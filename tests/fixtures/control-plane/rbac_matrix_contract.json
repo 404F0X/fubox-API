@@ -76,6 +76,16 @@
       "secret_safe": true
     },
     {
+      "key": "provider_key.recovery",
+      "method": "POST",
+      "path": "/admin/provider-keys/{id}/recovery",
+      "required_permission": "key_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
       "key": "request_log.read",
       "method": "GET",
       "path": "/admin/request-logs",

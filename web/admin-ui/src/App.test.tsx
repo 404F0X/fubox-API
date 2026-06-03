@@ -39,9 +39,10 @@ function sessionPlaceholder(value: string): string {
   return `${SESSION_PREFIX}${value}`;
 }
 
-function stubHealthyFetch(roles = ["owner"]) {
-  const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => {
+function stubHealthyFetch(roles = ["owner"], options: { recoveryFails?: boolean } = {}) {
+  const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = String(url);
+    const method = init?.method ?? "GET";
 
     if (requestUrl.includes("/admin/auth/login")) {
       return jsonResponse(loginPayload());
@@ -53,6 +54,14 @@ function stubHealthyFetch(roles = ["owner"]) {
 
     if (requestUrl.includes("/admin/auth/logout")) {
       return jsonResponse({ logged_out: true });
+    }
+
+    if (requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") && method === "POST") {
+      if (options.recoveryFails) {
+        return jsonError("provider key status `auth_failed` cannot be recovered through this endpoint", 400);
+      }
+
+      return jsonResponse(providerKeyRecoveryPayload());
     }
 
     if (requestUrl.includes("/admin/providers/health-summary")) {
@@ -714,6 +723,10 @@ function stubAdminFetch() {
       return jsonResponse({ ...providerKey, status: "deleted" });
     }
 
+    if (requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") && method === "POST") {
+      return jsonResponse(providerKeyRecoveryPayload());
+    }
+
     if (requestUrl.includes("/admin/provider-keys") && method === "POST") {
       return jsonResponse({ ...providerKey, id: "provider-key-2", key_alias: "created-key" });
     }
@@ -877,6 +890,7 @@ function capabilitySummaryForRoles(roles: string[]) {
             "provider.manage",
             "key.read",
             "key.manage",
+            "provider_key.recovery",
             "request_log.read",
             "trace.read",
             "audit.read",
@@ -903,6 +917,7 @@ const allCapabilities = [
   "provider.manage",
   "key.read",
   "key.manage",
+  "provider_key.recovery",
   "request_log.read",
   "trace.read",
   "audit.read",
@@ -1011,7 +1026,7 @@ function healthSummaryPayload() {
           tpm: 120000,
         },
         recent: healthSummaryRecent("provider_auth_failed"),
-        status: "auth_failed",
+        status: "cooldown",
       },
     ],
     providers: [
@@ -1045,7 +1060,7 @@ function healthSummaryPayload() {
     status_counts: {
       channels: { cooldown: 1 },
       models: { active: 1 },
-      provider_keys: { auth_failed: 1 },
+      provider_keys: { cooldown: 1 },
       providers: { enabled: 1 },
     },
     summary_version: 1,
@@ -1056,6 +1071,48 @@ function healthSummaryPayload() {
       models: 1,
       provider_keys: 1,
       providers: 1,
+    },
+  };
+}
+
+function providerKeyRecoveryPayload() {
+  return {
+    billing: {
+      billable: false,
+      ledger_write: false,
+    },
+    controlled_status_transition: true,
+    credential_material: {
+      omitted: true,
+    },
+    dry_run: false,
+    provider_key: {
+      channel_id: "channel-1",
+      credential_configured: true,
+      health_score: 0.25,
+      id: "provider-key-1",
+      key_alias: "openai-main",
+      metadata: {
+        owner: "ops",
+        token: skPlaceholder("recovery-response-hidden"),
+      },
+      secret_redacted: true,
+      status: "recovery_probe",
+      tenant_id: "tenant-1",
+    },
+    reason: "overview manual recovery request",
+    target_status: "recovery_probe",
+    transition: {
+      allowed_source_statuses: ["cooldown", "degraded", "recovery_probe"],
+      allowed_target_statuses: ["recovery_probe", "enabled"],
+      from_status: "cooldown",
+      to_status: "recovery_probe",
+    },
+    upstream_probe: {
+      billable: false,
+      executed: false,
+      mode: "not_implemented",
+      request_log_write: false,
     },
   };
 }
@@ -1407,8 +1464,8 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: /Billing/ })).not.toBeInTheDocument();
   });
 
-  it("switches navigation sections and tracks recovery requests locally", async () => {
-    stubHealthyFetch();
+  it("switches navigation sections and requests provider key recovery through the API", async () => {
+    const fetchMock = stubHealthyFetch();
 
     const user = await renderSignedInApp();
 
@@ -1417,11 +1474,38 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Provider Inventory" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Overview/ }));
-    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai primary" });
+    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
     await user.click(recoveryButton);
 
-    expect(recoveryButton).toHaveTextContent("Requested");
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("Requested"));
     expect(recoveryButton).toBeDisabled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/control-plane/admin/provider-keys/provider-key-1/recovery",
+      expect.objectContaining({
+        body: JSON.stringify({
+          reason: "overview manual recovery request",
+          target_status: "recovery_probe",
+        }),
+        method: "POST",
+      }),
+    );
+    expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("shows provider key recovery API failures without exposing secrets", async () => {
+    stubHealthyFetch(["owner"], { recoveryFails: true });
+
+    const user = await renderSignedInApp();
+
+    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    await user.click(recoveryButton);
+
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("Retry"));
+    expect(recoveryButton).not.toBeDisabled();
+    expect(
+      await screen.findByText("provider key status `auth_failed` cannot be recovered through this endpoint"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
   });
 
   it("renders request logs and safe request detail fields", async () => {

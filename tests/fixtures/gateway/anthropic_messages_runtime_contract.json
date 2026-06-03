@@ -37,17 +37,22 @@
   },
   "streaming_contract": {
     "request_stream_true": true,
-    "implemented": false,
-    "http_status": 501,
-    "error_code": "streaming_not_implemented",
-    "route_snapshot_reason": "anthropic_messages_stream_not_implemented",
+    "implemented": true,
+    "runtime_entry": "apps/gateway/src/streaming.rs::anthropic_messages_streaming",
+    "previous_501_removed": true,
+    "upstream_call": "send_anthropic_messages_stream_request",
+    "stream_protocol": "anthropic_messages",
+    "terminal_message_stop_end_reason": "completed",
+    "terminal_error_end_reason": "upstream_error",
+    "invalid_json_end_reason": "parser_error",
+    "no_late_fallback_after_response_start": true,
     "request_log": {
       "created": true,
-      "final_status": "rejected"
+      "final_status": "completed_or_partial_after_stream_finalizer"
     },
-    "provider_attempts_created": false,
-    "provider_key_opened": false,
-    "upstream_http_request_sent": false
+    "provider_attempts_created": true,
+    "provider_key_opened": true,
+    "upstream_http_request_sent": true
   },
   "preauth_rejection": {
     "http_status": 402,
@@ -121,10 +126,9 @@
     ]
   },
   "remaining_gaps": [
-    "Anthropic Messages streaming runtime",
     "live smoke with gateway plus mock provider and database",
     "dedicated Anthropic protocol route or capability constraints beyond shared chat route candidates",
     "complete Messages tool/content-block runtime semantics"
   ],
-  "notes": "Dry-run fixture for the first Gateway Anthropic Messages runtime slice. It locks the order auth, request log, preauthorize, provider attempt, provider key open, upstream request, usage rating, and ledger settle for non-streaming requests. Streaming is intentionally stable 501 before provider side effects until runtime streaming is implemented."
+  "notes": "Dry-run fixture for the Gateway Anthropic Messages runtime slice. It locks the order auth, request log, preauthorize, provider attempt, provider key open, upstream request, usage rating, ledger settle for non-streaming requests, and the minimal streaming runtime handoff."
 }

@@ -53,6 +53,7 @@
       "audience_allowlist_configured": true,
       "email_domain_allowlist_configured": true,
       "direct_client_claims_allowed": false,
+      "callback_exchange_plan_returned_after_valid_state": true,
       "token_exchange_implemented": false,
       "jwks_id_token_validation_implemented": false,
       "session_creation_implemented": false
@@ -75,12 +76,63 @@
         "valid_state": {
           "expected_error_code": "oidc_callback_exchange_unimplemented",
           "state_consumed": true,
+          "exchange_plan_returned": true,
+          "network_request_attempted": false,
           "code_exchange_attempted": false,
           "id_token_validation_attempted": false,
           "session_created": false
         }
       },
       "callback_response_echoes_raw_code_state_token_or_claims": false
+    },
+    "callback_exchange_plan": {
+      "status": "plan_only_refusal",
+      "network_request_attempted": false,
+      "authorization_code_exchange": {
+        "implemented": false,
+        "method": "POST",
+        "token_endpoint": {
+          "source_env": "AI_GATEWAY_OIDC_TOKEN_ENDPOINT",
+          "https_required": true,
+          "query_secret_rejected": true
+        },
+        "pkce": {
+          "required": true,
+          "code_verifier_source": "server_side_state_record",
+          "code_challenge_method": "S256",
+          "client_supplied_verifier_accepted": false
+        },
+        "client_auth": {
+          "configured_server_side_only": true,
+          "caller_supplied_secret_accepted": false
+        }
+      },
+      "jwks_id_token_validation": {
+        "implemented": false,
+        "jwks_uri_https_required": true,
+        "required_checks": [
+          "kid_present_and_matches_jwks_key",
+          "alg_allowlist_enforced",
+          "signature_valid",
+          "issuer_matches_configured_provider",
+          "audience_contains_client_id",
+          "azp_checked_when_multiple_audiences",
+          "exp_not_expired",
+          "nbf_not_in_future_when_present",
+          "nonce_matches_consumed_server_state",
+          "subject_present"
+        ]
+      },
+      "role_mapping_boundary": {
+        "input_source": "server_verified_oidc_id_token_or_userinfo_only",
+        "direct_callback_claims_accepted": false,
+        "unknown_roles_default_deny": true
+      },
+      "user_identity_and_session_boundary": {
+        "lookup": "user_identities(provider, subject, tenant_id)",
+        "session_creation_after_verified_mapping_only": true,
+        "session_created_in_this_slice": false
+      }
     },
     "remaining_gaps": [
       "authorization_code_exchange",

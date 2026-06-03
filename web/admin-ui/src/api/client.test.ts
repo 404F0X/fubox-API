@@ -184,6 +184,7 @@ describe("api client", () => {
       listProviderKeys,
       listRequestLogs,
       patchProviderKey,
+      requestProviderKeyRecovery,
     } = await loadClient();
     const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
       const requestUrl = String(url);
@@ -231,6 +232,28 @@ describe("api client", () => {
         return jsonResponse({ id: "provider-key-1", status: "deleted" });
       }
 
+      if (requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") && method === "POST") {
+        return jsonResponse({
+          controlled_status_transition: true,
+          credential_material: { omitted: true },
+          dry_run: false,
+          provider_key: { id: "provider-key-1", status: "recovery_probe" },
+          target_status: "recovery_probe",
+          transition: {
+            allowed_source_statuses: ["cooldown", "degraded", "recovery_probe"],
+            allowed_target_statuses: ["recovery_probe", "enabled"],
+            from_status: "cooldown",
+            to_status: "recovery_probe",
+          },
+          upstream_probe: {
+            billable: false,
+            executed: false,
+            mode: "not_implemented",
+            request_log_write: false,
+          },
+        });
+      }
+
       if (requestUrl.includes("/admin/provider-keys") && method === "POST") {
         return jsonResponse({ id: "provider-key-1", status: "enabled" });
       }
@@ -257,6 +280,7 @@ describe("api client", () => {
       status: "enabled",
     });
     await patchProviderKey("provider-key-1", { metadata: { region: "eu" }, status: "manual_disabled" });
+    await requestProviderKeyRecovery("provider-key-1", { reason: "overview", target_status: "recovery_probe" });
     await deleteProviderKey("provider-key-1");
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
@@ -267,6 +291,7 @@ describe("api client", () => {
       "/api/control-plane/admin/provider-keys",
       "/api/control-plane/admin/provider-keys",
       "/api/control-plane/admin/provider-keys/provider-key-1",
+      "/api/control-plane/admin/provider-keys/provider-key-1/recovery",
       "/api/control-plane/admin/provider-keys/provider-key-1",
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "GET" });
@@ -285,7 +310,11 @@ describe("api client", () => {
       body: JSON.stringify({ metadata: { region: "eu" }, status: "manual_disabled" }),
       method: "PATCH",
     });
-    expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: "DELETE" });
+    expect(fetchMock.mock.calls[7][1]).toMatchObject({
+      body: JSON.stringify({ reason: "overview", target_status: "recovery_probe" }),
+      method: "POST",
+    });
+    expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: "DELETE" });
   });
 
   it("wraps model association dry-run endpoint", async () => {

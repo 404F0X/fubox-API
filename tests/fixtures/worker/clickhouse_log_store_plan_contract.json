@@ -34,6 +34,8 @@
     "runtime_connected": false,
     "db_reads": false,
     "db_writes": false,
+    "queue_writes": false,
+    "file_system_writes": false,
     "outbound_calls": false,
     "network_requests": false,
     "clickhouse_config": {
@@ -49,6 +51,145 @@
       "batch_size": 2500,
       "flush_interval_ms": 750,
       "bounded_memory": true
+    },
+    "durable_queue": {
+      "queue_type": "append_only_wal_future",
+      "planned": true,
+      "enabled_in_this_slice": false,
+      "execute_supported": false,
+      "file_system_writes": false,
+      "wal_directory": {
+        "root": "AI_GATEWAY_CLICKHOUSE_WAL_DIR or <data_dir>/clickhouse-log-store/wal",
+        "tenant_partition": "tenant_id=00000000-0000-0000-0000-000000000001",
+        "segment_pattern": "wal-{monotonic_sequence}.jsonl",
+        "checkpoint_file": "checkpoint.json",
+        "creates_directories": false,
+        "writes_files": false
+      },
+      "wal_record_shape": {
+        "encoding": "json_lines",
+        "status_values": [
+          "pending",
+          "leased",
+          "acked",
+          "retry",
+          "dead_letter"
+        ],
+        "fields": [
+          "wal_sequence",
+          "tenant_id",
+          "sink",
+          "source_relation",
+          "source_record_id",
+          "request_id",
+          "provider_attempt_id",
+          "event_id",
+          "dedup_key",
+          "payload_hash",
+          "payload_policy",
+          "record_hash",
+          "status",
+          "attempt",
+          "not_before_utc",
+          "created_at_utc",
+          "updated_at_utc",
+          "metadata_redacted"
+        ],
+        "payload_body_written": false,
+        "credential_material_written": false
+      },
+      "disk_budget": {
+        "bounded_disk": true,
+        "max_bytes": 536870912,
+        "max_segment_bytes": 16777216,
+        "max_segments": 32,
+        "max_unacked_records": 42,
+        "overflow_action": "evict_oldest_unflushed_record"
+      },
+      "enqueue": {
+        "operation": "enqueue",
+        "idempotency_key_fields": [
+          "tenant_id",
+          "sink",
+          "dedup_key",
+          "record_hash"
+        ],
+        "status_from": [
+          "missing"
+        ],
+        "status_to": "pending",
+        "transaction_boundary": "append_wal_record_then_update_dedup_journal_future"
+      },
+      "dequeue": {
+        "operation": "dequeue",
+        "idempotency_key_fields": [
+          "tenant_id",
+          "wal_sequence",
+          "lease_id"
+        ],
+        "status_from": [
+          "pending",
+          "retry"
+        ],
+        "status_to": "leased",
+        "transaction_boundary": "lease_batch_before_clickhouse_send_future"
+      },
+      "ack": {
+        "operation": "ack",
+        "idempotency_key_fields": [
+          "tenant_id",
+          "wal_sequence",
+          "sink",
+          "dedup_key"
+        ],
+        "status_from": [
+          "leased"
+        ],
+        "status_to": "acked",
+        "transaction_boundary": "ack_after_clickhouse_insert_and_dedup_confirm_future"
+      },
+      "retry": {
+        "idempotency_key_fields": [
+          "tenant_id",
+          "wal_sequence",
+          "attempt"
+        ],
+        "max_attempts": 5,
+        "initial_backoff_ms": 200,
+        "max_backoff_ms": 4000,
+        "retry_status": "retry",
+        "exhausted_status": "dead_letter"
+      },
+      "retention": {
+        "delete_acked_segments_after_seconds": 86400,
+        "delete_failed_segments_after_seconds": 604800,
+        "checkpoint_after_acked_records": 2500,
+        "requires_no_pending_records_before_segment_delete": true
+      },
+      "load_safety": {
+        "replay_order": "tenant_partition_then_wal_sequence",
+        "max_replay_batch_rows": 2500,
+        "max_replay_bytes": 4194304,
+        "single_consumer_lock": "advisory_file_lock_future",
+        "replay_requires_dedup_journal_check": true,
+        "payload_policy_enforced_before_enqueue": true
+      },
+      "dedup_journal_linkage": {
+        "journal_relation": "clickhouse_log_store_dedup_journal_future",
+        "journal_key_fields": [
+          "tenant_id",
+          "sink",
+          "dedup_key"
+        ],
+        "wal_link_fields": [
+          "tenant_id",
+          "wal_sequence",
+          "record_hash",
+          "payload_hash"
+        ],
+        "conflict_action": "skip_duplicate_same_record_hash",
+        "payload_hash_mismatch_action": "dead_letter_and_require_manual_review_future"
+      }
     },
     "backpressure": {
       "drop_policy": "drop_oldest",
@@ -93,6 +234,8 @@
     "db_writes": false,
     "clickhouse_network_requests": false,
     "queue_writes": false,
+    "file_system_writes": false,
+    "wal_file_writes": false,
     "env_values_output": false,
     "credential_material_output": false,
     "payload_body_output": false,
@@ -109,9 +252,9 @@
   ],
   "remaining_gaps": [
     "real_clickhouse_writer",
-    "durable_queue_or_wal",
     "database_changefeed_or_export_cursor",
-    "dedup_journal_persistence",
+    "durable_wal_writer",
+    "dedup_journal_runtime_persistence",
     "load_and_retention_smoke"
   ]
 }

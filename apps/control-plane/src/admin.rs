@@ -101,6 +101,10 @@ pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
                 .delete(delete_provider_key),
         )
         .route(
+            "/admin/provider-keys/{id}/recovery",
+            axum::routing::post(request_provider_key_recovery),
+        )
+        .route(
             "/admin/api-key-profiles",
             get(list_api_key_profiles).post(create_api_key_profile),
         )
@@ -289,6 +293,13 @@ struct PatchProviderKeyRequest {
     api_key: Option<Value>,
     encrypted_secret: Option<Value>,
     secret_fingerprint: Option<Value>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderKeyRecoveryRequest {
+    target_status: Option<String>,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1053,6 +1064,73 @@ async fn patch_provider_key(
         .ok_or_else(|| AdminError::not_found("provider key"))?;
 
     Ok(Json(json!({ "data": provider_key_response(provider_key) })).into_response())
+}
+
+async fn request_provider_key_recovery(
+    State(state): State<Arc<ControlPlaneState>>,
+    Extension(session): Extension<AdminSession>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    request: Option<Json<ProviderKeyRecoveryRequest>>,
+) -> Result<Response, AdminError> {
+    let request = request.map(|Json(request)| request).unwrap_or_default();
+    let repository = repo(&state);
+    let current = repository
+        .get_provider_key(DEFAULT_TENANT_ID, id)
+        .await?
+        .ok_or_else(|| AdminError::not_found("provider key"))?;
+
+    let target_status = normalize_provider_key_recovery_target(request.target_status.as_deref())?;
+    validate_provider_key_recovery_transition(&current.status, &target_status)?;
+    let previous_status = current.status.clone();
+    let metadata = current.metadata.clone();
+    let reason = normalize_provider_key_recovery_reason(request.reason)?;
+    let request_context = admin_request_context_from_headers(&headers);
+
+    let audit_previous_status = previous_status.clone();
+    let audit_target_status = target_status.clone();
+    let audit_reason = reason.clone();
+    let provider_key = repository
+        .update_provider_key_admin_with_audit(
+            DEFAULT_TENANT_ID,
+            id,
+            &target_status,
+            metadata,
+            |before, after| {
+                new_admin_audit_log(
+                    &session,
+                    "provider_key.recovery_request",
+                    Some(before),
+                    after,
+                    json!({
+                        "controlled_status_transition": true,
+                        "previous_status": audit_previous_status,
+                        "target_status": audit_target_status,
+                        "reason": audit_reason,
+                        "upstream_probe": {
+                            "executed": false,
+                            "mode": "not_implemented"
+                        },
+                        "credential_material": {
+                            "omitted": true
+                        }
+                    }),
+                    Some(request_context.clone()),
+                )
+            },
+        )
+        .await?
+        .ok_or_else(|| AdminError::not_found("provider key"))?;
+
+    Ok(Json(json!({
+        "data": provider_key_recovery_response(
+            &provider_key,
+            &previous_status,
+            &target_status,
+            reason.as_deref(),
+        )
+    }))
+    .into_response())
 }
 
 async fn delete_provider_key(
@@ -4443,6 +4521,40 @@ fn provider_key_response(provider_key: ProviderKey) -> Value {
     })
 }
 
+fn provider_key_recovery_response(
+    provider_key: &ProviderKey,
+    previous_status: &str,
+    target_status: &str,
+    reason: Option<&str>,
+) -> Value {
+    json!({
+        "dry_run": false,
+        "controlled_status_transition": true,
+        "target_status": target_status,
+        "reason": reason,
+        "transition": {
+            "from_status": previous_status,
+            "to_status": target_status,
+            "allowed_source_statuses": ["cooldown", "degraded", "recovery_probe"],
+            "allowed_target_statuses": ["recovery_probe", "enabled"],
+        },
+        "provider_key": provider_key_response(provider_key.clone()),
+        "upstream_probe": {
+            "executed": false,
+            "mode": "not_implemented",
+            "billable": false,
+            "request_log_write": false,
+        },
+        "billing": {
+            "billable": false,
+            "ledger_write": false,
+        },
+        "credential_material": {
+            "omitted": true,
+        },
+    })
+}
+
 fn channel_manual_test_response(
     channel: &Channel,
     provider: &Provider,
@@ -4936,6 +5048,88 @@ fn validate_provider_key_manual_patch_status(status: &str) -> Result<(), AdminEr
             "unsupported provider key status `{value}`"
         ))),
     }
+}
+
+fn normalize_provider_key_recovery_target(
+    target_status: Option<&str>,
+) -> Result<String, AdminError> {
+    let normalized = match target_status {
+        Some(value) if value.trim().is_empty() => {
+            return Err(AdminError::bad_request(
+                "provider key recovery target_status must not be empty",
+            ));
+        }
+        Some(value) => match normalize_optional_token(Some(value)).as_deref() {
+            Some("active" | "enabled") => "enabled".to_string(),
+            Some("recovery_probe") => "recovery_probe".to_string(),
+            Some(
+                "auth_failed" | "quota_exhausted" | "cooldown" | "manual_disabled" | "disabled"
+                | "degraded" | "deleted",
+            ) => normalize_provider_key_status(Some(value))?,
+            Some(_) | None => {
+                return Err(AdminError::bad_request(
+                    "unsupported provider key recovery target",
+                ));
+            }
+        },
+        None => "recovery_probe".to_string(),
+    };
+
+    match normalized.as_str() {
+        "recovery_probe" | "enabled" => Ok(normalized),
+        "auth_failed" | "quota_exhausted" | "cooldown" | "manual_disabled" | "degraded"
+        | "deleted" => Err(AdminError::bad_request(format!(
+            "provider key recovery target `{normalized}` is not allowed"
+        ))),
+        _ => Err(AdminError::bad_request(
+            "unsupported provider key recovery target",
+        )),
+    }
+}
+
+fn validate_provider_key_recovery_transition(
+    current_status: &str,
+    target_status: &str,
+) -> Result<(), AdminError> {
+    match current_status {
+        "cooldown" | "degraded" | "recovery_probe" => {}
+        "auth_failed" | "quota_exhausted" | "manual_disabled" | "enabled" | "deleted" => {
+            return Err(AdminError::bad_request(format!(
+                "provider key status `{current_status}` cannot be recovered through this endpoint"
+            )));
+        }
+        value => {
+            return Err(AdminError::bad_request(format!(
+                "unsupported provider key current status `{value}`"
+            )));
+        }
+    }
+
+    match target_status {
+        "recovery_probe" | "enabled" => Ok(()),
+        value => Err(AdminError::bad_request(format!(
+            "provider key recovery target `{value}` is not allowed"
+        ))),
+    }
+}
+
+fn normalize_provider_key_recovery_reason(
+    reason: Option<String>,
+) -> Result<Option<String>, AdminError> {
+    let Some(reason) = reason else {
+        return Ok(None);
+    };
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Ok(None);
+    }
+    if reason.len() > 256 {
+        return Err(AdminError::bad_request(
+            "provider key recovery reason must be at most 256 bytes",
+        ));
+    }
+
+    Ok(Some(redact_secrets(reason)))
 }
 
 fn normalize_provider_status(status: Option<&str>) -> String {
@@ -5915,6 +6109,137 @@ mod tests {
     }
 
     #[test]
+    fn provider_key_recovery_target_and_transition_boundaries() {
+        for (raw, expected) in [
+            (None, "recovery_probe"),
+            (Some("recovery_probe"), "recovery_probe"),
+            (Some("enabled"), "enabled"),
+            (Some("active"), "enabled"),
+        ] {
+            assert_eq!(
+                normalize_provider_key_recovery_target(raw)
+                    .expect("safe recovery target should be accepted"),
+                expected
+            );
+        }
+
+        for forbidden in [
+            "manual_disabled",
+            "degraded",
+            "cooldown",
+            "auth_failed",
+            "quota_exhausted",
+            "deleted",
+        ] {
+            let error = normalize_provider_key_recovery_target(Some(forbidden))
+                .expect_err("unsafe recovery target should be rejected");
+            assert_eq!(error.code, "bad_request");
+            assert!(
+                !error.message.contains("sk-"),
+                "target error must not contain secret-like material"
+            );
+        }
+
+        let secret_like_unknown =
+            normalize_provider_key_recovery_target(Some("sk-live-recovery-target-never-echo"))
+                .expect_err("unsupported recovery target should be rejected");
+        assert_eq!(secret_like_unknown.code, "bad_request");
+        assert_eq!(
+            secret_like_unknown.message,
+            "unsupported provider key recovery target"
+        );
+        assert!(!secret_like_unknown.message.contains("sk-live"));
+
+        for current in ["cooldown", "degraded", "recovery_probe"] {
+            validate_provider_key_recovery_transition(current, "recovery_probe")
+                .expect("safe source should enter recovery_probe");
+            validate_provider_key_recovery_transition(current, "enabled")
+                .expect("safe source should enter enabled");
+        }
+
+        for current in [
+            "auth_failed",
+            "quota_exhausted",
+            "manual_disabled",
+            "enabled",
+            "deleted",
+        ] {
+            let error = validate_provider_key_recovery_transition(current, "recovery_probe")
+                .expect_err("unsafe source should be rejected");
+            assert_eq!(error.code, "bad_request");
+            assert!(
+                !error.message.contains("sk-"),
+                "source error must not contain secret-like material"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_key_recovery_request_rejects_unknown_secret_fields() {
+        let default_request = serde_json::from_value::<ProviderKeyRecoveryRequest>(json!({}))
+            .expect("empty recovery body should be valid");
+        assert_eq!(
+            normalize_provider_key_recovery_target(default_request.target_status.as_deref())
+                .expect("empty target should default"),
+            "recovery_probe"
+        );
+
+        let error = serde_json::from_value::<ProviderKeyRecoveryRequest>(json!({
+            "target_status": "recovery_probe",
+            "secret": "sk-live-recovery-secret-never-read"
+        }))
+        .expect_err("unknown secret fields must be rejected by deserialization");
+        let message = error.to_string();
+
+        assert!(message.contains("secret"));
+        assert!(!message.contains("sk-live-recovery-secret-never-read"));
+    }
+
+    #[test]
+    fn provider_key_recovery_response_is_secret_safe() {
+        let mut provider_key = provider_key_fixture(Uuid::from_u128(3));
+        provider_key.status = "recovery_probe".to_string();
+        provider_key.metadata = json!({
+            "owner": "ops",
+            "nested": {
+                "api_key": "sk-live-recovery-metadata-never-return"
+            }
+        });
+
+        let response = provider_key_recovery_response(
+            &provider_key,
+            "cooldown",
+            "recovery_probe",
+            Some("rotate after [REDACTED]"),
+        );
+        let serialized = serde_json::to_string(&response).expect("response should serialize");
+
+        assert_eq!(response["dry_run"], json!(false));
+        assert_eq!(response["controlled_status_transition"], json!(true));
+        assert_eq!(response["transition"]["from_status"], json!("cooldown"));
+        assert_eq!(response["transition"]["to_status"], json!("recovery_probe"));
+        assert_eq!(response["upstream_probe"]["executed"], json!(false));
+        assert_eq!(response["credential_material"]["omitted"], json!(true));
+        assert_eq!(
+            response["provider_key"]["metadata"]["nested"]["api_key"],
+            json!("[REDACTED]")
+        );
+
+        for forbidden in [
+            "sk-live-recovery-metadata-never-return",
+            "encrypted_secret",
+            "secret_fingerprint",
+            "has_secret_fingerprint",
+            "current_window_state",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "recovery response must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn provider_key_status_contract_fixture_locks_manual_boundaries() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/provider_key_status_contract.json"
@@ -5955,6 +6280,22 @@ mod tests {
 
         let response = &fixture["examples"]["manual_disable"]["response"]["data"];
         assert_eq!(response["credential_configured"], json!(true));
+        assert_eq!(
+            fixture["recovery_contract"]["path"],
+            json!("POST /admin/provider-keys/{id}/recovery")
+        );
+        assert_eq!(
+            fixture["recovery_contract"]["allowed_source_statuses"],
+            json!(["cooldown", "degraded", "recovery_probe"])
+        );
+        assert_eq!(
+            fixture["recovery_contract"]["allowed_target_statuses"],
+            json!(["recovery_probe", "enabled"])
+        );
+        assert_eq!(
+            fixture["examples"]["manual_recovery"]["response"]["data"]["upstream_probe"]["executed"],
+            json!(false)
+        );
         for forbidden in [
             "secret",
             "api_key",

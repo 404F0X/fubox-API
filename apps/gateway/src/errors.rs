@@ -229,19 +229,6 @@ impl GatewayApiError {
         }
     }
 
-    pub fn streaming_not_implemented(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_IMPLEMENTED,
-            error_type: "invalid_request_error",
-            code: "streaming_not_implemented",
-            message: message.into(),
-            param: Some("stream"),
-            owner: "gateway",
-            stage: "request_validate",
-            retryable: Some(false),
-        }
-    }
-
     pub fn to_openai_error_body(&self) -> Value {
         sanitize_error_body(json!({
             "error": {
@@ -416,19 +403,6 @@ mod tests {
         assert!(!body.contains("wallet_id"));
         assert!(!body.contains("budget_id"));
         assert!(!body.contains("sk-live-secret"));
-    }
-
-    #[test]
-    fn streaming_not_implemented_is_stable_rejected_contract_error() {
-        let error = GatewayApiError::streaming_not_implemented(
-            "stream=true is not implemented for Anthropic Messages in this gateway slice",
-        );
-
-        assert_eq!(error.status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(error.code, "streaming_not_implemented");
-        assert_eq!(error.owner, "gateway");
-        assert_eq!(error.stage, "request_validate");
-        assert_eq!(error.retryable, Some(false));
     }
 
     #[test]

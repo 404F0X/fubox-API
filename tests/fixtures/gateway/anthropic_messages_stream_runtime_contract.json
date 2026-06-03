@@ -1,0 +1,73 @@
+{
+  "scenario": "gateway_anthropic_messages_stream_runtime_contract_v1",
+  "endpoint": {
+    "name": "anthropic_messages_stream",
+    "path": "POST /v1/messages",
+    "stream": true,
+    "runtime_entry": "apps/gateway/src/streaming.rs::anthropic_messages_streaming",
+    "previous_501_removed": true
+  },
+  "request_flow": [
+    "authenticate_virtual_key",
+    "parse_anthropic_messages_request",
+    "resolve_canonical_model",
+    "select_route_candidates",
+    "create_request_started",
+    "pre_authorize_before_provider_attempt",
+    "create_provider_attempt_started",
+    "open_provider_key_for_route",
+    "send_anthropic_messages_stream_request",
+    "stream_response"
+  ],
+  "provider_contract": {
+    "adapter": "AnthropicAdapter",
+    "upstream_call": "send_anthropic_messages_stream_request",
+    "upstream_path": "/v1/messages",
+    "upstream_model_rewrite": "anthropic_messages_stream_request_for_upstream",
+    "provider_key_header": "x-api-key <redacted>",
+    "anthropic_version_header": "anthropic-version",
+    "provider_key_secret_logged": false,
+    "x_api_key_logged": false
+  },
+  "stream_contract": {
+    "protocol": "anthropic_messages",
+    "content_type": "text/event-stream",
+    "pull_model": "one_upstream_chunk_per_downstream_poll",
+    "max_upstream_chunk_bytes": 4194304,
+    "max_sse_event_bytes": 4194304,
+    "no_late_fallback_after_response_start": true,
+    "downstream_body_drop_end_reason": "client_cancel"
+  },
+  "terminal_contract": {
+    "message_stop": {
+      "request_status": "succeeded",
+      "provider_attempt_status": "succeeded",
+      "stream_end_reason": "completed",
+      "usage_source": "Anthropic usage event before terminal when present",
+      "rating_and_settle": "when completed stream has complete usage and non-zero rating"
+    },
+    "error_terminal": {
+      "request_status": "failed_or_partial",
+      "provider_attempt_status": "failed",
+      "stream_end_reason": "upstream_error",
+      "late_fallback": false,
+      "usage_billed": false
+    },
+    "invalid_json_event": {
+      "request_status": "failed_or_partial",
+      "provider_attempt_status": "failed",
+      "stream_end_reason": "parser_error",
+      "late_fallback": false,
+      "usage_billed": false
+    }
+  },
+  "forbidden_markers": [
+    "sk-live",
+    "plain-provider-secret",
+    "provider-secret-value",
+    "Authorization: Bearer",
+    "x-api-key: sk",
+    "payload body secret"
+  ],
+  "notes": "Dry-run/source contract for the first Gateway Anthropic Messages streaming runtime slice. Live mock-provider scenarios are still pending; this fixture locks no 501, preauth/provider side-effect order, Anthropic stream adapter parser usage, terminal end-reason semantics, and secret-safe output."
+}

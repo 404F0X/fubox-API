@@ -583,6 +583,87 @@ fn oidc_callback_error(
     }
 }
 
+fn oidc_callback_exchange_plan() -> Value {
+    json!({
+        "callback_refusal": {
+            "reason": "plan_only_no_token_exchange",
+            "network_request_attempted": false,
+            "code_exchange_attempted": false,
+            "id_token_validation_attempted": false,
+            "session_created": false,
+            "raw_authorization_code_echoed": false,
+            "raw_state_echoed": false,
+            "raw_token_or_claim_echoed": false
+        },
+        "exchange_plan": {
+            "authorization_code_exchange": {
+                "implemented": false,
+                "method": "POST",
+                "token_endpoint": {
+                    "source_env": "AI_GATEWAY_OIDC_TOKEN_ENDPOINT",
+                    "https_required": true,
+                    "userinfo_disallowed": true,
+                    "query_secret_rejected": true
+                },
+                "authorization_code": {
+                    "source": "callback_query_code",
+                    "raw_value_returned": false,
+                    "single_use_after_state_validation": true
+                },
+                "redirect_uri": {
+                    "source": "AI_GATEWAY_OIDC_REDIRECT_URI",
+                    "must_match_authorize_request": true
+                },
+                "pkce": {
+                    "required": true,
+                    "code_verifier_source": "server_side_state_record",
+                    "code_challenge_method": "S256",
+                    "client_supplied_verifier_accepted": false
+                },
+                "client_auth": {
+                    "configured_server_side_only": true,
+                    "accepted_future_methods": [
+                        "client_secret_basic",
+                        "client_secret_post",
+                        "private_key_jwt",
+                        "none_for_public_pkce_clients"
+                    ],
+                    "caller_supplied_secret_accepted": false
+                }
+            },
+            "jwks_id_token_validation": {
+                "implemented": false,
+                "jwks_uri_https_required": true,
+                "jwks_fetch_network_request_attempted": false,
+                "required_checks": [
+                    "kid_present_and_matches_jwks_key",
+                    "alg_allowlist_enforced",
+                    "signature_valid",
+                    "issuer_matches_configured_provider",
+                    "audience_contains_client_id",
+                    "azp_checked_when_multiple_audiences",
+                    "exp_not_expired",
+                    "nbf_not_in_future_when_present",
+                    "nonce_matches_consumed_server_state",
+                    "subject_present"
+                ]
+            },
+            "role_mapping_boundary": {
+                "input_source": "server_verified_oidc_id_token_or_userinfo_only",
+                "direct_callback_claims_accepted": false,
+                "role_group_mapping_after_token_validation_only": true,
+                "unknown_roles_default_deny": true
+            },
+            "user_identity_and_session_boundary": {
+                "user_identity_lookup": "user_identities(provider, subject, tenant_id)",
+                "create_user_identity_automatically": false,
+                "session_creation_after_verified_mapping_only": true,
+                "session_created_in_this_slice": false
+            }
+        }
+    })
+}
+
 fn oidc_callback_contains_direct_claims(query: &BTreeMap<String, String>) -> bool {
     callback_contains_direct_federated_credentials(query)
 }
@@ -606,10 +687,15 @@ fn callback_contains_direct_federated_credentials(query: &BTreeMap<String, Strin
             "access_token"
                 | "assertion"
                 | "authorization"
+                | "client_secret"
                 | "claims"
+                | "code_verifier"
                 | "email"
                 | "groups"
                 | "id_token"
+                | "issuer"
+                | "jwks"
+                | "jwks_uri"
                 | "name"
                 | "preferred_username"
                 | "refresh_token"
@@ -619,6 +705,7 @@ fn callback_contains_direct_federated_credentials(query: &BTreeMap<String, Strin
                 | "samlresponse"
                 | "sub"
                 | "token"
+                | "token_endpoint"
                 | "userinfo"
                 | "user_info"
         )
@@ -1478,6 +1565,7 @@ pub(crate) struct AuthError {
     status: StatusCode,
     code: &'static str,
     message: &'static str,
+    details: Option<Value>,
     retry_after_seconds: Option<u64>,
 }
 
@@ -1487,6 +1575,7 @@ impl AuthError {
             status: StatusCode::UNAUTHORIZED,
             code: "unauthorized",
             message: "admin session required",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1496,6 +1585,7 @@ impl AuthError {
             status: StatusCode::FORBIDDEN,
             code: "forbidden",
             message: "admin permission denied",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1505,6 +1595,7 @@ impl AuthError {
             status: StatusCode::UNAUTHORIZED,
             code: "invalid_credentials",
             message: "invalid credentials",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1514,6 +1605,7 @@ impl AuthError {
             status: StatusCode::TOO_MANY_REQUESTS,
             code: "login_rate_limited",
             message: "too many login attempts",
+            details: None,
             retry_after_seconds: Some(retry_after_seconds.max(1)),
         }
     }
@@ -1523,6 +1615,7 @@ impl AuthError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code: "oidc_unavailable",
             message: "oidc login is not configured",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1532,6 +1625,7 @@ impl AuthError {
             status: StatusCode::BAD_REQUEST,
             code: "oidc_state_missing",
             message: "oidc callback state is required",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1541,6 +1635,7 @@ impl AuthError {
             status: StatusCode::BAD_REQUEST,
             code: "oidc_state_invalid",
             message: "oidc callback state is invalid",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1550,6 +1645,7 @@ impl AuthError {
             status: StatusCode::BAD_REQUEST,
             code: "oidc_state_expired",
             message: "oidc callback state has expired",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1559,6 +1655,7 @@ impl AuthError {
             status: StatusCode::BAD_REQUEST,
             code: "oidc_callback_exchange_unimplemented",
             message: "oidc callback state validated; code exchange and token verification are not implemented",
+            details: Some(oidc_callback_exchange_plan()),
             retry_after_seconds: None,
         }
     }
@@ -1568,6 +1665,7 @@ impl AuthError {
             status: StatusCode::BAD_REQUEST,
             code: "oidc_claims_not_accepted",
             message: "oidc callback does not accept caller-supplied claims",
+            details: None,
             retry_after_seconds: None,
         }
     }
@@ -1577,12 +1675,13 @@ impl AuthError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "auth_service_error",
             message: "authentication service unavailable",
+            details: None,
             retry_after_seconds: None,
         }
     }
 
     fn body(&self) -> Value {
-        auth_error_body(self.code, self.message)
+        auth_error_body(self.code, self.message, self.details.as_ref())
     }
 }
 
@@ -1609,13 +1708,17 @@ impl IntoResponse for AuthError {
     }
 }
 
-fn auth_error_body(code: &'static str, message: &'static str) -> Value {
-    json!({
+fn auth_error_body(code: &'static str, message: &'static str, details: Option<&Value>) -> Value {
+    let mut body = json!({
         "error": {
             "code": code,
             "message": message
         }
-    })
+    });
+    if let Some(details) = details {
+        body["error"]["details"] = details.clone();
+    }
+    body
 }
 
 #[cfg(test)]
@@ -2073,8 +2176,24 @@ mod tests {
         );
         let valid_body = valid_error.body().to_string();
         assert_eq!(valid_error.code, "oidc_callback_exchange_unimplemented");
+        assert!(valid_body.contains("exchange_plan"));
+        assert!(valid_body.contains("authorization_code_exchange"));
+        assert!(valid_body.contains("AI_GATEWAY_OIDC_TOKEN_ENDPOINT"));
+        assert!(valid_body.contains("https_required"));
+        assert!(valid_body.contains("pkce"));
+        assert!(valid_body.contains("client_auth"));
+        assert!(valid_body.contains("jwks_id_token_validation"));
+        assert!(valid_body.contains("kid_present_and_matches_jwks_key"));
+        assert!(valid_body.contains("audience_contains_client_id"));
+        assert!(valid_body.contains("issuer_matches_configured_provider"));
+        assert!(valid_body.contains("exp_not_expired"));
+        assert!(valid_body.contains("nonce_matches_consumed_server_state"));
+        assert!(valid_body.contains("user_identities(provider, subject, tenant_id)"));
+        assert!(valid_body.contains("session_creation_after_verified_mapping_only"));
         assert!(!valid_body.contains(&valid_state));
         assert!(!valid_body.contains("provider-code-never-return"));
+        assert!(!valid_body.contains("client-secret"));
+        assert!(!valid_body.contains(fixed_oidc_state('4').as_str()));
 
         let replay_error = oidc_callback_error(
             &BTreeMap::from([("state".to_string(), valid_state)]),
@@ -2082,6 +2201,42 @@ mod tests {
             100,
         );
         assert_eq!(replay_error.code, "oidc_state_invalid");
+
+        let mismatch_state = fixed_oidc_state('5');
+        {
+            let mut store = oidc_state_store()
+                .lock()
+                .expect("oidc state store lock should be healthy");
+            store.insert(
+                mismatch_state.clone(),
+                StoredOidcState {
+                    provider: "acme".to_string(),
+                    nonce: fixed_oidc_state('6'),
+                    expires_at_epoch_seconds: 150,
+                },
+                100,
+            );
+        }
+        let mismatch_error = oidc_callback_error(
+            &BTreeMap::from([
+                ("code".to_string(), "provider-code-never-return".to_string()),
+                ("state".to_string(), mismatch_state.clone()),
+            ]),
+            "other",
+            100,
+        );
+        assert_eq!(mismatch_error.code, "oidc_state_invalid");
+        assert!(!mismatch_error.body().to_string().contains(&mismatch_state));
+
+        let mismatch_replay_error = oidc_callback_error(
+            &BTreeMap::from([
+                ("code".to_string(), "provider-code-never-return".to_string()),
+                ("state".to_string(), mismatch_state),
+            ]),
+            "acme",
+            100,
+        );
+        assert_eq!(mismatch_replay_error.code, "oidc_state_invalid");
     }
 
     #[test]
@@ -2094,6 +2249,10 @@ mod tests {
             ("email".to_string(), "admin@example.local".to_string()),
             ("roles".to_string(), "owner".to_string()),
             ("access_token".to_string(), "ya29.never-return".to_string()),
+            (
+                "client_secret".to_string(),
+                "oidc-client-secret-never-return".to_string(),
+            ),
         ]);
 
         let error = oidc_callback_error(&query, "acme", 100);
@@ -2105,7 +2264,9 @@ mod tests {
         assert!(!body.contains("admin@example.local"));
         assert!(!body.contains("owner"));
         assert!(!body.contains("ya29.never-return"));
+        assert!(!body.contains("oidc-client-secret-never-return"));
         assert!(body.contains("oidc_claims_not_accepted"));
+        assert!(!body.contains("exchange_plan"));
     }
 
     #[test]
@@ -2383,6 +2544,28 @@ mod tests {
             json!("oidc_callback_exchange_unimplemented")
         );
         assert_eq!(
+            fixture["oidc"]["state_nonce_persistence"]["callback_state_results"]["valid_state"]["exchange_plan_returned"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["oidc"]["callback_exchange_plan"]["authorization_code_exchange"]["token_endpoint"]
+                ["https_required"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["oidc"]["callback_exchange_plan"]["authorization_code_exchange"]["pkce"]["required"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["oidc"]["callback_exchange_plan"]["jwks_id_token_validation"]["required_checks"]
+                [0],
+            json!("kid_present_and_matches_jwks_key")
+        );
+        assert_eq!(
+            fixture["oidc"]["callback_exchange_plan"]["role_mapping_boundary"]["direct_callback_claims_accepted"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["oidc"]["state_nonce_persistence"]["callback_response_echoes_raw_code_state_token_or_claims"],
             json!(false)
         );
@@ -2396,6 +2579,11 @@ mod tests {
         );
         assert!(openapi.contains("default_deny: true"));
         assert!(openapi.contains("direct_client_claims_allowed: false"));
+        assert!(openapi.contains("callback_exchange_plan_returned_after_valid_state: true"));
+        assert!(openapi.contains("token_endpoint_https_required: true"));
+        assert!(openapi.contains("pkce_required: true"));
+        assert!(openapi.contains("kid_present_and_matches_jwks_key"));
+        assert!(openapi.contains("user_identities(provider, subject, tenant_id)"));
         assert!(openapi.contains("FederatedAuthMappingDecision"));
         assert!(openapi.contains("SamlMetadataSummary"));
         assert!(openapi.contains("server_side_state_nonce_persistence_implemented: true"));

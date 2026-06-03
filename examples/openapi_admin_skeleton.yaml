@@ -70,10 +70,33 @@ x-federated-auth-contract:
     audience_allowlist_required: true
     email_domain_allowlist_required: true
   oidc:
+    callback_exchange_plan_returned_after_valid_state: true
     token_exchange_implemented: false
     jwks_id_token_validation_implemented: false
     server_side_state_nonce_persistence_implemented: true
     session_creation_implemented: false
+    callback_exchange_plan:
+      status: plan_only_refusal
+      network_request_attempted: false
+      authorization_code_exchange:
+        method: POST
+        token_endpoint_source_env: AI_GATEWAY_OIDC_TOKEN_ENDPOINT
+        token_endpoint_https_required: true
+        pkce_required: true
+        pkce_code_verifier_source: server_side_state_record
+        client_auth_configured_server_side_only: true
+      jwks_id_token_validation:
+        jwks_uri_https_required: true
+        required_checks:
+          - kid_present_and_matches_jwks_key
+          - alg_allowlist_enforced
+          - signature_valid
+          - issuer_matches_configured_provider
+          - audience_contains_client_id
+          - exp_not_expired
+          - nonce_matches_consumed_server_state
+      role_mapping_boundary: server_verified_oidc_id_token_or_userinfo_only
+      user_identity_lookup: user_identities(provider, subject, tenant_id)
     remaining_gaps:
       - authorization_code_exchange
       - id_token_jwks_signature_validation
@@ -209,7 +232,7 @@ paths:
           description: Provider error marker. Not trusted for login and never echoed in errors.
       responses:
         '400':
-          description: Callback distinguishes missing, expired, invalid, and valid server-side state. Even with valid state it is rejected because authorization-code exchange and ID token/JWKS validation are not implemented. Caller-supplied roles, groups, ID/access tokens, Authorization headers, SAMLResponse values, assertions, raw code, state, or raw claims are not accepted for login and are never echoed.
+          description: Callback distinguishes missing, expired, invalid, and valid server-side state. Even with valid state it is rejected with a secret-safe plan-only exchange/JWKS/session boundary contract because authorization-code exchange and ID token/JWKS validation are not implemented. Caller-supplied roles, groups, ID/access tokens, Authorization headers, SAMLResponse values, assertions, raw code, state, client secrets, PKCE verifiers, or raw claims are not accepted for login and are never echoed.
           content:
             application/json:
               schema:
@@ -615,6 +638,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProviderKeyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/provider-keys/{id}/recovery:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [ProviderKeys]
+      summary: Request provider key manual recovery
+      operationId: requestProviderKeyRecovery
+      description: Performs only a controlled local status transition. No upstream probe, request log, ledger write, secret read, fingerprint read, or current window state read is performed.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderKeyRecoveryRequest'
+      responses:
+        '200':
+          description: Provider key recovery transition result with credential material omitted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderKeyRecoveryEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1538,6 +1590,8 @@ components:
               type: string
             message:
               type: string
+            details:
+              $ref: '#/components/schemas/JsonValue'
     HealthResponse:
       type: object
       additionalProperties: false
@@ -2830,6 +2884,114 @@ components:
           $ref: '#/components/schemas/ProviderKeyManualPatchStatus'
         metadata:
           $ref: '#/components/schemas/JsonValue'
+    ProviderKeyRecoveryTargetStatus:
+      type: string
+      enum: [recovery_probe, enabled]
+      description: Safe manual recovery targets. Runtime-managed error states and deleted are intentionally excluded.
+    ProviderKeyRecoveryRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        target_status:
+          $ref: '#/components/schemas/ProviderKeyRecoveryTargetStatus'
+          default: recovery_probe
+        reason:
+          type: string
+          maxLength: 256
+    ProviderKeyRecoveryCredentialMaterial:
+      type: object
+      additionalProperties: false
+      required: [omitted]
+      properties:
+        omitted:
+          type: boolean
+          const: true
+    ProviderKeyRecoveryTransition:
+      type: object
+      additionalProperties: false
+      required: [from_status, to_status, allowed_source_statuses, allowed_target_statuses]
+      properties:
+        from_status:
+          $ref: '#/components/schemas/ProviderKeyStatus'
+        to_status:
+          $ref: '#/components/schemas/ProviderKeyRecoveryTargetStatus'
+        allowed_source_statuses:
+          type: array
+          items:
+            type: string
+            enum: [cooldown, degraded, recovery_probe]
+        allowed_target_statuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderKeyRecoveryTargetStatus'
+    ProviderKeyRecoveryProbe:
+      type: object
+      additionalProperties: false
+      required: [executed, mode, billable, request_log_write]
+      properties:
+        executed:
+          type: boolean
+          const: false
+        mode:
+          type: string
+          enum: [not_implemented]
+        billable:
+          type: boolean
+          const: false
+        request_log_write:
+          type: boolean
+          const: false
+    ProviderKeyRecoveryBilling:
+      type: object
+      additionalProperties: false
+      required: [billable, ledger_write]
+      properties:
+        billable:
+          type: boolean
+          const: false
+        ledger_write:
+          type: boolean
+          const: false
+    ProviderKeyRecoveryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - dry_run
+        - controlled_status_transition
+        - target_status
+        - transition
+        - provider_key
+        - upstream_probe
+        - billing
+        - credential_material
+      properties:
+        dry_run:
+          type: boolean
+          const: false
+        controlled_status_transition:
+          type: boolean
+          const: true
+        target_status:
+          $ref: '#/components/schemas/ProviderKeyRecoveryTargetStatus'
+        reason:
+          type: [string, 'null']
+        transition:
+          $ref: '#/components/schemas/ProviderKeyRecoveryTransition'
+        provider_key:
+          $ref: '#/components/schemas/ProviderKey'
+        upstream_probe:
+          $ref: '#/components/schemas/ProviderKeyRecoveryProbe'
+        billing:
+          $ref: '#/components/schemas/ProviderKeyRecoveryBilling'
+        credential_material:
+          $ref: '#/components/schemas/ProviderKeyRecoveryCredentialMaterial'
+    ProviderKeyRecoveryEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ProviderKeyRecoveryResponse'
     ProviderKeyEnvelope:
       type: object
       additionalProperties: false

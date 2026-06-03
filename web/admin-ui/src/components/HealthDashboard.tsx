@@ -8,8 +8,9 @@ type Props = {
   lastChecked: string | null;
   loading: boolean;
   onRecoveryRequest: (entityId: string) => void;
+  recoveryErrors: Record<string, string>;
   onRefresh: () => void;
-  recoveryRequests: string[];
+  recoveryRequests: Record<string, "pending" | "succeeded" | "failed">;
   results: ProbeResult[];
 };
 
@@ -29,6 +30,7 @@ export function HealthDashboard({
   lastChecked,
   loading,
   onRecoveryRequest,
+  recoveryErrors,
   onRefresh,
   recoveryRequests,
   results,
@@ -127,7 +129,9 @@ export function HealthDashboard({
             <tbody>
               {rows.length > 0 ? (
                 rows.map((row) => {
-                  const recoveryRequested = recoveryRequests.includes(row.id);
+                  const recoveryState = recoveryRequests[row.id];
+                  const recoveryError = recoveryErrors[row.id];
+                  const recoveryDisabled = recoveryState === "pending" || recoveryState === "succeeded";
 
                   return (
                     <tr key={`${row.scope}-${row.id}`}>
@@ -143,16 +147,19 @@ export function HealthDashboard({
                       <td>{row.signal}</td>
                       <td>
                         {row.recoverable ? (
-                          <button
-                            aria-label={`Request recovery for ${row.name}`}
-                            className="table-action"
-                            disabled={recoveryRequested}
-                            onClick={() => onRecoveryRequest(row.id)}
-                            type="button"
-                          >
-                            <RotateCcw aria-hidden="true" size={15} />
-                            {recoveryRequested ? "Requested" : "Request"}
-                          </button>
+                          <div className="table-action-stack">
+                            <button
+                              aria-label={`Request recovery for ${row.name}`}
+                              className="table-action"
+                              disabled={recoveryDisabled}
+                              onClick={() => onRecoveryRequest(row.id)}
+                              type="button"
+                            >
+                              <RotateCcw aria-hidden="true" size={15} />
+                              {recoveryButtonLabel(recoveryState)}
+                            </button>
+                            {recoveryError ? <small>{recoveryError}</small> : null}
+                          </div>
                         ) : (
                           "-"
                         )}
@@ -191,7 +198,7 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
     ...summary.channels.map((channel) => ({
       id: channel.id,
       name: channel.name,
-      recoverable: isRecoverable(channel.status, channel.health_state),
+      recoverable: false,
       scope: "Channel",
       score: scoreText(channel.health_score),
       signal: signalText(channel.status, channel.recent),
@@ -200,7 +207,7 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
     ...summary.provider_keys.map((key) => ({
       id: key.id,
       name: key.key_alias,
-      recoverable: isRecoverable(key.status, key.health_state),
+      recoverable: isProviderKeyRecoverable(key.status),
       scope: "Provider key",
       score: scoreText(key.health_score),
       signal: signalText(key.status, key.recent, key.configured_last_error_code),
@@ -300,12 +307,22 @@ function pillStatus(healthState: string): ProbeResult["status"] {
   return "offline";
 }
 
-function isRecoverable(status: string, healthState: string): boolean {
-  return (
-    healthState === "degraded" ||
-    healthState === "unhealthy" ||
-    ["auth_failed", "cooldown", "degraded", "quota_exhausted", "recovery_probe"].includes(status)
-  );
+function isProviderKeyRecoverable(status: string): boolean {
+  return ["cooldown", "degraded", "recovery_probe"].includes(status);
+}
+
+function recoveryButtonLabel(state: "pending" | "succeeded" | "failed" | undefined): string {
+  if (state === "pending") {
+    return "Pending";
+  }
+  if (state === "succeeded") {
+    return "Requested";
+  }
+  if (state === "failed") {
+    return "Retry";
+  }
+
+  return "Request";
 }
 
 function shortId(id: string): string {

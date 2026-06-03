@@ -846,12 +846,39 @@ function Get-SqlExecutorSupport {
       }
     }
     "channel_mapping_entry" {
+      $requestedModel = Convert-ToSafeText (Get-PropertyValue $Operation.after @("requested_model", "client_model", "source_model") $null)
+      $upstreamModel = Convert-ToSafeText (Get-PropertyValue $Operation.after @("upstream_model_name", "upstream_model", "provider_model") $requestedModel)
+      $mappingPolicy = Convert-ToSafeText (Get-PropertyValue $Operation.after @("mapping_policy") $null)
+      if ([string]::IsNullOrWhiteSpace($mappingPolicy)) {
+        $mappingPolicy = if ($requestedModel -eq $upstreamModel) { "identity" } else { "explicit_upstream_name" }
+      }
+
+      if ([string]::IsNullOrWhiteSpace($requestedModel) -or [string]::IsNullOrWhiteSpace($upstreamModel)) {
+        return [ordered]@{
+          operation_id = $Operation.operation_id
+          target = $Operation.target
+          supported = $false
+          adapter = "channel_model_mappings_jsonb_merge_v1"
+          reason = "channel mapping SQL adapter requires requested_model and upstream_model_name"
+        }
+      }
+
+      if (@("identity", "explicit_upstream_name") -notcontains $mappingPolicy) {
+        return [ordered]@{
+          operation_id = $Operation.operation_id
+          target = $Operation.target
+          supported = $false
+          adapter = "channel_model_mappings_jsonb_merge_v1"
+          reason = "channel mapping SQL adapter only supports identity or explicit_upstream_name mapping_policy"
+        }
+      }
+
       return [ordered]@{
         operation_id = $Operation.operation_id
         target = $Operation.target
-        supported = $false
-        adapter = "channel_model_mappings_pending_v1"
-        reason = "channel mapping writes require source channel to internal channel binding and a channel model_mappings merge adapter"
+        supported = $true
+        adapter = "channel_model_mappings_jsonb_merge_v1"
+        reason = "target_schema_supported_for_simple_model_mapping_merge"
       }
     }
     default {
@@ -987,6 +1014,94 @@ returning to_jsonb(canonical_models.*) as after_image;
     statements = @(
       New-PostgreSqlStatement "capture_before_image" $Operation.operation_id $beforeSql $parameters
       New-PostgreSqlStatement "apply_upsert" $Operation.operation_id $applySql $parameters
+    )
+  }
+}
+
+function New-PostgreSqlChannelMappingEntryOperationPlan {
+  param(
+    [object]$Operation,
+    [string]$TenantId
+  )
+
+  $after = $Operation.after
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $after @("channel_source_id", "source_channel_id") $null)
+  $internalChannelId = Convert-ToSafeText (Get-PropertyValue $after @("internal_channel_id", "channel_id") $null)
+  $requestedModel = Convert-ToSafeText (Get-PropertyValue $after @("requested_model", "client_model", "source_model") $null)
+  $upstreamModel = Convert-ToSafeText (Get-PropertyValue $after @("upstream_model_name", "upstream_model", "provider_model") $requestedModel)
+  $mappingPolicy = Convert-ToSafeText (Get-PropertyValue $after @("mapping_policy") $null)
+  if ([string]::IsNullOrWhiteSpace($mappingPolicy)) {
+    $mappingPolicy = if ($requestedModel -eq $upstreamModel) { "identity" } else { "explicit_upstream_name" }
+  }
+
+  $mappingPatch = [ordered]@{}
+  if (-not [string]::IsNullOrWhiteSpace($requestedModel)) {
+    $mappingPatch[$requestedModel] = $upstreamModel
+  }
+
+  $parameters = [ordered]@{
+    tenant_id = $TenantId
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    channel_source_id = $channelSourceId
+    internal_channel_id = $internalChannelId
+    requested_model = $requestedModel
+    upstream_model_name = $upstreamModel
+    mapping_policy = $mappingPolicy
+    mapping_patch_json = Convert-ToCompactJson $mappingPatch 16
+    after_hash = Get-StableHash $Operation.after 32
+  }
+
+  $beforeSql = @'
+select jsonb_build_object(
+  'channel', to_jsonb(ch.*),
+  'existing_model_mappings', coalesce(ch.model_mappings, '{}'::jsonb),
+  'requested_model', :requested_model,
+  'existing_upstream_model_name', coalesce(ch.model_mappings, '{}'::jsonb) ->> :requested_model
+) as before_image
+from channels ch
+where ch.tenant_id = cast(:tenant_id as uuid)
+  and ch.id = cast(:internal_channel_id as uuid)
+  and ch.deleted_at is null
+for update;
+'@
+
+  $applySql = @'
+update channels ch
+set model_mappings = coalesce(ch.model_mappings, '{}'::jsonb) || cast(:mapping_patch_json as jsonb),
+    updated_at = now()
+where ch.tenant_id = cast(:tenant_id as uuid)
+  and ch.id = cast(:internal_channel_id as uuid)
+  and ch.deleted_at is null
+returning to_jsonb(ch.*) as after_image;
+'@
+
+  return [ordered]@{
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    action = $Operation.action
+    target = $Operation.target
+    adapter = "channel_model_mappings_jsonb_merge_v1"
+    supported = $true
+    replay_policy = @(
+      "source channel binding preflight must provide internal_channel_id",
+      "capture channel model_mappings before mutation with FOR UPDATE",
+      "merge requested_model to upstream_model_name into channels.model_mappings",
+      "future live runner should skip when existing requested_model already maps to upstream_model_name"
+    )
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    before_image_capture = [ordered]@{
+      required = $true
+      target_table = "channels"
+      natural_key = "tenant_id, internal_channel_id, requested_model"
+      operation_id = $Operation.operation_id
+      idempotency_key = $Operation.idempotency_key
+      rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    }
+    statements = @(
+      New-PostgreSqlStatement "capture_before_image" $Operation.operation_id $beforeSql $parameters
+      New-PostgreSqlStatement "apply_patch" $Operation.operation_id $applySql $parameters
     )
   }
 }
@@ -1287,6 +1402,8 @@ function New-PostgreSqlApplyExecutorPlan {
 
     if ($operation.target.kind -eq "canonical_model") {
       $operationPlans.Add((New-PostgreSqlCanonicalModelOperationPlan $operation $TenantId)) | Out-Null
+    } elseif ($operation.target.kind -eq "channel_mapping_entry") {
+      $operationPlans.Add((New-PostgreSqlChannelMappingEntryOperationPlan $operation $TenantId)) | Out-Null
     }
   }
 
@@ -1653,6 +1770,11 @@ foreach ($file in $inputFiles) {
       if ($null -eq (Get-PropertyValue $safeEntry @("channel_source_id") $null)) {
         $safeEntry["channel_source_id"] = $channelSourceId
       }
+      if (-not [string]::IsNullOrWhiteSpace($channelSourceId) -and $sourceChannelBindings.ContainsKey($channelSourceId)) {
+        $binding = $sourceChannelBindings[$channelSourceId]
+        $safeEntry["internal_provider_id"] = Convert-ToSafeText (Get-PropertyValue $binding @("internal_provider_id") $null)
+        $safeEntry["internal_channel_id"] = Convert-ToSafeText (Get-PropertyValue $binding @("internal_channel_id") $null)
+      }
       $safeEntry["channel_present"] = $channelPresent
       $allChannelMappingEntries.Add($safeEntry) | Out-Null
     }
@@ -1991,8 +2113,8 @@ $report = [ordered]@{
   }
   next_steps = @(
     "Resolve blocking conflicts before any real apply path is implemented.",
-    "Run only canonical_model SQL adapters until model association requested-model aliases and source channel bindings are implemented.",
-    "Bind source channel ids to internal provider/channel records before writing model associations or channel mappings.",
+    "Run canonical_model and simple channel_mapping_entry SQL adapters only; model association SQL still needs canonical/channel binding adapter coverage.",
+    "Bind source channel ids to internal provider/channel records before writing model associations or channel mapping entries.",
     "Persist rollback_snapshot and idempotency journal rows before each mutation when a live PostgreSQL runner is added.",
     "Provider key material is intentionally outside this plan and must use the secret-management path."
   )

@@ -68,7 +68,7 @@ pub(crate) struct ControlPlaneCapabilitySummary {
     secret_safe: bool,
 }
 
-pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 17] = [
+pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 18] = [
     ControlPlaneCapability {
         key: "provider.read",
         method: "GET",
@@ -97,6 +97,14 @@ pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 17] = [
         key: "key.manage",
         method: "POST",
         path: "/admin/provider-keys",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "provider_key.recovery",
+        method: "POST",
+        path: "/admin/provider-keys/{id}/recovery",
         required_permission: Some(Permission::KeyManage),
         credential_sensitive_read: false,
         secret_safe: true,
@@ -419,6 +427,13 @@ mod tests {
         );
         assert_eq!(
             permission_for_admin_request(
+                &Method::POST,
+                "/admin/provider-keys/00000000-0000-0000-0000-000000000001/recovery"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
                 &Method::PATCH,
                 "/admin/api-key-profiles/00000000-0000-0000-0000-000000000001"
             ),
@@ -435,6 +450,34 @@ mod tests {
             permission_for_admin_request(&Method::POST, "/admin/price-versions"),
             Some(Permission::BillingAdjust)
         );
+    }
+
+    #[test]
+    fn provider_key_recovery_requires_key_manage_rbac() {
+        let path = "/admin/provider-keys/00000000-0000-0000-0000-000000000001/recovery";
+
+        assert_eq!(
+            permission_for_admin_request(&Method::POST, path),
+            Some(Permission::KeyManage)
+        );
+        assert!(!role_allows_admin_request(
+            Role::Viewer,
+            &Method::POST,
+            path
+        ));
+        assert!(!role_allows_admin_request(
+            Role::Developer,
+            &Method::POST,
+            path
+        ));
+        assert!(!role_allows_admin_request(
+            Role::Billing,
+            &Method::POST,
+            path
+        ));
+        assert!(role_allows_admin_request(Role::Ops, &Method::POST, path));
+        assert!(role_allows_admin_request(Role::Admin, &Method::POST, path));
+        assert!(role_allows_admin_request(Role::Owner, &Method::POST, path));
     }
 
     #[test]

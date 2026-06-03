@@ -32,6 +32,8 @@ pub(crate) struct ClickHouseLogStoreWorkerPlan {
     runtime_connected: bool,
     db_reads: bool,
     db_writes: bool,
+    queue_writes: bool,
+    file_system_writes: bool,
     outbound_calls: bool,
     network_requests: bool,
     tenant_id: Uuid,
@@ -39,6 +41,7 @@ pub(crate) struct ClickHouseLogStoreWorkerPlan {
     clickhouse_config: Value,
     ingestion: ClickHouseIngestionPlan,
     queue: ClickHouseQueuePlan,
+    durable_queue: ClickHouseDurableQueuePlan,
     backpressure: ClickHouseBackpressurePlan,
     dedup: ClickHouseDedupPlan,
     table_mapping: Vec<ClickHouseTableMappingPlan>,
@@ -73,6 +76,100 @@ struct ClickHouseQueuePlan {
     flush_interval_ms: u64,
     enqueue_when_disabled: bool,
     bounded_memory: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseDurableQueuePlan {
+    queue_type: &'static str,
+    planned: bool,
+    enabled_in_this_slice: bool,
+    execute_supported: bool,
+    file_system_writes: bool,
+    wal_directory: ClickHouseWalDirectoryPlan,
+    wal_record_shape: ClickHouseWalRecordShapePlan,
+    disk_budget: ClickHouseWalDiskBudgetPlan,
+    enqueue: ClickHouseQueueOperationPlan,
+    dequeue: ClickHouseQueueOperationPlan,
+    ack: ClickHouseQueueOperationPlan,
+    retry: ClickHouseQueueRetryPlan,
+    retention: ClickHouseWalRetentionPlan,
+    load_safety: ClickHouseWalLoadSafetyPlan,
+    dedup_journal_linkage: ClickHouseWalDedupJournalPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseWalDirectoryPlan {
+    root: &'static str,
+    tenant_partition: String,
+    segment_pattern: &'static str,
+    checkpoint_file: &'static str,
+    creates_directories: bool,
+    writes_files: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseWalRecordShapePlan {
+    encoding: &'static str,
+    status_values: Vec<&'static str>,
+    fields: Vec<&'static str>,
+    payload_body_written: bool,
+    credential_material_written: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseWalDiskBudgetPlan {
+    bounded_disk: bool,
+    max_bytes: u64,
+    max_segment_bytes: u64,
+    max_segments: u64,
+    max_unacked_records: u64,
+    overflow_action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseQueueOperationPlan {
+    operation: &'static str,
+    idempotency_key_fields: Vec<&'static str>,
+    status_from: Vec<&'static str>,
+    status_to: &'static str,
+    transaction_boundary: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseQueueRetryPlan {
+    idempotency_key_fields: Vec<&'static str>,
+    max_attempts: u64,
+    initial_backoff_ms: u64,
+    max_backoff_ms: u64,
+    retry_status: &'static str,
+    exhausted_status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseWalRetentionPlan {
+    delete_acked_segments_after_seconds: u64,
+    delete_failed_segments_after_seconds: u64,
+    checkpoint_after_acked_records: u64,
+    requires_no_pending_records_before_segment_delete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseWalLoadSafetyPlan {
+    replay_order: &'static str,
+    max_replay_batch_rows: u64,
+    max_replay_bytes: u64,
+    single_consumer_lock: &'static str,
+    replay_requires_dedup_journal_check: bool,
+    payload_policy_enforced_before_enqueue: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ClickHouseWalDedupJournalPlan {
+    journal_relation: &'static str,
+    journal_key_fields: Vec<&'static str>,
+    wal_link_fields: Vec<&'static str>,
+    conflict_action: &'static str,
+    payload_hash_mismatch_action: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -120,6 +217,8 @@ struct ClickHouseWorkerContractReport {
     network_requests_disabled: bool,
     db_reads_disabled: bool,
     db_writes_disabled: bool,
+    queue_writes_disabled: bool,
+    file_system_writes_disabled: bool,
     queue_plan_only: bool,
     credential_material_omitted: bool,
     env_values_omitted: bool,
@@ -194,6 +293,9 @@ pub(crate) fn clickhouse_log_store_plan(
     let enabled = bool_at(&clickhouse_config, "enabled");
     let batch_size = u64_at(&clickhouse_config, "batch_size");
     let flush_interval_ms = u64_at(&clickhouse_config, "flush_interval_ms");
+    let retry_max_attempts = u64_nested_at(&clickhouse_config, "retry", "max_attempts").max(1);
+    let retry_initial_backoff_ms = u64_nested_at(&clickhouse_config, "retry", "initial_backoff_ms");
+    let retry_max_backoff_ms = u64_nested_at(&clickhouse_config, "retry", "max_backoff_ms");
     let max_queue_rows = u64_nested_at(&clickhouse_config, "backpressure", "max_queue_rows");
     let drop_policy = string_nested_at(&clickhouse_config, "backpressure", "drop_policy")
         .unwrap_or_else(|| "drop_newest".to_string());
@@ -207,6 +309,8 @@ pub(crate) fn clickhouse_log_store_plan(
         runtime_connected: false,
         db_reads: false,
         db_writes: false,
+        queue_writes: false,
+        file_system_writes: false,
         outbound_calls: false,
         network_requests: false,
         tenant_id,
@@ -229,6 +333,15 @@ pub(crate) fn clickhouse_log_store_plan(
             enqueue_when_disabled: false,
             bounded_memory: true,
         },
+        durable_queue: durable_queue_plan(
+            tenant_id,
+            max_queue_rows,
+            batch_size,
+            retry_max_attempts,
+            retry_initial_backoff_ms,
+            retry_max_backoff_ms,
+            drop_policy_to_overflow_action(&drop_policy),
+        ),
         backpressure: ClickHouseBackpressurePlan {
             enabled: true,
             max_queue_rows,
@@ -259,6 +372,11 @@ pub(crate) fn clickhouse_log_store_plan(
                 "clickhouse_config.contract",
                 "queue.max_queue_rows",
                 "queue.batch_size",
+                "durable_queue.wal_directory",
+                "durable_queue.disk_budget",
+                "durable_queue.enqueue",
+                "durable_queue.ack",
+                "durable_queue.retry",
                 "backpressure.drop_policy",
                 "dedup.per_sink_keys",
                 "table_mapping",
@@ -267,6 +385,8 @@ pub(crate) fn clickhouse_log_store_plan(
             network_requests_disabled: true,
             db_reads_disabled: true,
             db_writes_disabled: true,
+            queue_writes_disabled: true,
+            file_system_writes_disabled: true,
             queue_plan_only: true,
             credential_material_omitted: true,
             env_values_omitted: true,
@@ -274,9 +394,9 @@ pub(crate) fn clickhouse_log_store_plan(
         },
         remaining_gaps: vec![
             "real_clickhouse_writer",
-            "durable_queue_or_wal",
             "database_changefeed_or_export_cursor",
-            "dedup_journal_persistence",
+            "durable_wal_writer",
+            "dedup_journal_runtime_persistence",
             "load_and_retention_smoke",
         ],
     })
@@ -284,12 +404,126 @@ pub(crate) fn clickhouse_log_store_plan(
 
 pub(crate) fn clickhouse_log_store_execute_error(force: bool) -> String {
     if force {
-        return "clickhouse-log-store execute/send is not implemented in this dry-run slice; no DB read, queue write, ClickHouse write, or network request was sent"
+        return "clickhouse-log-store execute/send is not implemented in this dry-run slice; no DB read, queue write, WAL/file write, ClickHouse write, or network request was sent"
             .to_string();
     }
 
-    "clickhouse-log-store execute/send requires --force and is not implemented in this dry-run slice; no DB read, queue write, ClickHouse write, or network request was sent"
+    "clickhouse-log-store execute/send requires --force and is not implemented in this dry-run slice; no DB read, queue write, WAL/file write, ClickHouse write, or network request was sent"
         .to_string()
+}
+
+fn durable_queue_plan(
+    tenant_id: Uuid,
+    max_queue_rows: u64,
+    batch_size: u64,
+    retry_max_attempts: u64,
+    retry_initial_backoff_ms: u64,
+    retry_max_backoff_ms: u64,
+    overflow_action: String,
+) -> ClickHouseDurableQueuePlan {
+    const DEFAULT_MAX_WAL_BYTES: u64 = 512 * 1024 * 1024;
+    const DEFAULT_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
+    const DEFAULT_MAX_REPLAY_BYTES: u64 = 4 * 1024 * 1024;
+
+    ClickHouseDurableQueuePlan {
+        queue_type: "append_only_wal_future",
+        planned: true,
+        enabled_in_this_slice: false,
+        execute_supported: false,
+        file_system_writes: false,
+        wal_directory: ClickHouseWalDirectoryPlan {
+            root: "AI_GATEWAY_CLICKHOUSE_WAL_DIR or <data_dir>/clickhouse-log-store/wal",
+            tenant_partition: format!("tenant_id={tenant_id}"),
+            segment_pattern: "wal-{monotonic_sequence}.jsonl",
+            checkpoint_file: "checkpoint.json",
+            creates_directories: false,
+            writes_files: false,
+        },
+        wal_record_shape: ClickHouseWalRecordShapePlan {
+            encoding: "json_lines",
+            status_values: vec!["pending", "leased", "acked", "retry", "dead_letter"],
+            fields: vec![
+                "wal_sequence",
+                "tenant_id",
+                "sink",
+                "source_relation",
+                "source_record_id",
+                "request_id",
+                "provider_attempt_id",
+                "event_id",
+                "dedup_key",
+                "payload_hash",
+                "payload_policy",
+                "record_hash",
+                "status",
+                "attempt",
+                "not_before_utc",
+                "created_at_utc",
+                "updated_at_utc",
+                "metadata_redacted",
+            ],
+            payload_body_written: false,
+            credential_material_written: false,
+        },
+        disk_budget: ClickHouseWalDiskBudgetPlan {
+            bounded_disk: true,
+            max_bytes: DEFAULT_MAX_WAL_BYTES,
+            max_segment_bytes: DEFAULT_SEGMENT_BYTES,
+            max_segments: DEFAULT_MAX_WAL_BYTES / DEFAULT_SEGMENT_BYTES,
+            max_unacked_records: max_queue_rows,
+            overflow_action,
+        },
+        enqueue: ClickHouseQueueOperationPlan {
+            operation: "enqueue",
+            idempotency_key_fields: vec!["tenant_id", "sink", "dedup_key", "record_hash"],
+            status_from: vec!["missing"],
+            status_to: "pending",
+            transaction_boundary: "append_wal_record_then_update_dedup_journal_future",
+        },
+        dequeue: ClickHouseQueueOperationPlan {
+            operation: "dequeue",
+            idempotency_key_fields: vec!["tenant_id", "wal_sequence", "lease_id"],
+            status_from: vec!["pending", "retry"],
+            status_to: "leased",
+            transaction_boundary: "lease_batch_before_clickhouse_send_future",
+        },
+        ack: ClickHouseQueueOperationPlan {
+            operation: "ack",
+            idempotency_key_fields: vec!["tenant_id", "wal_sequence", "sink", "dedup_key"],
+            status_from: vec!["leased"],
+            status_to: "acked",
+            transaction_boundary: "ack_after_clickhouse_insert_and_dedup_confirm_future",
+        },
+        retry: ClickHouseQueueRetryPlan {
+            idempotency_key_fields: vec!["tenant_id", "wal_sequence", "attempt"],
+            max_attempts: retry_max_attempts,
+            initial_backoff_ms: retry_initial_backoff_ms,
+            max_backoff_ms: retry_max_backoff_ms,
+            retry_status: "retry",
+            exhausted_status: "dead_letter",
+        },
+        retention: ClickHouseWalRetentionPlan {
+            delete_acked_segments_after_seconds: 86_400,
+            delete_failed_segments_after_seconds: 604_800,
+            checkpoint_after_acked_records: batch_size.max(1),
+            requires_no_pending_records_before_segment_delete: true,
+        },
+        load_safety: ClickHouseWalLoadSafetyPlan {
+            replay_order: "tenant_partition_then_wal_sequence",
+            max_replay_batch_rows: batch_size.max(1),
+            max_replay_bytes: DEFAULT_MAX_REPLAY_BYTES,
+            single_consumer_lock: "advisory_file_lock_future",
+            replay_requires_dedup_journal_check: true,
+            payload_policy_enforced_before_enqueue: true,
+        },
+        dedup_journal_linkage: ClickHouseWalDedupJournalPlan {
+            journal_relation: "clickhouse_log_store_dedup_journal_future",
+            journal_key_fields: vec!["tenant_id", "sink", "dedup_key"],
+            wal_link_fields: vec!["tenant_id", "wal_sequence", "record_hash", "payload_hash"],
+            conflict_action: "skip_duplicate_same_record_hash",
+            payload_hash_mismatch_action: "dead_letter_and_require_manual_review_future",
+        },
+    }
 }
 
 fn table_mapping_from_config(config: &Value) -> Vec<ClickHouseTableMappingPlan> {
@@ -405,6 +639,8 @@ mod tests {
         assert!(!plan.runtime_connected);
         assert!(!plan.db_reads);
         assert!(!plan.db_writes);
+        assert!(!plan.queue_writes);
+        assert!(!plan.file_system_writes);
         assert!(!plan.outbound_calls);
         assert!(!plan.network_requests);
         assert_eq!(plan.tenant_id, TENANT_ID);
@@ -431,6 +667,47 @@ mod tests {
         assert_eq!(plan.queue.max_queue_rows, 42);
         assert_eq!(plan.queue.batch_size, 2500);
         assert_eq!(plan.queue.flush_interval_ms, 750);
+        assert!(plan.durable_queue.planned);
+        assert!(!plan.durable_queue.enabled_in_this_slice);
+        assert!(!plan.durable_queue.execute_supported);
+        assert!(!plan.durable_queue.file_system_writes);
+        assert_eq!(
+            plan.durable_queue.wal_directory.root,
+            "AI_GATEWAY_CLICKHOUSE_WAL_DIR or <data_dir>/clickhouse-log-store/wal"
+        );
+        assert_eq!(
+            plan.durable_queue.wal_directory.tenant_partition,
+            "tenant_id=00000000-0000-0000-0000-000000000001"
+        );
+        assert!(!plan.durable_queue.wal_directory.creates_directories);
+        assert!(!plan.durable_queue.wal_directory.writes_files);
+        assert!(plan.durable_queue.disk_budget.bounded_disk);
+        assert_eq!(plan.durable_queue.disk_budget.max_unacked_records, 42);
+        assert_eq!(
+            plan.durable_queue.enqueue.idempotency_key_fields,
+            vec!["tenant_id", "sink", "dedup_key", "record_hash"]
+        );
+        assert_eq!(
+            plan.durable_queue.ack.idempotency_key_fields,
+            vec!["tenant_id", "wal_sequence", "sink", "dedup_key"]
+        );
+        assert_eq!(plan.durable_queue.retry.max_attempts, 5);
+        assert_eq!(
+            plan.durable_queue.dedup_journal_linkage.journal_key_fields,
+            vec!["tenant_id", "sink", "dedup_key"]
+        );
+        assert!(
+            plan.durable_queue
+                .load_safety
+                .replay_requires_dedup_journal_check
+        );
+        assert!(!plan.durable_queue.wal_record_shape.payload_body_written);
+        assert!(
+            !plan
+                .durable_queue
+                .wal_record_shape
+                .credential_material_written
+        );
         assert_eq!(plan.backpressure.drop_policy, "drop_oldest");
         assert_eq!(
             plan.backpressure.overflow_action,
@@ -447,6 +724,8 @@ mod tests {
         assert!(plan.contract.config_validated_by_observability_crate);
         assert!(plan.contract.network_requests_disabled);
         assert!(plan.contract.db_writes_disabled);
+        assert!(plan.contract.queue_writes_disabled);
+        assert!(plan.contract.file_system_writes_disabled);
         assert!(plan.contract.credential_material_omitted);
         assert!(plan.contract.env_values_omitted);
     }
@@ -505,6 +784,7 @@ mod tests {
     fn execute_error_documents_refused_writes_and_sends() {
         assert!(clickhouse_log_store_execute_error(false).contains("requires --force"));
         assert!(clickhouse_log_store_execute_error(true).contains("ClickHouse write"));
+        assert!(clickhouse_log_store_execute_error(true).contains("WAL/file write"));
     }
 
     fn fixture() -> Value {

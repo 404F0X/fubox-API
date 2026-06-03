@@ -38,6 +38,12 @@
       "runtime_entry": "apps/gateway/src/main.rs::anthropic_messages"
     },
     {
+      "name": "anthropic_messages_stream",
+      "path": "POST /v1/messages",
+      "stream": true,
+      "runtime_entry": "apps/gateway/src/streaming.rs::anthropic_messages_streaming"
+    },
+    {
       "name": "gemini_generate_content_native_passthrough",
       "path": "POST /v1beta/models/{model}:generateContent",
       "stream": false,

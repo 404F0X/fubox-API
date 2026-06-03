@@ -575,6 +575,40 @@ export type PatchProviderKeyRequest = {
   status?: ProviderKeyStatus;
 };
 
+export type ProviderKeyRecoveryTargetStatus = "recovery_probe" | "enabled";
+
+export type ProviderKeyRecoveryRequest = {
+  reason?: string;
+  target_status?: ProviderKeyRecoveryTargetStatus;
+};
+
+export type ProviderKeyRecoveryResponse = {
+  billing: {
+    billable: false;
+    ledger_write: false;
+  };
+  controlled_status_transition: true;
+  credential_material: {
+    omitted: true;
+  };
+  dry_run: false;
+  provider_key: ProviderKey;
+  reason?: string | null;
+  target_status: ProviderKeyRecoveryTargetStatus;
+  transition: {
+    allowed_source_statuses: string[];
+    allowed_target_statuses: ProviderKeyRecoveryTargetStatus[];
+    from_status: ProviderKeyStatus;
+    to_status: ProviderKeyRecoveryTargetStatus;
+  };
+  upstream_probe: {
+    billable: false;
+    executed: false;
+    mode: "not_implemented" | string;
+    request_log_write: false;
+  };
+};
+
 export type ApiKeyProfileStatus = "active" | "disabled" | "deleted" | string;
 
 export type ApiKeyProfile = {
@@ -1254,6 +1288,18 @@ export function patchProviderKey(
     ...options,
     body: request,
     method: "PATCH",
+  });
+}
+
+export function requestProviderKeyRecovery(
+  id: string,
+  request: ProviderKeyRecoveryRequest = {},
+  options: Omit<JsonRequestOptions, "body" | "method"> = {},
+): Promise<ProviderKeyRecoveryResponse> {
+  return apiJson<ProviderKeyRecoveryResponse>(`/admin/provider-keys/${encodeURIComponent(id)}/recovery`, {
+    ...options,
+    body: request,
+    method: "POST",
   });
 }
 

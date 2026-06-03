@@ -15,6 +15,7 @@ if (-not $scriptPath) {
 $script:RepoRoot = (Resolve-Path (Join-Path (Split-Path -Parent $scriptPath) "..\..")).Path
 $script:ApplyPlanScript = Join-Path $script:RepoRoot "scripts\importers\import-apply-plan.ps1"
 $script:SqlExecutorFixturePath = Join-Path $script:RepoRoot "tests\fixtures\importers\apply_plan_canonical_only.sample.json"
+$script:ChannelMappingFixturePath = Join-Path $script:RepoRoot "tests\fixtures\importers\apply_plan_channel_mapping_bound.sample.json"
 $script:SqlExecutorContractPath = Join-Path $script:RepoRoot "tests\fixtures\importers\postgresql_sql_executor_contract.expected.json"
 
 if ([string]::IsNullOrWhiteSpace($InputPath)) {
@@ -143,6 +144,7 @@ Assert-Condition (Test-Path -LiteralPath $script:ApplyPlanScript -PathType Leaf)
 Assert-Condition (Test-Path -LiteralPath $InputPath -PathType Leaf) "input sample exists"
 Assert-Condition (Test-Path -LiteralPath $ExistingStatePath -PathType Leaf) "existing-state sample exists"
 Assert-Condition (Test-Path -LiteralPath $script:SqlExecutorFixturePath -PathType Leaf) "sql executor canonical-only fixture exists"
+Assert-Condition (Test-Path -LiteralPath $script:ChannelMappingFixturePath -PathType Leaf) "sql executor channel mapping fixture exists"
 Assert-Condition (Test-Path -LiteralPath $script:SqlExecutorContractPath -PathType Leaf) "sql executor contract fixture exists"
 
 $sqlExecutorContract = Read-JsonObject $script:SqlExecutorContractPath
@@ -250,6 +252,39 @@ $sqlText = (($statements | ForEach-Object { [string]$_.sql }) -join "`n").ToLowe
 foreach ($fragment in (Convert-ToArray $sqlExecutorContract.expected.required_sql_fragments)) {
   Assert-Condition ($sqlText.Contains(([string]$fragment).ToLowerInvariant())) "sql executor SQL contains '$fragment'"
 }
+
+$channelMappingDryRun = Invoke-ApplyPlan -PlanInputPath $script:ChannelMappingFixturePath
+$channelMappingApplyForce = Invoke-ApplyPlan -PlanInputPath $script:ChannelMappingFixturePath -Apply -Force
+Assert-NoSecretMaterial $channelMappingDryRun.Raw
+Assert-NoSecretMaterial $channelMappingApplyForce.Raw
+Assert-Equal $channelMappingDryRun.Plan.preflight.status "pass" "channel mapping fixture preflight status"
+Assert-Equal $channelMappingDryRun.Plan.sql_executor_plan.executor_status "dry_run_sql_plan" "channel mapping dry-run executor status"
+Assert-Equal $channelMappingApplyForce.Plan.sql_executor_plan.executor_status "prepared_sql_plan" "channel mapping apply-force executor status"
+Assert-Equal $channelMappingApplyForce.Plan.sql_executor_plan.database_writes $false "channel mapping apply-force database_writes"
+Assert-Equal $channelMappingApplyForce.Plan.sql_executor_plan.live_database_connection $false "channel mapping apply-force live connection flag"
+$channelMappingSourceBindingCheck = Get-PreflightCheck $channelMappingApplyForce.Plan "source_provider_channel_bindings"
+Assert-Equal $channelMappingSourceBindingCheck.status "pass" "channel mapping source binding preflight status"
+
+$channelMappingOperationPlans = @(Convert-ToArray $channelMappingApplyForce.Plan.sql_executor_plan.transaction.operation_plans)
+$channelMappingPlans = @($channelMappingOperationPlans | Where-Object { $_.target.kind -eq "channel_mapping_entry" })
+Assert-Equal $channelMappingPlans.Count 1 "channel mapping fixture emits one channel_mapping_entry plan"
+Assert-Equal $channelMappingPlans[0].supported $true "channel mapping adapter is supported"
+Assert-Equal $channelMappingPlans[0].adapter "channel_model_mappings_jsonb_merge_v1" "channel mapping adapter name"
+$channelMappingStatements = @(Convert-ToArray $channelMappingPlans[0].statements)
+Assert-Condition (@($channelMappingStatements | Where-Object { $_.phase -eq "capture_before_image" }).Count -eq 1) "channel mapping emits before-image capture"
+Assert-Condition (@($channelMappingStatements | Where-Object { $_.phase -eq "apply_patch" }).Count -eq 1) "channel mapping emits apply patch"
+$channelMappingSqlText = (($channelMappingStatements | ForEach-Object { [string]$_.sql }) -join "`n").ToLowerInvariant()
+foreach ($fragment in @("for update", "update channels", "model_mappings", "cast(:mapping_patch_json as jsonb)")) {
+  Assert-Condition ($channelMappingSqlText.Contains($fragment)) "channel mapping SQL contains '$fragment'"
+}
+
+$channelMappingJournalPlan = $channelMappingApplyForce.Plan.sql_executor_plan.journal_contract.sql_plan
+$channelMappingJournalRows = @(Convert-ToArray $channelMappingJournalPlan.operation_insert_statements)
+Assert-Equal $channelMappingJournalRows.Count 1 "channel mapping fixture emits one rollback journal row"
+Assert-Equal $channelMappingJournalRows[0].operation_id $channelMappingPlans[0].operation_id "channel mapping journal row is tied to operation"
+$channelMappingRollbackEntries = @(Convert-ToArray $channelMappingApplyForce.Plan.rollback_snapshot.entries)
+Assert-Equal $channelMappingRollbackEntries.Count 1 "channel mapping fixture emits one rollback snapshot entry"
+
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_contract.capture_before_apply $sqlExecutorContract.expected.rollback_contract.capture_before_apply "rollback contract captures before apply"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_contract.includes_operation_id $sqlExecutorContract.expected.rollback_contract.includes_operation_id "rollback contract includes operation id"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_contract.includes_idempotency_key $sqlExecutorContract.expected.rollback_contract.includes_idempotency_key "rollback contract includes idempotency key"

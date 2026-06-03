@@ -8,8 +8,9 @@ use std::{
 };
 
 use ai_gateway_adapters::{
-    AdapterUsage, ChatCompletionRequest, OpenAiChatStream, OpenAiCompatibleClient,
-    OpenAiResponseRequest, OpenAiResponsesStreamTerminalKind,
+    AdapterUpstreamRequest, AdapterUsage, AnthropicAdapter, AnthropicAdapterError,
+    AnthropicMessagesRequest, AnthropicStreamTerminalKind, ChatCompletionRequest, OpenAiChatStream,
+    OpenAiCompatibleClient, OpenAiResponseRequest, OpenAiResponsesStreamTerminalKind,
 };
 use ai_gateway_billing_ledger::{TokenUsage, rate_usage_from_json};
 use ai_gateway_stream::{
@@ -28,23 +29,31 @@ use futures::stream;
 use serde_json::{Value, json};
 
 use crate::{
-    EndpointRequestFinalMetrics, OpenAiClientCache, cached_openai_client,
+    EndpointRequestFinalMetrics, OpenAiClientCache, anthropic_provider_error_can_fallback,
+    cached_openai_client,
     db::{
         AuthContext, GatewayRepository, LedgerSettleEntry, ResolvedChatRoute, ResolvedPriceVersion,
         StreamProviderAttemptFinalUpdate, StreamRequestFinalUpdate,
     },
     elapsed_ms,
     errors::{adapter_error_response, summarize_adapter_error},
+    errors::{anthropic_adapter_error_response, summarize_anthropic_adapter_error},
     fallback_event, finish_provider_attempt_with_adapter_error,
-    finish_provider_attempt_with_adapter_error_and_fallback, finish_provider_attempt_with_error,
-    finish_request_with_error, open_provider_key_for_route, pre_authorize_before_provider_attempt,
-    provider_attempt_fallback_metadata, provider_error_can_fallback,
-    record_endpoint_request_final_metrics, record_request_final_route, request_for_upstream,
-    responses_request_for_upstream, route_snapshot_with_final_attempt,
+    finish_provider_attempt_with_adapter_error_and_fallback,
+    finish_provider_attempt_with_anthropic_adapter_error,
+    finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint,
+    finish_provider_attempt_with_error, finish_request_with_error, open_provider_key_for_route,
+    pre_authorize_before_provider_attempt, provider_attempt_fallback_metadata,
+    provider_error_can_fallback, record_endpoint_request_final_metrics, record_request_final_route,
+    request_for_upstream, responses_request_for_upstream, route_snapshot_with_final_attempt,
 };
 
 const OPENAI_STREAM_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
 const OPENAI_STREAM_MAX_CHUNK_BYTES: usize = OPENAI_STREAM_MAX_EVENT_BYTES;
+const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
+const ANTHROPIC_VERSION_HEADER: &str = "anthropic-version";
+const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
+const APPLICATION_JSON_CONTENT_TYPE: &str = "application/json";
 
 pub(crate) struct StreamingChatContext<'a> {
     pub(crate) repository: &'a GatewayRepository,
@@ -65,6 +74,17 @@ pub(crate) struct StreamingResponsesContext<'a> {
     pub(crate) request: &'a OpenAiResponseRequest,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) upstream_clients: &'a mut OpenAiClientCache,
+    pub(crate) route_snapshot: Value,
+}
+
+pub(crate) struct StreamingAnthropicMessagesContext<'a> {
+    pub(crate) repository: &'a GatewayRepository,
+    pub(crate) auth: &'a AuthContext,
+    pub(crate) request_id: uuid::Uuid,
+    pub(crate) request_started_at: Instant,
+    pub(crate) request: &'a AnthropicMessagesRequest,
+    pub(crate) attempt_routes: &'a [ResolvedChatRoute],
+    pub(crate) native_http: &'a reqwest::Client,
     pub(crate) route_snapshot: Value,
 }
 
@@ -203,7 +223,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                 .await;
 
                 return stream_response(
-                    upstream_stream,
+                    upstream_stream.into(),
                     StreamLogContext {
                         repository: repository.clone(),
                         auth: auth.clone(),
@@ -409,7 +429,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                 .await;
 
                 return stream_response(
-                    upstream_stream,
+                    upstream_stream.into(),
                     StreamLogContext {
                         repository: repository.clone(),
                         auth: auth.clone(),
@@ -480,6 +500,222 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
     unreachable!("non-empty provider attempt loop must return a response");
 }
 
+pub(crate) async fn anthropic_messages_streaming(
+    context: StreamingAnthropicMessagesContext<'_>,
+) -> Response {
+    let StreamingAnthropicMessagesContext {
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        request,
+        attempt_routes,
+        native_http,
+        route_snapshot,
+    } = context;
+
+    debug_assert!(request.is_streaming());
+
+    let adapter = AnthropicAdapter::new();
+    let mut fallback_events = Vec::new();
+
+    for (attempt_index, route) in attempt_routes.iter().enumerate() {
+        let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
+        if let Some(response) = pre_authorize_before_provider_attempt(
+            crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+        )
+        .await
+        {
+            return response;
+        }
+
+        let attempt_id = match repository
+            .create_provider_attempt_started(auth, request_id, route, attempt_no)
+            .await
+        {
+            Ok(attempt_id) => attempt_id,
+            Err(error) => {
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        };
+
+        let provider_started_at = Instant::now();
+        let upstream_request = match anthropic_messages_stream_request_for_upstream(
+            &adapter,
+            request,
+            &route.upstream_model,
+        ) {
+            Ok(upstream_request) => upstream_request,
+            Err(error) => {
+                let summary = summarize_anthropic_adapter_error(&error);
+                finish_provider_attempt_with_anthropic_adapter_error(
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                return anthropic_adapter_error_response(error);
+            }
+        };
+
+        let provider_key = match open_provider_key_for_route(repository, auth, route).await {
+            Ok(provider_key) => provider_key,
+            Err(error) => {
+                finish_provider_attempt_with_error(
+                    repository,
+                    auth,
+                    attempt_id,
+                    provider_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        };
+
+        match send_anthropic_messages_stream_request(
+            native_http,
+            route,
+            &upstream_request,
+            provider_key.secret.expose_secret(),
+        )
+        .await
+        {
+            Ok(upstream_stream) => {
+                if !upstream_stream
+                    .content_type()
+                    .is_some_and(|content_type| content_type.starts_with("text/event-stream"))
+                {
+                    tracing::warn!(
+                        provider_id = %route.provider_id,
+                        channel_id = %route.channel_id,
+                        content_type = upstream_stream.content_type().unwrap_or("<missing>"),
+                        "upstream anthropic messages stream did not declare text/event-stream"
+                    );
+                }
+
+                record_request_final_route(
+                    repository,
+                    auth,
+                    request_id,
+                    route,
+                    route_snapshot_with_final_attempt(
+                        route_snapshot.clone(),
+                        route,
+                        attempt_no,
+                        &fallback_events,
+                    ),
+                )
+                .await;
+
+                return stream_response(
+                    upstream_stream,
+                    StreamLogContext {
+                        repository: repository.clone(),
+                        auth: auth.clone(),
+                        request_id,
+                        attempt_id,
+                        canonical_model_id: route.canonical_model_id,
+                        canonical_model_key: route.canonical_model_key.clone(),
+                        protocol: GatewayStreamProtocol::AnthropicMessages,
+                        metrics_endpoint: crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                        request_started_at,
+                        provider_started_at,
+                    },
+                );
+            }
+            Err(error) => {
+                let summary = summarize_anthropic_adapter_error(&error);
+
+                if attempt_index + 1 < attempt_routes.len()
+                    && anthropic_provider_error_can_fallback(&error)
+                {
+                    let next_route = &attempt_routes[attempt_index + 1];
+                    let event = fallback_event(attempt_no, &summary, route, next_route);
+                    finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint(
+                        crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        Some(summary.error_code.as_str()),
+                        provider_attempt_fallback_metadata(&event),
+                    )
+                    .await;
+                    fallback_events.push(event);
+
+                    tracing::warn!(
+                        attempt_no,
+                        provider_id = %route.provider_id,
+                        channel_id = %route.channel_id,
+                        error_code = %summary.error_code,
+                        "provider anthropic messages stream attempt failed before response started; trying fallback route"
+                    );
+                    continue;
+                }
+
+                finish_provider_attempt_with_anthropic_adapter_error(
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                return anthropic_adapter_error_response(error);
+            }
+        }
+    }
+
+    unreachable!("non-empty provider attempt loop must return a response");
+}
+
 #[derive(Debug, Clone)]
 struct StreamLogContext {
     repository: GatewayRepository,
@@ -494,7 +730,7 @@ struct StreamLogContext {
     provider_started_at: Instant,
 }
 
-fn stream_response(upstream: OpenAiChatStream, context: StreamLogContext) -> Response {
+fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -> Response {
     let status = StatusCode::from_u16(upstream.status()).unwrap_or(StatusCode::OK);
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
@@ -516,7 +752,7 @@ fn stream_response(upstream: OpenAiChatStream, context: StreamLogContext) -> Res
                     tracing::warn!(
                         %error,
                         partial_sent = state.partial_sent(),
-                        "failed to parse upstream SSE chunk while forwarding chat stream"
+                    "failed to parse upstream SSE chunk while forwarding stream"
                     );
                     state.finish(contract.end_reason).await;
                     Some((Err(stream_io_error(contract.end_reason)), None))
@@ -531,7 +767,7 @@ fn stream_response(upstream: OpenAiChatStream, context: StreamLogContext) -> Res
                 tracing::warn!(
                     %error,
                     partial_sent = state.partial_sent(),
-                    "upstream chat stream failed after response started; not attempting fallback"
+                    "upstream stream failed after response started; not attempting fallback"
                 );
                 state.finish(contract.end_reason).await;
                 Some((Err(stream_io_error(contract.end_reason)), None))
@@ -558,14 +794,14 @@ fn stream_response(upstream: OpenAiChatStream, context: StreamLogContext) -> Res
 }
 
 struct ForwardStreamState {
-    upstream: OpenAiChatStream,
+    upstream: GatewayUpstreamStream,
     progress: StreamProgress,
     context: StreamLogContext,
     finalization_claim: StreamFinalizationClaim,
 }
 
 impl ForwardStreamState {
-    fn new(upstream: OpenAiChatStream, context: StreamLogContext) -> Self {
+    fn new(upstream: GatewayUpstreamStream, context: StreamLogContext) -> Self {
         Self {
             upstream,
             progress: StreamProgress::new(
@@ -718,6 +954,7 @@ impl StreamProgress {
 enum GatewayStreamProtocol {
     OpenAiChatCompletions,
     OpenAiResponses,
+    AnthropicMessages,
 }
 
 impl GatewayStreamProtocol {
@@ -725,6 +962,7 @@ impl GatewayStreamProtocol {
         match self {
             Self::OpenAiChatCompletions => StreamProtocol::OpenAiChatCompletions,
             Self::OpenAiResponses => StreamProtocol::OpenAiResponses,
+            Self::AnthropicMessages => StreamProtocol::AnthropicMessages,
         }
     }
 
@@ -732,6 +970,7 @@ impl GatewayStreamProtocol {
         match self {
             Self::OpenAiChatCompletions => "openai_chat_completions",
             Self::OpenAiResponses => "openai_responses",
+            Self::AnthropicMessages => "anthropic_messages",
         }
     }
 
@@ -742,8 +981,148 @@ impl GatewayStreamProtocol {
                 usage: openai_chat_stream_usage_from_event(event),
             }),
             Self::OpenAiResponses => openai_responses_stream_event_observation(event),
+            Self::AnthropicMessages => anthropic_messages_stream_event_observation(event),
         }
     }
+}
+
+impl From<OpenAiChatStream> for GatewayUpstreamStream {
+    fn from(stream: OpenAiChatStream) -> Self {
+        Self::OpenAi(stream)
+    }
+}
+
+enum GatewayUpstreamStream {
+    OpenAi(OpenAiChatStream),
+    Anthropic(NativeSseStream),
+}
+
+impl GatewayUpstreamStream {
+    fn status(&self) -> u16 {
+        match self {
+            Self::OpenAi(stream) => stream.status(),
+            Self::Anthropic(stream) => stream.status,
+        }
+    }
+
+    fn content_type(&self) -> Option<&str> {
+        match self {
+            Self::OpenAi(stream) => stream.content_type(),
+            Self::Anthropic(stream) => stream.content_type.as_deref(),
+        }
+    }
+
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::OpenAi(stream) => stream.next_chunk().await.map_err(|error| error.to_string()),
+            Self::Anthropic(stream) => stream.next_chunk().await,
+        }
+    }
+}
+
+struct NativeSseStream {
+    status: u16,
+    content_type: Option<String>,
+    response: reqwest::Response,
+}
+
+impl NativeSseStream {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+        self.response
+            .chunk()
+            .await
+            .map(|chunk| chunk.map(|chunk| chunk.to_vec()))
+            .map_err(|error| crate::anthropic_reqwest_error(error).to_string())
+    }
+}
+
+fn anthropic_messages_stream_request_for_upstream(
+    adapter: &AnthropicAdapter,
+    request: &AnthropicMessagesRequest,
+    upstream_model: &str,
+) -> Result<AdapterUpstreamRequest, AnthropicAdapterError> {
+    let mut request = request.clone();
+    request.model = upstream_model.to_string();
+    adapter.build_messages_request(&request)
+}
+
+async fn send_anthropic_messages_stream_request(
+    http: &reqwest::Client,
+    route: &ResolvedChatRoute,
+    upstream_request: &AdapterUpstreamRequest,
+    provider_key: &str,
+) -> Result<GatewayUpstreamStream, AnthropicAdapterError> {
+    let url = anthropic_upstream_url(&route.endpoint, &upstream_request.path)?;
+    let response = http
+        .post(url)
+        .header(
+            ANTHROPIC_API_KEY_HEADER,
+            anthropic_provider_key_header(provider_key)?,
+        )
+        .header(ANTHROPIC_VERSION_HEADER, DEFAULT_ANTHROPIC_VERSION)
+        .header(reqwest::header::CONTENT_TYPE, APPLICATION_JSON_CONTENT_TYPE)
+        .json(&upstream_request.body)
+        .send()
+        .await
+        .map_err(crate::anthropic_reqwest_error)?;
+
+    let status = response.status();
+    let retry_after = crate::native_retry_after_from_headers(response.headers());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    if !status.is_success() {
+        let body =
+            response
+                .bytes()
+                .await
+                .map_err(|_| AnthropicAdapterError::UpstreamInvalidJson {
+                    status: status.as_u16(),
+                    message: "failed to read upstream response body".to_string(),
+                    retry_after: retry_after.clone(),
+                })?;
+        crate::anthropic_parse_messages_response(
+            status.as_u16(),
+            &body,
+            retry_after,
+            provider_key,
+        )?;
+        unreachable!("non-success anthropic stream status must parse as an error");
+    }
+
+    Ok(GatewayUpstreamStream::Anthropic(NativeSseStream {
+        status: status.as_u16(),
+        content_type,
+        response,
+    }))
+}
+
+fn anthropic_upstream_url(
+    endpoint: &str,
+    upstream_path: &str,
+) -> Result<reqwest::Url, AnthropicAdapterError> {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    if endpoint.is_empty() {
+        return Err(AnthropicAdapterError::RequestSerialize(
+            "upstream endpoint must be a non-empty URL".to_string(),
+        ));
+    }
+
+    reqwest::Url::parse(&format!("{endpoint}{upstream_path}"))
+        .map_err(|error| AnthropicAdapterError::RequestSerialize(error.to_string()))
+}
+
+fn anthropic_provider_key_header(
+    provider_key: &str,
+) -> Result<reqwest::header::HeaderValue, AnthropicAdapterError> {
+    reqwest::header::HeaderValue::from_str(provider_key).map_err(|_| {
+        AnthropicAdapterError::RequestSerialize(
+            "provider authorization credential is invalid".into(),
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1040,6 +1419,32 @@ fn openai_responses_stream_event_observation(
     })
 }
 
+fn anthropic_messages_stream_event_observation(
+    event: &SseEvent,
+) -> Result<StreamEventObservation, StreamChunkError> {
+    if event.data.is_empty() {
+        return Ok(StreamEventObservation::default());
+    }
+
+    let stream_terminal_kind = terminal_event_kind(StreamProtocol::AnthropicMessages, event);
+    let adapter_event =
+        AnthropicAdapter::parse_messages_stream_event(event.event.as_deref(), &event.data)
+            .map_err(|error| StreamChunkError::ProtocolParser {
+                protocol: GatewayStreamProtocol::AnthropicMessages,
+                message: error.to_string(),
+            })?;
+
+    Ok(StreamEventObservation {
+        terminal_kind: merge_terminal_kinds(
+            stream_terminal_kind,
+            anthropic_adapter_terminal_kind(adapter_event.terminal_kind),
+        ),
+        usage: adapter_event
+            .usage()
+            .and_then(stream_usage_from_adapter_usage),
+    })
+}
+
 const fn responses_adapter_terminal_kind(
     terminal_kind: OpenAiResponsesStreamTerminalKind,
 ) -> TerminalEventKind {
@@ -1049,6 +1454,16 @@ const fn responses_adapter_terminal_kind(
         OpenAiResponsesStreamTerminalKind::Failed | OpenAiResponsesStreamTerminalKind::Error => {
             TerminalEventKind::Failed
         }
+    }
+}
+
+const fn anthropic_adapter_terminal_kind(
+    terminal_kind: AnthropicStreamTerminalKind,
+) -> TerminalEventKind {
+    match terminal_kind {
+        AnthropicStreamTerminalKind::None => TerminalEventKind::None,
+        AnthropicStreamTerminalKind::MessageStop => TerminalEventKind::Completed,
+        AnthropicStreamTerminalKind::Error => TerminalEventKind::Failed,
     }
 }
 
@@ -1366,6 +1781,24 @@ mod tests {
 
     fn load_openai_stream_fixture(file_name: &str) -> Vec<u8> {
         let path = openai_stream_fixture_path(file_name);
+        fs::read(&path)
+            .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()))
+    }
+
+    fn anthropic_stream_fixture_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("adapters")
+            .join("anthropic")
+            .join("streams")
+            .join(file_name)
+    }
+
+    fn load_anthropic_stream_fixture(file_name: &str) -> Vec<u8> {
+        let path = anthropic_stream_fixture_path(file_name);
         fs::read(&path)
             .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()))
     }
@@ -1708,6 +2141,137 @@ mod tests {
             StreamChunkError::ProtocolParser { protocol, message } => {
                 assert_eq!(*protocol, GatewayStreamProtocol::OpenAiResponses);
                 assert!(!message.contains("Authorization"));
+                assert!(!message.contains("secret"));
+            }
+            other => panic!("expected protocol parser error, got {other:?}"),
+        }
+        assert_eq!(
+            stream_forward_failure_contract(StreamForwardFailureKind::from(&parse_error))
+                .end_reason,
+            StreamEndReason::ParserError
+        );
+        assert!(!invalid.partial_sent);
+        assert_eq!(invalid.terminal_kind, TerminalEventKind::None);
+    }
+
+    #[test]
+    fn anthropic_stream_progress_tracks_message_stop_and_error_terminals() {
+        let request_started_at = Instant::now();
+        let provider_started_at = Instant::now();
+        let mut completed =
+            StreamProgress::new(GatewayStreamProtocol::AnthropicMessages, 4096, 4096);
+
+        completed
+            .observe_chunk(
+                &load_anthropic_stream_fixture("messages_stream_completed.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("completed Anthropic stream should parse");
+        assert!(completed.partial_sent);
+        assert_eq!(completed.terminal_kind, TerminalEventKind::None);
+        let completed_end = completed
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("completed Anthropic EOF should classify");
+        assert_eq!(completed_end, StreamEndReason::Completed);
+        assert_eq!(completed.terminal_kind, TerminalEventKind::Completed);
+        assert_eq!(completed.usage, StreamUsageUpdate::default());
+
+        let mut with_usage =
+            StreamProgress::new(GatewayStreamProtocol::AnthropicMessages, 4096, 4096);
+        with_usage
+            .observe_chunk(
+                br#"event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":4,"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#,
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("Anthropic usage event should parse");
+        let with_usage_end = with_usage
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("Anthropic usage EOF should classify");
+        assert_eq!(with_usage_end, StreamEndReason::Completed);
+        assert_eq!(
+            with_usage.usage,
+            StreamUsageUpdate {
+                input_tokens: Some(4),
+                output_tokens: Some(5),
+            }
+        );
+        let usage_update = stream_request_final_update(
+            17,
+            with_usage.partial_sent,
+            with_usage_end,
+            with_usage.request_ttft_ms,
+            with_usage.usage,
+            Some(StreamRatingUpdate {
+                final_cost: "0.00000123".to_string(),
+                currency: "USD".to_string(),
+                price_version_id: uuid::Uuid::from_u128(71),
+            }),
+        );
+        assert_eq!(usage_update.status, "succeeded");
+        assert_eq!(usage_update.input_tokens, Some(4));
+        assert_eq!(usage_update.output_tokens, Some(5));
+        assert_eq!(usage_update.final_cost.as_deref(), Some("0.00000123"));
+
+        let mut error_terminal =
+            StreamProgress::new(GatewayStreamProtocol::AnthropicMessages, 4096, 4096);
+        error_terminal
+            .observe_chunk(
+                &load_anthropic_stream_fixture("messages_stream_error.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("error Anthropic stream should parse");
+        assert!(!error_terminal.partial_sent);
+        assert_eq!(error_terminal.terminal_kind, TerminalEventKind::None);
+        let error_end = error_terminal
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("error Anthropic EOF should classify");
+        assert_eq!(error_end, StreamEndReason::UpstreamError);
+        assert_eq!(error_terminal.terminal_kind, TerminalEventKind::Failed);
+        let error_update = stream_request_final_update(
+            19,
+            error_terminal.partial_sent,
+            error_end,
+            error_terminal.request_ttft_ms,
+            error_terminal.usage,
+            None,
+        );
+        assert_eq!(error_update.status, "failed");
+        assert_eq!(
+            error_update.error_code.as_deref(),
+            Some("stream_upstream_error")
+        );
+    }
+
+    #[test]
+    fn anthropic_stream_progress_maps_invalid_json_to_parser_error() {
+        let request_started_at = Instant::now();
+        let provider_started_at = Instant::now();
+        let mut invalid = StreamProgress::new(GatewayStreamProtocol::AnthropicMessages, 4096, 4096);
+
+        invalid
+            .observe_chunk(
+                &load_anthropic_stream_fixture("messages_stream_invalid_json.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("unterminated invalid JSON fixture is buffered until EOF");
+        let parse_error = invalid
+            .observe_eof(request_started_at, provider_started_at)
+            .expect_err("Anthropic adapter parser should reject invalid JSON events");
+        match &parse_error {
+            StreamChunkError::ProtocolParser { protocol, message } => {
+                assert_eq!(*protocol, GatewayStreamProtocol::AnthropicMessages);
+                assert!(!message.contains("Authorization"));
+                assert!(!message.contains("x-api-key"));
                 assert!(!message.contains("secret"));
             }
             other => panic!("expected protocol parser error, got {other:?}"),

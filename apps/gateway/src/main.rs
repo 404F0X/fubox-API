@@ -1630,29 +1630,6 @@ async fn anthropic_messages(
     };
     let request_body_hash = sha256_hex(&body);
 
-    if request.is_streaming() {
-        let error = GatewayApiError::streaming_not_implemented(
-            "stream=true is not implemented for Anthropic Messages in this gateway slice",
-        );
-        start_and_finish_request_error_for_endpoint(
-            METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
-            repository,
-            &auth,
-            Some(&request.model),
-            Some(&request_body_hash),
-            request_payload_log(&payload_policy, &body),
-            RequestRouteLog::unresolved(route_snapshot_for_rejection(
-                &auth,
-                Some(&request.model),
-                "anthropic_messages_stream_not_implemented",
-            )),
-            started_at,
-            error.log_summary(),
-        )
-        .await;
-        return error.into_response();
-    }
-
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &request.model)
         .await
@@ -1744,6 +1721,22 @@ async fn anthropic_messages(
             );
         }
     };
+
+    if request.is_streaming() {
+        return streaming::anthropic_messages_streaming(
+            streaming::StreamingAnthropicMessagesContext {
+                repository,
+                auth: &auth,
+                request_id,
+                request_started_at: started_at,
+                request: &request,
+                attempt_routes: &attempt_routes,
+                native_http: &state.native_http,
+                route_snapshot,
+            },
+        )
+        .await;
+    }
 
     let mut fallback_events = Vec::new();
 
@@ -3003,7 +2996,7 @@ async fn anthropic_upstream_response(
     anthropic_parse_messages_response(status.as_u16(), &body, retry_after, provider_key)
 }
 
-fn anthropic_parse_messages_response(
+pub(crate) fn anthropic_parse_messages_response(
     status: u16,
     body: &[u8],
     retry_after: Option<AdapterRetryAfter>,
@@ -3070,7 +3063,7 @@ fn native_reqwest_error(error: reqwest::Error) -> OpenAiAdapterError {
     }
 }
 
-fn anthropic_reqwest_error(error: reqwest::Error) -> AnthropicAdapterError {
+pub(crate) fn anthropic_reqwest_error(error: reqwest::Error) -> AnthropicAdapterError {
     let status = if error.is_timeout() { 504 } else { 502 };
     let message = if error.is_timeout() {
         "upstream provider request timed out"
@@ -3089,7 +3082,7 @@ fn anthropic_reqwest_error(error: reqwest::Error) -> AnthropicAdapterError {
     }
 }
 
-fn native_retry_after_from_headers(
+pub(crate) fn native_retry_after_from_headers(
     headers: &reqwest::header::HeaderMap,
 ) -> Option<AdapterRetryAfter> {
     let retry_after_ms = headers
@@ -3835,7 +3828,7 @@ fn provider_error_can_fallback(error: &OpenAiAdapterError) -> bool {
         .is_some_and(error_signal_can_fallback)
 }
 
-fn anthropic_provider_error_can_fallback(error: &AnthropicAdapterError) -> bool {
+pub(crate) fn anthropic_provider_error_can_fallback(error: &AnthropicAdapterError) -> bool {
     error
         .to_error_signal()
         .as_ref()
@@ -4977,7 +4970,7 @@ async fn finish_provider_attempt_with_adapter_error(
     .await;
 }
 
-async fn finish_provider_attempt_with_anthropic_adapter_error(
+pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error(
     repository: &GatewayRepository,
     auth: &AuthContext,
     route: &ResolvedChatRoute,
@@ -5116,7 +5109,7 @@ async fn finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint(
+pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint(
     endpoint: &'static str,
     repository: &GatewayRepository,
     auth: &AuthContext,
@@ -6309,7 +6302,8 @@ mod tests {
         );
         assert!(anthropic_section.contains("authenticate_virtual_key("));
         assert!(anthropic_section.contains("AnthropicMessagesRequest::from_slice(&body)"));
-        assert!(anthropic_section.contains("GatewayApiError::streaming_not_implemented("));
+        assert!(!anthropic_section.contains("anthropic_messages_stream_not_implemented"));
+        assert!(anthropic_section.contains("streaming::anthropic_messages_streaming("));
         assert!(anthropic_section.contains(".resolve_chat_route_candidates("));
         assert!(anthropic_section.contains(".create_request_started("));
         assert!(anthropic_section.contains("pre_authorize_before_provider_attempt("));
@@ -6330,9 +6324,9 @@ mod tests {
         );
         assert_marker_before(
             anthropic_section,
-            "GatewayApiError::streaming_not_implemented(",
-            ".resolve_chat_route_candidates(",
-            "anthropic_messages_streaming_todo",
+            ".create_request_started(",
+            "streaming::anthropic_messages_streaming(",
+            "anthropic_messages_stream",
         );
         assert_marker_before(
             anthropic_section,
@@ -6379,18 +6373,91 @@ mod tests {
             "send_anthropic_messages_request"
         );
         assert_eq!(
-            fixture["streaming_contract"]["error_code"],
-            "streaming_not_implemented"
-        );
-        assert_eq!(
-            fixture["streaming_contract"]["provider_attempts_created"],
-            false
+            fixture["streaming_contract"]["implemented"],
+            serde_json::Value::Bool(true)
         );
         assert_eq!(fixture["preauth_rejection"]["provider_key_opened"], false);
         assert_eq!(
             fixture["preauth_rejection"]["upstream_http_request_sent"],
             false
         );
+    }
+
+    #[test]
+    fn anthropic_stream_runtime_contract_is_routed_and_secret_safe() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/anthropic_messages_stream_runtime_contract.json"
+        ))
+        .expect("Anthropic stream runtime contract fixture should be valid json");
+        let main_source = include_str!("main.rs");
+        let streaming_source = include_str!("streaming.rs");
+        let anthropic_section = source_section(
+            main_source,
+            "async fn anthropic_messages(",
+            "async fn gemini_generate_content_native_passthrough(",
+        );
+        let streaming_section = source_section(
+            streaming_source,
+            "pub(crate) async fn anthropic_messages_streaming(",
+            "#[derive(Debug, Clone)]",
+        );
+
+        assert_eq!(
+            fixture["endpoint"]["previous_501_removed"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(
+            !anthropic_section.contains("anthropic_messages_stream_not_implemented"),
+            "Anthropic stream=true must not keep the old 501 rejection branch"
+        );
+        assert!(
+            !anthropic_section.contains("StreamingNotImplemented"),
+            "Anthropic stream=true must route into streaming runtime"
+        );
+        assert_marker_before(
+            anthropic_section,
+            ".create_request_started(",
+            "streaming::anthropic_messages_streaming(",
+            "anthropic_messages_stream",
+        );
+        assert_pre_authorize_gates_provider_side_effects(
+            streaming_section,
+            "anthropic_messages_stream",
+            "send_anthropic_messages_stream_request(",
+        );
+        assert!(
+            streaming_section.contains("GatewayStreamProtocol::AnthropicMessages"),
+            "Anthropic stream finalizer must parse terminal events with Anthropic protocol"
+        );
+        assert!(
+            streaming_source.contains("AnthropicAdapter::parse_messages_stream_event("),
+            "Anthropic stream runtime must reuse adapter stream parser"
+        );
+        assert_eq!(
+            fixture["provider_contract"]["provider_key_secret_logged"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            fixture["provider_contract"]["x_api_key_logged"],
+            serde_json::Value::Bool(false)
+        );
+
+        let mut fixture_without_markers = fixture.clone();
+        fixture_without_markers
+            .as_object_mut()
+            .expect("fixture object")
+            .remove("forbidden_markers");
+        let fixture_text = fixture_without_markers.to_string();
+        for marker in fixture["forbidden_markers"]
+            .as_array()
+            .expect("forbidden markers")
+        {
+            let marker = marker.as_str().expect("forbidden marker string");
+            assert!(
+                !fixture_text.contains(marker),
+                "Anthropic stream fixture leaked forbidden marker: {marker}"
+            );
+        }
     }
 
     #[test]
@@ -6967,7 +7034,7 @@ mod tests {
             fixture["scenario"],
             "gateway_pre_authorize_runtime_contract_v1"
         );
-        assert_eq!(fixture["endpoints"].as_array().expect("endpoints").len(), 7);
+        assert_eq!(fixture["endpoints"].as_array().expect("endpoints").len(), 8);
         assert_eq!(fixture["rejected_contract"]["http_status"], 402);
         assert_eq!(
             fixture["rejected_contract"]["openai_error"]["code"],
@@ -7044,6 +7111,7 @@ mod tests {
                 "responses_stream",
                 "embeddings_non_stream",
                 "anthropic_messages_non_stream",
+                "anthropic_messages_stream",
                 "gemini_generate_content_native_passthrough"
             ]
         );
@@ -7112,6 +7180,17 @@ mod tests {
             anthropic_section,
             "anthropic_messages_non_stream",
             "send_anthropic_messages_request(",
+        );
+
+        let anthropic_streaming_section = source_section(
+            streaming_source,
+            "pub(crate) async fn anthropic_messages_streaming(",
+            "#[derive(Debug, Clone)]",
+        );
+        assert_pre_authorize_gates_provider_side_effects(
+            anthropic_streaming_section,
+            "anthropic_messages_stream",
+            "send_anthropic_messages_stream_request(",
         );
 
         let gemini_section = source_section(

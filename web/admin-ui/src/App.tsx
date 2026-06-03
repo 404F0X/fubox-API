@@ -1,5 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { getProviderHealthSummary, type HealthSummary, logoutAdmin, type ProbeResult, probeServices } from "./api/client";
+import {
+  getProviderHealthSummary,
+  type HealthSummary,
+  logoutAdmin,
+  type ProbeResult,
+  probeServices,
+  requestProviderKeyRecovery,
+} from "./api/client";
 import { HealthDashboard } from "./components/HealthDashboard";
 import { Activity, Database, Key, Network, ScrollText, ShieldCheck } from "./components/icons";
 import { type AdminSession, LoginPanel } from "./components/LoginPanel";
@@ -22,6 +29,7 @@ type AdminCapability =
   | "provider.manage"
   | "key.read"
   | "key.manage"
+  | "provider_key.recovery"
   | "request_log.read"
   | "trace.read"
   | "audit.read"
@@ -82,7 +90,8 @@ export function App() {
   const [healthSummaryError, setHealthSummaryError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [lastChecked, setLastChecked] = useState<string | null>(null);
-  const [recoveryRequests, setRecoveryRequests] = useState<string[]>([]);
+  const [recoveryRequests, setRecoveryRequests] = useState<Record<string, "pending" | "succeeded" | "failed">>({});
+  const [recoveryErrors, setRecoveryErrors] = useState<Record<string, string>>({});
 
   async function refresh() {
     setLoading(true);
@@ -122,8 +131,25 @@ export function App() {
     void refresh();
   }, [session]);
 
-  function requestRecovery(entityId: string) {
-    setRecoveryRequests((current) => (current.includes(entityId) ? current : [...current, entityId]));
+  async function requestRecovery(providerKeyId: string) {
+    setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "pending" }));
+    setRecoveryErrors((current) => {
+      const next = { ...current };
+      delete next[providerKeyId];
+      return next;
+    });
+
+    try {
+      await requestProviderKeyRecovery(providerKeyId, {
+        reason: "overview manual recovery request",
+        target_status: "recovery_probe",
+      });
+      setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "succeeded" }));
+      void refresh();
+    } catch (error) {
+      setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "failed" }));
+      setRecoveryErrors((current) => ({ ...current, [providerKeyId]: errorText(error) }));
+    }
   }
 
   async function signOut() {
@@ -194,9 +220,10 @@ export function App() {
             healthSummary={healthSummary}
             healthSummaryError={healthSummaryError}
             loading={loading || (results.length === 0 && lastChecked === null)}
+            recoveryErrors={recoveryErrors}
             recoveryRequests={recoveryRequests}
             results={results}
-            onRecoveryRequest={requestRecovery}
+            onRecoveryRequest={(providerKeyId) => void requestRecovery(providerKeyId)}
             onRefresh={refresh}
           />
         ) : selectedView === "requestLogs" ? (
