@@ -36,7 +36,17 @@
       "body",
       "request_body",
       "response_body",
-      "route_decision_snapshot"
+      "route_decision_snapshot",
+      "ledger.entries[].idempotency_key",
+      "ledger.entries[].usage_snapshot",
+      "ledger.entries[].policy_snapshot",
+      "ledger.entries[].metadata",
+      "ledger.entries[].id",
+      "ledger.entries[].tenant_id",
+      "ledger.entries[].wallet_id",
+      "ledger.entries[].virtual_key_id",
+      "ledger.entries[].price_version_id",
+      "ledger.entries[].related_ledger_entry_id"
     ]
   },
   "examples": {
@@ -63,6 +73,32 @@
           ],
           "first_request_at": "2026-06-02 12:00:01+00",
           "last_request_at": "2026-06-02 12:00:02+00",
+          "ledger": {
+            "limit": 500,
+            "limit_reached": false,
+            "returned_count": 1,
+            "request_count": 1,
+            "currencies": [
+              "USD"
+            ],
+            "omitted_fields": [
+              "idempotency_key",
+              "usage_snapshot",
+              "policy_snapshot",
+              "metadata"
+            ],
+            "entries": [
+              {
+                "request_id": "00000000-0000-0000-0000-000000000011",
+                "entry_type": "settle",
+                "amount": "-0.01000000",
+                "currency": "USD",
+                "status": "confirmed",
+                "occurred_at": "2026-06-02 12:00:01+00",
+                "created_at": "2026-06-02 12:00:01+00"
+              }
+            ]
+          },
           "requests": [
             {
               "id": "00000000-0000-0000-0000-000000000012",

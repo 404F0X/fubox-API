@@ -414,7 +414,28 @@ export type ProviderAttempt = {
   upstream_model?: string | null;
 };
 
+export type LedgerEntrySummary = {
+  amount: string;
+  created_at: string;
+  currency: string;
+  entry_type: LedgerEntryType;
+  occurred_at: string;
+  request_id?: string | null;
+  status: LedgerEntryStatus;
+};
+
+export type RequestLedgerSummary = {
+  currencies: string[];
+  entries: LedgerEntrySummary[];
+  limit: number;
+  limit_reached: boolean;
+  omitted_fields: string[];
+  request_count: number;
+  returned_count: number;
+};
+
 export type RequestLogDetail = {
+  ledger: RequestLedgerSummary;
   provider_attempts: ProviderAttempt[];
   request_log: RequestLogSummary;
   route_decision_snapshot: JsonValue;
@@ -430,6 +451,7 @@ export type RequestTraceSummary = {
   first_request_at?: string | null;
   last_error?: HealthSummaryRecentLastError | null;
   last_request_at?: string | null;
+  ledger: RequestLedgerSummary;
   limit: number;
   limit_reached: boolean;
   request_count: number;

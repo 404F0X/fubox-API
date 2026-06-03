@@ -296,9 +296,13 @@ Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.journal_contract.schema_versi
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.journal_contract.sql_plan.schema_version $sqlExecutorContract.expected.journal_sql_plan_schema "rollback journal sql plan schema"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.schema_version $sqlExecutorContract.expected.rollback_operation_plan_schema "rollback operation plan schema"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.execution_status $sqlExecutorContract.expected.rollback_operation_execution_status "rollback operation execution status"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.execution_order $sqlExecutorContract.expected.rollback_operation_execution_order "rollback operation execution order"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.operation_order.ordering $sqlExecutorContract.expected.rollback_operation_execution_order "rollback operation order contract"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.replay_contract.schema_version $sqlExecutorContract.expected.rollback_replay_contract_schema "rollback replay contract schema"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.refusal_contract.schema_version $sqlExecutorContract.expected.rollback_execution_refusal_contract_schema "rollback execution refusal contract schema"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.database_writes $false "rollback operation plan makes no database writes"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.live_database_connection $false "rollback operation plan makes no live database connection"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.mark_run_rolled_back_statement.phase $sqlExecutorContract.expected.rollback_run_status_statement_phase "rollback run status statement phase"
 Assert-Condition (@(Convert-ToArray $sqlApplyForce.Plan.sql_executor_plan.refusal_contract.refuse_apply_when | Where-Object { $_ -eq "source_provider_channel_bindings preflight fails" }).Count -eq 1) "refusal contract blocks failed source bindings"
 Assert-Condition (@(Convert-ToArray $sqlApplyForce.Plan.sql_executor_plan.operation_bundle_contract.statement_phase_order | Where-Object { $_ -eq "persist_rollback_snapshot_entry" }).Count -eq 1) "operation bundle persists rollback snapshot before mutation"
 
@@ -322,10 +326,37 @@ foreach ($fragment in (Convert-ToArray $sqlExecutorContract.expected.required_jo
 
 $rollbackSkeletons = @(Convert-ToArray $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.operation_skeletons)
 Assert-Condition ($rollbackSkeletons.Count -gt 0) "rollback operation plan emits skeletons"
+$applyOperationIds = @(Convert-ToArray $operationPlans | ForEach-Object { $_.operation_id })
+$rollbackOperationIds = @(Convert-ToArray $rollbackSkeletons | ForEach-Object { $_.operation_id })
+Assert-Equal $rollbackOperationIds.Count $applyOperationIds.Count "rollback skeleton count matches apply operation count"
+for ($i = 0; $i -lt $rollbackOperationIds.Count; $i++) {
+  $expectedReverseId = $applyOperationIds[($applyOperationIds.Count - 1 - $i)]
+  Assert-Equal $rollbackOperationIds[$i] $expectedReverseId "rollback skeletons are ordered in reverse apply order"
+}
 foreach ($skeleton in $rollbackSkeletons) {
   Assert-Equal $skeleton.supported_by_current_slice $false "rollback skeleton is plan-only"
   Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$skeleton.lookup_statement.sql)) "rollback skeleton has journal lookup SQL"
+  Assert-Equal $skeleton.execution_order $sqlExecutorContract.expected.rollback_operation_execution_order "rollback skeleton execution order"
+  Assert-Condition ([int]$skeleton.rollback_sequence -gt 0) "rollback skeleton has sequence"
+  Assert-Equal $skeleton.replay_idempotency_contract.schema_version $sqlExecutorContract.expected.rollback_operation_replay_contract_schema "rollback skeleton replay contract schema"
+  $rollbackStatements = @($skeleton.lookup_statement, $skeleton.mark_rolled_back_statement)
+  foreach ($phase in (Convert-ToArray $sqlExecutorContract.expected.rollback_required_operation_statement_phases)) {
+    $phaseMatches = @($rollbackStatements | Where-Object { $_.phase -eq $phase })
+    Assert-Condition ($phaseMatches.Count -gt 0) "rollback skeleton emits $phase statement"
+  }
+  Assert-Equal $skeleton.mark_rolled_back_statement.parameters.rollback_snapshot_idempotency_key $sqlApplyForce.Plan.sql_executor_plan.rollback_snapshot_idempotency_key "rollback skeleton carries rollback snapshot key"
+  Assert-Equal $skeleton.compensating_mutation_contract.database_writes $false "rollback compensating mutation contract is no-write"
+  Assert-Condition (@(Convert-ToArray $skeleton.compensating_mutation_contract.future_runner_must_verify | Where-Object { $_ -eq "current target state still matches after_hash or replay must refuse" }).Count -eq 1) "rollback skeleton refuses stale target state"
 }
+
+$channelMappingRollbackPlan = $channelMappingApplyForce.Plan.sql_executor_plan.rollback_operation_plan
+Assert-Equal $channelMappingRollbackPlan.execution_order $sqlExecutorContract.expected.rollback_operation_execution_order "channel mapping rollback execution order"
+Assert-Equal $channelMappingRollbackPlan.database_writes $false "channel mapping rollback plan database_writes"
+Assert-Equal $channelMappingRollbackPlan.live_database_connection $false "channel mapping rollback plan live connection"
+$channelMappingRollbackSkeletons = @(Convert-ToArray $channelMappingRollbackPlan.operation_skeletons)
+Assert-Equal $channelMappingRollbackSkeletons.Count 1 "channel mapping rollback emits one skeleton"
+Assert-Equal $channelMappingRollbackSkeletons[0].compensating_mutation_contract.future_adapter "channel_model_mappings_rollback_v1_planned" "channel mapping rollback future adapter"
+Assert-Equal $channelMappingRollbackSkeletons[0].mark_rolled_back_statement.phase $sqlExecutorContract.expected.rollback_required_operation_statement_phases[1] "channel mapping rollback status phase"
 
 $missingForceFailed = $false
 try {

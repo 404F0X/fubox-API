@@ -48,6 +48,8 @@ use crate::{
 
 const REQUEST_LOG_DEFAULT_LIMIT: i64 = 50;
 const REQUEST_LOG_MAX_LIMIT: i64 = 500;
+const REQUEST_LOG_DETAIL_LEDGER_LIMIT: i64 = 25;
+const TRACE_REQUEST_LEDGER_LIMIT: i64 = 500;
 const AUDIT_LOG_DEFAULT_LIMIT: i64 = 50;
 const AUDIT_LOG_MAX_LIMIT: i64 = 500;
 const BILLING_READ_DEFAULT_LIMIT: i64 = 50;
@@ -1857,6 +1859,17 @@ async fn get_request_log_detail(
     let provider_attempts = repository
         .list_provider_attempts_for_request(DEFAULT_TENANT_ID, id)
         .await?;
+    let ledger_entries = repository
+        .list_ledger_entries(
+            DEFAULT_TENANT_ID,
+            LedgerEntryListFilter {
+                limit: REQUEST_LOG_DETAIL_LEDGER_LIMIT,
+                project_id: None,
+                request_id: Some(id),
+                wallet_id: None,
+            },
+        )
+        .await?;
     let route_decision_snapshot = request_log.route_decision_snapshot.clone();
     let request_log = RequestLogSummary::from(&request_log);
 
@@ -1865,6 +1878,7 @@ async fn get_request_log_detail(
             "request_log": request_log,
             "provider_attempts": provider_attempts,
             "route_decision_snapshot": route_decision_snapshot,
+            "ledger": ledger_summary_response(&ledger_entries, REQUEST_LOG_DETAIL_LEDGER_LIMIT),
         }
     }))
     .into_response())
@@ -1886,8 +1900,13 @@ async fn get_trace_request_summary(
         return Err(AdminError::not_found("request trace"));
     }
 
+    let request_ids = request_logs.iter().map(|log| log.id).collect::<Vec<_>>();
+    let ledger_entries =
+        list_ledger_entries_for_request_ids(state.as_ref(), DEFAULT_TENANT_ID, &request_ids)
+            .await?;
+
     Ok(Json(json!({
-        "data": trace_request_summary_response(&trace_id, &request_logs, limit)
+        "data": trace_request_summary_response(&trace_id, &request_logs, limit, &ledger_entries)
     }))
     .into_response())
 }
@@ -2013,6 +2032,46 @@ async fn list_ledger_entries(
         .collect::<Vec<_>>();
 
     Ok(Json(json!({ "data": ledger_entries })).into_response())
+}
+
+async fn list_ledger_entries_for_request_ids(
+    state: &ControlPlaneState,
+    tenant_id: Uuid,
+    request_ids: &[Uuid],
+) -> Result<Vec<LedgerEntry>, AdminError> {
+    if request_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut unique_request_ids = request_ids.to_vec();
+    unique_request_ids.sort_unstable();
+    unique_request_ids.dedup();
+
+    let rows = sqlx::query(
+        r#"
+        select
+          id, tenant_id, project_id, wallet_id, request_id, virtual_key_id, trace_id,
+          related_ledger_entry_id, entry_type, amount::text as amount, currency, status,
+          idempotency_key, price_version_id, usage_snapshot, policy_snapshot, metadata,
+          occurred_at::text as occurred_at, created_at::text as created_at
+        from ledger_entries
+        where tenant_id = $1
+          and request_id = any($2::uuid[])
+        order by created_at desc, id
+        limit $3
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(unique_request_ids)
+    .bind(TRACE_REQUEST_LEDGER_LIMIT)
+    .fetch_all(state.db())
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    rows.into_iter()
+        .map(ledger_entry_from_row)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AdminError::from(DbError::Query(error)))
 }
 
 async fn get_billing_reconciliation(
@@ -2388,6 +2447,73 @@ fn ledger_entry_response(entry: LedgerEntry) -> Value {
         "metadata": billing_safe_json_value(entry.metadata),
         "occurred_at": entry.occurred_at,
         "created_at": entry.created_at,
+    })
+}
+
+fn ledger_entry_from_row(row: PgRow) -> Result<LedgerEntry, sqlx::Error> {
+    Ok(LedgerEntry {
+        id: row.try_get("id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        project_id: row.try_get("project_id")?,
+        wallet_id: row.try_get("wallet_id")?,
+        request_id: row.try_get("request_id")?,
+        virtual_key_id: row.try_get("virtual_key_id")?,
+        trace_id: row.try_get("trace_id")?,
+        related_ledger_entry_id: row.try_get("related_ledger_entry_id")?,
+        entry_type: row.try_get("entry_type")?,
+        amount: row.try_get("amount")?,
+        currency: row.try_get("currency")?,
+        status: row.try_get("status")?,
+        idempotency_key: row.try_get("idempotency_key")?,
+        price_version_id: row.try_get("price_version_id")?,
+        usage_snapshot: row.try_get("usage_snapshot")?,
+        policy_snapshot: row.try_get("policy_snapshot")?,
+        metadata: row.try_get("metadata")?,
+        occurred_at: row.try_get("occurred_at")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+fn ledger_summary_response(entries: &[LedgerEntry], limit: i64) -> Value {
+    let currencies = entries
+        .iter()
+        .map(|entry| health_summary_string(&entry.currency))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let request_ids = entries
+        .iter()
+        .filter_map(|entry| entry.request_id)
+        .collect::<BTreeSet<_>>();
+
+    json!({
+        "limit": limit,
+        "limit_reached": entries.len() as i64 == limit,
+        "returned_count": entries.len(),
+        "request_count": request_ids.len(),
+        "currencies": currencies,
+        "omitted_fields": [
+            "idempotency_key",
+            "usage_snapshot",
+            "policy_snapshot",
+            "metadata"
+        ],
+        "entries": entries
+            .iter()
+            .map(ledger_entry_summary_response)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn ledger_entry_summary_response(entry: &LedgerEntry) -> Value {
+    json!({
+        "request_id": entry.request_id,
+        "entry_type": health_summary_string(&entry.entry_type),
+        "amount": health_summary_string(&entry.amount),
+        "currency": health_summary_string(&entry.currency),
+        "status": health_summary_string(&entry.status),
+        "occurred_at": health_summary_string(&entry.occurred_at),
+        "created_at": health_summary_string(&entry.created_at),
     })
 }
 
@@ -4273,6 +4399,7 @@ fn trace_request_summary_response(
     trace_id: &str,
     request_logs: &[RequestLogSummary],
     limit: i64,
+    ledger_entries: &[LedgerEntry],
 ) -> Value {
     let mut stats = RecentHealthStats::default();
     for log in request_logs {
@@ -4313,6 +4440,7 @@ fn trace_request_summary_response(
         "currencies": currencies,
         "first_request_at": first_request_at,
         "last_request_at": last_request_at,
+        "ledger": ledger_summary_response(ledger_entries, TRACE_REQUEST_LEDGER_LIMIT),
         "requests": request_logs
             .iter()
             .map(request_log_summary_safe_value)
@@ -5808,6 +5936,95 @@ mod tests {
             assert!(
                 !serialized.contains(forbidden),
                 "billing read fixture must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_request_summary_contract_fixture_includes_ledger_summary_without_sensitive_entries() {
+        let fixture = serde_json::from_str::<Value>(include_str!(
+            "../../../tests/fixtures/control-plane/trace_request_summary_contract.json"
+        ))
+        .expect("fixture should be valid json");
+
+        assert_eq!(
+            fixture["endpoint"]["path"],
+            json!("/admin/traces/{trace_id}")
+        );
+        assert_eq!(
+            fixture["response_contract"]["rbac_permission"],
+            json!("log_read_metadata")
+        );
+        assert_eq!(
+            fixture["examples"]["bounded_trace"]["response"]["data"]["ledger"]["returned_count"],
+            json!(1)
+        );
+        let entry =
+            &fixture["examples"]["bounded_trace"]["response"]["data"]["ledger"]["entries"][0];
+        assert_eq!(entry["entry_type"], json!("settle"));
+        assert!(entry.get("idempotency_key").is_none());
+        assert!(entry.get("usage_snapshot").is_none());
+        assert!(entry.get("policy_snapshot").is_none());
+        assert!(entry.get("metadata").is_none());
+
+        let serialized_entry = serde_json::to_string(entry).expect("entry should serialize");
+        for forbidden in [
+            "payload_object_ref",
+            "request_body",
+            "response_body",
+            "sk-",
+            "api_key",
+            "Authorization",
+            "secret",
+        ] {
+            assert!(
+                !serialized_entry.contains(forbidden),
+                "trace request ledger summary entry must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_log_detail_ledger_contract_fixture_omits_sensitive_ledger_material() {
+        let fixture = serde_json::from_str::<Value>(include_str!(
+            "../../../tests/fixtures/control-plane/request_log_detail_ledger_contract.json"
+        ))
+        .expect("fixture should be valid json");
+
+        assert_eq!(
+            fixture["endpoint"]["path"],
+            json!("/admin/request-logs/{id}")
+        );
+        assert_eq!(
+            fixture["response_contract"]["rbac_permission"],
+            json!("log_read_metadata")
+        );
+        assert_eq!(
+            fixture["examples"]["detail"]["response"]["data"]["ledger"]["limit"],
+            json!(REQUEST_LOG_DETAIL_LEDGER_LIMIT)
+        );
+
+        let entry = &fixture["examples"]["detail"]["response"]["data"]["ledger"]["entries"][0];
+        assert_eq!(entry["status"], json!("confirmed"));
+        assert!(entry.get("idempotency_key").is_none());
+        assert!(entry.get("usage_snapshot").is_none());
+        assert!(entry.get("policy_snapshot").is_none());
+        assert!(entry.get("metadata").is_none());
+
+        let serialized_entry = serde_json::to_string(entry).expect("entry should serialize");
+        for forbidden in [
+            "payload_object_ref",
+            "request_body",
+            "response_body",
+            "raw_metadata",
+            "sk-",
+            "api_key",
+            "Authorization",
+            "secret",
+        ] {
+            assert!(
+                !serialized_entry.contains(forbidden),
+                "request detail ledger summary entry must not contain {forbidden}"
             );
         }
     }
@@ -7482,8 +7699,15 @@ mod tests {
         failed.thread_id = succeeded.thread_id.clone();
         failed.client_request_id = succeeded.client_request_id.clone();
 
-        let response =
-            trace_request_summary_response("trace Bearer never-return", &[failed, succeeded], 2);
+        let succeeded_id = succeeded.id;
+        let ledger_entry =
+            ledger_entry_fixture(91, succeeded_id, "settle", "-0.01000000", "confirmed");
+        let response = trace_request_summary_response(
+            "trace Bearer never-return",
+            &[failed, succeeded],
+            2,
+            &[ledger_entry],
+        );
         let serialized = serde_json::to_string(&response).expect("response should serialize");
 
         assert_eq!(response["limit"], json!(2));
@@ -7500,6 +7724,36 @@ mod tests {
             response["requests"][0]["response_body_hash"],
             json!("resp-hash")
         );
+        assert_eq!(response["ledger"]["returned_count"], json!(1));
+        assert_eq!(
+            response["ledger"]["entries"][0]["request_id"],
+            json!(succeeded_id)
+        );
+        assert_eq!(
+            response["ledger"]["omitted_fields"],
+            json!([
+                "idempotency_key",
+                "usage_snapshot",
+                "policy_snapshot",
+                "metadata"
+            ])
+        );
+        assert!(
+            response["ledger"]["entries"][0]
+                .get("usage_snapshot")
+                .is_none()
+        );
+        assert!(
+            response["ledger"]["entries"][0]
+                .get("policy_snapshot")
+                .is_none()
+        );
+        assert!(response["ledger"]["entries"][0].get("metadata").is_none());
+        assert!(
+            response["ledger"]["entries"][0]
+                .get("idempotency_key")
+                .is_none()
+        );
         assert!(
             response["requests"][0]
                 .get("route_decision_snapshot")
@@ -7511,6 +7765,47 @@ mod tests {
         assert!(serialized.contains("[REDACTED]"));
         assert!(!serialized.contains("never-return"));
         assert!(!serialized.contains("sk-live-error-never-return"));
+        assert!(!serialized.contains("ledger-idempotency-never-return"));
+        assert!(!serialized.contains("raw ledger payload"));
         assert!(!serialized.contains("raw prompt"));
+    }
+
+    fn ledger_entry_fixture(
+        id: u128,
+        request_id: Uuid,
+        entry_type: &str,
+        amount: &str,
+        status: &str,
+    ) -> LedgerEntry {
+        LedgerEntry {
+            id: Uuid::from_u128(id),
+            tenant_id: DEFAULT_TENANT_ID,
+            project_id: Some(Uuid::from_u128(20)),
+            wallet_id: Some(Uuid::from_u128(40)),
+            request_id: Some(request_id),
+            virtual_key_id: Some(Uuid::from_u128(50)),
+            trace_id: Some("trace-ledger-1".to_string()),
+            related_ledger_entry_id: None,
+            entry_type: entry_type.to_string(),
+            amount: amount.to_string(),
+            currency: "USD".to_string(),
+            status: status.to_string(),
+            idempotency_key: "ledger-idempotency-never-return".to_string(),
+            price_version_id: Some(Uuid::from_u128(60)),
+            usage_snapshot: json!({
+                "body": "raw ledger payload",
+                "input_tokens": 12,
+                "secret_note": "sk-live-ledger-never-return"
+            }),
+            policy_snapshot: json!({
+                "authorization": "Bearer ledger-never-return"
+            }),
+            metadata: json!({
+                "payload": "raw ledger payload",
+                "secret": "sk-live-metadata-never-return"
+            }),
+            occurred_at: "2026-06-02 12:00:00+00".to_string(),
+            created_at: "2026-06-02 12:00:01+00".to_string(),
+        }
     }
 }

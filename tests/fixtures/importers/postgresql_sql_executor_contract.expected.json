@@ -26,6 +26,14 @@
     "rollback_operation_plan_schema": "importer.rollback-operation-plan.v1",
     "rollback_execution_refusal_contract_schema": "importer.rollback-execution-refusal-contract.v1",
     "rollback_operation_execution_status": "refused_no_live_runner",
+    "rollback_operation_execution_order": "reverse_apply_order",
+    "rollback_replay_contract_schema": "importer.rollback-execution-replay-contract.v1",
+    "rollback_operation_replay_contract_schema": "importer.rollback-replay-idempotency-contract.v1",
+    "rollback_required_operation_statement_phases": [
+      "rollback_lookup_journal_entry",
+      "rollback_mark_operation_rolled_back"
+    ],
+    "rollback_run_status_statement_phase": "rollback_mark_apply_run_rolled_back",
     "source_binding_preflight": "pass",
     "required_journal_tables": [
       "importer_apply_runs",

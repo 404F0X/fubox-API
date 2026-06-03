@@ -1294,13 +1294,78 @@ where transaction_id = :transaction_id
 for update;
 '@
 
+  $markOperationRolledBackSql = @'
+update importer_apply_operation_journal
+set status = 'rolled_back',
+    updated_at = now()
+where transaction_id = :transaction_id
+  and operation_id = :operation_id
+  and snapshot_entry_id = :snapshot_entry_id
+  and status = 'applied'
+returning rollback_entry_json;
+'@
+
+  $markRunRolledBackSql = @'
+update importer_apply_runs
+set status = 'rolled_back',
+    updated_at = now()
+where transaction_id = :transaction_id
+  and rollback_snapshot_idempotency_key = :rollback_snapshot_idempotency_key
+  and status = 'applied'
+  and not exists (
+    select 1
+    from importer_apply_operation_journal j
+    where j.transaction_id = importer_apply_runs.transaction_id
+      and j.status not in ('rolled_back', 'skipped_same_after_hash')
+  )
+returning transaction_id, status;
+'@
+
+  $runParameters = [ordered]@{
+    tenant_id = $TenantId
+    transaction_id = $TransactionId
+    rollback_snapshot_idempotency_key = $RollbackSnapshotKey
+  }
+
+  $operations = @(Convert-ToObjectArray $WriteOperations)
   $operationSkeletons = New-Object System.Collections.Generic.List[object]
-  foreach ($operation in $WriteOperations) {
+  $rollbackSequence = 0
+  for ($index = $operations.Count - 1; $index -ge 0; $index--) {
+    $operation = $operations[$index]
+    $rollbackSequence += 1
+
     $rollbackIntent = "no_compensating_action"
     if ($operation.rollback.rollback_action -eq "delete_created_object") {
       $rollbackIntent = "delete_created_object_by_natural_key"
     } elseif ($operation.rollback.rollback_action -eq "restore_previous_object") {
       $rollbackIntent = "restore_previous_object_from_before_image_json"
+    }
+
+    $futureAdapter = "unavailable_for_target_kind"
+    $futureMutationIntent = @("refuse until a target-specific rollback adapter is implemented")
+    switch ([string]$operation.target.kind) {
+      "canonical_model" {
+        $futureAdapter = "canonical_models_rollback_v1_planned"
+        $futureMutationIntent = @(
+          "delete_created_object by tenant_id/model_key when before_image.object_exists=false",
+          "restore_previous_object from before_image_json when before_image.object_exists=true",
+          "verify the current row still matches after_hash or refuse replay"
+        )
+      }
+      "channel_mapping_entry" {
+        $futureAdapter = "channel_model_mappings_rollback_v1_planned"
+        $futureMutationIntent = @(
+          "restore channels.model_mappings from before_image_json.existing_model_mappings",
+          "remove requested_model when before_image recorded no existing mapping",
+          "verify the current mapping still matches after_hash or refuse replay"
+        )
+      }
+      "model_association" {
+        $futureAdapter = "model_associations_rollback_blocked_v1"
+        $futureMutationIntent = @(
+          "model_association rollback remains blocked until canonical/channel binding adapters exist"
+        )
+      }
     }
 
     $parameters = [ordered]@{
@@ -1315,6 +1380,8 @@ for update;
     }
 
     $operationSkeletons.Add([ordered]@{
+        rollback_sequence = $rollbackSequence
+        execution_order = "reverse_apply_order"
         operation_id = $operation.operation_id
         target = $operation.target
         rollback_snapshot_entry_id = $operation.rollback_snapshot_entry_id
@@ -1324,14 +1391,26 @@ for update;
         required_journal_status = @("applied")
         no_secret_material = $true
         lookup_statement = New-PostgreSqlStatement "rollback_lookup_journal_entry" $operation.operation_id $lookupSql $parameters
+        mark_rolled_back_statement = New-PostgreSqlStatement "rollback_mark_operation_rolled_back" $operation.operation_id $markOperationRolledBackSql $parameters
+        replay_idempotency_contract = [ordered]@{
+          schema_version = "importer.rollback-replay-idempotency-contract.v1"
+          replay_key = "$($RollbackSnapshotKey):$($operation.rollback_snapshot_entry_id)"
+          already_rolled_back = "no_op"
+          skipped_same_after_hash = "no_op"
+          prepared_or_blocked_status = "refuse"
+          applied_status = "eligible_after_before_image_and_target_hash_verification"
+        }
         compensating_mutation_contract = [ordered]@{
           schema_version = "importer.rollback-compensating-mutation-contract.v1"
+          future_adapter = $futureAdapter
+          mutation_intent = $futureMutationIntent
           future_runner_must_verify = @(
             "journal row belongs to requested transaction_id and snapshot_entry_id",
             "operation target hash matches journal target hash",
             "journal status is applied before compensating mutation",
             "before_image_json schema is importer.before-image.v1",
-            "before_image_hash matches before_image_json when object_exists=true"
+            "before_image_hash matches before_image_json when object_exists=true",
+            "current target state still matches after_hash or replay must refuse"
           )
           mutation_sql_status = "not_generated_in_this_slice"
           database_writes = $false
@@ -1342,11 +1421,33 @@ for update;
   return [ordered]@{
     schema_version = "importer.rollback-operation-plan.v1"
     execution_status = "refused_no_live_runner"
+    execution_order = "reverse_apply_order"
     rollback_snapshot_idempotency_key = $RollbackSnapshotKey
     transaction_id = $TransactionId
     database_writes = $false
     live_database_connection = $false
     compensating_rollback_supported_by_current_slice = $false
+    operation_order = [ordered]@{
+      ordering = "reverse_apply_order"
+      operation_count = $operations.Count
+      operation_ids = @(Convert-ToObjectArray ($operationSkeletons | ForEach-Object { $_.operation_id }))
+      reason = "Rollback must unwind later apply mutations before earlier mutations."
+    }
+    replay_contract = [ordered]@{
+      schema_version = "importer.rollback-execution-replay-contract.v1"
+      replay_key = $RollbackSnapshotKey
+      replay_decision_order = @(
+        "load apply run by transaction_id and rollback_snapshot_idempotency_key",
+        "lock operation journal rows in reverse apply order",
+        "skip rows already rolled_back or skipped_same_after_hash",
+        "refuse rows that are prepared, blocked, or missing before_image_json",
+        "verify before_image_hash and target after_hash",
+        "execute target-specific compensating mutation",
+        "mark operation rolled_back",
+        "mark apply run rolled_back after every operation is rolled_back or skipped"
+      )
+    }
+    mark_run_rolled_back_statement = New-PostgreSqlStatement "rollback_mark_apply_run_rolled_back" "apply_run" $markRunRolledBackSql $runParameters
     refusal_contract = [ordered]@{
       schema_version = "importer.rollback-execution-refusal-contract.v1"
       refusal_reason = "Rollback execution is plan-only in this slice; no live PostgreSQL runner or compensating mutation writer is implemented, so no database writes were made."
@@ -1356,7 +1457,9 @@ for update;
         "rollback journal rows are not persisted by a live apply transaction",
         "operation journal status is not applied",
         "before_image hash verification fails",
-        "target kind rollback adapter is unavailable"
+        "current target state no longer matches after_hash",
+        "target kind rollback adapter is unavailable",
+        "operation ordering cannot be reconstructed"
       )
     }
     operation_skeletons = @(Convert-ToObjectArray $operationSkeletons)

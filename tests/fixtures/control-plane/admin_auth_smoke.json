@@ -19,7 +19,25 @@
         "success_clears_failures": true,
         "does_not_reveal_user_existence": true,
         "does_not_store_raw_username": true,
-        "redis_distributed_store": "future_trait_implementation"
+        "store_env": "AI_GATEWAY_ADMIN_LOGIN_RATE_LIMIT_STORE",
+        "default_store": "memory",
+        "redis_distributed_store": {
+          "status": "minimal_runtime_backend",
+          "enabled_values": ["redis", "distributed_redis"],
+          "redis_addr_source": "config.redis.addr",
+          "redis_db_source": "config.redis.db",
+          "key_prefix_env": "AI_GATEWAY_ADMIN_LOGIN_RATE_LIMIT_REDIS_KEY_PREFIX",
+          "timeout_ms_env": "AI_GATEWAY_ADMIN_LOGIN_RATE_LIMIT_REDIS_TIMEOUT_MS",
+          "default_timeout_ms": 200,
+          "key_material": "tenant_id + normalized_email_fingerprint",
+          "raw_username_stored": false,
+          "atomic_record_failure": "redis EVAL + SET EX",
+          "success_clear": "DEL",
+          "unavailable_policy": "fail_closed",
+          "unavailable_status": 429,
+          "unavailable_error_code": "login_rate_limited",
+          "unavailable_response_echoes_username_or_credentials": false
+        }
       }
     },
     "oidc_authorize_url": {

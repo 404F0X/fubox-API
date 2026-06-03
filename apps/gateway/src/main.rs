@@ -115,9 +115,10 @@ struct NativeGeminiPath {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct NativeParsedJsonBody {
+pub(crate) struct NativeParsedJsonBody {
     model: Option<String>,
     stream: bool,
+    stream_generate_content: bool,
     value: Value,
 }
 
@@ -2050,27 +2051,6 @@ async fn gemini_generate_content_native_passthrough(
 
     let request_body_hash = sha256_hex(&body);
 
-    if native_path.action == NativeGeminiAction::StreamGenerateContent {
-        let error = OpenAiAdapterError::StreamingNotImplemented;
-        start_and_finish_request_error_for_endpoint(
-            METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
-            repository,
-            &auth,
-            Some(&native_path.requested_model),
-            Some(&request_body_hash),
-            request_payload_log(&payload_policy, &body),
-            RequestRouteLog::unresolved(route_snapshot_for_rejection(
-                &auth,
-                Some(&native_path.requested_model),
-                "native_streaming_not_supported",
-            )),
-            started_at,
-            summarize_adapter_error(&error),
-        )
-        .await;
-        return adapter_error_response(error);
-    }
-
     let parsed_body = match parse_native_json_body(&body) {
         Ok(parsed_body) => parsed_body,
         Err(error) => {
@@ -2116,26 +2096,10 @@ async fn gemini_generate_content_native_passthrough(
         return adapter_error_response(error);
     }
 
-    if parsed_body.stream {
-        let error = OpenAiAdapterError::StreamingNotImplemented;
-        start_and_finish_request_error_for_endpoint(
-            METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
-            repository,
-            &auth,
-            Some(&native_path.requested_model),
-            Some(&request_body_hash),
-            request_payload_log(&payload_policy, &body),
-            RequestRouteLog::unresolved(route_snapshot_for_rejection(
-                &auth,
-                Some(&native_path.requested_model),
-                "native_streaming_not_supported",
-            )),
-            started_at,
-            summarize_adapter_error(&error),
-        )
-        .await;
-        return adapter_error_response(error);
-    }
+    let native_streaming_requested = native_path.action
+        == NativeGeminiAction::StreamGenerateContent
+        || parsed_body.stream
+        || parsed_body.stream_generate_content;
 
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &native_path.requested_model)
@@ -2234,6 +2198,25 @@ async fn gemini_generate_content_native_passthrough(
     };
 
     let inbound_content_type = inbound_content_type_for_passthrough(&headers);
+
+    if native_streaming_requested {
+        return streaming::gemini_generate_content_streaming(
+            streaming::StreamingGeminiGenerateContentContext {
+                repository,
+                auth: &auth,
+                request_id,
+                request_started_at: started_at,
+                original_body: body,
+                parsed_body,
+                attempt_routes: &attempt_routes,
+                native_http: &state.native_http,
+                route_snapshot,
+                inbound_content_type,
+            },
+        )
+        .await;
+    }
+
     let mut fallback_events = Vec::new();
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
@@ -2751,22 +2734,30 @@ fn parse_native_json_body(body: &[u8]) -> Result<NativeParsedJsonBody, OpenAiAda
         }
     };
 
-    let stream = match object.get("stream") {
-        Some(Value::Bool(stream)) => *stream,
-        Some(Value::Null) | None => false,
-        Some(_) => {
-            return Err(OpenAiAdapterError::InvalidRequest {
-                message: "stream must be a boolean".to_string(),
-                param: Some("stream"),
-            });
-        }
-    };
+    let stream = optional_native_bool_field(object, "stream")?.unwrap_or(false);
+    let stream_generate_content =
+        optional_native_bool_field(object, "streamGenerateContent")?.unwrap_or(false);
 
     Ok(NativeParsedJsonBody {
         model,
         stream,
+        stream_generate_content,
         value,
     })
+}
+
+fn optional_native_bool_field(
+    object: &serde_json::Map<String, Value>,
+    field: &'static str,
+) -> Result<Option<bool>, OpenAiAdapterError> {
+    match object.get(field) {
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(Value::Null) | None => Ok(None),
+        Some(_) => Err(OpenAiAdapterError::InvalidRequest {
+            message: format!("{field} must be a boolean"),
+            param: Some(field),
+        }),
+    }
 }
 
 fn validate_native_body_routing_fields(
@@ -2785,7 +2776,7 @@ fn validate_native_body_routing_fields(
     Ok(())
 }
 
-fn prepare_native_passthrough_body(
+pub(crate) fn prepare_native_passthrough_body(
     original_body: &Bytes,
     parsed_body: &NativeParsedJsonBody,
     upstream_model: &str,
@@ -2847,7 +2838,7 @@ fn gemini_generate_content_upstream_path(
     ))
 }
 
-fn native_model_path_value_is_valid(model: &str) -> bool {
+pub(crate) fn native_model_path_value_is_valid(model: &str) -> bool {
     !model.is_empty()
         && model.trim() == model
         && !model.starts_with('/')
@@ -2914,7 +2905,7 @@ async fn send_anthropic_messages_request(
     anthropic_upstream_response(response, provider_key).await
 }
 
-fn native_upstream_url(
+pub(crate) fn native_upstream_url(
     endpoint: &str,
     upstream_path: &str,
 ) -> Result<reqwest::Url, OpenAiAdapterError> {
@@ -2929,7 +2920,7 @@ fn native_upstream_url(
         .map_err(|error| OpenAiAdapterError::InvalidUpstreamBaseUrl(error.to_string()))
 }
 
-fn native_provider_key_header(
+pub(crate) fn native_provider_key_header(
     provider_key: &str,
 ) -> Result<reqwest::header::HeaderValue, OpenAiAdapterError> {
     reqwest::header::HeaderValue::from_str(provider_key)
@@ -3029,7 +3020,7 @@ pub(crate) fn anthropic_parse_messages_response(
     Ok(payload)
 }
 
-fn native_upstream_status_error(
+pub(crate) fn native_upstream_status_error(
     status: u16,
     body: &[u8],
     retry_after: Option<AdapterRetryAfter>,
@@ -3051,7 +3042,7 @@ fn native_upstream_status_error(
     }
 }
 
-fn native_reqwest_error(error: reqwest::Error) -> OpenAiAdapterError {
+pub(crate) fn native_reqwest_error(error: reqwest::Error) -> OpenAiAdapterError {
     if error.is_timeout() {
         OpenAiAdapterError::UpstreamTimeout
     } else if error.is_connect() {
@@ -4858,7 +4849,7 @@ async fn finish_request_with_error(
     .await;
 }
 
-async fn finish_request_with_error_for_endpoint(
+pub(crate) async fn finish_request_with_error_for_endpoint(
     endpoint: &'static str,
     repository: &GatewayRepository,
     auth: &AuthContext,
@@ -5080,7 +5071,7 @@ async fn finish_provider_attempt_with_error_and_fallback_for_endpoint(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
+pub(crate) async fn finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
     endpoint: &'static str,
     repository: &GatewayRepository,
     auth: &AuthContext,
@@ -7034,7 +7025,7 @@ mod tests {
             fixture["scenario"],
             "gateway_pre_authorize_runtime_contract_v1"
         );
-        assert_eq!(fixture["endpoints"].as_array().expect("endpoints").len(), 8);
+        assert_eq!(fixture["endpoints"].as_array().expect("endpoints").len(), 9);
         assert_eq!(fixture["rejected_contract"]["http_status"], 402);
         assert_eq!(
             fixture["rejected_contract"]["openai_error"]["code"],
@@ -7112,7 +7103,8 @@ mod tests {
                 "embeddings_non_stream",
                 "anthropic_messages_non_stream",
                 "anthropic_messages_stream",
-                "gemini_generate_content_native_passthrough"
+                "gemini_generate_content_native_passthrough",
+                "gemini_generate_content_stream"
             ]
         );
 
@@ -7203,6 +7195,17 @@ mod tests {
             "gemini_generate_content_native_passthrough",
             "send_native_passthrough_request(",
         );
+
+        let gemini_streaming_section = source_section(
+            streaming_source,
+            "pub(crate) async fn gemini_generate_content_streaming(",
+            "#[derive(Debug, Clone)]",
+        );
+        assert_pre_authorize_gates_provider_side_effects(
+            gemini_streaming_section,
+            "gemini_generate_content_stream",
+            "send_gemini_generate_content_stream_request(",
+        );
     }
 
     #[test]
@@ -7281,6 +7284,87 @@ mod tests {
             assert!(
                 !fixture_text.contains(marker),
                 "responses stream fixture leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_stream_runtime_contract_is_routed_and_secret_safe() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/gemini_generate_content_stream_runtime_contract.json"
+        ))
+        .expect("Gemini stream runtime contract fixture should be valid json");
+        let main_source = include_str!("main.rs");
+        let streaming_source = include_str!("streaming.rs");
+        let gemini_section = source_section(
+            main_source,
+            "async fn gemini_generate_content_native_passthrough(",
+            "async fn models(",
+        );
+        let streaming_section = source_section(
+            streaming_source,
+            "pub(crate) async fn gemini_generate_content_streaming(",
+            "#[derive(Debug, Clone)]",
+        );
+
+        assert_eq!(
+            fixture["endpoint"]["previous_501_removed"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(
+            !gemini_section.contains("native_streaming_not_supported"),
+            "Gemini native streaming must not keep the old 501 rejection branch"
+        );
+        assert!(
+            !gemini_section.contains("StreamingNotImplemented"),
+            "Gemini native streaming must route into streaming runtime"
+        );
+        assert!(
+            gemini_section.contains("parsed_body.stream_generate_content"),
+            "Gemini native streaming must support body streamGenerateContent=true"
+        );
+        assert_marker_before(
+            gemini_section,
+            ".create_request_started(",
+            "streaming::gemini_generate_content_streaming(",
+            "gemini_generate_content_stream",
+        );
+        assert_pre_authorize_gates_provider_side_effects(
+            streaming_section,
+            "gemini_generate_content_stream",
+            "send_gemini_generate_content_stream_request(",
+        );
+        assert!(
+            streaming_section.contains("GatewayStreamProtocol::GeminiGenerateContent"),
+            "Gemini stream finalizer must parse terminal events with Gemini protocol"
+        );
+        assert!(
+            streaming_source.contains("GeminiAdapter::parse_generate_content_stream_event("),
+            "Gemini stream runtime must reuse adapter stream parser"
+        );
+        assert_eq!(
+            fixture["provider_contract"]["provider_key_secret_logged"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            fixture["provider_contract"]["x_goog_api_key_logged"],
+            serde_json::Value::Bool(false)
+        );
+
+        let mut fixture_without_markers = fixture.clone();
+        fixture_without_markers
+            .as_object_mut()
+            .expect("fixture object")
+            .remove("forbidden_markers");
+        let fixture_text = fixture_without_markers.to_string();
+        for marker in fixture["forbidden_markers"]
+            .as_array()
+            .expect("forbidden markers")
+        {
+            let marker = marker.as_str().expect("forbidden marker string");
+            assert!(
+                !fixture_text.contains(marker),
+                "Gemini stream fixture leaked forbidden marker: {marker}"
             );
         }
     }

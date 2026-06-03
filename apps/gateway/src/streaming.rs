@@ -9,8 +9,9 @@ use std::{
 
 use ai_gateway_adapters::{
     AdapterUpstreamRequest, AdapterUsage, AnthropicAdapter, AnthropicAdapterError,
-    AnthropicMessagesRequest, AnthropicStreamTerminalKind, ChatCompletionRequest, OpenAiChatStream,
-    OpenAiCompatibleClient, OpenAiResponseRequest, OpenAiResponsesStreamTerminalKind,
+    AnthropicMessagesRequest, AnthropicStreamTerminalKind, ChatCompletionRequest, GeminiAdapter,
+    GeminiStreamTerminalKind, OpenAiAdapterError, OpenAiChatStream, OpenAiCompatibleClient,
+    OpenAiResponseRequest, OpenAiResponsesStreamTerminalKind,
 };
 use ai_gateway_billing_ledger::{TokenUsage, rate_usage_from_json};
 use ai_gateway_stream::{
@@ -29,8 +30,8 @@ use futures::stream;
 use serde_json::{Value, json};
 
 use crate::{
-    EndpointRequestFinalMetrics, OpenAiClientCache, anthropic_provider_error_can_fallback,
-    cached_openai_client,
+    EndpointRequestFinalMetrics, NativeParsedJsonBody, OpenAiClientCache,
+    anthropic_provider_error_can_fallback, cached_openai_client,
     db::{
         AuthContext, GatewayRepository, LedgerSettleEntry, ResolvedChatRoute, ResolvedPriceVersion,
         StreamProviderAttemptFinalUpdate, StreamRequestFinalUpdate,
@@ -40,9 +41,11 @@ use crate::{
     errors::{anthropic_adapter_error_response, summarize_anthropic_adapter_error},
     fallback_event, finish_provider_attempt_with_adapter_error,
     finish_provider_attempt_with_adapter_error_and_fallback,
+    finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint,
     finish_provider_attempt_with_anthropic_adapter_error,
     finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint,
-    finish_provider_attempt_with_error, finish_request_with_error, open_provider_key_for_route,
+    finish_provider_attempt_with_error, finish_request_with_error,
+    finish_request_with_error_for_endpoint, open_provider_key_for_route,
     pre_authorize_before_provider_attempt, provider_attempt_fallback_metadata,
     provider_error_can_fallback, record_endpoint_request_final_metrics, record_request_final_route,
     request_for_upstream, responses_request_for_upstream, route_snapshot_with_final_attempt,
@@ -88,6 +91,19 @@ pub(crate) struct StreamingAnthropicMessagesContext<'a> {
     pub(crate) route_snapshot: Value,
 }
 
+pub(crate) struct StreamingGeminiGenerateContentContext<'a> {
+    pub(crate) repository: &'a GatewayRepository,
+    pub(crate) auth: &'a AuthContext,
+    pub(crate) request_id: uuid::Uuid,
+    pub(crate) request_started_at: Instant,
+    pub(crate) original_body: Bytes,
+    pub(crate) parsed_body: NativeParsedJsonBody,
+    pub(crate) attempt_routes: &'a [ResolvedChatRoute],
+    pub(crate) native_http: &'a reqwest::Client,
+    pub(crate) route_snapshot: Value,
+    pub(crate) inbound_content_type: Option<String>,
+}
+
 pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>) -> Response {
     let StreamingChatContext {
         repository,
@@ -125,7 +141,8 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
-                finish_request_with_error(
+                finish_request_with_error_for_endpoint(
+                    crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                     repository,
                     auth,
                     request_id,
@@ -331,7 +348,8 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
-                finish_request_with_error(
+                finish_request_with_error_for_endpoint(
+                    crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                     repository,
                     auth,
                     request_id,
@@ -716,6 +734,260 @@ pub(crate) async fn anthropic_messages_streaming(
     unreachable!("non-empty provider attempt loop must return a response");
 }
 
+pub(crate) async fn gemini_generate_content_streaming(
+    context: StreamingGeminiGenerateContentContext<'_>,
+) -> Response {
+    let StreamingGeminiGenerateContentContext {
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        original_body,
+        parsed_body,
+        attempt_routes,
+        native_http,
+        route_snapshot,
+        inbound_content_type,
+    } = context;
+
+    let mut fallback_events = Vec::new();
+
+    for (attempt_index, route) in attempt_routes.iter().enumerate() {
+        let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
+        if let Some(response) = pre_authorize_before_provider_attempt(
+            crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+        )
+        .await
+        {
+            return response;
+        }
+
+        let attempt_id = match repository
+            .create_provider_attempt_started(auth, request_id, route, attempt_no)
+            .await
+        {
+            Ok(attempt_id) => attempt_id,
+            Err(error) => {
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        };
+
+        let provider_started_at = Instant::now();
+        let upstream_path =
+            match gemini_stream_generate_content_upstream_path(&route.upstream_model) {
+                Ok(path) => path,
+                Err(error) => {
+                    let summary = summarize_adapter_error(&error);
+                    finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
+                        crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        None,
+                        json!({}),
+                    )
+                    .await;
+                    finish_request_with_error_for_endpoint(
+                        crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                        repository,
+                        auth,
+                        request_id,
+                        request_started_at,
+                        summary,
+                    )
+                    .await;
+                    return adapter_error_response(error);
+                }
+            };
+        let upstream_body = match crate::prepare_native_passthrough_body(
+            &original_body,
+            &parsed_body,
+            &route.upstream_model,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let summary = summarize_adapter_error(&error);
+                finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
+                    crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                    None,
+                    json!({}),
+                )
+                .await;
+                finish_request_with_error_for_endpoint(
+                    crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                return adapter_error_response(error);
+            }
+        };
+
+        let provider_key = match open_provider_key_for_route(repository, auth, route).await {
+            Ok(provider_key) => provider_key,
+            Err(error) => {
+                finish_provider_attempt_with_error(
+                    repository,
+                    auth,
+                    attempt_id,
+                    provider_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                finish_request_with_error_for_endpoint(
+                    crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        };
+
+        match send_gemini_generate_content_stream_request(
+            native_http,
+            route,
+            &upstream_path,
+            upstream_body.body,
+            provider_key.secret.expose_secret(),
+            inbound_content_type.as_deref(),
+        )
+        .await
+        {
+            Ok(upstream_stream) => {
+                if !upstream_stream
+                    .content_type()
+                    .is_some_and(|content_type| content_type.starts_with("text/event-stream"))
+                {
+                    tracing::warn!(
+                        provider_id = %route.provider_id,
+                        channel_id = %route.channel_id,
+                        content_type = upstream_stream.content_type().unwrap_or("<missing>"),
+                        "upstream gemini generateContent stream did not declare text/event-stream"
+                    );
+                }
+
+                record_request_final_route(
+                    repository,
+                    auth,
+                    request_id,
+                    route,
+                    route_snapshot_with_final_attempt(
+                        route_snapshot.clone(),
+                        route,
+                        attempt_no,
+                        &fallback_events,
+                    ),
+                )
+                .await;
+
+                return stream_response(
+                    upstream_stream,
+                    StreamLogContext {
+                        repository: repository.clone(),
+                        auth: auth.clone(),
+                        request_id,
+                        attempt_id,
+                        canonical_model_id: route.canonical_model_id,
+                        canonical_model_key: route.canonical_model_key.clone(),
+                        protocol: GatewayStreamProtocol::GeminiGenerateContent,
+                        metrics_endpoint: crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                        request_started_at,
+                        provider_started_at,
+                    },
+                );
+            }
+            Err(error) => {
+                let summary = summarize_adapter_error(&error);
+
+                if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
+                    let next_route = &attempt_routes[attempt_index + 1];
+                    let event = fallback_event(attempt_no, &summary, route, next_route);
+                    finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
+                        crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        Some(summary.error_code.as_str()),
+                        provider_attempt_fallback_metadata(&event),
+                    )
+                    .await;
+                    fallback_events.push(event);
+
+                    tracing::warn!(
+                        attempt_no,
+                        provider_id = %route.provider_id,
+                        channel_id = %route.channel_id,
+                        error_code = %summary.error_code,
+                        "provider gemini generateContent stream attempt failed before response started; trying fallback route"
+                    );
+                    continue;
+                }
+
+                finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
+                    crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                    None,
+                    json!({}),
+                )
+                .await;
+                finish_request_with_error_for_endpoint(
+                    crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                return adapter_error_response(error);
+            }
+        }
+    }
+
+    unreachable!("non-empty provider attempt loop must return a response");
+}
+
 #[derive(Debug, Clone)]
 struct StreamLogContext {
     repository: GatewayRepository,
@@ -955,6 +1227,7 @@ enum GatewayStreamProtocol {
     OpenAiChatCompletions,
     OpenAiResponses,
     AnthropicMessages,
+    GeminiGenerateContent,
 }
 
 impl GatewayStreamProtocol {
@@ -963,6 +1236,7 @@ impl GatewayStreamProtocol {
             Self::OpenAiChatCompletions => StreamProtocol::OpenAiChatCompletions,
             Self::OpenAiResponses => StreamProtocol::OpenAiResponses,
             Self::AnthropicMessages => StreamProtocol::AnthropicMessages,
+            Self::GeminiGenerateContent => StreamProtocol::GeminiGenerateContent,
         }
     }
 
@@ -971,6 +1245,7 @@ impl GatewayStreamProtocol {
             Self::OpenAiChatCompletions => "openai_chat_completions",
             Self::OpenAiResponses => "openai_responses",
             Self::AnthropicMessages => "anthropic_messages",
+            Self::GeminiGenerateContent => "gemini_generate_content",
         }
     }
 
@@ -982,6 +1257,7 @@ impl GatewayStreamProtocol {
             }),
             Self::OpenAiResponses => openai_responses_stream_event_observation(event),
             Self::AnthropicMessages => anthropic_messages_stream_event_observation(event),
+            Self::GeminiGenerateContent => gemini_generate_content_stream_event_observation(event),
         }
     }
 }
@@ -995,6 +1271,7 @@ impl From<OpenAiChatStream> for GatewayUpstreamStream {
 enum GatewayUpstreamStream {
     OpenAi(OpenAiChatStream),
     Anthropic(NativeSseStream),
+    Gemini(NativeSseStream),
 }
 
 impl GatewayUpstreamStream {
@@ -1002,6 +1279,7 @@ impl GatewayUpstreamStream {
         match self {
             Self::OpenAi(stream) => stream.status(),
             Self::Anthropic(stream) => stream.status,
+            Self::Gemini(stream) => stream.status,
         }
     }
 
@@ -1009,6 +1287,7 @@ impl GatewayUpstreamStream {
         match self {
             Self::OpenAi(stream) => stream.content_type(),
             Self::Anthropic(stream) => stream.content_type.as_deref(),
+            Self::Gemini(stream) => stream.content_type.as_deref(),
         }
     }
 
@@ -1016,6 +1295,7 @@ impl GatewayUpstreamStream {
         match self {
             Self::OpenAi(stream) => stream.next_chunk().await.map_err(|error| error.to_string()),
             Self::Anthropic(stream) => stream.next_chunk().await,
+            Self::Gemini(stream) => stream.next_chunk().await,
         }
     }
 }
@@ -1094,6 +1374,74 @@ async fn send_anthropic_messages_stream_request(
     }
 
     Ok(GatewayUpstreamStream::Anthropic(NativeSseStream {
+        status: status.as_u16(),
+        content_type,
+        response,
+    }))
+}
+
+fn gemini_stream_generate_content_upstream_path(
+    upstream_model: &str,
+) -> Result<String, OpenAiAdapterError> {
+    if !crate::native_model_path_value_is_valid(upstream_model) {
+        return Err(OpenAiAdapterError::InvalidRequest {
+            message: "upstream model path segment is invalid".to_string(),
+            param: Some("model"),
+        });
+    }
+
+    Ok(format!(
+        "{}{}{}",
+        crate::GEMINI_UPSTREAM_PATH_PREFIX,
+        upstream_model,
+        ":streamGenerateContent?alt=sse"
+    ))
+}
+
+async fn send_gemini_generate_content_stream_request(
+    http: &reqwest::Client,
+    route: &ResolvedChatRoute,
+    upstream_path: &str,
+    body: Bytes,
+    provider_key: &str,
+    inbound_content_type: Option<&str>,
+) -> Result<GatewayUpstreamStream, OpenAiAdapterError> {
+    let url = crate::native_upstream_url(&route.endpoint, upstream_path)?;
+    let content_type = inbound_content_type.unwrap_or(APPLICATION_JSON_CONTENT_TYPE);
+    let response = http
+        .post(url)
+        .header(
+            crate::GEMINI_API_KEY_HEADER,
+            crate::native_provider_key_header(provider_key)?,
+        )
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .body(body)
+        .send()
+        .await
+        .map_err(crate::native_reqwest_error)?;
+
+    let status = response.status();
+    let retry_after = crate::native_retry_after_from_headers(response.headers());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    if !status.is_success() {
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| OpenAiAdapterError::UpstreamRead(error.to_string()))?;
+        return Err(crate::native_upstream_status_error(
+            status.as_u16(),
+            &body,
+            retry_after,
+            provider_key,
+        ));
+    }
+
+    Ok(GatewayUpstreamStream::Gemini(NativeSseStream {
         status: status.as_u16(),
         content_type,
         response,
@@ -1445,6 +1793,33 @@ fn anthropic_messages_stream_event_observation(
     })
 }
 
+fn gemini_generate_content_stream_event_observation(
+    event: &SseEvent,
+) -> Result<StreamEventObservation, StreamChunkError> {
+    if event.data.is_empty() {
+        return Ok(StreamEventObservation::default());
+    }
+
+    let stream_terminal_kind = terminal_event_kind(StreamProtocol::GeminiGenerateContent, event);
+    let adapter_event =
+        GeminiAdapter::parse_generate_content_stream_event(&event.data).map_err(|error| {
+            StreamChunkError::ProtocolParser {
+                protocol: GatewayStreamProtocol::GeminiGenerateContent,
+                message: error.to_string(),
+            }
+        })?;
+
+    Ok(StreamEventObservation {
+        terminal_kind: merge_terminal_kinds(
+            stream_terminal_kind,
+            gemini_adapter_terminal_kind(adapter_event.terminal_kind.clone()),
+        ),
+        usage: adapter_event
+            .usage()
+            .and_then(stream_usage_from_adapter_usage),
+    })
+}
+
 const fn responses_adapter_terminal_kind(
     terminal_kind: OpenAiResponsesStreamTerminalKind,
 ) -> TerminalEventKind {
@@ -1464,6 +1839,14 @@ const fn anthropic_adapter_terminal_kind(
         AnthropicStreamTerminalKind::None => TerminalEventKind::None,
         AnthropicStreamTerminalKind::MessageStop => TerminalEventKind::Completed,
         AnthropicStreamTerminalKind::Error => TerminalEventKind::Failed,
+    }
+}
+
+fn gemini_adapter_terminal_kind(terminal_kind: GeminiStreamTerminalKind) -> TerminalEventKind {
+    match terminal_kind {
+        GeminiStreamTerminalKind::None => TerminalEventKind::None,
+        GeminiStreamTerminalKind::FinishReason(_) => TerminalEventKind::Completed,
+        GeminiStreamTerminalKind::Error => TerminalEventKind::Failed,
     }
 }
 
@@ -1799,6 +2182,24 @@ mod tests {
 
     fn load_anthropic_stream_fixture(file_name: &str) -> Vec<u8> {
         let path = anthropic_stream_fixture_path(file_name);
+        fs::read(&path)
+            .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()))
+    }
+
+    fn gemini_stream_fixture_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("adapters")
+            .join("gemini")
+            .join("streams")
+            .join(file_name)
+    }
+
+    fn load_gemini_stream_fixture(file_name: &str) -> Vec<u8> {
+        let path = gemini_stream_fixture_path(file_name);
         fs::read(&path)
             .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()))
     }
@@ -2283,6 +2684,74 @@ data: {"type":"message_stop"}
         );
         assert!(!invalid.partial_sent);
         assert_eq!(invalid.terminal_kind, TerminalEventKind::None);
+    }
+
+    #[test]
+    fn gemini_stream_progress_tracks_finish_reason_usage_and_error_terminals() {
+        let request_started_at = Instant::now();
+        let provider_started_at = Instant::now();
+        let mut completed =
+            StreamProgress::new(GatewayStreamProtocol::GeminiGenerateContent, 4096, 4096);
+
+        completed
+            .observe_chunk(
+                b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]},\"index\":0}]}\n\ndata: {\"candidates\":[{\"index\":0,\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":9,\"candidatesTokenCount\":2,\"totalTokenCount\":11}}\n\n",
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("completed Gemini stream should parse");
+        assert!(completed.partial_sent);
+        assert!(completed.request_ttft_ms.is_some());
+        assert_eq!(completed.terminal_kind, TerminalEventKind::Completed);
+        assert_eq!(
+            completed.usage,
+            StreamUsageUpdate {
+                input_tokens: Some(9),
+                output_tokens: Some(2),
+            }
+        );
+        assert_eq!(
+            completed
+                .observe_eof(request_started_at, provider_started_at)
+                .expect("Gemini completed EOF should classify"),
+            StreamEndReason::Completed
+        );
+
+        let mut failed =
+            StreamProgress::new(GatewayStreamProtocol::GeminiGenerateContent, 4096, 4096);
+        failed
+            .observe_chunk(
+                b"data: {\"error\":{\"code\":500,\"message\":\"provider failed\"}}\n\n",
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("Gemini error terminal should parse");
+        assert!(!failed.partial_sent);
+        assert_eq!(failed.terminal_kind, TerminalEventKind::Failed);
+        assert_eq!(
+            failed
+                .observe_eof(request_started_at, provider_started_at)
+                .expect("Gemini error terminal EOF should classify"),
+            StreamEndReason::UpstreamError
+        );
+
+        let mut invalid =
+            StreamProgress::new(GatewayStreamProtocol::GeminiGenerateContent, 4096, 4096);
+        invalid
+            .observe_chunk(
+                &load_gemini_stream_fixture("generate_content_stream_invalid_json.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("unterminated invalid JSON fixture is buffered until EOF");
+        let invalid_error = invalid
+            .observe_eof(request_started_at, provider_started_at)
+            .expect_err("invalid Gemini stream JSON should be a parser error");
+        assert_eq!(
+            stream_forward_failure_contract(StreamForwardFailureKind::from(&invalid_error))
+                .end_reason,
+            StreamEndReason::ParserError
+        );
     }
 
     #[test]

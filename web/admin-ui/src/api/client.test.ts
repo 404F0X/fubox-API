@@ -192,6 +192,25 @@ describe("api client", () => {
 
       if (requestUrl.includes("/admin/request-logs/request-1")) {
         return jsonResponse({
+          ledger: {
+            currencies: ["USD"],
+            entries: [
+              {
+                amount: "-0.10000000",
+                created_at: "2026-06-02T12:00:01Z",
+                currency: "USD",
+                entry_type: "settle",
+                occurred_at: "2026-06-02T12:00:00Z",
+                request_id: "request-1",
+                status: "confirmed",
+              },
+            ],
+            limit: 25,
+            limit_reached: false,
+            omitted_fields: ["idempotency_key", "usage_snapshot", "policy_snapshot", "metadata"],
+            request_count: 1,
+            returned_count: 1,
+          },
           provider_attempts: [],
           request_log: { id: "request-1" },
           route_decision_snapshot: {},
@@ -205,6 +224,15 @@ describe("api client", () => {
           first_request_at: "2026-06-02T12:00:00Z",
           last_error: null,
           last_request_at: "2026-06-02T12:00:00Z",
+          ledger: {
+            currencies: ["USD"],
+            entries: [],
+            limit: 500,
+            limit_reached: false,
+            omitted_fields: ["idempotency_key", "usage_snapshot", "policy_snapshot", "metadata"],
+            request_count: 0,
+            returned_count: 0,
+          },
           limit: 20,
           limit_reached: false,
           request_count: 1,

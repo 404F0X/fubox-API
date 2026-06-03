@@ -12,6 +12,8 @@
       "amount_mismatch",
       "zero_cost_matched",
       "scheduler_watermark_read_plan",
+      "mockable_repository_read_contract",
+      "bounded_db_batch_contract",
       "postgres_read_shape"
     ]
   },
@@ -185,6 +187,48 @@
       "read_only": true,
       "db_writes": false,
       "database_url_output": "omitted",
+      "repository": {
+        "trait_name": "BillingReconciliationReadRepository",
+        "mockable": true,
+        "planned_impl": "PostgresBillingReconciliationReadRepository",
+        "required_methods": ["read_scheduler_state", "read_reconciliation_batch"],
+        "side_effects": ["none", "read_only", "no_webhook_send"],
+        "required_output_contract": [
+          "closed_open_utc_window",
+          "last_run_summary",
+          "watermark_summary",
+          "bounded_reconciliation_rows",
+          "no_payload_body",
+          "no_headers",
+          "no_provider_or_wallet_credentials",
+          "no_database_url"
+        ]
+      },
+      "scheduler_state_read": {
+        "query_id": "billing_reconciliation_scheduler_state_select.v1",
+        "planned_table": "worker_job_state",
+        "lookup_keys": ["tenant_id", "job_name", "cursor_kind"],
+        "lock_mode": "none_read_only_snapshot",
+        "row_limit": 1,
+        "read_attempted": false
+      },
+      "batch": {
+        "bounded": true,
+        "batch_size": 250,
+        "max_batch_size": 10000,
+        "limit_parameter": "$6 batch_size",
+        "has_more_detection": "returned_rows == batch_size",
+        "checkpoint_persisted": false,
+        "must_omit": [
+          "request_payload",
+          "response_payload",
+          "headers",
+          "provider_secret",
+          "provider_key",
+          "wallet_secret",
+          "database_url"
+        ]
+      },
       "cursor": {
         "kind": "window_end",
         "lower_bound_source": "scheduler.watermark.value",

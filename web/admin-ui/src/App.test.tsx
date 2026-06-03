@@ -136,7 +136,27 @@ function stubAdminFetch() {
     upstream_model: "gpt-4o-mini-2024-07-18",
     virtual_key_id: null,
   };
+  const requestLedgerSummary = {
+    currencies: ["USD"],
+    entries: [
+      {
+        amount: "-0.01230000",
+        created_at: "2026-06-02T12:02:00Z",
+        currency: "USD",
+        entry_type: "settle",
+        occurred_at: "2026-06-02T12:01:30Z",
+        request_id: "req_1",
+        status: "confirmed",
+      },
+    ],
+    limit: 25,
+    limit_reached: false,
+    omitted_fields: ["idempotency_key", "usage_snapshot", "policy_snapshot", "metadata"],
+    request_count: 1,
+    returned_count: 1,
+  };
   const requestDetail = {
+    ledger: requestLedgerSummary,
     provider_attempts: [
       {
         attempt_no: 1,
@@ -208,6 +228,7 @@ function stubAdminFetch() {
       status: "failed",
     },
     last_request_at: "2026-06-02T12:03:00Z",
+    ledger: requestLedgerSummary,
     limit: 25,
     limit_reached: false,
     request_count: 2,
@@ -1524,10 +1545,15 @@ describe("App", () => {
     expect(screen.getByText("provider-1")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Route Trace" })).toBeInTheDocument();
     expect(screen.getByText("weighted-fallback")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
+    expect(screen.getByText("settle")).toBeInTheDocument();
+    expect(screen.getByText("-0.01230000 USD")).toBeInTheDocument();
     expect(screen.queryByText((content) => content.includes('"strategy": "weighted-fallback"'))).not.toBeInTheDocument();
     expect(screen.queryByText("payload-123-hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("raw prompt hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("request-body-hash-hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText("settle:request-1")).not.toBeInTheDocument();
+    expect(screen.queryByText("price-version-1")).not.toBeInTheDocument();
     expect(screen.queryByText(skPlaceholder("route-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("route-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("nested-route-hidden"))).not.toBeInTheDocument();
@@ -1549,6 +1575,8 @@ describe("App", () => {
     expect(within(metrics).getByText("Errors")).toBeInTheDocument();
     expect(within(metrics).getByText("300")).toBeInTheDocument();
     expect(within(metrics).getByText("155")).toBeInTheDocument();
+    expect(screen.getByText("Ledger rows")).toBeInTheDocument();
+    expect(screen.getAllByText("settle").length).toBeGreaterThan(0);
     expect(await screen.findByText("req_2")).toBeInTheDocument();
     expect(document.body.textContent).toContain("provider_auth_failed [redacted]");
 

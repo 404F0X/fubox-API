@@ -240,10 +240,49 @@ struct BillingReconciliationDbReadPlan {
     database_url_output: &'static str,
     transaction: &'static str,
     batch_size: usize,
+    repository: BillingReconciliationDbRepositoryPlan,
+    scheduler_state_read: BillingReconciliationDbSchedulerReadPlan,
+    batch: BillingReconciliationDbBatchPlan,
     last_run_source: BillingReconciliationDbStateReadPlan,
     watermark_source: BillingReconciliationDbStateReadPlan,
     cursor: BillingReconciliationDbCursorPlan,
     postgres_query: BillingReconciliationPostgresReadShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationDbRepositoryPlan {
+    trait_name: &'static str,
+    mockable: bool,
+    planned_impl: &'static str,
+    methods: Vec<&'static str>,
+    scheduler_state_source_order: Vec<&'static str>,
+    reconciliation_rows_source_order: Vec<&'static str>,
+    side_effects: Vec<&'static str>,
+    output_contract: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationDbSchedulerReadPlan {
+    query_id: &'static str,
+    planned_table: String,
+    lookup_keys: Vec<&'static str>,
+    lock_mode: &'static str,
+    row_limit: usize,
+    output_columns: Vec<&'static str>,
+    fallback_order: Vec<&'static str>,
+    read_attempted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationDbBatchPlan {
+    bounded: bool,
+    batch_size: usize,
+    max_batch_size: usize,
+    limit_parameter: &'static str,
+    has_more_detection: &'static str,
+    resume_cursor: &'static str,
+    checkpoint_persisted: bool,
+    output_columns_omit: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -474,6 +513,8 @@ pub(crate) fn billing_reconciliation_plan(
                 "last_run_watermark",
                 "postgres_read_plan",
                 "cursor_watermark_read_plan",
+                "mockable_repository_read_contract",
+                "bounded_db_batch_contract",
             ],
             stable_fields: vec![
                 "schema_version",
@@ -485,6 +526,9 @@ pub(crate) fn billing_reconciliation_plan(
                 "window",
                 "scope",
                 "db_read_plan",
+                "db_read_plan.repository",
+                "db_read_plan.scheduler_state_read",
+                "db_read_plan.batch",
                 "db_read_plan.cursor",
                 "db_read_plan.postgres_query",
                 "would_report",
@@ -707,6 +751,73 @@ fn db_read_plan(
         database_url_output: "omitted",
         transaction: "read_only_repeatable_read",
         batch_size,
+        repository: BillingReconciliationDbRepositoryPlan {
+            trait_name: "BillingReconciliationReadRepository",
+            mockable: true,
+            planned_impl: "PostgresBillingReconciliationReadRepository",
+            methods: vec!["read_scheduler_state", "read_reconciliation_batch"],
+            scheduler_state_source_order: vec![
+                "worker_job_state",
+                "input.scheduler.last_run",
+                "input.scheduler.watermark",
+                "window fallback",
+            ],
+            reconciliation_rows_source_order: vec!["request_logs", "ledger_entries"],
+            side_effects: vec!["none", "read_only", "no_webhook_send"],
+            output_contract: vec![
+                "closed_open_utc_window",
+                "last_run_summary",
+                "watermark_summary",
+                "bounded_reconciliation_rows",
+                "no_payload_body",
+                "no_headers",
+                "no_provider_or_wallet_credentials",
+                "no_database_url",
+            ],
+        },
+        scheduler_state_read: BillingReconciliationDbSchedulerReadPlan {
+            query_id: "billing_reconciliation_scheduler_state_select.v1",
+            planned_table: state_table.clone(),
+            lookup_keys: vec!["tenant_id", "job_name", "cursor_kind"],
+            lock_mode: "none_read_only_snapshot",
+            row_limit: 1,
+            output_columns: vec![
+                "last_run_id",
+                "last_run_status",
+                "last_run_started_at",
+                "last_run_finished_at",
+                "last_run_window_day",
+                "last_run_window_start",
+                "last_run_window_end",
+                "watermark_kind",
+                "watermark_value",
+                "watermark_updated_at",
+            ],
+            fallback_order: vec![
+                "input.scheduler.last_run",
+                "input.scheduler.watermark",
+                "window.period_start",
+            ],
+            read_attempted: false,
+        },
+        batch: BillingReconciliationDbBatchPlan {
+            bounded: true,
+            batch_size,
+            max_batch_size: MAX_DB_READ_BATCH_SIZE,
+            limit_parameter: "$6 batch_size",
+            has_more_detection: "returned_rows == batch_size",
+            resume_cursor: "coalesce(request_completed_at, request_created_at, ledger_last_created_at), request_id",
+            checkpoint_persisted: false,
+            output_columns_omit: vec![
+                "request_payload",
+                "response_payload",
+                "headers",
+                "provider_secret",
+                "provider_key",
+                "wallet_secret",
+                "database_url",
+            ],
+        },
         last_run_source: BillingReconciliationDbStateReadPlan {
             source: last_run_source,
             planned_table: state_table.clone(),
@@ -1040,6 +1151,26 @@ mod tests {
         assert!(plan.db_read_plan.read_only);
         assert!(!plan.db_read_plan.db_writes);
         assert_eq!(plan.db_read_plan.database_url_output, "omitted");
+        assert!(plan.db_read_plan.repository.mockable);
+        assert_eq!(
+            plan.db_read_plan.repository.trait_name,
+            "BillingReconciliationReadRepository"
+        );
+        assert_eq!(
+            plan.db_read_plan.scheduler_state_read.query_id,
+            "billing_reconciliation_scheduler_state_select.v1"
+        );
+        assert_eq!(plan.db_read_plan.scheduler_state_read.row_limit, 1);
+        assert_eq!(
+            plan.db_read_plan.scheduler_state_read.lock_mode,
+            "none_read_only_snapshot"
+        );
+        assert!(plan.db_read_plan.batch.bounded);
+        assert_eq!(plan.db_read_plan.batch.batch_size, 250);
+        assert_eq!(
+            plan.db_read_plan.batch.max_batch_size,
+            MAX_DB_READ_BATCH_SIZE
+        );
         assert_eq!(plan.db_read_plan.cursor.bounds, "closed_open");
         assert_eq!(
             plan.db_read_plan.cursor.lower_bound_source,
@@ -1095,6 +1226,20 @@ mod tests {
         assert_eq!(
             plan.db_read_plan.postgres_query.query_id,
             expected_db["postgres_query"]["query_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.repository.mockable,
+            expected_db["repository"]["mockable"].as_bool().unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.scheduler_state_read.query_id,
+            expected_db["scheduler_state_read"]["query_id"]
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.batch.bounded,
+            expected_db["batch"]["bounded"].as_bool().unwrap()
         );
         assert_eq!(plan.input.row_count, 5);
         assert_eq!(plan.input.selected_row_count, 5);
@@ -1182,6 +1327,26 @@ mod tests {
         assert_eq!(
             plan.db_read_plan.cursor.checkpoint_after_success,
             "2024-03-01 00:00:00+00"
+        );
+        assert_eq!(
+            plan.db_read_plan.scheduler_state_read.fallback_order,
+            vec![
+                "input.scheduler.last_run",
+                "input.scheduler.watermark",
+                "window.period_start"
+            ]
+        );
+        assert!(
+            plan.db_read_plan
+                .batch
+                .output_columns_omit
+                .contains(&"request_payload")
+        );
+        assert!(
+            plan.db_read_plan
+                .batch
+                .output_columns_omit
+                .contains(&"database_url")
         );
     }
 

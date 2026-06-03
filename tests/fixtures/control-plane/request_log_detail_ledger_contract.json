@@ -1,0 +1,95 @@
+{
+  "scenario": "control_plane_request_log_detail_ledger_contract",
+  "endpoint": {
+    "method": "GET",
+    "path": "/admin/request-logs/{id}",
+    "example_path": "/admin/request-logs/00000000-0000-0000-0000-000000000011"
+  },
+  "response_contract": {
+    "envelope": "data",
+    "read_only": true,
+    "tenant_scoped": true,
+    "rbac_permission": "log_read_metadata",
+    "ledger_limit": 25,
+    "ledger_payload_material_omitted": true,
+    "ledger_secret_material_omitted": true,
+    "ledger_omitted_fields": [
+      "idempotency_key",
+      "usage_snapshot",
+      "policy_snapshot",
+      "metadata"
+    ],
+    "disallowed_ledger_entry_fields": [
+      "idempotency_key",
+      "usage_snapshot",
+      "policy_snapshot",
+      "metadata",
+      "id",
+      "tenant_id",
+      "wallet_id",
+      "virtual_key_id",
+      "price_version_id",
+      "related_ledger_entry_id",
+      "payload",
+      "body",
+      "request_body",
+      "response_body",
+      "raw_metadata"
+    ]
+  },
+  "examples": {
+    "detail": {
+      "response": {
+        "data": {
+          "request_log": {
+            "id": "00000000-0000-0000-0000-000000000011",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "status": "succeeded",
+            "partial_sent": false,
+            "input_tokens": 12,
+            "output_tokens": 34,
+            "final_cost": "0.01000000",
+            "currency": "USD",
+            "payload_stored": false,
+            "redaction_status": "hash_only",
+            "request_body_hash": "sha256:req-contract-1",
+            "response_body_hash": "sha256:resp-contract-1",
+            "created_at": "2026-06-02 12:00:01+00",
+            "completed_at": "2026-06-02 12:00:01+00"
+          },
+          "provider_attempts": [],
+          "route_decision_snapshot": {
+            "version": "route_decision_snapshot_v1",
+            "strategy": "priority_weight"
+          },
+          "ledger": {
+            "limit": 25,
+            "limit_reached": false,
+            "returned_count": 1,
+            "request_count": 1,
+            "currencies": [
+              "USD"
+            ],
+            "omitted_fields": [
+              "idempotency_key",
+              "usage_snapshot",
+              "policy_snapshot",
+              "metadata"
+            ],
+            "entries": [
+              {
+                "request_id": "00000000-0000-0000-0000-000000000011",
+                "entry_type": "settle",
+                "amount": "-0.01000000",
+                "currency": "USD",
+                "status": "confirmed",
+                "occurred_at": "2026-06-02 12:00:01+00",
+                "created_at": "2026-06-02 12:00:01+00"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

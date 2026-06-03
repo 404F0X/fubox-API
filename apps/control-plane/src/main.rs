@@ -29,7 +29,7 @@ use tower_http::{
 use uuid::Uuid;
 
 use crate::auth_login_rate_limit::{
-    InMemoryLoginFailureRateLimitStore, LoginFailureRateLimitStore,
+    LoginFailureRateLimitStore, login_failure_rate_limit_store_from_env,
 };
 
 pub(crate) const DEFAULT_TENANT_ID: Uuid = Uuid::from_u128(0x00000000_0000_0000_0000_000000000001);
@@ -45,12 +45,14 @@ pub(crate) struct ControlPlaneState {
 
 impl ControlPlaneState {
     fn new(app: AppState, db: PgPool) -> Self {
+        let login_failure_rate_limits = login_failure_rate_limit_store_from_env(
+            &app.config().redis.addr,
+            app.config().redis.db,
+        );
         Self {
             app,
             db,
-            // TODO(E1-002): replace this single-process store with Redis once Control Plane owns
-            // a Redis client; the trait boundary above is the runtime integration point.
-            login_failure_rate_limits: Arc::new(InMemoryLoginFailureRateLimitStore::default()),
+            login_failure_rate_limits,
         }
     }
 

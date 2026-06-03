@@ -7,6 +7,7 @@ import {
   type RequestLogDetail,
   type RequestLogListFilters,
   type RequestLogSummary,
+  type RequestLedgerSummary,
   type RequestTraceSummary,
 } from "../api/client";
 import { StateChip, errorMessage, isJsonRecord, safeFieldValue, shortId } from "./adminUtils";
@@ -328,6 +329,7 @@ function RequestLogDetailPanel({
   }
 
   const log = detail.request_log;
+  const ledger = normalizeLedgerSummary(detail.ledger);
 
   return (
     <section className="detail-grid" aria-label="Request log detail">
@@ -387,6 +389,12 @@ function RequestLogDetailPanel({
       </article>
 
       <RouteTracePanel detail={detail} />
+
+      <LedgerSummaryPanel
+        emptyMessage="No ledger entries were linked to this request."
+        summary={ledger}
+        title="Ledger Entries"
+      />
 
       <article className="admin-panel detail-panel--wide">
         <div className="section-heading">
@@ -551,6 +559,8 @@ function formatBoolean(value: boolean | null | undefined): string {
 }
 
 function TraceSummaryPanel({ summary }: { summary: RequestTraceSummary }) {
+  const ledger = normalizeLedgerSummary(summary.ledger);
+
   return (
     <>
       <section className="feature-stats" aria-label="Trace summary metrics">
@@ -592,9 +602,116 @@ function TraceSummaryPanel({ summary }: { summary: RequestTraceSummary }) {
             <dt>Last error</dt>
             <dd>{formatLastError(summary.last_error)}</dd>
           </div>
+          <div>
+            <dt>Ledger rows</dt>
+            <dd>
+              {ledger.returned_count} returned
+              {ledger.limit_reached ? ` / limit ${ledger.limit}` : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>Ledger currencies</dt>
+            <dd>{formatList(ledger.currencies)}</dd>
+          </div>
         </dl>
+
+        <LedgerRowsTable emptyMessage="No ledger entries were linked to the returned trace rows." summary={ledger} />
       </section>
     </>
+  );
+}
+
+function LedgerSummaryPanel({
+  emptyMessage,
+  summary,
+  title,
+}: {
+  emptyMessage: string;
+  summary: RequestLogDetail["ledger"];
+  title: string;
+}) {
+  return (
+    <article className="admin-panel detail-panel--wide">
+      <div className="section-heading">
+        <div>
+          <h2>{title}</h2>
+          <p>
+            {summary.returned_count} returned across {summary.request_count} request
+            {summary.request_count === 1 ? "" : "s"}.
+          </p>
+        </div>
+      </div>
+      <LedgerRowsTable emptyMessage={emptyMessage} summary={summary} />
+    </article>
+  );
+}
+
+function normalizeLedgerSummary(summary: RequestLedgerSummary | null | undefined): RequestLedgerSummary {
+  if (!summary || !Array.isArray(summary.entries)) {
+    return {
+      currencies: [],
+      entries: [],
+      limit: 0,
+      limit_reached: false,
+      omitted_fields: ["idempotency_key", "usage_snapshot", "policy_snapshot", "metadata"],
+      request_count: 0,
+      returned_count: 0,
+    };
+  }
+
+  return {
+    currencies: Array.isArray(summary.currencies) ? summary.currencies : [],
+    entries: summary.entries,
+    limit: typeof summary.limit === "number" ? summary.limit : summary.entries.length,
+    limit_reached: Boolean(summary.limit_reached),
+    omitted_fields: Array.isArray(summary.omitted_fields) ? summary.omitted_fields : [],
+    request_count: typeof summary.request_count === "number" ? summary.request_count : 0,
+    returned_count: typeof summary.returned_count === "number" ? summary.returned_count : summary.entries.length,
+  };
+}
+
+function LedgerRowsTable({
+  emptyMessage,
+  summary,
+}: {
+  emptyMessage: string;
+  summary: RequestLogDetail["ledger"];
+}) {
+  return (
+    <div className="health-table-wrap">
+      <table className="health-table admin-table admin-table--ledger">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Amount</th>
+            <th>Request</th>
+            <th>Occurred</th>
+          </tr>
+        </thead>
+        <tbody>
+          {summary.entries.length > 0 ? (
+            summary.entries.map((entry, index) => (
+              <tr key={`${entry.request_id ?? "request"}-${entry.entry_type}-${entry.occurred_at}-${index}`}>
+                <td>{formatLedgerStatus(entry.entry_type)}</td>
+                <td>
+                  <StateChip status={safeStatus(entry.status)} />
+                </td>
+                <td>
+                  {safeFieldValue(entry.amount)} {safeFieldValue(entry.currency)}
+                </td>
+                <td>{safeShortId(entry.request_id)}</td>
+                <td>{formatDate(entry.occurred_at)}</td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td colSpan={5}>{emptyMessage}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -665,6 +782,10 @@ function safeStatus(value: string): string {
   const safeValue = safeFieldValue(value);
 
   return safeValue === "-" ? "unknown" : safeValue;
+}
+
+function formatLedgerStatus(value: string): string {
+  return safeFieldValue(value).replace(/_/g, " ");
 }
 
 function formatDateField(value: string | null | undefined): string {

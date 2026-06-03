@@ -190,6 +190,31 @@ paths:
                 $ref: '#/components/schemas/LoginEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: Login failure rate limit reached. The distributed Redis backend is enabled only when AI_GATEWAY_ADMIN_LOGIN_RATE_LIMIT_STORE is redis/distributed_redis; Redis backend failures fail closed with the same secret-safe error shape.
+          headers:
+            Retry-After:
+              description: Seconds before the caller can retry this tenant + normalized login fingerprint.
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+      x-ai-gateway-login-rate-limit:
+        fixture: tests/fixtures/control-plane/admin_auth_smoke.json
+        key: tenant_id + normalized_email_fingerprint
+        default_store: memory
+        redis_store:
+          env: AI_GATEWAY_ADMIN_LOGIN_RATE_LIMIT_STORE
+          enabled_values: [redis, distributed_redis]
+          redis_addr_source: config.redis.addr
+          redis_db_source: config.redis.db
+          atomic_record_failure: redis EVAL + SET EX
+          unavailable_policy: fail_closed
+          unavailable_error_code: login_rate_limited
+          raw_username_stored: false
   /admin/auth/oidc/authorize-url:
     get:
       tags: [Auth]
@@ -1200,7 +1225,7 @@ paths:
       operationId: getRequestLogDetail
       responses:
         '200':
-          description: Request log detail without payload object references or payload bodies.
+          description: Request log detail with provider attempts, route snapshot, and bounded ledger summaries. Payload bodies, ledger snapshots, raw metadata, and secret material are not exposed.
           content:
             application/json:
               schema:
@@ -1218,7 +1243,7 @@ paths:
       tags: [RequestLogs]
       summary: Get request summaries for a trace
       operationId: getTraceRequestSummary
-      description: Read-only tenant-scoped trace lookup over request_logs. The bounded response returns request metadata, hashes, token totals, and error summary only; payload bodies, payload object references, route snapshots, and secret material are not exposed.
+      description: Read-only tenant-scoped trace lookup over request_logs with bounded ledger summaries for returned request IDs. Payload bodies, payload object references, route snapshots, ledger snapshots, raw metadata, and secret material are not exposed.
       parameters:
         - $ref: '#/components/parameters/LimitQuery'
       responses:
@@ -4544,7 +4569,7 @@ components:
     RequestLogDetail:
       type: object
       additionalProperties: false
-      required: [request_log, provider_attempts, route_decision_snapshot]
+      required: [request_log, provider_attempts, route_decision_snapshot, ledger]
       properties:
         request_log:
           $ref: '#/components/schemas/RequestLogSummary'
@@ -4554,6 +4579,8 @@ components:
             $ref: '#/components/schemas/ProviderAttempt'
         route_decision_snapshot:
           $ref: '#/components/schemas/JsonValue'
+        ledger:
+          $ref: '#/components/schemas/RequestLedgerSummary'
     RequestTrace:
       type: object
       additionalProperties: false
@@ -4570,6 +4597,7 @@ components:
         - currencies
         - first_request_at
         - last_request_at
+        - ledger
         - requests
       properties:
         tenant_id:
@@ -4613,10 +4641,99 @@ components:
           type: [string, 'null']
         last_request_at:
           type: [string, 'null']
+        ledger:
+          $ref: '#/components/schemas/RequestLedgerSummary'
         requests:
           type: array
           items:
             $ref: '#/components/schemas/RequestLogSummary'
+    RequestLedgerSummary:
+      type: object
+      additionalProperties: false
+      required: [limit, limit_reached, returned_count, request_count, currencies, omitted_fields, entries]
+      properties:
+        limit:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 500
+        limit_reached:
+          type: boolean
+        returned_count:
+          type: integer
+          minimum: 0
+        request_count:
+          type: integer
+          minimum: 0
+        currencies:
+          type: array
+          items:
+            type: string
+        omitted_fields:
+          type: array
+          description: Ledger fields deliberately omitted from Request/Trace surfaces.
+          items:
+            type: string
+            enum: [idempotency_key, usage_snapshot, policy_snapshot, metadata]
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntrySummary'
+    LedgerEntrySummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - entry_type
+        - amount
+        - currency
+        - status
+        - occurred_at
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        virtual_key_id:
+          type: [string, 'null']
+          format: uuid
+        trace_id:
+          type: [string, 'null']
+          description: Trace identifier with secret-like substrings redacted.
+        related_ledger_entry_id:
+          type: [string, 'null']
+          format: uuid
+        entry_type:
+          type: string
+          enum: [reserve, settle, refund, adjust, expire, credit_grant, credit_expire]
+        amount:
+          type: string
+          description: Decimal amount encoded as a string.
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [pending, confirmed, reversed]
+        price_version_id:
+          type: [string, 'null']
+          format: uuid
+        occurred_at:
+          type: string
+        created_at:
+          type: string
     RequestTraceErrorSummary:
       type: object
       additionalProperties: false

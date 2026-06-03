@@ -48,6 +48,12 @@
       "path": "POST /v1beta/models/{model}:generateContent",
       "stream": false,
       "runtime_entry": "apps/gateway/src/main.rs::gemini_generate_content_native_passthrough"
+    },
+    {
+      "name": "gemini_generate_content_stream",
+      "path": "POST /v1beta/models/{model}:streamGenerateContent",
+      "stream": true,
+      "runtime_entry": "apps/gateway/src/streaming.rs::gemini_generate_content_streaming"
     }
   ],
   "rejected_contract": {
