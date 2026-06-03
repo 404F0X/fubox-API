@@ -434,6 +434,16 @@ export type RequestLedgerSummary = {
   returned_count: number;
 };
 
+export type RouteDecisionSnapshotSummary = {
+  candidate_count?: number | null;
+  filtered_count?: number | null;
+  filter_reasons?: string[] | null;
+  selected_channel_id?: string | null;
+  selected_provider_model?: string | null;
+  selected_score_total?: number | null;
+  trace_affinity_status?: string | null;
+};
+
 export type RequestLogDetail = {
   ledger: RequestLedgerSummary;
   provider_attempts: ProviderAttempt[];

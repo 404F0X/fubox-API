@@ -213,7 +213,17 @@ describe("api client", () => {
           },
           provider_attempts: [],
           request_log: { id: "request-1" },
-          route_decision_snapshot: {},
+          route_decision_snapshot: {
+            summary: {
+              candidate_count: 3,
+              filtered_count: 2,
+              filter_reasons: ["ZeroWeight", "CoolingDown"],
+              selected_channel_id: "channel-1",
+              selected_provider_model: "gpt-route-summary-upstream",
+              selected_score_total: 2144483738,
+              trace_affinity_status: "Disabled",
+            },
+          },
         });
       }
 
@@ -291,7 +301,19 @@ describe("api client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await listRequestLogs({ limit: 10, model: "gpt-4o-mini", status: "succeeded" });
-    await getRequestLogDetail("request-1");
+    await expect(getRequestLogDetail("request-1")).resolves.toMatchObject({
+      route_decision_snapshot: {
+        summary: {
+          candidate_count: 3,
+          filtered_count: 2,
+          filter_reasons: ["ZeroWeight", "CoolingDown"],
+          selected_channel_id: "channel-1",
+          selected_provider_model: "gpt-route-summary-upstream",
+          selected_score_total: 2144483738,
+          trace_affinity_status: "Disabled",
+        },
+      },
+    });
     await getRequestTraceSummary("trace-1", { limit: 20 });
     await listAuditLogs({
       action: "provider_key.update",

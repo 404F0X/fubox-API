@@ -784,34 +784,39 @@ async fn create_channel(
         .unwrap_or_else(|| "openai_compatible".to_string());
     let repository = repo(&state);
     let channel = repository
-        .upsert_channel(NewChannel {
-            tenant_id: DEFAULT_TENANT_ID,
-            provider_id: request.provider_id,
-            name: non_empty(request.name, "name")?,
-            endpoint: validate_admin_provider_endpoint(endpoint)?,
-            protocol_mode: normalize_protocol_mode(&protocol_mode),
-            status: normalize_enabled_status(request.status.as_deref()),
-            region: request.region,
-            priority: request.priority.unwrap_or(100),
-            weight: request.weight.unwrap_or(100),
-            tags: request.tags.unwrap_or_else(|| json!([])),
-            model_mappings: request.model_mappings.unwrap_or_else(|| json!({})),
-            request_overrides: request.request_overrides.unwrap_or_else(|| json!([])),
-            timeout_policy: request.timeout_policy.unwrap_or_else(|| json!({})),
-            probe_policy: request.probe_policy.unwrap_or_else(|| json!({})),
-            health_score: request.health_score.unwrap_or(1.0),
-        })
+        .upsert_channel_with_audit(
+            NewChannel {
+                tenant_id: DEFAULT_TENANT_ID,
+                provider_id: request.provider_id,
+                name: non_empty(request.name, "name")?,
+                endpoint: validate_admin_provider_endpoint(endpoint)?,
+                protocol_mode: normalize_protocol_mode(&protocol_mode),
+                status: normalize_enabled_status(request.status.as_deref()),
+                region: request.region,
+                priority: request.priority.unwrap_or(100),
+                weight: request.weight.unwrap_or(100),
+                tags: request.tags.unwrap_or_else(|| json!([])),
+                model_mappings: request.model_mappings.unwrap_or_else(|| json!({})),
+                request_overrides: request.request_overrides.unwrap_or_else(|| json!([])),
+                timeout_policy: request.timeout_policy.unwrap_or_else(|| json!({})),
+                probe_policy: request.probe_policy.unwrap_or_else(|| json!({})),
+                health_score: request.health_score.unwrap_or(1.0),
+            },
+            |after| {
+                new_admin_audit_log(
+                    &session,
+                    "channel.create",
+                    None,
+                    after,
+                    json!({
+                        "upsert_semantics": true,
+                        "transactional_audit": true
+                    }),
+                    None,
+                )
+            },
+        )
         .await?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "channel.create",
-        None,
-        &channel,
-        json!({ "upsert_semantics": true }),
-    )
-    .await?;
 
     Ok((StatusCode::CREATED, Json(json!({ "data": channel }))).into_response())
 }
@@ -847,7 +852,6 @@ async fn patch_channel(
         .get_channel(DEFAULT_TENANT_ID, id)
         .await?
         .ok_or_else(|| AdminError::not_found("channel"))?;
-    let before = current.clone();
     let endpoint = request
         .endpoint
         .or(request.base_url)
@@ -859,7 +863,7 @@ async fn patch_channel(
         .map(|protocol| normalize_protocol_mode(&protocol))
         .unwrap_or(current.protocol_mode);
     let channel = repository
-        .update_channel(
+        .update_channel_with_audit(
             DEFAULT_TENANT_ID,
             id,
             UpdateChannel {
@@ -883,19 +887,19 @@ async fn patch_channel(
                 probe_policy: request.probe_policy.unwrap_or(current.probe_policy),
                 health_score: request.health_score.unwrap_or(current.health_score),
             },
+            |before, after| {
+                new_admin_audit_log(
+                    &session,
+                    "channel.update",
+                    Some(before),
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            },
         )
         .await?
         .ok_or_else(|| AdminError::not_found("channel"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "channel.update",
-        Some(&before),
-        &channel,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": channel })).into_response())
 }
@@ -906,24 +910,19 @@ async fn delete_channel(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let before = repository
-        .get_channel(DEFAULT_TENANT_ID, id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("channel"))?;
     let channel = repository
-        .soft_delete_channel(DEFAULT_TENANT_ID, id)
+        .soft_delete_channel_with_audit(DEFAULT_TENANT_ID, id, |before, after| {
+            new_admin_audit_log(
+                &session,
+                "channel.delete",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("channel"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "channel.delete",
-        Some(&before),
-        &channel,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": channel })).into_response())
 }
@@ -3158,7 +3157,7 @@ impl AuditResource for Channel {
     }
 
     fn audit_summary(&self) -> Value {
-        json!({
+        sanitize_audit_value(json!({
             "id": self.id,
             "tenant_id": self.tenant_id,
             "provider_id": self.provider_id,
@@ -3169,12 +3168,12 @@ impl AuditResource for Channel {
             "priority": self.priority,
             "weight": self.weight,
             "tags_count": array_len(&self.tags),
-            "model_mappings_keys": object_keys(&self.model_mappings),
+            "model_mappings_keys": audit_safe_object_keys(&self.model_mappings),
             "request_overrides_count": array_len(&self.request_overrides),
-            "timeout_policy_keys": object_keys(&self.timeout_policy),
-            "probe_policy_keys": object_keys(&self.probe_policy),
+            "timeout_policy_keys": audit_safe_object_keys(&self.timeout_policy),
+            "probe_policy_keys": audit_safe_object_keys(&self.probe_policy),
             "health_score": self.health_score,
-        })
+        }))
     }
 }
 
@@ -5404,6 +5403,39 @@ mod tests {
         }
     }
 
+    fn channel_fixture() -> Channel {
+        Channel {
+            id: Uuid::from_u128(301),
+            tenant_id: DEFAULT_TENANT_ID,
+            provider_id: Uuid::from_u128(201),
+            name: "primary".to_string(),
+            endpoint: "https://internal-provider.example/v1".to_string(),
+            protocol_mode: "openai_compatible".to_string(),
+            status: "enabled".to_string(),
+            region: Some("us-east".to_string()),
+            priority: 10,
+            weight: 100,
+            tags: json!(["primary", "batch"]),
+            model_mappings: json!({
+                "gpt-visible": "upstream-gpt",
+                "authorization": "Bearer never-audit"
+            }),
+            request_overrides: json!([
+                { "headers": { "Authorization": "Bearer never-audit" } },
+                { "body": "raw body never audit" }
+            ]),
+            timeout_policy: json!({
+                "connect_ms": 1_000,
+                "payload": "raw payload never audit"
+            }),
+            probe_policy: json!({
+                "interval_seconds": 30,
+                "provider_key_fingerprint": "fp-never-audit"
+            }),
+            health_score: 0.9,
+        }
+    }
+
     fn virtual_key_fixture() -> VirtualKey {
         VirtualKey {
             id: Uuid::from_u128(10),
@@ -6913,6 +6945,119 @@ mod tests {
     }
 
     #[test]
+    fn channel_success_audit_shape_is_transactional_and_endpoint_safe() {
+        let before = channel_fixture();
+        let mut after = before.clone();
+        after.status = "disabled".to_string();
+        after.name = "Bearer never-audit".to_string();
+
+        let audit = new_admin_audit_log_from_parts(
+            Uuid::from_u128(701),
+            DEFAULT_TENANT_ID,
+            "channel.update",
+            Some(&before),
+            &after,
+            json!({ "transactional_audit": true }),
+            None,
+        );
+        let serialized = serde_json::to_string(&audit).expect("audit should serialize");
+
+        assert_eq!(audit.action, "channel.update");
+        assert_eq!(audit.resource_type, "channel");
+        assert_eq!(audit.resource_id, Some(after.id));
+        assert_eq!(audit.resource_tenant_id, Some(DEFAULT_TENANT_ID));
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["status"],
+            json!("disabled")
+        );
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["name"],
+            json!("[REDACTED]")
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["model_mappings_keys"],
+            json!(["gpt-visible"])
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["timeout_policy_keys"],
+            json!(["connect_ms"])
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["probe_policy_keys"],
+            json!(["interval_seconds"])
+        );
+        assert_eq!(audit.metadata["transactional_audit"], json!(true));
+        assert!(!serialized.contains("https://internal-provider.example/v1"));
+        assert!(!serialized.contains("Bearer never-audit"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("raw body never audit"));
+        assert!(!serialized.contains("raw payload never audit"));
+        assert!(!serialized.contains("provider_key_fingerprint"));
+        assert!(!serialized.contains("fp-never-audit"));
+        assert!(!serialized.contains("current_window_state"));
+    }
+
+    #[test]
+    fn channel_missing_business_result_does_not_build_success_audit() {
+        fn build_success_audit_for_optional_channel(
+            channel: Option<&Channel>,
+        ) -> Option<NewAuditLog> {
+            channel.map(|after| {
+                new_admin_audit_log_from_parts(
+                    Uuid::from_u128(701),
+                    DEFAULT_TENANT_ID,
+                    "channel.update",
+                    None,
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            })
+        }
+
+        let missing = build_success_audit_for_optional_channel(None);
+        let present_channel = channel_fixture();
+        let present = build_success_audit_for_optional_channel(Some(&present_channel));
+
+        assert!(missing.is_none());
+        assert_eq!(
+            present.expect("audit should build").action,
+            "channel.update"
+        );
+    }
+
+    #[test]
+    fn channel_admin_writes_use_transactional_success_audit_helpers() {
+        let source = include_str!("admin.rs");
+        let create_section = source
+            .split("async fn create_channel")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn get_channel").next())
+            .expect("create_channel section should be present");
+        let patch_section = source
+            .split("async fn patch_channel")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn delete_channel").next())
+            .expect("patch_channel section should be present");
+        let delete_section = source
+            .split("async fn delete_channel")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn dry_run_channel_manual_test").next())
+            .expect("delete_channel section should be present");
+
+        assert!(create_section.contains(".upsert_channel_with_audit("));
+        assert!(patch_section.contains(".update_channel_with_audit("));
+        assert!(delete_section.contains(".soft_delete_channel_with_audit("));
+        assert!(create_section.contains("\"upsert_semantics\": true"));
+        assert!(create_section.contains("\"transactional_audit\": true"));
+        assert!(patch_section.contains("\"transactional_audit\": true"));
+        assert!(delete_section.contains("\"transactional_audit\": true"));
+        assert!(!create_section.contains("record_admin_audit("));
+        assert!(!patch_section.contains("record_admin_audit("));
+        assert!(!delete_section.contains("record_admin_audit("));
+    }
+
+    #[test]
     fn audit_log_contract_fixture_captures_transaction_and_safe_metadata() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/audit_log_contract.json"
@@ -6945,6 +7090,9 @@ mod tests {
             "POST /admin/providers",
             "PATCH /admin/providers/{id}",
             "DELETE /admin/providers/{id}",
+            "POST /admin/channels",
+            "PATCH /admin/channels/{id}",
+            "DELETE /admin/channels/{id}",
             "POST /admin/price-versions",
         ] {
             assert!(
@@ -6956,6 +7104,19 @@ mod tests {
             fixture["examples"]["provider_update_success_audit"]["metadata"]["transactional_audit"],
             json!(true)
         );
+        assert_eq!(
+            fixture["examples"]["channel_update_success_audit"]["metadata"]["transactional_audit"],
+            json!(true)
+        );
+        for snapshot in ["before_snapshot", "after_snapshot"] {
+            assert!(
+                !fixture["examples"]["channel_update_success_audit"][snapshot]
+                    .as_object()
+                    .expect("channel audit snapshot should be an object")
+                    .contains_key("endpoint"),
+                "channel audit fixture must not expose endpoint in {snapshot}"
+            );
+        }
         assert_eq!(
             fixture["query_contract"]["path"],
             json!("GET /admin/audit-logs")
@@ -7001,6 +7162,10 @@ mod tests {
             "sk-",
             "encrypted_secret",
             "raw body never audit",
+            "raw payload never audit",
+            "internal-provider.example",
+            "https://",
+            "fingerprint-never",
         ] {
             assert!(
                 !serialized.contains(forbidden),

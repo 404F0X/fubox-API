@@ -17,6 +17,11 @@ use crate::{
         UpdateCanonicalModel, UpdateChannel, UpdateModelAssociation, UpdateProvider, VirtualKey,
     },
     pool::{DbError, PgPool},
+    trace_affinity::{
+        TRACE_AFFINITY_PREVIOUS_SUCCESS_LOOKUP_SQL, TraceAffinityPreviousSuccessLookupInput,
+        TraceAffinityPreviousSuccessLookupPlan, TraceAffinityPreviousSuccessRoute,
+        build_trace_affinity_previous_success_lookup,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -1179,6 +1184,74 @@ impl DbRepository {
         channel_from_row(row).map_err(DbError::Query)
     }
 
+    pub async fn upsert_channel_with_audit<F>(
+        &self,
+        new_channel: NewChannel,
+        build_audit: F,
+    ) -> Result<Channel, DbError>
+    where
+        F: FnOnce(&Channel) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let row = sqlx::query(
+            r#"
+            insert into channels (
+              tenant_id, provider_id, name, endpoint, protocol_mode, status, region,
+              priority, weight, tags, model_mappings, request_overrides,
+              timeout_policy, probe_policy, health_score
+            )
+            values (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+              $13, $14, ($15::double precision)::numeric
+            )
+            on conflict (tenant_id, provider_id, name) do update
+            set endpoint = excluded.endpoint,
+                protocol_mode = excluded.protocol_mode,
+                status = excluded.status,
+                region = excluded.region,
+                priority = excluded.priority,
+                weight = excluded.weight,
+                tags = excluded.tags,
+                model_mappings = excluded.model_mappings,
+                request_overrides = excluded.request_overrides,
+                timeout_policy = excluded.timeout_policy,
+                probe_policy = excluded.probe_policy,
+                health_score = excluded.health_score,
+                updated_at = now(),
+                deleted_at = null
+            returning
+              id, tenant_id, provider_id, name, endpoint, protocol_mode, status, region,
+              priority, weight, tags, model_mappings, request_overrides, timeout_policy,
+              probe_policy, health_score::double precision as health_score
+            "#,
+        )
+        .bind(new_channel.tenant_id)
+        .bind(new_channel.provider_id)
+        .bind(new_channel.name)
+        .bind(new_channel.endpoint)
+        .bind(new_channel.protocol_mode)
+        .bind(new_channel.status)
+        .bind(new_channel.region)
+        .bind(new_channel.priority)
+        .bind(new_channel.weight)
+        .bind(new_channel.tags)
+        .bind(new_channel.model_mappings)
+        .bind(new_channel.request_overrides)
+        .bind(new_channel.timeout_policy)
+        .bind(new_channel.probe_policy)
+        .bind(new_channel.health_score)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let channel = channel_from_row(row).map_err(DbError::Query)?;
+        let audit = build_audit(&channel);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(channel)
+    }
+
     pub async fn get_channel(
         &self,
         tenant_id: Uuid,
@@ -1299,6 +1372,92 @@ impl DbRepository {
             .map_err(DbError::Query)
     }
 
+    pub async fn update_channel_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        channel_id: Uuid,
+        update: UpdateChannel,
+        build_audit: F,
+    ) -> Result<Option<Channel>, DbError>
+    where
+        F: FnOnce(&Channel, &Channel) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, provider_id, name, endpoint, protocol_mode, status, region,
+              priority, weight, tags, model_mappings, request_overrides, timeout_policy,
+              probe_policy, health_score::double precision as health_score
+            from channels
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(channel_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = channel_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update channels
+            set provider_id = $3,
+                name = $4,
+                endpoint = $5,
+                protocol_mode = $6,
+                status = $7,
+                region = $8,
+                priority = $9,
+                weight = $10,
+                tags = $11,
+                model_mappings = $12,
+                request_overrides = $13,
+                timeout_policy = $14,
+                probe_policy = $15,
+                health_score = ($16::double precision)::numeric,
+                updated_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, provider_id, name, endpoint, protocol_mode, status, region,
+              priority, weight, tags, model_mappings, request_overrides, timeout_policy,
+              probe_policy, health_score::double precision as health_score
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(channel_id)
+        .bind(update.provider_id)
+        .bind(update.name)
+        .bind(update.endpoint)
+        .bind(update.protocol_mode)
+        .bind(update.status)
+        .bind(update.region)
+        .bind(update.priority)
+        .bind(update.weight)
+        .bind(update.tags)
+        .bind(update.model_mappings)
+        .bind(update.request_overrides)
+        .bind(update.timeout_policy)
+        .bind(update.probe_policy)
+        .bind(update.health_score)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = channel_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
+    }
+
     pub async fn update_channel_status(
         &self,
         tenant_id: Uuid,
@@ -1353,6 +1512,63 @@ impl DbRepository {
         row.map(channel_from_row)
             .transpose()
             .map_err(DbError::Query)
+    }
+
+    pub async fn soft_delete_channel_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        channel_id: Uuid,
+        build_audit: F,
+    ) -> Result<Option<Channel>, DbError>
+    where
+        F: FnOnce(&Channel, &Channel) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, provider_id, name, endpoint, protocol_mode, status, region,
+              priority, weight, tags, model_mappings, request_overrides, timeout_policy,
+              probe_policy, health_score::double precision as health_score
+            from channels
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(channel_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = channel_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update channels
+            set status = 'deleted', updated_at = now(), deleted_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, provider_id, name, endpoint, protocol_mode, status, region,
+              priority, weight, tags, model_mappings, request_overrides, timeout_policy,
+              probe_policy, health_score::double precision as health_score
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(channel_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = channel_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
     }
 
     pub async fn get_provider_key(
@@ -2450,6 +2666,31 @@ impl DbRepository {
         map_rows(rows, request_log_summary_from_row)
     }
 
+    pub async fn find_trace_affinity_previous_success(
+        &self,
+        input: TraceAffinityPreviousSuccessLookupInput,
+    ) -> Result<Option<TraceAffinityPreviousSuccessRoute>, DbError> {
+        let plan = build_trace_affinity_previous_success_lookup(input);
+        let TraceAffinityPreviousSuccessLookupPlan::Query(query) = plan else {
+            return Ok(None);
+        };
+
+        let row = sqlx::query(TRACE_AFFINITY_PREVIOUS_SUCCESS_LOOKUP_SQL)
+            .bind(query.tenant_id)
+            .bind(query.trace_id)
+            .bind(query.not_before)
+            .bind(query.project_id)
+            .bind(query.canonical_model_id)
+            .bind(query.limit)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(DbError::Query)?;
+
+        row.map(trace_affinity_previous_success_route_from_row)
+            .transpose()
+            .map_err(DbError::Query)
+    }
+
     pub async fn get_request_log(
         &self,
         tenant_id: Uuid,
@@ -3255,6 +3496,17 @@ fn request_log_summary_from_row(row: PgRow) -> Result<RequestLogSummary, sqlx::E
         response_body_hash: row.try_get("response_body_hash")?,
         created_at: row.try_get("created_at")?,
         completed_at: row.try_get("completed_at")?,
+    })
+}
+
+fn trace_affinity_previous_success_route_from_row(
+    row: PgRow,
+) -> Result<TraceAffinityPreviousSuccessRoute, sqlx::Error> {
+    Ok(TraceAffinityPreviousSuccessRoute {
+        channel_id: row.try_get("channel_id")?,
+        provider_id: row.try_get("provider_id")?,
+        canonical_model_id: row.try_get("canonical_model_id")?,
+        upstream_model: row.try_get("upstream_model")?,
     })
 }
 

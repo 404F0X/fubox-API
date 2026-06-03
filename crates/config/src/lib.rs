@@ -265,6 +265,10 @@ pub fn validate_provider_endpoint(
     Ok(trimmed.to_string())
 }
 
+pub fn provider_endpoint_resolved_ip_allowed(ip: IpAddr) -> bool {
+    !forbidden_provider_ip(ip)
+}
+
 fn is_production_env() -> bool {
     env::var(APP_ENV_ENV)
         .map(|value| value.trim().eq_ignore_ascii_case("production"))
@@ -618,5 +622,24 @@ mod tests {
             validate_provider_endpoint("http://127.0.0.1:18080/v1", policy).unwrap(),
             "http://127.0.0.1:18080/v1"
         );
+    }
+
+    #[test]
+    fn provider_endpoint_resolved_ip_policy_rejects_internal_ranges() {
+        assert!(provider_endpoint_resolved_ip_allowed(IpAddr::V4(
+            Ipv4Addr::new(203, 0, 113, 10)
+        )));
+        assert!(!provider_endpoint_resolved_ip_allowed(IpAddr::V4(
+            Ipv4Addr::new(10, 0, 0, 1)
+        )));
+        assert!(!provider_endpoint_resolved_ip_allowed(IpAddr::V4(
+            Ipv4Addr::new(169, 254, 169, 254)
+        )));
+        assert!(!provider_endpoint_resolved_ip_allowed(IpAddr::V6(
+            Ipv6Addr::LOCALHOST
+        )));
+        assert!(!provider_endpoint_resolved_ip_allowed(
+            "fe80::1".parse().unwrap()
+        ));
     }
 }

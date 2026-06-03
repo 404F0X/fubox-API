@@ -194,6 +194,15 @@ function stubAdminFetch() {
         body: "raw prompt hidden",
       },
       strategy: "weighted-fallback",
+      summary: {
+        candidate_count: 3,
+        filtered_count: 2,
+        filter_reasons: ["ZeroWeight", "CoolingDown"],
+        selected_channel_id: "channel-1",
+        selected_provider_model: "gpt-route-summary-upstream",
+        selected_score_total: 2144483738,
+        trace_affinity_status: "Disabled",
+      },
     },
   };
   const traceFailedRequestLog = {
@@ -1544,11 +1553,20 @@ describe("App", () => {
     expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
     expect(screen.getByText("provider-1")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Route Trace" })).toBeInTheDocument();
-    expect(screen.getByText("weighted-fallback")).toBeInTheDocument();
+    const routeTracePanel = screen.getByRole("heading", { level: 2, name: "Route Trace" }).closest("article");
+    expect(routeTracePanel).not.toBeNull();
+    expect(within(routeTracePanel as HTMLElement).getByText("channel-1")).toBeInTheDocument();
+    expect(within(routeTracePanel as HTMLElement).getByText("gpt-route-summary-upstream")).toBeInTheDocument();
+    expect(within(routeTracePanel as HTMLElement).getByText("3")).toBeInTheDocument();
+    expect(within(routeTracePanel as HTMLElement).getByText("2")).toBeInTheDocument();
+    expect(within(routeTracePanel as HTMLElement).getByText("ZeroWeight, CoolingDown")).toBeInTheDocument();
+    expect(within(routeTracePanel as HTMLElement).getByText("2144483738")).toBeInTheDocument();
+    expect(within(routeTracePanel as HTMLElement).getByText("Disabled")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
     expect(screen.getByText("settle")).toBeInTheDocument();
     expect(screen.getByText("-0.01230000 USD")).toBeInTheDocument();
     expect(screen.queryByText((content) => content.includes('"strategy": "weighted-fallback"'))).not.toBeInTheDocument();
+    expect(screen.queryByText("weighted-fallback")).not.toBeInTheDocument();
     expect(screen.queryByText("payload-123-hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("raw prompt hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("request-body-hash-hidden")).not.toBeInTheDocument();

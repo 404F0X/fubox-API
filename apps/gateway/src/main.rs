@@ -23,13 +23,13 @@ use ai_gateway_auth::{
     open_provider_key,
 };
 use ai_gateway_billing_ledger::{
-    FixedDecimal, PreAuthorizeBalance, PreAuthorizeBudget, PreAuthorizeDecision,
-    PreAuthorizeEstimate, PreAuthorizeRejectReason, PricingRules, TokenUsage, pre_authorize,
-    rate_usage_from_json,
+    ExtendedTokenUsage, FixedDecimal, PreAuthorizeBalance, PreAuthorizeBudget,
+    PreAuthorizeDecision, PreAuthorizeEstimate, PreAuthorizeRejectReason, PricingRules, TokenUsage,
+    extract_runtime_token_usage_from_value, pre_authorize, rate_usage_from_json,
 };
 use ai_gateway_config::{
     AppConfig, ProviderEndpointPolicy, ProviderEndpointValidationError, ip_allowlist_contains,
-    validate_provider_endpoint,
+    provider_endpoint_resolved_ip_allowed, validate_provider_endpoint,
 };
 use ai_gateway_observability::{
     PayloadPolicyDecision, PayloadStorageMode, PromptProtectionAction, PromptProtectionHit,
@@ -603,7 +603,9 @@ async fn chat_completions(
             &mut upstream_clients,
             &route.endpoint,
             state.upstream_timeout,
-        ) {
+        )
+        .await
+        {
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -675,8 +677,14 @@ async fn chat_completions(
                     ),
                 )
                 .await;
-                let rating =
-                    rate_request_usage(repository, &auth, route.canonical_model_id, usage).await;
+                let rating = rate_request_usage(
+                    repository,
+                    &auth,
+                    route.canonical_model_id,
+                    usage,
+                    Some(&payload),
+                )
+                .await;
                 finish_request_success(
                     repository,
                     &auth,
@@ -1013,7 +1021,9 @@ async fn responses(
             &mut upstream_clients,
             &route.endpoint,
             state.upstream_timeout,
-        ) {
+        )
+        .await
+        {
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -1094,8 +1104,14 @@ async fn responses(
                     ),
                 )
                 .await;
-                let rating =
-                    rate_request_usage(repository, &auth, route.canonical_model_id, usage).await;
+                let rating = rate_request_usage(
+                    repository,
+                    &auth,
+                    route.canonical_model_id,
+                    usage,
+                    Some(&payload),
+                )
+                .await;
                 finish_request_success_for_endpoint(
                     METRICS_ENDPOINT_RESPONSES,
                     repository,
@@ -1425,7 +1441,9 @@ async fn embeddings(
             &mut upstream_clients,
             &route.endpoint,
             state.upstream_timeout,
-        ) {
+        )
+        .await
+        {
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -1507,8 +1525,14 @@ async fn embeddings(
                     ),
                 )
                 .await;
-                let rating =
-                    rate_request_usage(repository, &auth, route.canonical_model_id, usage).await;
+                let rating = rate_request_usage(
+                    repository,
+                    &auth,
+                    route.canonical_model_id,
+                    usage,
+                    Some(&payload),
+                )
+                .await;
                 finish_request_success_for_endpoint(
                     METRICS_ENDPOINT_EMBEDDINGS,
                     repository,
@@ -1882,6 +1906,30 @@ async fn anthropic_messages(
             }
         };
 
+        if let Err(error) = validate_anthropic_route_endpoint_for_provider_call(route).await {
+            let summary = summarize_anthropic_adapter_error(&error);
+            finish_provider_attempt_with_anthropic_adapter_error(
+                repository,
+                &auth,
+                route,
+                attempt_id,
+                provider_started_at,
+                &error,
+                summary.clone(),
+            )
+            .await;
+            finish_request_with_error_for_endpoint(
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                summary,
+            )
+            .await;
+            return anthropic_adapter_error_response(error);
+        }
+
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
@@ -1935,8 +1983,14 @@ async fn anthropic_messages(
                     ),
                 )
                 .await;
-                let rating =
-                    rate_request_usage(repository, &auth, route.canonical_model_id, usage).await;
+                let rating = rate_request_usage(
+                    repository,
+                    &auth,
+                    route.canonical_model_id,
+                    usage,
+                    Some(&payload),
+                )
+                .await;
                 finish_request_success_for_endpoint(
                     METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                     repository,
@@ -2388,6 +2442,30 @@ async fn gemini_generate_content_native_passthrough(
                 }
             };
 
+        if let Err(error) = validate_route_endpoint_for_provider_call(route).await {
+            let summary = summarize_adapter_error(&error);
+            finish_provider_attempt_with_adapter_error(
+                repository,
+                &auth,
+                route,
+                attempt_id,
+                provider_started_at,
+                &error,
+                summary.clone(),
+            )
+            .await;
+            finish_request_with_error_for_endpoint(
+                METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                summary,
+            )
+            .await;
+            return adapter_error_response(error);
+        }
+
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
@@ -2443,7 +2521,8 @@ async fn gemini_generate_content_native_passthrough(
                 )
                 .await;
                 let rating =
-                    rate_request_usage(repository, &auth, route.canonical_model_id, usage).await;
+                    rate_request_usage(repository, &auth, route.canonical_model_id, usage, None)
+                        .await;
                 finish_request_success_for_endpoint(
                     METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                     repository,
@@ -3804,13 +3883,12 @@ fn chat_attempt_routes(
     attempts
 }
 
-fn cached_openai_client(
+async fn cached_openai_client(
     clients: &mut OpenAiClientCache,
     endpoint: &str,
     timeout: Duration,
 ) -> Result<OpenAiCompatibleClient, OpenAiAdapterError> {
-    let endpoint = validate_provider_endpoint(endpoint, ProviderEndpointPolicy::from_env())
-        .map_err(openai_provider_endpoint_error)?;
+    let endpoint = validate_provider_endpoint_for_runtime(endpoint).await?;
     cached_openai_client_with_builder(clients, &endpoint, |endpoint| {
         OpenAiCompatibleClient::new_with_timeout(endpoint.to_string(), timeout)
     })
@@ -3824,6 +3902,71 @@ fn configured_max_provider_attempts(config: &AppConfig) -> usize {
 
 fn openai_provider_endpoint_error(error: ProviderEndpointValidationError) -> OpenAiAdapterError {
     OpenAiAdapterError::InvalidUpstreamBaseUrl(format!("provider endpoint rejected: {error}"))
+}
+
+pub(crate) async fn validate_route_endpoint_for_provider_call(
+    route: &ResolvedChatRoute,
+) -> Result<(), OpenAiAdapterError> {
+    validate_provider_endpoint_for_runtime(&route.endpoint)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn validate_anthropic_route_endpoint_for_provider_call(
+    route: &ResolvedChatRoute,
+) -> Result<(), AnthropicAdapterError> {
+    validate_route_endpoint_for_provider_call(route)
+        .await
+        .map_err(|error| AnthropicAdapterError::RequestSerialize(error.to_string()))
+}
+
+async fn validate_provider_endpoint_for_runtime(
+    endpoint: &str,
+) -> Result<String, OpenAiAdapterError> {
+    let policy = ProviderEndpointPolicy::from_env();
+    let endpoint =
+        validate_provider_endpoint(endpoint, policy).map_err(openai_provider_endpoint_error)?;
+    if !policy.allow_unsafe_local_endpoints {
+        validate_provider_endpoint_dns(&endpoint).await?;
+    }
+    Ok(endpoint)
+}
+
+async fn validate_provider_endpoint_dns(endpoint: &str) -> Result<(), OpenAiAdapterError> {
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|error| OpenAiAdapterError::InvalidUpstreamBaseUrl(error.to_string()))?;
+    let host = url.host_str().ok_or_else(|| {
+        OpenAiAdapterError::InvalidUpstreamBaseUrl("provider endpoint host is required".to_string())
+    })?;
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+    let port = url.port_or_known_default().ok_or_else(|| {
+        OpenAiAdapterError::InvalidUpstreamBaseUrl(
+            "provider endpoint port could not be determined".to_string(),
+        )
+    })?;
+    let addrs = tokio::net::lookup_host((host, port)).await.map_err(|_| {
+        OpenAiAdapterError::InvalidUpstreamBaseUrl(
+            "provider endpoint DNS resolution failed".to_string(),
+        )
+    })?;
+    let resolved_ips: Vec<IpAddr> = addrs.map(|addr| addr.ip()).collect();
+    if resolved_provider_endpoint_ips_allowed(&resolved_ips) {
+        Ok(())
+    } else {
+        Err(OpenAiAdapterError::InvalidUpstreamBaseUrl(
+            "provider endpoint DNS resolved to a forbidden address".to_string(),
+        ))
+    }
+}
+
+fn resolved_provider_endpoint_ips_allowed(ips: &[IpAddr]) -> bool {
+    !ips.is_empty()
+        && ips
+            .iter()
+            .copied()
+            .all(provider_endpoint_resolved_ip_allowed)
 }
 
 fn cached_openai_client_with_builder(
@@ -4461,6 +4604,10 @@ fn u64_to_i64(value: u64) -> Option<i64> {
     i64::try_from(value).ok()
 }
 
+fn i64_to_u64(value: i64) -> Option<u64> {
+    value.try_into().ok()
+}
+
 impl RequestUsageUpdate {
     fn token_usage_for_rating(self) -> Option<TokenUsage> {
         Some(TokenUsage::new(
@@ -4468,6 +4615,61 @@ impl RequestUsageUpdate {
             self.output_tokens?.try_into().ok()?,
         ))
     }
+
+    fn extended_token_usage_for_rating(self) -> Option<ExtendedTokenUsage> {
+        self.token_usage_for_rating().map(ExtendedTokenUsage::from)
+    }
+
+    fn runtime_token_usage_for_rating(
+        self,
+        runtime_payload: Option<&Value>,
+    ) -> Option<ExtendedTokenUsage> {
+        let fallback = self.extended_token_usage_for_rating()?;
+        let Some(runtime_payload) = runtime_payload else {
+            return Some(fallback);
+        };
+
+        match extract_runtime_token_usage_from_value(runtime_payload) {
+            Ok(Some(usage)) if runtime_rating_usage_matches_request_usage(self, usage) => {
+                Some(usage)
+            }
+            Ok(Some(_)) => {
+                tracing::warn!(
+                    "runtime usage details did not match adapter usage totals for request rating"
+                );
+                Some(fallback)
+            }
+            Ok(None) => Some(fallback),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "failed to extract runtime usage details for request rating"
+                );
+                Some(fallback)
+            }
+        }
+    }
+}
+
+fn runtime_rating_usage_matches_request_usage(
+    request_usage: RequestUsageUpdate,
+    rating_usage: ExtendedTokenUsage,
+) -> bool {
+    let Some(input_tokens) = request_usage.input_tokens.and_then(i64_to_u64) else {
+        return false;
+    };
+    let Some(output_tokens) = request_usage.output_tokens.and_then(i64_to_u64) else {
+        return false;
+    };
+
+    let rating_input_total = rating_usage
+        .input_tokens
+        .checked_add(rating_usage.cache_tokens.unwrap_or(0));
+    let rating_output_total = rating_usage
+        .output_tokens
+        .checked_add(rating_usage.reasoning_tokens.unwrap_or(0));
+
+    rating_input_total == Some(input_tokens) && rating_output_total == Some(output_tokens)
 }
 
 async fn rate_request_usage(
@@ -4475,8 +4677,9 @@ async fn rate_request_usage(
     auth: &AuthContext,
     canonical_model_id: uuid::Uuid,
     usage: RequestUsageUpdate,
+    runtime_payload: Option<&Value>,
 ) -> Option<RequestRatingUpdate> {
-    let token_usage = usage.token_usage_for_rating()?;
+    let token_usage = usage.runtime_token_usage_for_rating(runtime_payload)?;
 
     let price_version = match repository
         .resolve_active_price_version(auth, canonical_model_id)
@@ -4498,7 +4701,7 @@ async fn rate_request_usage(
 
 fn request_rating_from_price_version(
     price_version: &ResolvedPriceVersion,
-    usage: TokenUsage,
+    usage: impl Into<ExtendedTokenUsage>,
 ) -> Option<RequestRatingUpdate> {
     let rating = match rate_usage_from_json(&price_version.pricing_rules_json, usage) {
         Ok(rating) => rating,
@@ -5829,6 +6032,25 @@ mod tests {
         assert!(source.contains("DefaultBodyLimit::max(max_request_body_bytes)"));
         assert!(source.contains("gateway_cors_layer()"));
         assert!(!source.contains(concat!("CorsLayer", "::permissive()")));
+    }
+
+    #[test]
+    fn provider_endpoint_runtime_dns_guard_rejects_forbidden_resolutions() {
+        assert!(resolved_provider_endpoint_ips_allowed(&[
+            IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 10)),
+            IpAddr::V6("2001:db8::1".parse().unwrap()),
+        ]));
+        assert!(!resolved_provider_endpoint_ips_allowed(&[]));
+        assert!(!resolved_provider_endpoint_ips_allowed(&[
+            IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 10)),
+            IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 5)),
+        ]));
+        assert!(!resolved_provider_endpoint_ips_allowed(&[IpAddr::V4(
+            std::net::Ipv4Addr::new(169, 254, 169, 254)
+        ),]));
+        assert!(!resolved_provider_endpoint_ips_allowed(&[IpAddr::V6(
+            std::net::Ipv6Addr::LOCALHOST
+        ),]));
     }
 
     fn test_route(
@@ -7980,6 +8202,118 @@ mod tests {
             }
         );
         assert_eq!(partial.token_usage_for_rating(), None);
+    }
+
+    #[test]
+    fn runtime_usage_for_rating_splits_cache_and_reasoning_without_double_counting() {
+        let usage = request_usage_from_adapter_usage(Some(AdapterUsage {
+            prompt_tokens: Some(1_000_000),
+            completion_tokens: Some(500_000),
+            total_tokens: Some(1_500_000),
+        }));
+        let runtime_payload = json!({
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 500_000,
+                "total_tokens": 1_500_000,
+                "prompt_tokens_details": {
+                    "cached_tokens": 250_000
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 100_000
+                }
+            },
+            "payload": {
+                "body": "fixture-raw-payload-marker"
+            },
+            "headers": {
+                "Authorization": "Bearer fixture-header-marker"
+            }
+        });
+
+        assert_eq!(
+            usage,
+            RequestUsageUpdate {
+                input_tokens: Some(1_000_000),
+                output_tokens: Some(500_000)
+            }
+        );
+        let rating_usage = usage
+            .runtime_token_usage_for_rating(Some(&runtime_payload))
+            .expect("runtime usage should extract");
+
+        assert_eq!(rating_usage.input_tokens, 750_000);
+        assert_eq!(rating_usage.output_tokens, 400_000);
+        assert_eq!(rating_usage.cache_tokens, Some(250_000));
+        assert_eq!(rating_usage.reasoning_tokens, Some(100_000));
+
+        let price_version_id = uuid::Uuid::from_u128(32);
+        let price_version = ResolvedPriceVersion {
+            id: price_version_id,
+            pricing_rules_json: json!({
+                "currency": "USD",
+                "scale": 8,
+                "input_token_rate_per_1m": "1.00000000",
+                "output_token_rate_per_1m": "2.00000000",
+                "cache_token_rate_per_1m": "0.25000000",
+                "reasoning_token_rate_per_1m": "4.00000000",
+                "fixed_request_cost": "0.12500000"
+            })
+            .to_string(),
+        };
+
+        let rating = request_rating_from_price_version(&price_version, rating_usage)
+            .expect("runtime usage details should rate");
+
+        assert_eq!(rating.final_cost, "2.13750000");
+        assert_eq!(rating.currency, "USD");
+        assert_eq!(rating.price_version_id, price_version_id);
+
+        let debug = format!("{rating:?}");
+        assert!(!debug.contains("fixture-raw-payload-marker"));
+        assert!(!debug.contains("fixture-header-marker"));
+        assert!(!debug.contains("Authorization"));
+        assert!(!debug.contains("Bearer"));
+    }
+
+    #[test]
+    fn runtime_usage_for_rating_falls_back_when_details_are_invalid_or_mismatched() {
+        let usage = RequestUsageUpdate {
+            input_tokens: Some(12),
+            output_tokens: Some(34),
+        };
+        let invalid_payload = json!({
+            "usage": {
+                "prompt_tokens": "provider-secret-marker",
+                "completion_tokens": 34
+            },
+            "provider_key_value": "fixture-provider-credential-marker"
+        });
+        let mismatched_payload = json!({
+            "usage": {
+                "prompt_tokens": 13,
+                "completion_tokens": 34,
+                "prompt_tokens_details": {
+                    "cached_tokens": 1
+                }
+            }
+        });
+
+        let invalid_fallback = usage
+            .runtime_token_usage_for_rating(Some(&invalid_payload))
+            .expect("invalid details should fall back to adapter usage");
+        let mismatched_fallback = usage
+            .runtime_token_usage_for_rating(Some(&mismatched_payload))
+            .expect("mismatched details should fall back to adapter usage");
+
+        assert_eq!(invalid_fallback, ExtendedTokenUsage::new(12, 34));
+        assert_eq!(mismatched_fallback, ExtendedTokenUsage::new(12, 34));
+
+        let debug = format!("{invalid_fallback:?}{mismatched_fallback:?}");
+        assert!(!debug.contains("provider-secret-marker"));
+        assert!(!debug.contains("fixture-provider-credential-marker"));
+        assert!(!debug.contains("provider_key"));
+        assert!(!debug.contains("secret"));
     }
 
     #[test]

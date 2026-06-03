@@ -54,7 +54,7 @@
 
 - [~] **E1-004 实现 Audit Log**  
   优先级：P0  
-  验收：key、provider、price、route、billing 修改均写 audit。当前 Control Plane admin provider/channel/provider_key/api_key_profile/virtual_key/model/model_association 写操作已写入 `audit_logs`，并记录 before/after snapshot 与 session 元数据；audit metadata/snapshot 已接入敏感信息 sanitizer，避免 secret、Authorization、Cookie、payload/body、raw headers、raw UA/client IP 等原文落审计。provider create/update/delete、provider_key create/update/delete、price_version create 与 virtual_key create/disable/expire 已进入事务化闭环：业务写入与 success audit 使用同一 DB transaction，缺失业务行不会构造 success audit，audit insert 失败会回滚对应写入；相关 audit metadata 已记录 `user_agent_sha256`、`client_ip_sha256`、IP 来源/类型/范围等安全摘要。Control Plane 已新增只读 `GET /admin/audit-logs` 查询契约/API，支持 tenant、actor、action/resource、时间范围与 limit 过滤，归 `AuditRead`，响应再次 secret-safe 清洗。channel/profile/model/model_association 等其他写路径事务化、更多 billing 写操作覆盖和 audit UI 验收尚未完成。
+  验收：key、provider、price、route、billing 修改均写 audit。当前 Control Plane admin provider/channel/provider_key/api_key_profile/virtual_key/model/model_association 写操作已写入 `audit_logs`，并记录 before/after snapshot 与 session 元数据；audit metadata/snapshot 已接入敏感信息 sanitizer，避免 secret、Authorization、Cookie、payload/body、raw headers、raw UA/client IP 等原文落审计，channel audit snapshot 不记录 endpoint/base_url 原文。provider create/update/delete、channel create/update/delete、provider_key create/update/delete、price_version create 与 virtual_key create/disable/expire 已进入事务化闭环：业务写入与 success audit 使用同一 DB transaction，缺失业务行不会构造 success audit，audit insert 失败会回滚对应写入；相关 audit metadata 已记录 `user_agent_sha256`、`client_ip_sha256`、IP 来源/类型/范围等安全摘要。Control Plane 已新增只读 `GET /admin/audit-logs` 查询契约/API，支持 tenant、actor、action/resource、时间范围与 limit 过滤，归 `AuditRead`，响应再次 secret-safe 清洗。profile/model/model_association 等其他写路径事务化、更多 billing 写操作覆盖和 audit UI 验收尚未完成。
 
 - [~] **E1-005 OIDC 基础登录草案**  
   优先级：P1  
@@ -91,7 +91,7 @@
 
 - [x] **E3-001 实现 Provider/Channel CRUD**  
   优先级：P0  
-  验收：支持 endpoint、protocol_mode、tags、priority、weight、timeout。当前 Control Plane 已支持 provider/channel create/list/get/patch/delete，`verify_control_plane_crud_smoke.ps1 -IncludeFullCrud -StrictFullCrud` 已通过；provider/channel endpoint 已新增统一安全校验，默认要求 HTTPS 并拒绝 userinfo、query/fragment、localhost、private/link-local/multicast/unspecified IP 和 metadata IP，Gateway 出站前也会复核；本地 Compose/Helm mock-provider 场景需显式 `AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS=true`。
+  验收：支持 endpoint、protocol_mode、tags、priority、weight、timeout。当前 Control Plane 已支持 provider/channel create/list/get/patch/delete，`verify_control_plane_crud_smoke.ps1 -IncludeFullCrud -StrictFullCrud` 已通过；provider/channel endpoint 已新增统一安全校验，默认要求 HTTPS 并拒绝 userinfo、query/fragment、localhost、private/link-local/multicast/unspecified IP 和 metadata IP，Gateway 出站前会在打开 provider key 前复核静态 URL 并对 DNS 解析 IP 做 forbidden-range 检查，OpenAI-compatible 与 native/streaming 路径共用该 guard；本地 Compose/Helm mock-provider 场景需显式 `AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS=true`。
 
 - [~] **E3-002 实现 Provider Key 加密存储**  
   优先级：P0  
@@ -262,7 +262,7 @@
 
 - [~] **E8-007 实现 trace affinity**  
   优先级：P0  
-  验收：同 trace 优先之前成功渠道。当前 routing core 已支持 previous successful channel affinity，纯函数单测覆盖同 trace 稳定命中、前序渠道不可选 fallback、空候选 not-candidate 和不同 trace pin 到不同渠道；待接 Gateway/DB trace 成功渠道记忆。
+  验收：同 trace 优先之前成功渠道。当前 routing core 已支持 previous successful channel affinity，纯函数单测覆盖同 trace 稳定命中、前序渠道不可选 fallback、空候选 not-candidate 和不同 trace pin 到不同渠道；DB 侧已新增 previous-success lookup contract/SQL skeleton 和最小 repository 读取方法：按 tenant + trace_id + created_at TTL 使用 `idx_request_logs_trace_time`，可选 project/canonical model scope，仅读取 `status='succeeded'` 且 channel/provider 非空的最近记录，limit 有上限，输出只保留 channel/provider/model 摘要，不输出原始 trace_id、request_id、provider_key_id、payload/body/hash/metadata/secret；待接 Gateway selection 前 lookup 与 runtime smoke。
 
 ---
 
@@ -286,7 +286,7 @@
 
 - [~] **E9-005 实现 usage rating engine**  
   优先级：P0  
-  验收：input/output/cache/reasoning token 可计价。当前非流式 chat rating 已写入 request `final_cost` 并供 settle ledger metadata 使用；stream request-log rating 已接入 completed+usage 完整路径；billing-ledger 纯函数已支持 cache/reasoning token rate 计价；本轮新增 runtime usage extraction contract/API，可从 OpenAI/Responses、Anthropic、Gemini usage JSON 中提取并拆分 cache/reasoning token，按分类 token 计价时避免 input/cache 与 output/reasoning 双算，fixture 覆盖 secret-safe 错误与 payload/header/provider marker 不回显。Gateway/streaming 调用点、request log cache/reasoning 字段持久化和真实 DB integration 仍未接入。
+  验收：input/output/cache/reasoning token 可计价。当前非流式 chat rating 已写入 request `final_cost` 并供 settle ledger metadata 使用；stream request-log rating 已接入 completed+usage 完整路径；billing-ledger 纯函数已支持 cache/reasoning token rate 计价；runtime usage extraction contract/API 可从 OpenAI/Responses、Anthropic、Gemini usage JSON 中提取并拆分 cache/reasoning token，按分类 token 计价时避免 input/cache 与 output/reasoning 双算，fixture 覆盖 secret-safe 错误与 payload/header/provider marker 不回显；Gateway 非流式 chat/responses/embeddings/Anthropic Messages rating helper 已传入 provider JSON payload，并在 runtime usage totals 与 adapter usage totals 对齐时使用 cache/reasoning 拆分后的 `ExtendedTokenUsage` 计价，invalid/mismatch 时回退旧 input/output usage 且不回显 provider payload/secret。Streaming finalizer、Gemini native passthrough、request log cache/reasoning 字段持久化和真实 DB integration 仍未接入。
 
 - [~] **E9-006 实现 daily reconciliation job**  
   优先级：P0  
@@ -342,7 +342,7 @@
 
 - [~] **E11-005 Request/Trace 页面**  
   优先级：P0  
-  验收：查询、详情、route trace、ledger、payload 懒加载。当前 Admin UI 已将 Request/Trace workspace 接入导航并改为 lazy-loaded `RequestLogsPage`，复用 same-origin request log list/detail API wrapper；页面已新增 Trace ID 查询，调用 `GET /admin/traces/{trace_id}` 展示 trace summary metrics、last error、时间范围、currency 和 bounded request rows；request detail 保留 provider attempts，并新增 secret-safe Route Trace 摘要，仅展示 route policy、strategy、selected channel、candidate/filter 数和 snapshot version，不渲染 raw snapshot/payload/secret；request detail 与 trace summary 已展示 ledger summary rows（entry/status/amount/request/time），不渲染 idempotency key、usage/policy snapshot、metadata、payload、secret 或 Authorization；前端测试覆盖 route/trace/ledger 字段脱敏。payload 懒加载和更完整 trace drilldown 仍待完成。
+  验收：查询、详情、route trace、ledger、payload 懒加载。当前 Admin UI 已将 Request/Trace workspace 接入导航并改为 lazy-loaded `RequestLogsPage`，复用 same-origin request log list/detail API wrapper；页面已新增 Trace ID 查询，调用 `GET /admin/traces/{trace_id}` 展示 trace summary metrics、last error、时间范围、currency 和 bounded request rows；request detail 保留 provider attempts，并新增 secret-safe Route Trace 摘要，仅展示 Gateway `route_decision_snapshot.summary` 稳定字段（selected channel/provider model、candidate/filter 数、filter reasons、score、trace affinity），不渲染 raw snapshot/payload/secret；request detail 与 trace summary 已展示 ledger summary rows（entry/status/amount/request/time），不渲染 idempotency key、usage/policy snapshot、metadata、payload、secret 或 Authorization；前端测试覆盖 route/trace/ledger 字段脱敏。payload 懒加载和更完整 trace drilldown 仍待完成。
 
 - [~] **E11-006 Health Dashboard**  
   优先级：P0  
@@ -382,7 +382,7 @@
 
 - [~] **E13-001 Secret masking middleware**  
   优先级：P0  
-  验收：日志不出现 Authorization/API key/Cookie。当前 `ai-gateway-observability` 统一 sanitizer 已被 Gateway 错误路径接入，database error log、adapter error body 和 OpenAI-compatible error body 会脱敏 Authorization/API key/Cookie/token/password/secret，同时保留 `model_key`/`cache_key`/`public_key_id` 等非敏感标识；本轮审查修复已补 Gateway body limit 前置、CORS allowlist、provider endpoint SSRF guard、HTTP redirect 禁用、`readyz` 脱敏和生产配置路径显式化；完整 HTTP middleware 层与更多入口接入仍待完成。
+  验收：日志不出现 Authorization/API key/Cookie。当前 `ai-gateway-observability` 统一 sanitizer 已被 Gateway 错误路径接入，database error log、adapter error body 和 OpenAI-compatible error body 会脱敏 Authorization/API key/Cookie/token/password/secret，同时保留 `model_key`/`cache_key`/`public_key_id` 等非敏感标识；本轮审查修复已补 Gateway body limit 前置、CORS allowlist、provider endpoint static + DNS SSRF guard（provider key 打开前执行）、HTTP redirect 禁用、`readyz` 脱敏和生产配置路径显式化；完整 HTTP middleware 层与更多入口接入仍待完成。
 
 - [~] **E13-002 Provider key encryption**  
   优先级：P0  
@@ -398,7 +398,7 @@
 
 - [~] **E13-005 Prompt Protection**  
   优先级：P1  
-  验收：regex mask/reject、scope、命中日志。当前 `ai-gateway-observability` 已新增 prompt protection 纯函数切片，支持 text/json/payload 输入，输出 action、scoped hits、safe_text/safe_json；覆盖 secret-like token、Bearer、password/API key/sensitive fields mask，以及明显 prompt-injection phrase reject，并保留 `model_key`、`cache_key`、`public_key_id` 等公开标识；hit summary 已做 bounded cap，避免恶意 payload 放大日志/去重成本。Gateway `/v1/chat/completions` 非流式与 stream=true 已接入 runtime preflight，默认 `AI_GATEWAY_PROMPT_PROTECTION=enforce`，支持 `audit`/`disabled`；enforce 命中后在 canonical routing、request_started、pre_authorize、provider_attempt、provider key 解密和上游调用前返回 OpenAI-compatible `prompt_protection_rejected`，request log 使用 hash-only payload metadata，并只写 action/mode/reason/hit_count/scopes/hit_kinds 安全摘要；audit 命中在 provider_attempt 前仅记录 request hash/action/reason/hit_count 后继续，不落 raw payload/secret。`tests/fixtures/gateway/prompt_protection_runtime_contract.json` 已锁定该 runtime 合约。审计查询/UI 和可配置规则仍待完成。
+  验收：regex mask/reject、scope、命中日志。当前 `ai-gateway-observability` 已新增 prompt protection 纯函数切片，支持 text/json/payload 输入，输出 action、scoped hits、safe_text/safe_json；覆盖 secret-like token、Bearer、password/API key/sensitive fields mask，以及明显 prompt-injection phrase reject，并保留 `model_key`、`cache_key`、`public_key_id` 等公开标识；hit summary 已做 bounded cap，避免恶意 payload 放大日志/去重成本。Gateway `/v1/chat/completions` 非流式与 stream=true 已接入 runtime preflight，默认 `AI_GATEWAY_PROMPT_PROTECTION=enforce`，支持 `audit`/`disabled`；enforce 命中后在 canonical routing、request_started、pre_authorize、provider_attempt、provider key 解密和上游调用前返回 OpenAI-compatible `prompt_protection_rejected`，request log 使用 hash-only payload metadata，并只写 action/mode/reason/hit_count/scopes/hit_kinds 安全摘要；audit 命中在 provider_attempt 前仅记录 request hash/action/reason/hit_count 后继续，不落 raw payload/secret。`tests/fixtures/gateway/prompt_protection_runtime_contract.json` 已锁定该 runtime 合约。本轮新增可配置规则纯函数/contract：`prompt_protection_rules_v1` 支持 bounded literal/contains mask/reject、text/json path scope、规则数量/name/pattern/scope 长度限制、每字段扫描/替换上限、secret-like rule name/pattern value 拒绝、错误消息与 summary 脱敏，并锁定 regex/regex_like 在 observability crate 未接入 regex 依赖前返回 `unsupported_pattern_type`；`tests/fixtures/observability/prompt_protection_configurable_rules_contract.json` 已覆盖 mask/reject、scope、invalid config、secret-safe serialization 和 public id 不误伤。审计查询/UI、可配置规则 Gateway runtime 接入和真实 regex 编译型规则仍待完成。
 
 ---
 

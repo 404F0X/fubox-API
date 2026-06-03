@@ -1,18 +1,21 @@
 {
   "todo": "E1-004",
-  "scope": "control-plane provider, provider_key and price_version admin writes plus read-only audit log query API",
+  "scope": "control-plane provider, channel, provider_key and price_version admin writes plus read-only audit log query API",
   "transaction_contract": {
     "business_and_audit_share_transaction": true,
     "paths": [
       "POST /admin/providers",
       "PATCH /admin/providers/{id}",
       "DELETE /admin/providers/{id}",
+      "POST /admin/channels",
+      "PATCH /admin/channels/{id}",
+      "DELETE /admin/channels/{id}",
       "POST /admin/provider-keys",
       "PATCH /admin/provider-keys/{id}",
       "DELETE /admin/provider-keys/{id}",
       "POST /admin/price-versions"
     ],
-    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, provider_key or price_version write"
+    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, provider_key or price_version write"
   },
   "metadata_contract": {
     "raw_request_body_omitted": true,
@@ -53,6 +56,7 @@
       "payload",
       "body",
       "raw headers",
+      "provider endpoint or base_url",
       "provider key material"
     ]
   },
@@ -81,6 +85,62 @@
           "base_url",
           "owner"
         ]
+      },
+      "metadata": {
+        "transactional_audit": true,
+        "actor_session_id": "00000000-0000-0000-0000-000000000701",
+        "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+        "source": "control_plane_admin"
+      }
+    },
+    "channel_update_success_audit": {
+      "action": "channel.update",
+      "resource_type": "channel",
+      "before_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000301",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "provider_id": "00000000-0000-0000-0000-000000000201",
+        "name": "primary",
+        "protocol_mode": "openai_compatible",
+        "status": "enabled",
+        "region": "us-east",
+        "priority": 10,
+        "weight": 100,
+        "tags_count": 2,
+        "model_mappings_keys": [
+          "gpt-visible"
+        ],
+        "request_overrides_count": 1,
+        "timeout_policy_keys": [
+          "connect_ms"
+        ],
+        "probe_policy_keys": [
+          "interval_seconds"
+        ],
+        "health_score": 0.9
+      },
+      "after_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000301",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "provider_id": "00000000-0000-0000-0000-000000000201",
+        "name": "primary",
+        "protocol_mode": "openai_compatible",
+        "status": "disabled",
+        "region": "us-east",
+        "priority": 10,
+        "weight": 100,
+        "tags_count": 2,
+        "model_mappings_keys": [
+          "gpt-visible"
+        ],
+        "request_overrides_count": 1,
+        "timeout_policy_keys": [
+          "connect_ms"
+        ],
+        "probe_policy_keys": [
+          "interval_seconds"
+        ],
+        "health_score": 0.9
       },
       "metadata": {
         "transactional_audit": true,

@@ -18,6 +18,13 @@ const PROMPT_INJECTION_PHRASES: &[&str] = &[
     "you are now dan",
 ];
 const MAX_PROMPT_PROTECTION_HITS: usize = 64;
+pub const PROMPT_PROTECTION_RULE_SET_SCHEMA: &str = "prompt_protection_rules_v1";
+pub const MAX_PROMPT_PROTECTION_CONFIGURED_RULES: usize = 32;
+pub const MAX_PROMPT_PROTECTION_RULE_NAME_BYTES: usize = 64;
+pub const MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES: usize = 256;
+pub const MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES: usize = 128;
+const MAX_CONFIGURED_RULE_SCAN_BYTES: usize = 64 * 1024;
+const MAX_CONFIGURED_RULE_MATCHES_PER_VALUE: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptProtectionAction {
@@ -50,6 +57,94 @@ pub struct PromptProtectionResult {
     pub safe_json: Option<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptProtectionConfiguredPatternKind {
+    Literal,
+    Contains,
+}
+
+impl PromptProtectionConfiguredPatternKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Literal => "literal",
+            Self::Contains => "contains",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptProtectionConfiguredScope {
+    Any,
+    Text,
+    JsonPathPrefix(String),
+}
+
+impl PromptProtectionConfiguredScope {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Any => "any",
+            Self::Text => "text",
+            Self::JsonPathPrefix(scope) => scope.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptProtectionConfiguredRule {
+    pub name: String,
+    pub action: PromptProtectionAction,
+    pub scope: PromptProtectionConfiguredScope,
+    pub pattern_kind: PromptProtectionConfiguredPatternKind,
+    pub pattern: String,
+    pub case_sensitive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptProtectionRuleSet {
+    pub rules: Vec<PromptProtectionConfiguredRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptProtectionConfiguredHit {
+    pub rule_name: String,
+    pub action: PromptProtectionAction,
+    pub scope: String,
+    pub pattern_kind: PromptProtectionConfiguredPatternKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfiguredPromptProtectionResult {
+    pub action: PromptProtectionAction,
+    pub hits: Vec<PromptProtectionConfiguredHit>,
+    pub safe_text: String,
+    pub safe_json: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptProtectionRuleSetError {
+    pub code: &'static str,
+    pub field: Option<String>,
+}
+
+impl std::fmt::Display for PromptProtectionRuleSetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.field.as_deref() {
+            Some(field) => write!(
+                formatter,
+                "prompt protection rule set validation failed: code={}, field={}",
+                self.code, field
+            ),
+            None => write!(
+                formatter,
+                "prompt protection rule set validation failed: code={}",
+                self.code
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PromptProtectionRuleSetError {}
+
 pub fn protect_prompt_text(input: &str) -> PromptProtectionResult {
     let mut hits = Vec::new();
     let safe_text = protect_text_in_scope("text", input, &mut hits);
@@ -80,6 +175,696 @@ pub fn protect_prompt_payload(input: &str) -> PromptProtectionResult {
         Ok(value) => protect_prompt_json(&value),
         Err(_) => protect_prompt_text(input),
     }
+}
+
+pub fn parse_prompt_protection_rule_set_str(
+    input: &str,
+) -> Result<PromptProtectionRuleSet, PromptProtectionRuleSetError> {
+    let value =
+        serde_json::from_str::<Value>(input).map_err(|_| rule_set_error("invalid_json", None))?;
+    parse_prompt_protection_rule_set(&value)
+}
+
+pub fn parse_prompt_protection_rule_set(
+    value: &Value,
+) -> Result<PromptProtectionRuleSet, PromptProtectionRuleSetError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| rule_set_error("invalid_root", None))?;
+
+    if let Some(schema) = object.get("schema").or_else(|| object.get("version")) {
+        let schema = schema
+            .as_str()
+            .ok_or_else(|| rule_set_error("invalid_schema", Some("schema")))?;
+        if schema != PROMPT_PROTECTION_RULE_SET_SCHEMA {
+            return Err(rule_set_error("unsupported_schema", Some("schema")));
+        }
+    }
+
+    let rules = object
+        .get("rules")
+        .ok_or_else(|| rule_set_error("missing_rules", Some("rules")))?
+        .as_array()
+        .ok_or_else(|| rule_set_error("invalid_rules", Some("rules")))?;
+
+    if rules.len() > MAX_PROMPT_PROTECTION_CONFIGURED_RULES {
+        return Err(rule_set_error("too_many_rules", Some("rules")));
+    }
+
+    let rules = rules
+        .iter()
+        .enumerate()
+        .map(|(index, value)| parse_configured_rule(index, value))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(PromptProtectionRuleSet { rules })
+}
+
+pub fn prompt_protection_rule_set_summary(rule_set: &PromptProtectionRuleSet) -> Value {
+    json_object([
+        (
+            "schema",
+            Value::String(PROMPT_PROTECTION_RULE_SET_SCHEMA.to_string()),
+        ),
+        (
+            "rule_count",
+            Value::Number(serde_json::Number::from(rule_set.rules.len())),
+        ),
+        (
+            "limits",
+            json_object([
+                (
+                    "max_rules",
+                    Value::Number(serde_json::Number::from(
+                        MAX_PROMPT_PROTECTION_CONFIGURED_RULES,
+                    )),
+                ),
+                (
+                    "max_rule_name_bytes",
+                    Value::Number(serde_json::Number::from(
+                        MAX_PROMPT_PROTECTION_RULE_NAME_BYTES,
+                    )),
+                ),
+                (
+                    "max_pattern_bytes",
+                    Value::Number(serde_json::Number::from(
+                        MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES,
+                    )),
+                ),
+                (
+                    "max_scope_bytes",
+                    Value::Number(serde_json::Number::from(
+                        MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES,
+                    )),
+                ),
+                (
+                    "max_scan_bytes_per_value",
+                    Value::Number(serde_json::Number::from(MAX_CONFIGURED_RULE_SCAN_BYTES)),
+                ),
+                (
+                    "max_matches_per_value",
+                    Value::Number(serde_json::Number::from(
+                        MAX_CONFIGURED_RULE_MATCHES_PER_VALUE,
+                    )),
+                ),
+            ]),
+        ),
+        (
+            "rules",
+            Value::Array(rule_set.rules.iter().map(configured_rule_summary).collect()),
+        ),
+    ])
+}
+
+fn parse_configured_rule(
+    index: usize,
+    value: &Value,
+) -> Result<PromptProtectionConfiguredRule, PromptProtectionRuleSetError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| rule_set_error("invalid_rule", Some(&format!("rules[{index}]"))))?;
+    let field = |field: &str| format!("rules[{index}].{field}");
+    let name = parse_rule_name(
+        object
+            .get("name")
+            .or_else(|| object.get("id"))
+            .ok_or_else(|| rule_set_error("missing_rule_name", Some(&field("name"))))?,
+        &field("name"),
+    )?;
+    let action = parse_rule_action(
+        object
+            .get("action")
+            .ok_or_else(|| rule_set_error("missing_action", Some(&field("action"))))?,
+        &field("action"),
+    )?;
+    let scope = parse_rule_scope(
+        object
+            .get("scope")
+            .unwrap_or(&Value::String("any".to_string())),
+        &field("scope"),
+    )?;
+    let (pattern_kind, pattern, case_sensitive) = parse_rule_pattern(
+        object
+            .get("pattern")
+            .ok_or_else(|| rule_set_error("missing_pattern", Some(&field("pattern"))))?,
+        &field("pattern"),
+    )?;
+
+    Ok(PromptProtectionConfiguredRule {
+        name,
+        action,
+        scope,
+        pattern_kind,
+        pattern,
+        case_sensitive,
+    })
+}
+
+fn parse_rule_name(value: &Value, field: &str) -> Result<String, PromptProtectionRuleSetError> {
+    let name = value
+        .as_str()
+        .ok_or_else(|| rule_set_error("invalid_rule_name", Some(field)))?
+        .trim();
+
+    if name.is_empty() {
+        return Err(rule_set_error("empty_rule_name", Some(field)));
+    }
+    if name.len() > MAX_PROMPT_PROTECTION_RULE_NAME_BYTES {
+        return Err(rule_set_error("rule_name_too_long", Some(field)));
+    }
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.'))
+    {
+        return Err(rule_set_error("invalid_rule_name", Some(field)));
+    }
+    if looks_secret_like_identifier(name) || crate::is_sensitive_key_name(name) {
+        return Err(rule_set_error("secret_like_rule_name", Some(field)));
+    }
+
+    Ok(name.to_string())
+}
+
+fn parse_rule_action(
+    value: &Value,
+    field: &str,
+) -> Result<PromptProtectionAction, PromptProtectionRuleSetError> {
+    match value
+        .as_str()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("mask") => Ok(PromptProtectionAction::Mask),
+        Some("reject") => Ok(PromptProtectionAction::Reject),
+        _ => Err(rule_set_error("invalid_action", Some(field))),
+    }
+}
+
+fn parse_rule_scope(
+    value: &Value,
+    field: &str,
+) -> Result<PromptProtectionConfiguredScope, PromptProtectionRuleSetError> {
+    let scope = value
+        .as_str()
+        .ok_or_else(|| rule_set_error("invalid_scope", Some(field)))?
+        .trim();
+
+    if scope.is_empty() {
+        return Err(rule_set_error("empty_scope", Some(field)));
+    }
+    if scope.len() > MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES {
+        return Err(rule_set_error("scope_too_long", Some(field)));
+    }
+    if looks_secret_like(scope) {
+        return Err(rule_set_error("secret_like_scope", Some(field)));
+    }
+
+    match scope.to_ascii_lowercase().as_str() {
+        "any" | "body" | "json" => Ok(PromptProtectionConfiguredScope::Any),
+        "text" => Ok(PromptProtectionConfiguredScope::Text),
+        "messages" => Ok(PromptProtectionConfiguredScope::JsonPathPrefix(
+            "$.messages".to_string(),
+        )),
+        "metadata" => Ok(PromptProtectionConfiguredScope::JsonPathPrefix(
+            "$.metadata".to_string(),
+        )),
+        "model" => Ok(PromptProtectionConfiguredScope::JsonPathPrefix(
+            "$.model".to_string(),
+        )),
+        "tools" => Ok(PromptProtectionConfiguredScope::JsonPathPrefix(
+            "$.tools".to_string(),
+        )),
+        _ if scope.starts_with('$') => Ok(PromptProtectionConfiguredScope::JsonPathPrefix(
+            scope.to_string(),
+        )),
+        _ => Err(rule_set_error("invalid_scope", Some(field))),
+    }
+}
+
+fn parse_rule_pattern(
+    value: &Value,
+    field: &str,
+) -> Result<(PromptProtectionConfiguredPatternKind, String, bool), PromptProtectionRuleSetError> {
+    match value {
+        Value::String(pattern) => validate_pattern_value(
+            PromptProtectionConfiguredPatternKind::Contains,
+            pattern,
+            false,
+            field,
+        ),
+        Value::Object(object) => {
+            let pattern_type = object
+                .get("type")
+                .or_else(|| object.get("kind"))
+                .and_then(Value::as_str)
+                .unwrap_or("contains")
+                .trim()
+                .to_ascii_lowercase();
+            let pattern_kind = match pattern_type.as_str() {
+                "literal" | "exact" => PromptProtectionConfiguredPatternKind::Literal,
+                "contains" | "substring" => PromptProtectionConfiguredPatternKind::Contains,
+                "regex" | "regex_like" | "regexp" => {
+                    return Err(rule_set_error(
+                        "unsupported_pattern_type",
+                        Some(&format!("{field}.type")),
+                    ));
+                }
+                _ => {
+                    return Err(rule_set_error(
+                        "invalid_pattern_type",
+                        Some(&format!("{field}.type")),
+                    ));
+                }
+            };
+            let pattern = object
+                .get("value")
+                .or_else(|| object.get("literal"))
+                .ok_or_else(|| {
+                    rule_set_error("missing_pattern_value", Some(&format!("{field}.value")))
+                })?
+                .as_str()
+                .ok_or_else(|| {
+                    rule_set_error("invalid_pattern_value", Some(&format!("{field}.value")))
+                })?;
+            let case_sensitive = object
+                .get("case_sensitive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            validate_pattern_value(
+                pattern_kind,
+                pattern,
+                case_sensitive,
+                &format!("{field}.value"),
+            )
+        }
+        _ => Err(rule_set_error("invalid_pattern", Some(field))),
+    }
+}
+
+fn validate_pattern_value(
+    pattern_kind: PromptProtectionConfiguredPatternKind,
+    pattern: &str,
+    case_sensitive: bool,
+    field: &str,
+) -> Result<(PromptProtectionConfiguredPatternKind, String, bool), PromptProtectionRuleSetError> {
+    let pattern = pattern.trim();
+
+    if pattern.is_empty() {
+        return Err(rule_set_error("empty_pattern_value", Some(field)));
+    }
+    if pattern.len() > MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES {
+        return Err(rule_set_error("pattern_value_too_long", Some(field)));
+    }
+    if !pattern.is_ascii() {
+        return Err(rule_set_error("non_ascii_pattern_value", Some(field)));
+    }
+    if looks_secret_like(pattern) {
+        return Err(rule_set_error("secret_like_pattern_value", Some(field)));
+    }
+
+    Ok((pattern_kind, pattern.to_string(), case_sensitive))
+}
+
+fn configured_rule_summary(rule: &PromptProtectionConfiguredRule) -> Value {
+    json_object([
+        ("name", Value::String(rule.name.clone())),
+        (
+            "action",
+            Value::String(prompt_protection_action_label(rule.action).to_string()),
+        ),
+        ("scope", Value::String(rule.scope.as_str().to_string())),
+        (
+            "pattern_type",
+            Value::String(rule.pattern_kind.as_str().to_string()),
+        ),
+        (
+            "pattern_len_bytes",
+            Value::Number(serde_json::Number::from(rule.pattern.len())),
+        ),
+        ("case_sensitive", Value::Bool(rule.case_sensitive)),
+        ("pattern_value_omitted", Value::Bool(true)),
+    ])
+}
+
+fn rule_set_error(code: &'static str, field: Option<&str>) -> PromptProtectionRuleSetError {
+    PromptProtectionRuleSetError {
+        code,
+        field: field.map(str::to_string),
+    }
+}
+
+fn looks_secret_like(value: &str) -> bool {
+    redact_secrets(value) != value
+}
+
+fn looks_secret_like_identifier(value: &str) -> bool {
+    let value = value.trim();
+    crate::bearer_scheme_len(value).is_some()
+        || crate::SECRET_TOKEN_PREFIXES
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+}
+
+pub fn apply_prompt_protection_rule_set_to_text(
+    input: &str,
+    rule_set: &PromptProtectionRuleSet,
+) -> ConfiguredPromptProtectionResult {
+    let mut hits = Vec::new();
+    let safe_text = apply_configured_rules_to_string("text", input, &rule_set.rules, &mut hits);
+
+    ConfiguredPromptProtectionResult {
+        action: configured_action_for_hits(&hits),
+        hits,
+        safe_text,
+        safe_json: None,
+    }
+}
+
+pub fn apply_prompt_protection_rule_set_to_json(
+    value: &Value,
+    rule_set: &PromptProtectionRuleSet,
+) -> ConfiguredPromptProtectionResult {
+    let mut hits = Vec::new();
+    let safe_json = apply_configured_rules_to_json_value("$", value, &rule_set.rules, &mut hits);
+    let safe_text = safe_json.to_string();
+
+    ConfiguredPromptProtectionResult {
+        action: configured_action_for_hits(&hits),
+        hits,
+        safe_text,
+        safe_json: Some(safe_json),
+    }
+}
+
+pub fn apply_prompt_protection_rule_set_to_payload(
+    input: &str,
+    rule_set: &PromptProtectionRuleSet,
+) -> ConfiguredPromptProtectionResult {
+    match serde_json::from_str::<Value>(input) {
+        Ok(value) => apply_prompt_protection_rule_set_to_json(&value, rule_set),
+        Err(_) => apply_prompt_protection_rule_set_to_text(input, rule_set),
+    }
+}
+
+pub fn configured_prompt_protection_result_summary(
+    result: &ConfiguredPromptProtectionResult,
+) -> Value {
+    let mut actions = std::collections::BTreeMap::new();
+    let mut scopes = std::collections::BTreeSet::new();
+    let mut rules = std::collections::BTreeSet::new();
+    let mut pattern_types = std::collections::BTreeMap::new();
+
+    for hit in &result.hits {
+        *actions
+            .entry(prompt_protection_action_label(hit.action))
+            .or_insert(0usize) += 1;
+        scopes.insert(hit.scope.clone());
+        rules.insert(hit.rule_name.clone());
+        *pattern_types
+            .entry(hit.pattern_kind.as_str())
+            .or_insert(0usize) += 1;
+    }
+
+    json_object([
+        (
+            "schema",
+            Value::String(PROMPT_PROTECTION_RULE_SET_SCHEMA.to_string()),
+        ),
+        (
+            "action",
+            Value::String(prompt_protection_action_label(result.action).to_string()),
+        ),
+        (
+            "hit_count",
+            Value::Number(serde_json::Number::from(result.hits.len())),
+        ),
+        (
+            "hit_actions",
+            Value::Object(Map::from_iter(actions.into_iter().map(
+                |(action, count)| {
+                    (
+                        action.to_string(),
+                        Value::Number(serde_json::Number::from(count)),
+                    )
+                },
+            ))),
+        ),
+        (
+            "scopes",
+            Value::Array(scopes.into_iter().map(Value::String).collect()),
+        ),
+        (
+            "rules",
+            Value::Array(rules.into_iter().map(Value::String).collect()),
+        ),
+        (
+            "pattern_types",
+            Value::Object(Map::from_iter(pattern_types.into_iter().map(
+                |(kind, count)| {
+                    (
+                        kind.to_string(),
+                        Value::Number(serde_json::Number::from(count)),
+                    )
+                },
+            ))),
+        ),
+        ("raw_pattern_values_omitted", Value::Bool(true)),
+    ])
+}
+
+fn apply_configured_rules_to_json_value(
+    scope: &str,
+    value: &Value,
+    rules: &[PromptProtectionConfiguredRule],
+    hits: &mut Vec<PromptProtectionConfiguredHit>,
+) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let child_scope = json_key_scope(scope, key);
+                    if is_public_identifier_json_key(key) {
+                        return (key.clone(), value.clone());
+                    }
+
+                    (
+                        key.clone(),
+                        apply_configured_rules_to_json_value(&child_scope, value, rules, hits),
+                    )
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    apply_configured_rules_to_json_value(
+                        &json_index_scope(scope, index),
+                        value,
+                        rules,
+                        hits,
+                    )
+                })
+                .collect(),
+        ),
+        Value::String(value) => {
+            Value::String(apply_configured_rules_to_string(scope, value, rules, hits))
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
+    }
+}
+
+fn apply_configured_rules_to_string(
+    scope: &str,
+    input: &str,
+    rules: &[PromptProtectionConfiguredRule],
+    hits: &mut Vec<PromptProtectionConfiguredHit>,
+) -> String {
+    let mut safe_text = input.to_string();
+
+    for rule in rules {
+        if !configured_rule_scope_matches(&rule.scope, scope) {
+            continue;
+        }
+        if configured_rule_match_ranges(input, rule).is_empty() {
+            continue;
+        }
+
+        push_configured_hit(hits, scope, rule);
+        safe_text = mask_configured_rule_matches(&safe_text, rule);
+    }
+
+    safe_text
+}
+
+fn configured_rule_scope_matches(scope: &PromptProtectionConfiguredScope, candidate: &str) -> bool {
+    match scope {
+        PromptProtectionConfiguredScope::Any => true,
+        PromptProtectionConfiguredScope::Text => candidate == "text",
+        PromptProtectionConfiguredScope::JsonPathPrefix(prefix) => {
+            if candidate == prefix {
+                return true;
+            }
+            candidate
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+        }
+    }
+}
+
+fn configured_rule_match_ranges(
+    input: &str,
+    rule: &PromptProtectionConfiguredRule,
+) -> Vec<(usize, usize)> {
+    match rule.pattern_kind {
+        PromptProtectionConfiguredPatternKind::Literal => literal_match_ranges(input, rule),
+        PromptProtectionConfiguredPatternKind::Contains => contains_match_ranges(input, rule),
+    }
+}
+
+fn literal_match_ranges(input: &str, rule: &PromptProtectionConfiguredRule) -> Vec<(usize, usize)> {
+    if input.len() > MAX_CONFIGURED_RULE_SCAN_BYTES || input.len() != rule.pattern.len() {
+        return Vec::new();
+    }
+    let matches = if rule.case_sensitive {
+        input == rule.pattern
+    } else {
+        input.eq_ignore_ascii_case(&rule.pattern)
+    };
+
+    if matches {
+        vec![(0, input.len())]
+    } else {
+        Vec::new()
+    }
+}
+
+fn contains_match_ranges(
+    input: &str,
+    rule: &PromptProtectionConfiguredRule,
+) -> Vec<(usize, usize)> {
+    let scan_end = bounded_scan_end(input, MAX_CONFIGURED_RULE_SCAN_BYTES);
+    let haystack = &input[..scan_end];
+    let mut ranges = Vec::new();
+
+    if rule.case_sensitive {
+        collect_substring_ranges(haystack, &rule.pattern, &mut ranges);
+    } else {
+        let haystack = haystack.to_ascii_lowercase();
+        let pattern = rule.pattern.to_ascii_lowercase();
+        collect_substring_ranges(&haystack, &pattern, &mut ranges);
+    }
+
+    ranges
+}
+
+fn collect_substring_ranges(haystack: &str, pattern: &str, ranges: &mut Vec<(usize, usize)>) {
+    let mut offset = 0;
+
+    while ranges.len() < MAX_CONFIGURED_RULE_MATCHES_PER_VALUE && offset <= haystack.len() {
+        let Some(match_start) = haystack[offset..].find(pattern) else {
+            break;
+        };
+        let start = offset + match_start;
+        let end = start + pattern.len();
+        ranges.push((start, end));
+        offset = end;
+    }
+}
+
+fn mask_configured_rule_matches(input: &str, rule: &PromptProtectionConfiguredRule) -> String {
+    let ranges = configured_rule_match_ranges(input, rule);
+    if ranges.is_empty() {
+        return input.to_string();
+    }
+
+    let mut output = String::with_capacity(input.len());
+    let mut last_index = 0;
+    for (start, end) in ranges {
+        if start < last_index || end > input.len() {
+            continue;
+        }
+        output.push_str(&input[last_index..start]);
+        output.push_str(REDACTED_SECRET);
+        last_index = end;
+    }
+    output.push_str(&input[last_index..]);
+    output
+}
+
+fn bounded_scan_end(input: &str, max_bytes: usize) -> usize {
+    if input.len() <= max_bytes {
+        return input.len();
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
+}
+
+fn push_configured_hit(
+    hits: &mut Vec<PromptProtectionConfiguredHit>,
+    scope: &str,
+    rule: &PromptProtectionConfiguredRule,
+) {
+    if hits
+        .iter()
+        .any(|hit| hit.scope == scope && hit.rule_name == rule.name)
+    {
+        return;
+    }
+    if hits.len() >= MAX_PROMPT_PROTECTION_HITS {
+        return;
+    }
+
+    hits.push(PromptProtectionConfiguredHit {
+        rule_name: rule.name.clone(),
+        action: rule.action,
+        scope: scope.to_string(),
+        pattern_kind: rule.pattern_kind,
+    });
+}
+
+fn configured_action_for_hits(hits: &[PromptProtectionConfiguredHit]) -> PromptProtectionAction {
+    if hits
+        .iter()
+        .any(|hit| hit.action == PromptProtectionAction::Reject)
+    {
+        PromptProtectionAction::Reject
+    } else if hits.is_empty() {
+        PromptProtectionAction::Allow
+    } else {
+        PromptProtectionAction::Mask
+    }
+}
+
+fn is_public_identifier_json_key(key: &str) -> bool {
+    matches!(
+        crate::normalize_sensitive_name(key).as_str(),
+        "model_key" | "cache_key" | "public_key_id"
+    )
+}
+
+fn prompt_protection_action_label(action: PromptProtectionAction) -> &'static str {
+    match action {
+        PromptProtectionAction::Allow => "allow",
+        PromptProtectionAction::Mask => "mask",
+        PromptProtectionAction::Reject => "reject",
+    }
+}
+
+fn json_object<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    Value::Object(Map::from_iter(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value)),
+    ))
 }
 
 fn protect_json_value(scope: &str, value: &Value, hits: &mut Vec<PromptProtectionHit>) -> Value {
@@ -498,5 +1283,280 @@ mod tests {
                 && hit.kind == PromptProtectionHitKind::PromptInjectionPhrase
         }));
         assert!(!result.safe_text.contains("sk-live-value"));
+    }
+
+    #[test]
+    fn configurable_rule_fixture_masks_rejects_and_serializes_secret_safe_summary() {
+        let fixture = configurable_rule_fixture();
+        let rule_set = parse_prompt_protection_rule_set(&fixture["valid_config"])
+            .expect("valid configurable rule set");
+        let rule_set_summary = prompt_protection_rule_set_summary(&rule_set);
+        let result =
+            apply_prompt_protection_rule_set_to_json(&fixture["sample_payload"], &rule_set);
+        let result_summary = configured_prompt_protection_result_summary(&result);
+        let safe_json = result.safe_json.as_ref().expect("safe json");
+
+        assert_eq!(rule_set.rules.len(), 3);
+        assert_eq!(
+            rule_set_summary["schema"],
+            PROMPT_PROTECTION_RULE_SET_SCHEMA
+        );
+        assert_eq!(rule_set_summary["rule_count"], 3);
+        assert_eq!(
+            rule_set_summary["limits"]["max_rules"],
+            MAX_PROMPT_PROTECTION_CONFIGURED_RULES
+        );
+        assert_eq!(result.action, PromptProtectionAction::Reject);
+        assert_eq!(
+            result.hits.len(),
+            fixture["expected_result"]["hit_count"]
+                .as_u64()
+                .expect("hit count") as usize
+        );
+        assert_eq!(
+            safe_json["model_key"],
+            fixture["expected_result"]["safe_public_fields"]["model_key"]
+        );
+        assert_eq!(
+            safe_json["cache_key"],
+            fixture["expected_result"]["safe_public_fields"]["cache_key"]
+        );
+        assert_eq!(
+            safe_json["public_key_id"],
+            fixture["expected_result"]["safe_public_fields"]["public_key_id"]
+        );
+        assert!(
+            safe_json["messages"][0]["content"]
+                .as_str()
+                .expect("safe content")
+                .contains(REDACTED_SECRET)
+        );
+        assert_eq!(safe_json["metadata"]["ticket"], REDACTED_SECRET);
+        assert_eq!(result_summary["action"], "reject");
+        assert_eq!(result_summary["hit_count"], 3);
+        assert_eq!(result_summary["raw_pattern_values_omitted"], true);
+
+        let serialized_safe_outputs = format!("{rule_set_summary}{result_summary}");
+        for marker in fixture["forbidden_serialized_markers"]
+            .as_array()
+            .expect("forbidden markers")
+        {
+            let marker = marker.as_str().expect("marker string");
+            assert!(
+                !serialized_safe_outputs
+                    .to_ascii_lowercase()
+                    .contains(&marker.to_ascii_lowercase()),
+                "configured prompt protection summary leaked marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn configurable_rules_scope_text_and_json_paths() {
+        let rules = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [
+                {
+                    "name": "text_mask",
+                    "action": "mask",
+                    "scope": "text",
+                    "pattern": { "type": "contains", "value": "plain marker" }
+                },
+                {
+                    "name": "metadata_reject",
+                    "action": "reject",
+                    "scope": "$.metadata.reason",
+                    "pattern": { "type": "literal", "value": "blocked" }
+                }
+            ]
+        }))
+        .expect("rules");
+
+        let text_result = apply_prompt_protection_rule_set_to_text("plain marker in text", &rules);
+        let json_result = apply_prompt_protection_rule_set_to_json(
+            &json!({
+                "messages": [{ "content": "plain marker in json should not match text scope" }],
+                "metadata": { "reason": "blocked" }
+            }),
+            &rules,
+        );
+
+        assert_eq!(text_result.action, PromptProtectionAction::Mask);
+        assert_eq!(text_result.safe_text, format!("{REDACTED_SECRET} in text"));
+        assert_eq!(json_result.action, PromptProtectionAction::Reject);
+        assert_eq!(
+            json_result.safe_json.as_ref().expect("safe json")["messages"][0]["content"],
+            "plain marker in json should not match text scope"
+        );
+        assert_eq!(
+            json_result.safe_json.as_ref().expect("safe json")["metadata"]["reason"],
+            REDACTED_SECRET
+        );
+    }
+
+    #[test]
+    fn configurable_rules_reject_invalid_config_without_echoing_secret_material() {
+        let fixture = configurable_rule_fixture();
+        let contract = &fixture["invalid_config_contract"];
+        let unsupported_regex = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "reject_regex",
+                "action": "reject",
+                "scope": "messages",
+                "pattern": { "type": "regex", "value": "ignore previous instructions" }
+            }]
+        }))
+        .expect_err("regex is not enabled in this crate slice");
+        assert_eq!(
+            unsupported_regex.code,
+            contract["unsupported_regex_pattern_code"]
+                .as_str()
+                .expect("code")
+        );
+
+        let secret_name = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "sk-live-secret",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": { "type": "contains", "value": "safe marker" }
+            }]
+        }))
+        .expect_err("secret-like rule name");
+        assert_eq!(
+            secret_name.code,
+            contract["secret_like_rule_name_code"]
+                .as_str()
+                .expect("code")
+        );
+        assert!(!secret_name.to_string().contains("sk-live-secret"));
+
+        let sensitive_field_name = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "authorization",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": { "type": "contains", "value": "safe marker" }
+            }]
+        }))
+        .expect_err("sensitive field names should not be exposed as rule names");
+        assert_eq!(
+            sensitive_field_name.code,
+            contract["secret_like_rule_name_code"]
+                .as_str()
+                .expect("code")
+        );
+        assert!(!sensitive_field_name.to_string().contains("safe marker"));
+
+        let secret_pattern = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "mask_header",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": {
+                    "type": "contains",
+                    "value": "Authorization: Bearer sk-live-secret"
+                }
+            }]
+        }))
+        .expect_err("secret-like pattern");
+        assert_eq!(
+            secret_pattern.code,
+            contract["secret_like_pattern_value_code"]
+                .as_str()
+                .expect("code")
+        );
+        let secret_pattern_text = secret_pattern.to_string();
+        assert!(!secret_pattern_text.contains("sk-live-secret"));
+        assert!(!secret_pattern_text.contains("Authorization: Bearer"));
+
+        let too_many_rules = Value::Object(Map::from_iter([
+            (
+                "schema".to_string(),
+                Value::String(PROMPT_PROTECTION_RULE_SET_SCHEMA.to_string()),
+            ),
+            (
+                "rules".to_string(),
+                Value::Array(
+                    (0..=MAX_PROMPT_PROTECTION_CONFIGURED_RULES)
+                        .map(|index| {
+                            json!({
+                                "name": format!("rule_{index}"),
+                                "action": "mask",
+                                "scope": "messages",
+                                "pattern": { "type": "contains", "value": "safe marker" }
+                            })
+                        })
+                        .collect(),
+                ),
+            ),
+        ]));
+        let too_many_rules = parse_prompt_protection_rule_set(&too_many_rules)
+            .expect_err("too many rules should fail");
+        assert_eq!(
+            too_many_rules.code,
+            contract["too_many_rules_code"].as_str().expect("code")
+        );
+
+        let long_pattern = "a".repeat(MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES + 1);
+        let long_pattern = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "long_pattern",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": { "type": "contains", "value": long_pattern }
+            }]
+        }))
+        .expect_err("long pattern should fail");
+        assert_eq!(
+            long_pattern.code,
+            contract["pattern_value_too_long_code"]
+                .as_str()
+                .expect("code")
+        );
+    }
+
+    #[test]
+    fn configurable_rules_do_not_mask_public_identifier_fields() {
+        let rule_set = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "mask_public_id_marker",
+                "action": "mask",
+                "scope": "any",
+                "pattern": { "type": "contains", "value": "pk_live" }
+            }]
+        }))
+        .expect("rule set");
+        let payload = json!({
+            "model_key": "pk_live_model_key_marker",
+            "cache_key": "pk_live_cache_key_marker",
+            "public_key_id": "pk_live_public_identifier",
+            "messages": [{ "content": "pk_live should be masked in prompt content" }]
+        });
+
+        let result = apply_prompt_protection_rule_set_to_json(&payload, &rule_set);
+        let safe_json = result.safe_json.as_ref().expect("safe json");
+
+        assert_eq!(result.action, PromptProtectionAction::Mask);
+        assert_eq!(safe_json["model_key"], "pk_live_model_key_marker");
+        assert_eq!(safe_json["cache_key"], "pk_live_cache_key_marker");
+        assert_eq!(safe_json["public_key_id"], "pk_live_public_identifier");
+        assert_eq!(
+            safe_json["messages"][0]["content"],
+            format!("{REDACTED_SECRET} should be masked in prompt content")
+        );
+    }
+
+    fn configurable_rule_fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/observability/prompt_protection_configurable_rules_contract.json"
+        ))
+        .expect("configurable prompt protection fixture should be valid json")
     }
 }

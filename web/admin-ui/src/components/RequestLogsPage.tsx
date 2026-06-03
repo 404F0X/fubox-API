@@ -457,18 +457,17 @@ function RouteTracePanel({ detail }: { detail: RequestLogDetail }) {
       <div className="section-heading">
         <div>
           <h2>Route Trace</h2>
-          <p>{safeFieldValue(detail.request_log.route_policy_version)}</p>
         </div>
       </div>
 
       <dl className="detail-list">
         <div>
-          <dt>Strategy</dt>
-          <dd>{summary.strategy}</dd>
-        </div>
-        <div>
           <dt>Selected channel</dt>
           <dd>{safeShortId(summary.selectedChannelId)}</dd>
+        </div>
+        <div>
+          <dt>Provider model</dt>
+          <dd>{summary.selectedProviderModel}</dd>
         </div>
         <div>
           <dt>Candidates</dt>
@@ -479,8 +478,16 @@ function RouteTracePanel({ detail }: { detail: RequestLogDetail }) {
           <dd>{summary.filteredCount}</dd>
         </div>
         <div>
-          <dt>Snapshot version</dt>
-          <dd>{summary.version}</dd>
+          <dt>Filter reasons</dt>
+          <dd>{summary.filterReasons}</dd>
+        </div>
+        <div>
+          <dt>Selected score</dt>
+          <dd>{summary.selectedScoreTotal}</dd>
+        </div>
+        <div>
+          <dt>Trace affinity</dt>
+          <dd>{summary.traceAffinityStatus}</dd>
         </div>
       </dl>
     </article>
@@ -488,55 +495,66 @@ function RouteTracePanel({ detail }: { detail: RequestLogDetail }) {
 }
 
 function summarizeRouteDecisionSnapshot(snapshot: JsonValue) {
-  if (!isJsonRecord(snapshot)) {
-    return {
-      candidateCount: 0,
-      filteredCount: 0,
-      selectedChannelId: null,
-      strategy: "-",
-      version: "-",
-    };
+  const emptySummary = {
+    candidateCount: "-",
+    filterReasons: "-",
+    filteredCount: "-",
+    selectedChannelId: null,
+    selectedProviderModel: "-",
+    selectedScoreTotal: "-",
+    traceAffinityStatus: "-",
+  };
+
+  if (!isJsonRecord(snapshot) || !isJsonRecord(snapshot.summary)) {
+    return emptySummary;
   }
 
-  const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
-  const filteredCount = candidates.filter(
-    (candidate) =>
-      isJsonRecord(candidate) &&
-      candidate.filter_reason !== null &&
-      candidate.filter_reason !== undefined &&
-      candidate.filter_reason !== "",
-  ).length;
+  const summary = snapshot.summary;
 
   return {
-    candidateCount: candidates.length,
-    filteredCount,
-    selectedChannelId: routeSnapshotSelectedChannelId(snapshot),
-    strategy: safeFieldValue(snapshot.strategy),
-    version: safeFieldValue(snapshot.version),
+    candidateCount: safeNumberField(summary.candidate_count),
+    filterReasons: formatFilterReasons(summary.filter_reasons),
+    filteredCount: safeNumberField(summary.filtered_count),
+    selectedChannelId: stringField(summary.selected_channel_id),
+    selectedProviderModel: safeStringField(summary.selected_provider_model),
+    selectedScoreTotal: safeNumberField(summary.selected_score_total),
+    traceAffinityStatus: safeStringField(summary.trace_affinity_status),
   };
 }
 
-function routeSnapshotSelectedChannelId(snapshot: Record<string, JsonValue>): string | null {
-  if (typeof snapshot.selected_channel_id === "string") {
-    return snapshot.selected_channel_id;
+function stringField(value: JsonValue | undefined): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function safeStringField(value: JsonValue | undefined): string {
+  const stringValue = stringField(value);
+
+  return stringValue ? safeFieldValue(stringValue) : "-";
+}
+
+function safeNumberField(value: JsonValue | undefined): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return safeFieldValue(value);
   }
 
-  const selected = snapshot.selected ?? null;
-  if (isJsonRecord(selected) && typeof selected.channel_id === "string") {
-    return selected.channel_id;
+  if (typeof value === "string") {
+    return safeFieldValue(value);
   }
 
-  const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates : [];
-  const selectedCandidate = candidates.find(
-    (candidate) => isJsonRecord(candidate) && candidate.selected === true,
-  );
+  return "-";
+}
 
-  const selectedCandidateValue = selectedCandidate ?? null;
-  if (isJsonRecord(selectedCandidateValue) && typeof selectedCandidateValue.channel_id === "string") {
-    return selectedCandidateValue.channel_id;
+function formatFilterReasons(value: JsonValue | undefined): string {
+  if (!Array.isArray(value)) {
+    return "-";
   }
 
-  return null;
+  const reasons = value
+    .filter((item): item is string => typeof item === "string")
+    .map(safeFieldValue)
+    .filter((item) => item !== "-");
+
+  return reasons.length > 0 ? reasons.join(", ") : "-";
 }
 
 function toListFilters(filters: FilterState): RequestLogListFilters {

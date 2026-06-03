@@ -1,0 +1,123 @@
+{
+  "scenario": "trace_affinity_previous_success_lookup_contract",
+  "crate": "ai-gateway-db",
+  "function": "build_trace_affinity_previous_success_lookup",
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "project_id": "00000000-0000-0000-0000-000000000002",
+    "trace_id": "trace-contract-1",
+    "canonical_model_id": "00000000-0000-0000-0000-000000000010",
+    "not_before": "2026-06-03T11:00:00Z",
+    "lookback_seconds": 7200,
+    "limit": 99
+  },
+  "expected_plan_summary": {
+    "schema": "trace_affinity_previous_success_lookup_v1",
+    "enabled": true,
+    "skip_reason": null,
+    "source_table": "request_logs",
+    "index_hint": "idx_request_logs_trace_time",
+    "index_columns": [
+      "tenant_id",
+      "trace_id",
+      "created_at"
+    ],
+    "tenant_scoped": true,
+    "project_scoped": true,
+    "canonical_model_scoped": true,
+    "trace_id_len": 16,
+    "trace_id_material_in_output": false,
+    "created_at_ttl_bound": true,
+    "not_before_bound": true,
+    "lookback_seconds": 7200,
+    "limit": 8,
+    "status_filter": "succeeded",
+    "order_by": "created_at desc, id desc",
+    "output_fields": [
+      "channel_id",
+      "provider_id",
+      "canonical_model_id",
+      "upstream_model"
+    ],
+    "omitted_fields": [
+      "request_id",
+      "trace_id",
+      "provider_key_id",
+      "virtual_key_id",
+      "api_key_profile_id",
+      "route_decision_snapshot",
+      "request_body_hash",
+      "response_body_hash",
+      "payload_object_ref",
+      "payload",
+      "body",
+      "metadata"
+    ]
+  },
+  "expected_sql_fragments": [
+    "from request_logs",
+    "where tenant_id = $1",
+    "and trace_id = $2",
+    "and created_at >= $3::timestamptz",
+    "and ($4::uuid is null or project_id = $4)",
+    "and ($5::uuid is null or canonical_model_id = $5)",
+    "and status = 'succeeded'",
+    "and resolved_channel_id is not null",
+    "and resolved_provider_id is not null",
+    "order by created_at desc, id desc",
+    "limit $6"
+  ],
+  "disallowed_sql_fragments": [
+    "select *",
+    "provider_key_id",
+    "request_body_hash",
+    "response_body_hash",
+    "route_decision_snapshot",
+    "payload",
+    "metadata",
+    "authorization",
+    "secret"
+  ],
+  "refusal_cases": [
+    {
+      "name": "missing_trace",
+      "trace_id": null,
+      "not_before": "2026-06-03T11:00:00Z",
+      "expected_skip_reason": "MissingTraceId"
+    },
+    {
+      "name": "blank_trace",
+      "trace_id": "   ",
+      "not_before": "2026-06-03T11:00:00Z",
+      "expected_skip_reason": "BlankTraceId"
+    },
+    {
+      "name": "too_long_trace",
+      "trace_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "not_before": "2026-06-03T11:00:00Z",
+      "expected_skip_reason": "TraceIdTooLong"
+    },
+    {
+      "name": "missing_ttl_cutoff",
+      "trace_id": "trace-contract-1",
+      "not_before": null,
+      "expected_skip_reason": "MissingNotBefore"
+    }
+  ],
+  "safety_contract": {
+    "query_uses_existing_index": "idx_request_logs_trace_time",
+    "index_prefix": [
+      "tenant_id",
+      "trace_id"
+    ],
+    "bounded_by_created_at_ttl": true,
+    "bounded_limit_max": 8,
+    "raw_trace_id_in_safe_summary": false,
+    "raw_payload_or_secret_output": false,
+    "gateway_runtime_mutation": false
+  },
+  "notes": [
+    "The caller computes not_before from now - TTL and binds it as $3; the SQL skeleton keeps created_at sargable for the request_logs trace index.",
+    "The lookup returns only channel/provider/model summary fields. Current candidates still decide whether the remembered channel is selectable."
+  ]
+}

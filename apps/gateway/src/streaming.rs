@@ -49,6 +49,7 @@ use crate::{
     pre_authorize_before_provider_attempt, provider_attempt_fallback_metadata,
     provider_error_can_fallback, record_endpoint_request_final_metrics, record_request_final_route,
     request_for_upstream, responses_request_for_upstream, route_snapshot_with_final_attempt,
+    validate_anthropic_route_endpoint_for_provider_call, validate_route_endpoint_for_provider_call,
 };
 
 const OPENAI_STREAM_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
@@ -164,7 +165,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
 
         let provider_started_at = Instant::now();
         let upstream_client =
-            match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout) {
+            match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout).await {
                 Ok(client) => client,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
@@ -375,7 +376,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
 
         let provider_started_at = Instant::now();
         let upstream_client =
-            match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout) {
+            match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout).await {
                 Ok(client) => client,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
@@ -615,6 +616,23 @@ pub(crate) async fn anthropic_messages_streaming(
                 return anthropic_adapter_error_response(error);
             }
         };
+
+        if let Err(error) = validate_anthropic_route_endpoint_for_provider_call(route).await {
+            let summary = summarize_anthropic_adapter_error(&error);
+            finish_provider_attempt_with_anthropic_adapter_error(
+                repository,
+                auth,
+                route,
+                attempt_id,
+                provider_started_at,
+                &error,
+                summary.clone(),
+            )
+            .await;
+            finish_request_with_error(repository, auth, request_id, request_started_at, summary)
+                .await;
+            return anthropic_adapter_error_response(error);
+        }
 
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
@@ -866,6 +884,33 @@ pub(crate) async fn gemini_generate_content_streaming(
                 return adapter_error_response(error);
             }
         };
+
+        if let Err(error) = validate_route_endpoint_for_provider_call(route).await {
+            let summary = summarize_adapter_error(&error);
+            finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
+                crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                repository,
+                auth,
+                route,
+                attempt_id,
+                provider_started_at,
+                &error,
+                summary.clone(),
+                None,
+                json!({}),
+            )
+            .await;
+            finish_request_with_error_for_endpoint(
+                crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                repository,
+                auth,
+                request_id,
+                request_started_at,
+                summary,
+            )
+            .await;
+            return adapter_error_response(error);
+        }
 
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
