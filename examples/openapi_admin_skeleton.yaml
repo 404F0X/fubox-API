@@ -294,6 +294,25 @@ paths:
       summary: Summarize provider routing health
       operationId: getProviderHealthSummary
       description: Returns a best-effort provider/channel/provider-key/model health dashboard summary from configured status fields and a bounded request-log sample. Provider key credential material is never returned.
+      parameters:
+        - name: window_minutes
+          in: query
+          required: false
+          description: Request-log time window used for success-rate calculations.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1440
+            default: 60
+        - name: sample_limit
+          in: query
+          required: false
+          description: Maximum request-log rows sampled inside the time window. Values above 500 are capped server-side.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 500
       responses:
         '200':
           description: Provider health summary.
@@ -2038,14 +2057,21 @@ components:
     HealthSummaryRecentStats:
       type: object
       additionalProperties: false
-      required: [request_count, error_count, last_error]
+      required: [request_count, success_count, error_count, success_rate, last_error]
       properties:
         request_count:
+          type: integer
+          minimum: 0
+        success_count:
           type: integer
           minimum: 0
         error_count:
           type: integer
           minimum: 0
+        success_rate:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
         last_error:
           oneOf:
             - $ref: '#/components/schemas/HealthSummaryRecentLastError'
@@ -2284,17 +2310,52 @@ components:
         recent_window:
           type: object
           additionalProperties: false
-          required: [source, sample_limit, sample_count]
+          required:
+            - source
+            - window
+            - window_minutes
+            - sample_limit
+            - sample_count
+            - success_count
+            - error_count
+            - success_rate
           properties:
             source:
               type: string
               const: request_logs
+            window:
+              type: object
+              additionalProperties: false
+              required: [unit, minutes]
+              properties:
+                unit:
+                  type: string
+                  const: minutes
+                minutes:
+                  type: integer
+                  minimum: 1
+                  maximum: 1440
+            window_minutes:
+              type: integer
+              minimum: 1
+              maximum: 1440
             sample_limit:
               type: integer
               minimum: 1
+              maximum: 500
             sample_count:
               type: integer
               minimum: 0
+            success_count:
+              type: integer
+              minimum: 0
+            error_count:
+              type: integer
+              minimum: 0
+            success_rate:
+              type: [number, 'null']
+              minimum: 0
+              maximum: 1
         totals:
           type: object
           additionalProperties: false

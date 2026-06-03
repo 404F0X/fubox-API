@@ -626,6 +626,7 @@ describe("api client", () => {
     await createApiKeyProfile({
       allowed_models: ["gpt-visible"],
       denied_models: ["gpt-denied"],
+      ip_allowlist: ["198.51.100.0/24"],
       model_aliases: { fast: "gpt-visible" },
       name: "default",
       project_id: "project-1",
@@ -634,6 +635,7 @@ describe("api client", () => {
     await patchApiKeyProfile("profile-1", {
       allowed_models: ["gpt-visible", "gpt-visible-2"],
       denied_models: ["gpt-denied"],
+      ip_allowlist: ["198.51.100.10"],
       model_aliases: { fast: "gpt-visible-2" },
       name: "renamed",
       status: "disabled",
@@ -667,6 +669,7 @@ describe("api client", () => {
       body: JSON.stringify({
         allowed_models: ["gpt-visible"],
         denied_models: ["gpt-denied"],
+        ip_allowlist: ["198.51.100.0/24"],
         model_aliases: { fast: "gpt-visible" },
         name: "default",
         project_id: "project-1",
@@ -678,6 +681,7 @@ describe("api client", () => {
       body: JSON.stringify({
         allowed_models: ["gpt-visible", "gpt-visible-2"],
         denied_models: ["gpt-denied"],
+        ip_allowlist: ["198.51.100.10"],
         model_aliases: { fast: "gpt-visible-2" },
         name: "renamed",
         status: "disabled",
@@ -752,6 +756,7 @@ describe("api client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await getProviderHealthSummary();
+    await getProviderHealthSummary({ window_minutes: 15, sample_limit: 25 });
     await listPriceVersions({
       price_book_id: "price-book-1",
       canonical_model_id: "model-1",
@@ -773,6 +778,7 @@ describe("api client", () => {
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
       "/api/control-plane/admin/providers/health-summary",
+      "/api/control-plane/admin/providers/health-summary?window_minutes=15&sample_limit=25",
       "/api/control-plane/admin/price-versions?price_book_id=price-book-1&canonical_model_id=model-1&status=active&limit=25",
       "/api/control-plane/admin/ledger/entries?project_id=project-1&request_id=request-1&wallet_id=wallet-1&limit=50",
       "/api/control-plane/admin/billing/reconciliation?day=2026-06-02&limit=5",
@@ -781,7 +787,8 @@ describe("api client", () => {
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "GET" });
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "GET" });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "GET" });
-    expect(fetchMock.mock.calls[3][1]?.body).toBeUndefined();
+    expect(fetchMock.mock.calls[4][1]).toMatchObject({ method: "GET" });
+    expect(fetchMock.mock.calls[4][1]?.body).toBeUndefined();
   });
 
   it("keeps admin login cookie-only by default and only sends explicit fallback tokens", async () => {

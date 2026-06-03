@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 const DEFAULT_DISCREPANCY_LIMIT: usize = 50;
 const MAX_DISCREPANCY_LIMIT: usize = 500;
+const DEFAULT_DB_READ_BATCH_SIZE: usize = 1_000;
+const MAX_DB_READ_BATCH_SIZE: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BillingReconciliationMode {
@@ -31,6 +33,8 @@ pub(crate) struct BillingReconciliationInput {
     window: BillingReconciliationWindowInput,
     #[serde(default)]
     scheduler: BillingReconciliationSchedulerInput,
+    #[serde(default)]
+    db_read: BillingReconciliationDbReadInput,
     #[serde(default)]
     project_id: Option<Uuid>,
     #[serde(default)]
@@ -85,6 +89,20 @@ struct BillingReconciliationWatermarkInput {
     value: Option<String>,
     #[serde(default)]
     updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct BillingReconciliationDbReadInput {
+    #[serde(default)]
+    last_run_source: Option<String>,
+    #[serde(default)]
+    watermark_source: Option<String>,
+    #[serde(default)]
+    cursor_kind: Option<String>,
+    #[serde(default)]
+    state_table: Option<String>,
+    #[serde(default)]
+    read_batch_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -145,6 +163,7 @@ pub(crate) struct BillingReconciliationPlan {
     scheduler: BillingReconciliationSchedulerPlan,
     window: BillingReconciliationWindowPlan,
     scope: BillingReconciliationScopePlan,
+    db_read_plan: BillingReconciliationDbReadPlan,
     source: BillingReconciliationSourceReport,
     input: BillingReconciliationInputReport,
     contract: BillingReconciliationContractReport,
@@ -210,6 +229,57 @@ struct BillingReconciliationScopePlan {
     tenant_id: Uuid,
     all_projects: bool,
     project_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationDbReadPlan {
+    planned: bool,
+    connection_attempted: bool,
+    read_only: bool,
+    db_writes: bool,
+    database_url_output: &'static str,
+    transaction: &'static str,
+    batch_size: usize,
+    last_run_source: BillingReconciliationDbStateReadPlan,
+    watermark_source: BillingReconciliationDbStateReadPlan,
+    cursor: BillingReconciliationDbCursorPlan,
+    postgres_query: BillingReconciliationPostgresReadShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationDbStateReadPlan {
+    source: String,
+    planned_table: String,
+    lookup_key: &'static str,
+    fallback_source: &'static str,
+    input_present: bool,
+    read_attempted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationDbCursorPlan {
+    kind: String,
+    lower_bound: String,
+    lower_bound_source: &'static str,
+    upper_bound: String,
+    upper_bound_source: &'static str,
+    bounds: &'static str,
+    checkpoint_after_success: String,
+    checkpoint_persisted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct BillingReconciliationPostgresReadShape {
+    query_id: &'static str,
+    query_skeleton: &'static str,
+    parameters: Vec<&'static str>,
+    ctes: Vec<&'static str>,
+    source_tables: Vec<&'static str>,
+    filters: Vec<&'static str>,
+    project_filter_applied: bool,
+    project_filter_parameter: Option<&'static str>,
+    result_columns: Vec<&'static str>,
+    order_by: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -326,6 +396,7 @@ pub(crate) fn billing_reconciliation_plan(
         );
     };
     let scheduler_state = scheduler_state_report(input.scheduler, day_source)?;
+    let db_read_input = input.db_read.clone();
     let window = resolved_window(&day, input.window)?;
     let tenant_id = tenant_id_override
         .or(input.tenant_id)
@@ -351,6 +422,7 @@ pub(crate) fn billing_reconciliation_plan(
 
     let selected_row_count = rows.len();
     let project_filter_applied = !project_ids.is_empty();
+    let db_read_plan = db_read_plan(db_read_input, &window, &project_ids, &scheduler_state)?;
     let zero_cost_matched_count = rows.iter().filter(|row| is_zero_cost_matched(row)).count();
     let report = reconcile_billing_usage_ledger(tenant_id, rows, discrepancy_limit)
         .map_err(|error| super::safe_error_text(&error.to_string()))?;
@@ -383,6 +455,7 @@ pub(crate) fn billing_reconciliation_plan(
             all_projects: project_ids.is_empty(),
             project_ids,
         },
+        db_read_plan,
         source: source_report(source),
         input: BillingReconciliationInputReport {
             row_count: source_row_count,
@@ -399,6 +472,8 @@ pub(crate) fn billing_reconciliation_plan(
                 "zero_cost_matched",
                 "daily_scheduler_window",
                 "last_run_watermark",
+                "postgres_read_plan",
+                "cursor_watermark_read_plan",
             ],
             stable_fields: vec![
                 "schema_version",
@@ -409,6 +484,9 @@ pub(crate) fn billing_reconciliation_plan(
                 "scheduler.watermark",
                 "window",
                 "scope",
+                "db_read_plan",
+                "db_read_plan.cursor",
+                "db_read_plan.postgres_query",
                 "would_report",
                 "report.summary",
                 "report.discrepancies",
@@ -434,11 +512,11 @@ pub(crate) fn billing_reconciliation_plan(
 
 pub(crate) fn billing_reconciliation_execute_error(force: bool) -> String {
     if force {
-        return "billing-reconciliation execute/send is not implemented in this dry-run slice; future DB writer and alert sender are required"
+        return "billing-reconciliation execute/send is not implemented in this dry-run slice; future DB reader/writer and alert sender are required"
             .to_string();
     }
 
-    "billing-reconciliation execute/send requires --force and is not implemented in this dry-run slice; future DB writer and alert sender are required"
+    "billing-reconciliation execute/send requires --force and is not implemented in this dry-run slice; future DB reader/writer and alert sender are required"
         .to_string()
 }
 
@@ -600,12 +678,138 @@ fn source_report(source: BillingReconciliationInputSource) -> BillingReconciliat
     }
 }
 
+fn db_read_plan(
+    input: BillingReconciliationDbReadInput,
+    window: &BillingReconciliationWindowPlan,
+    project_ids: &[Uuid],
+    scheduler_state: &BillingReconciliationSchedulerState,
+) -> Result<BillingReconciliationDbReadPlan, String> {
+    let state_table =
+        optional_safe_text(input.state_table).unwrap_or_else(|| "worker_job_state".to_string());
+    let last_run_source = optional_safe_text(input.last_run_source)
+        .unwrap_or_else(|| "worker_job_state.last_run".to_string());
+    let watermark_source = optional_safe_text(input.watermark_source)
+        .unwrap_or_else(|| "worker_job_state.watermark".to_string());
+    let cursor_kind = optional_safe_text(input.cursor_kind).unwrap_or_else(|| "window_end".into());
+    let batch_size = normalize_db_read_batch_size(input.read_batch_size)?;
+    let (lower_bound, lower_bound_source) =
+        if let Some(watermark) = scheduler_state.watermark.value.as_deref() {
+            (watermark.to_string(), "scheduler.watermark.value")
+        } else {
+            (window.period_start.clone(), "window.period_start")
+        };
+
+    Ok(BillingReconciliationDbReadPlan {
+        planned: true,
+        connection_attempted: false,
+        read_only: true,
+        db_writes: false,
+        database_url_output: "omitted",
+        transaction: "read_only_repeatable_read",
+        batch_size,
+        last_run_source: BillingReconciliationDbStateReadPlan {
+            source: last_run_source,
+            planned_table: state_table.clone(),
+            lookup_key: "tenant_id + job_name",
+            fallback_source: "input.scheduler.last_run",
+            input_present: scheduler_state.last_run.present,
+            read_attempted: false,
+        },
+        watermark_source: BillingReconciliationDbStateReadPlan {
+            source: watermark_source,
+            planned_table: state_table,
+            lookup_key: "tenant_id + job_name + cursor_kind",
+            fallback_source: "input.scheduler.watermark",
+            input_present: scheduler_state.watermark.present,
+            read_attempted: false,
+        },
+        cursor: BillingReconciliationDbCursorPlan {
+            kind: cursor_kind,
+            lower_bound,
+            lower_bound_source,
+            upper_bound: window.period_end.clone(),
+            upper_bound_source: "window.period_end",
+            bounds: "closed_open",
+            checkpoint_after_success: window.period_end.clone(),
+            checkpoint_persisted: false,
+        },
+        postgres_query: BillingReconciliationPostgresReadShape {
+            query_id: "billing_reconciliation_input_select.v1",
+            query_skeleton: "with job_state as (...), bounds as (...), periods as (...), request_usage as (...), ledger_rollup as (...), joined as (...) select reconciliation rows",
+            parameters: vec![
+                "$1 tenant_id",
+                "$2 report_day",
+                "$3 project_ids optional",
+                "$4 cursor_lower_bound",
+                "$5 cursor_upper_bound",
+                "$6 batch_size",
+            ],
+            ctes: vec![
+                "job_state",
+                "bounds",
+                "periods",
+                "request_usage",
+                "ledger_rollup",
+                "joined",
+            ],
+            source_tables: vec!["worker_job_state", "request_logs", "ledger_entries"],
+            filters: vec![
+                "tenant_id = $1",
+                "coalesce(request_logs.completed_at, request_logs.created_at) >= $4",
+                "coalesce(request_logs.completed_at, request_logs.created_at) < $5",
+                "ledger_entries.entry_type in ('settle', 'refund')",
+                "ledger_entries.status in ('pending', 'confirmed')",
+                "ledger_entries.occurred_at >= $4",
+                "ledger_entries.occurred_at < $5",
+            ],
+            project_filter_applied: !project_ids.is_empty(),
+            project_filter_parameter: (!project_ids.is_empty()).then_some("$3 project_ids"),
+            result_columns: vec![
+                "tenant_id",
+                "period_start",
+                "period_end",
+                "request_id",
+                "project_id",
+                "virtual_key_id",
+                "trace_id",
+                "canonical_model_id",
+                "resolved_provider_id",
+                "resolved_channel_id",
+                "requested_model",
+                "upstream_model",
+                "request_status",
+                "input_tokens",
+                "output_tokens",
+                "request_final_cost",
+                "request_currency",
+                "ledger_entry_ids",
+                "ledger_entry_count",
+                "ledger_amount",
+                "ledger_currency",
+            ],
+            order_by: vec![
+                "coalesce(request_completed_at, request_created_at, ledger_last_created_at) desc nulls last",
+                "request_id nulls last",
+            ],
+        },
+    })
+}
+
 fn normalize_discrepancy_limit(limit: Option<usize>) -> Result<usize, String> {
     let limit = limit.unwrap_or(DEFAULT_DISCREPANCY_LIMIT);
     if limit == 0 {
         return Err("limit must be at least 1".to_string());
     }
     Ok(limit.min(MAX_DISCREPANCY_LIMIT))
+}
+
+fn normalize_db_read_batch_size(batch_size: Option<usize>) -> Result<usize, String> {
+    let batch_size = batch_size.unwrap_or(DEFAULT_DB_READ_BATCH_SIZE);
+    if batch_size == 0 {
+        return Err("db_read.read_batch_size must be at least 1".to_string());
+    }
+
+    Ok(batch_size.min(MAX_DB_READ_BATCH_SIZE))
 }
 
 fn optional_iso_day(value: Option<String>) -> Result<Option<String>, String> {
@@ -790,10 +994,12 @@ mod tests {
 
     #[test]
     fn fixture_builds_daily_reconciliation_plan_contract() {
-        let input = billing_reconciliation_input_from_json_str(include_str!(
+        let fixture = include_str!(
             "../../../tests/fixtures/worker/billing_reconciliation_plan_contract.json"
-        ))
-        .expect("fixture should parse");
+        );
+        let fixture_contract: Value = serde_json::from_str(fixture).expect("fixture is JSON");
+        let input =
+            billing_reconciliation_input_from_json_str(fixture).expect("fixture should parse");
 
         let plan = billing_reconciliation_plan(
             None,
@@ -829,6 +1035,67 @@ mod tests {
         assert_eq!(plan.window.bounds, "closed_open");
         assert_eq!(plan.scope.tenant_id, TENANT_ID);
         assert!(!plan.scope.all_projects);
+        assert!(plan.db_read_plan.planned);
+        assert!(!plan.db_read_plan.connection_attempted);
+        assert!(plan.db_read_plan.read_only);
+        assert!(!plan.db_read_plan.db_writes);
+        assert_eq!(plan.db_read_plan.database_url_output, "omitted");
+        assert_eq!(plan.db_read_plan.cursor.bounds, "closed_open");
+        assert_eq!(
+            plan.db_read_plan.cursor.lower_bound_source,
+            "scheduler.watermark.value"
+        );
+        assert_eq!(plan.db_read_plan.cursor.lower_bound, "2026-06-02T00:00:00Z");
+        assert_eq!(
+            plan.db_read_plan.cursor.upper_bound,
+            "2026-06-03 00:00:00+00"
+        );
+        assert!(plan.db_read_plan.postgres_query.project_filter_applied);
+        assert_eq!(
+            plan.db_read_plan.postgres_query.query_id,
+            "billing_reconciliation_input_select.v1"
+        );
+        assert!(
+            plan.db_read_plan
+                .postgres_query
+                .source_tables
+                .contains(&"request_logs")
+        );
+        assert!(
+            plan.db_read_plan
+                .postgres_query
+                .source_tables
+                .contains(&"ledger_entries")
+        );
+        let expected_db = &fixture_contract["expected_output_contract"]["db_read_plan"];
+        assert_eq!(
+            plan.db_read_plan.planned,
+            expected_db["planned"].as_bool().unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.connection_attempted,
+            expected_db["connection_attempted"].as_bool().unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.database_url_output,
+            expected_db["database_url_output"].as_str().unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.cursor.lower_bound_source,
+            expected_db["cursor"]["lower_bound_source"]
+                .as_str()
+                .unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.cursor.checkpoint_persisted,
+            expected_db["cursor"]["checkpoint_persisted"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            plan.db_read_plan.postgres_query.query_id,
+            expected_db["postgres_query"]["query_id"].as_str().unwrap()
+        );
         assert_eq!(plan.input.row_count, 5);
         assert_eq!(plan.input.selected_row_count, 5);
         assert!(plan.would_report.discrepancies);
@@ -874,6 +1141,8 @@ mod tests {
             "payload_body_redacted",
             "provider_key_secret_redacted",
             "wallet_secret_redacted",
+            "postgres://",
+            "database-url-secret-marker",
         ] {
             assert!(
                 !serialized.contains(forbidden),
@@ -906,6 +1175,14 @@ mod tests {
         assert_eq!(plan.window.period_start, "2024-02-29 00:00:00+00");
         assert_eq!(plan.window.period_end, "2024-03-01 00:00:00+00");
         assert!(plan.window.computed_from_utc_day);
+        assert_eq!(
+            plan.db_read_plan.cursor.lower_bound_source,
+            "window.period_start"
+        );
+        assert_eq!(
+            plan.db_read_plan.cursor.checkpoint_after_success,
+            "2024-03-01 00:00:00+00"
+        );
     }
 
     #[test]
@@ -956,6 +1233,11 @@ mod tests {
         assert_eq!(plan.scope.project_ids, vec![project_id]);
         assert_eq!(plan.input.selected_row_count, 5);
         assert_eq!(plan.input.discrepancy_limit, 10);
+        assert!(plan.db_read_plan.postgres_query.project_filter_applied);
+        assert_eq!(
+            plan.db_read_plan.postgres_query.project_filter_parameter,
+            Some("$3 project_ids")
+        );
     }
 
     #[test]
@@ -1005,6 +1287,29 @@ mod tests {
     #[test]
     fn execute_error_requires_future_writer() {
         assert!(billing_reconciliation_execute_error(false).contains("requires --force"));
-        assert!(billing_reconciliation_execute_error(true).contains("future DB writer"));
+        assert!(billing_reconciliation_execute_error(true).contains("future DB reader/writer"));
+        assert!(!billing_reconciliation_execute_error(true).contains("postgres://"));
+    }
+
+    #[test]
+    fn db_read_plan_rejects_zero_batch_size() {
+        let input = billing_reconciliation_input_from_json_str(
+            r#"{"input":{"tenant_id":"00000000-0000-0000-0000-000000000001","day":"2026-06-02","db_read":{"read_batch_size":0},"rows":[]}}"#,
+        )
+        .expect("shape should parse");
+
+        let error = billing_reconciliation_plan(
+            None,
+            Vec::new(),
+            None,
+            None,
+            BillingReconciliationInputSource::InputJson {
+                path: "fixture.json".to_string(),
+            },
+            input,
+        )
+        .expect_err("zero DB batch should fail");
+
+        assert!(error.contains("read_batch_size"));
     }
 }

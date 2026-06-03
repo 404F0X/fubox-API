@@ -83,7 +83,7 @@
 
 - [~] **E2-005 实现 IP allowlist 和过期检查**  
   优先级：P0  
-  验收：被拒绝请求不进入上游调用。当前 Gateway 已做 key 过期/禁用拒绝；IP allowlist 第一切片已接入：使用 ConnectInfo TCP peer IP，不信任未授权的 `X-Forwarded-For`/`X-Real-IP`；读取 `virtual_keys.ip_allowlist`，空列表允许；支持单 IP/CIDR IPv4/IPv6；非法条目忽略且不放行；拒绝时返回 OpenAI-compatible 403 `api_key_ip_forbidden`，不创建 `request_logs`/`provider_attempts`，不进入上游。`server.trusted_proxy_allowlist` 已接入：默认空列表，仅当 TCP peer 命中受信代理单 IP/CIDR 时才使用 `X-Forwarded-For` 首个 IP 或 `X-Real-IP`，畸形 forwarded IP 在 auth 阶段拒绝；profile 独立 allowlist 已接入：`api_key_profiles.ip_allowlist` 专用 schema/API/Gateway 读取已落地，key allowlist 先放行、profile allowlist 再收紧，空 profile allowlist 不额外限制，畸形/非法条目不放行；旧版 `request_overrides` 中的 `type=profile_ip_allowlist` policy 仍保持兼容。Admin UI 专用表单和 live smoke 尚未完成。
+  验收：被拒绝请求不进入上游调用。当前 Gateway 已做 key 过期/禁用拒绝；IP allowlist 第一切片已接入：使用 ConnectInfo TCP peer IP，不信任未授权的 `X-Forwarded-For`/`X-Real-IP`；读取 `virtual_keys.ip_allowlist`，空列表允许；支持单 IP/CIDR IPv4/IPv6；非法条目忽略且不放行；拒绝时返回 OpenAI-compatible 403 `api_key_ip_forbidden`，不创建 `request_logs`/`provider_attempts`，不进入上游。`server.trusted_proxy_allowlist` 已接入：默认空列表，仅当 TCP peer 命中受信代理单 IP/CIDR 时才使用 `X-Forwarded-For` 首个 IP 或 `X-Real-IP`，畸形 forwarded IP 在 auth 阶段拒绝；profile 独立 allowlist 已接入：`api_key_profiles.ip_allowlist` 专用 schema/API/Gateway 读取已落地，key allowlist 先放行、profile allowlist 再收紧，空 profile allowlist 不额外限制，畸形/非法条目不放行；旧版 `request_overrides` 中的 `type=profile_ip_allowlist` policy 仍保持兼容。Admin UI profile create/patch 专用 `ip_allowlist` JSON array 表单已接入，前端阻止 malformed JSON、非数组和非字符串条目提交，列表摘要只展示条目数且不渲染 raw payload/Authorization/secret；live smoke 尚未完成。
 
 ---
 
@@ -112,7 +112,7 @@
 
 - [~] **E3-006 实现 provider/channel/key health dashboard API**  
   优先级：P0  
-  验收：展示健康分、最近错误、冷却时间、成功率。当前 Control Plane 已新增 `GET /admin/providers/health-summary` 后端最小切片，汇总 provider/channel/provider_key/model 状态、health score/state、冷却时间、request log bounded sample 统计和最近错误；OpenAPI 与 contract fixture 已补，响应不返回 endpoint、provider metadata、provider key metadata/current_window_state、encrypted secret、fingerprint 或 raw key，并对展示字符串做 secret-like sanitizer；Admin UI Overview 已接入该 summary。实时 probe/健康分刷新、按时间窗口成功率和真实恢复 API 尚未完成。
+  验收：展示健康分、最近错误、冷却时间、成功率。当前 Control Plane 已新增 `GET /admin/providers/health-summary` 后端切片，汇总 provider/channel/provider_key/model 状态、health score/state、冷却时间、request log bounded sample 统计、最近错误和按 `window_minutes`/`sample_limit` 约束的窗口成功率；OpenAPI 与 contract fixture 已补，响应不返回 endpoint、provider metadata、provider key metadata/current_window_state、encrypted secret、fingerprint 或 raw key，并对展示字符串做 secret-like sanitizer；Admin UI Overview 已接入该 summary 和窗口成功率摘要。实时 probe/健康分刷新、真实恢复 API 和更完整时间窗口趋势图尚未完成。
 
 ---
 
@@ -158,7 +158,7 @@
 
 - [~] **E5-004 实现 OpenAI Responses 基础**  
   优先级：P0  
-  验收：文本请求和 stream terminal event 正确。当前 Gateway 已新增 `POST /v1/responses` 非流式基础入口，复用认证、DB 路由、provider key 注入、fallback、request log、metrics、usage rating 和 ledger settle；OpenAI-compatible adapter 已支持 Responses upstream build/parse、usage 映射和非流式 fixture。`stream=true` 目前明确返回 501 并写 rejected log；Responses streaming runtime、完整 schema/tool semantics 和 live smoke 尚未完成。
+  验收：文本请求和 stream terminal event 正确。当前 Gateway 已新增 `POST /v1/responses` 非流式基础入口，复用认证、DB 路由、provider key 注入、fallback、request log、metrics、usage rating 和 ledger settle；OpenAI-compatible adapter 已支持 Responses upstream build/parse、usage 映射、非流式 fixture 与 `responses_stream_with_provider_key` 最小 stream 发送入口。`stream=true` 已路由到 `streaming::responses_streaming`，复用 provider key 注入、preauth、request/provider logs、pre-response fallback、Responses terminal usage/rating/settle 和 no-late-fallback stream finalizer；`tests/fixtures/gateway/responses_stream_runtime_contract.json` 已锁定无 501、secret-safe 与 terminal behavior。完整 schema/tool semantics、live smoke 和更深 runtime DB integration 验收尚未完成。
 
 - [~] **E5-005 实现 Embeddings**  
   优先级：P0  
@@ -218,7 +218,7 @@
 
 - [~] **E7-003 实现 terminal event validation**  
   优先级：P0  
-  验收：OpenAI/Responses/Anthropic/Gemini terminal fixtures 通过。当前 `ai-gateway-stream` 已实现四类协议 terminal event 纯函数与单测，Gateway OpenAI Chat streaming runtime 已用 terminal event 判定区分 completed/upstream_eof；已补 Responses/Anthropic/Gemini cross-protocol SSE terminal fixtures，覆盖 completed、failed/error、invalid JSON、missing terminal、split chunk decode 和 EOF end reason 映射，adapter stream/harness focused tests 已通过。Responses/Anthropic/Gemini runtime 接入验收仍待完成。
+  验收：OpenAI/Responses/Anthropic/Gemini terminal fixtures 通过。当前 `ai-gateway-stream` 已实现四类协议 terminal event 纯函数与单测，Gateway OpenAI Chat streaming runtime 已用 terminal event 判定区分 completed/upstream_eof；已补 Responses/Anthropic/Gemini cross-protocol SSE terminal fixtures，覆盖 completed、failed/error、invalid JSON、missing terminal、split chunk decode 和 EOF end reason 映射，adapter stream/harness focused tests 已通过。Gateway Responses streaming runtime 已接入 Responses terminal observation，completed terminal 进入 completed finalizer，failed/error terminal 映射 `upstream_error`，invalid JSON 映射 `parser_error`；Anthropic/Gemini runtime 接入验收仍待完成。
 
 - [~] **E7-004 实现 stream_end_reason**  
   优先级：P0  
@@ -230,7 +230,7 @@
 
 - [~] **E7-006 实现 stream usage reconcile**  
   优先级：P0  
-  验收：usage 缺失有估算和 estimated 标记。当前 OpenAI chat streaming completed finalization 已在 terminal 前观察到完整 usage 时写入 input/output tokens、rating、final_cost、currency、price_version_id，并在 completed+完整 usage+非零 cost 时写 confirmed settle ledger entry；缺 usage、不完整 usage、client_cancel、非 completed 或 zero cost 均不会扣费。usage 估算/estimated 标记、Responses/Anthropic/Gemini streaming usage 和 live reconcile smoke 尚未完成。
+  验收：usage 缺失有估算和 estimated 标记。当前 OpenAI chat/Responses streaming completed finalization 已在 terminal 前观察到完整 usage 时写入 input/output tokens、rating、final_cost、currency、price_version_id，并在 completed+完整 usage+非零 cost 时写 confirmed settle ledger entry；缺 usage、不完整 usage、client_cancel、非 completed 或 zero cost 均不会扣费。usage 估算/estimated 标记、Anthropic/Gemini streaming usage 和 live reconcile smoke 尚未完成。
 
 ---
 
@@ -290,7 +290,7 @@
 
 - [~] **E9-006 实现 daily reconciliation job**  
   优先级：P0  
-  验收：ledger 和 request usage 差异报告。当前已新增只读 daily reconciliation report 基础：billing-ledger 纯函数按 request `final_cost` 推导期望 settle debit，对比 `ledger_entries` 中 settle/refund 的 pending/confirmed 汇总，输出缺失、意外、金额不匹配、币种不匹配摘要和差异明细；Control Plane 已挂载 `GET /admin/billing/reconciliation` 并用 `BillingRead` RBAC，fixture/OpenAPI 已补，report 展示字段会脱敏且不含 payload/secret。Worker 已新增 `ai-worker billing-reconciliation --dry-run --input ...` plan-only 切片，生成 daily scheduler/window/scope/report contract，并补 daily scheduler/window 第二切片：可按 `scheduler.now_utc` 推导上一个完整 UTC day，输出 closed-open UTC window、last-run/watermark contract，默认不写 DB、不发 webhook，`--execute/--send` 当前需 `--force` 且明确拒绝 future writer；plan serialization 会去除 request/header/provider/wallet/scheduler credential material。真实 DB scheduler 读取、Postgres integration test、真实 alert send 和自动调度尚未完成。
+  验收：ledger 和 request usage 差异报告。当前已新增只读 daily reconciliation report 基础：billing-ledger 纯函数按 request `final_cost` 推导期望 settle debit，对比 `ledger_entries` 中 settle/refund 的 pending/confirmed 汇总，输出缺失、意外、金额不匹配、币种不匹配摘要和差异明细；Control Plane 已挂载 `GET /admin/billing/reconciliation` 并用 `BillingRead` RBAC，fixture/OpenAPI 已补，report 展示字段会脱敏且不含 payload/secret。Worker 已新增 `ai-worker billing-reconciliation --dry-run --input ...` plan-only 切片，生成 daily scheduler/window/scope/report contract，并补 daily scheduler/window 第二切片：可按 `scheduler.now_utc` 推导上一个完整 UTC day，输出 closed-open UTC window、last-run/watermark contract，默认不写 DB、不发 webhook；本切片新增 DB scheduler/read plan contract，输出 last-run/watermark state source、cursor closed-open bounds、Postgres `request_logs`/`ledger_entries` 只读查询 skeleton、project filter 参数和 batch plan，仍不连接 DB、不写 DB、不发送告警，`--execute`/`--send` 当前需 `--force` 且明确拒绝 future DB reader/writer 与 alert sender；plan serialization 会去除 request/header/provider/wallet/scheduler/DB URL credential material。真实 DB scheduler 读取、Postgres integration test、真实 alert send 和自动调度尚未完成。
 
 ---
 
@@ -338,7 +338,7 @@
 
 - [~] **E11-004 Virtual Key/Profile 页面**  
   优先级：P0  
-  验收：创建 key、profile、预算、模型权限。当前 Admin UI 已有 Virtual Keys/Profile 页，支持 profile list/create/patch/delete、virtual key list/create/get/disable/expire；本切片已新增 profile visible/denied model 与 model alias JSON create/patch 表单、列表摘要展示，virtual key rate-limit/budget policy 安全 JSON 占位与摘要/详情展示，并统一剔除 secret/Authorization/raw payload/body 等 unsafe JSON 字段；创建 key 后仅在创建结果区域一次性展示服务端返回 secret，列表/详情/JSON 摘要不再渲染一次性 credential 原文。更完整预算工作流、专用 budget schema 表单和 profile 其他策略字段编辑仍待完成。
+  验收：创建 key、profile、预算、模型权限。当前 Admin UI 已有 Virtual Keys/Profile 页，支持 profile list/create/patch/delete、virtual key list/create/get/disable/expire；本切片已新增 profile visible/denied model、model alias 与专用 IP allowlist JSON create/patch 表单、列表摘要展示，virtual key rate-limit/budget policy 安全 JSON 占位与摘要/详情展示，并统一剔除 secret/Authorization/raw payload/body 等 unsafe JSON 字段；创建 key 后仅在创建结果区域一次性展示服务端返回 secret，列表/详情/JSON 摘要不再渲染一次性 credential 原文。更完整预算工作流、专用 budget schema 表单和 profile 其他策略字段编辑仍待完成。
 
 - [~] **E11-005 Request/Trace 页面**  
   优先级：P0  
@@ -346,7 +346,7 @@
 
 - [~] **E11-006 Health Dashboard**  
   优先级：P0  
-  验收：provider/channel/key/model 状态、手动恢复。当前 Overview 保留服务探针，并已接入 `GET /admin/providers/health-summary` 渲染 provider/channel/key/model 健康矩阵、recent error、score、route count 和本地 recovery request 状态；真实恢复 API、实时 probe 刷新和成功率时间窗口图仍待完成。
+  验收：provider/channel/key/model 状态、手动恢复。当前 Overview 保留服务探针，并已接入 `GET /admin/providers/health-summary` 渲染 provider/channel/key/model 健康矩阵、recent error、score、route count、窗口成功率摘要和本地 recovery request 状态；真实恢复 API、实时 probe 刷新和更完整成功率时间窗口图仍待完成。
 
 - [~] **E11-007 Billing/Price 页面**  
   优先级：P0  
@@ -374,7 +374,7 @@
 
 - [~] **E12-005 Apply + rollback snapshot**  
   优先级：P0  
-  验收：导入失败可回滚，可重复执行。当前 `scripts/importers/import-apply-plan.ps1` 已在 read-only plan 基础上新增 PostgreSQL SQL-plan executor 第二切片：默认仍为 dry-run，不连接 live DB、不写库；`-Apply` 必须配合 `-Force`，无冲突、source provider/channel 绑定通过且 adapter 支持时才进入 `prepared_sql_plan`；输出事务边界、operation id/idempotency manifest、rollback snapshot entry/before-image schema、refusal contract、JSON/SQL operation bundle、`SELECT ... FOR UPDATE` before-image 捕获 SQL 和 canonical model `ON CONFLICT` upsert SQL；重复执行策略明确为 same idempotency/target 可 skip，存在且不同则 update。`tests/fixtures/importers/apply_plan_canonical_only.sample.json` 与 `postgresql_sql_executor_contract.expected.json` 已覆盖无冲突 canonical adapter；`model_association`/`channel_mapping_entry` 现在会因 requested-model alias 冲突、source channel 到内部 channel/provider 绑定缺失或 channel `model_mappings` merge adapter 未完成被 preflight 阻断；真实 live PostgreSQL runner、事务内 before-image 持久化 journal 表和 rollback 执行尚未完成。
+  验收：导入失败可回滚，可重复执行。当前 `scripts/importers/import-apply-plan.ps1` 已在 read-only plan 基础上新增 PostgreSQL SQL-plan executor 与 rollback journal contract：默认仍为 dry-run，不连接 live DB、不写库；`-Apply` 必须配合 `-Force`，无冲突、source provider/channel 绑定通过且 adapter 支持时只进入 `prepared_sql_plan`，并明确 live PostgreSQL runner 未实现、不会真实写库；输出事务边界、operation id/idempotency manifest、rollback snapshot entry/before-image schema、refusal contract、JSON/SQL operation bundle、`SELECT ... FOR UPDATE` before-image 捕获 SQL、canonical model `ON CONFLICT` upsert SQL、`importer_apply_runs`/`importer_apply_operation_journal` DDL、apply run/operation journal insert SQL plan 和 rollback operation skeleton。`tests/fixtures/importers/apply_plan_canonical_only.sample.json` 与 `postgresql_sql_executor_contract.expected.json` 已覆盖无冲突 canonical adapter、rollback journal DDL/insert 与 rollback execution refusal contract；`model_association`/`channel_mapping_entry` 现在会因 requested-model alias 冲突、source channel 到内部 channel/provider 绑定缺失或 channel `model_mappings` merge adapter 未完成被 preflight 阻断；真实 live PostgreSQL runner、事务内 journal 持久化执行和 rollback compensating mutation runner 尚未完成。
 
 ---
 

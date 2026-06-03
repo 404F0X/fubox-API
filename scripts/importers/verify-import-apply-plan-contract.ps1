@@ -257,8 +257,40 @@ Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_contract.no_secret_m
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.refusal_contract.schema_version $sqlExecutorContract.expected.refusal_contract_schema "refusal contract schema"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.operation_bundle_contract.schema_version $sqlExecutorContract.expected.operation_bundle_schema "operation bundle schema"
 Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_contract.entry_schema.schema_version $sqlExecutorContract.expected.rollback_entry_schema "rollback entry schema"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.journal_contract.schema_version $sqlExecutorContract.expected.journal_contract_schema "rollback journal contract schema"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.journal_contract.sql_plan.schema_version $sqlExecutorContract.expected.journal_sql_plan_schema "rollback journal sql plan schema"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.schema_version $sqlExecutorContract.expected.rollback_operation_plan_schema "rollback operation plan schema"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.execution_status $sqlExecutorContract.expected.rollback_operation_execution_status "rollback operation execution status"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.refusal_contract.schema_version $sqlExecutorContract.expected.rollback_execution_refusal_contract_schema "rollback execution refusal contract schema"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.database_writes $false "rollback operation plan makes no database writes"
+Assert-Equal $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.live_database_connection $false "rollback operation plan makes no live database connection"
 Assert-Condition (@(Convert-ToArray $sqlApplyForce.Plan.sql_executor_plan.refusal_contract.refuse_apply_when | Where-Object { $_ -eq "source_provider_channel_bindings preflight fails" }).Count -eq 1) "refusal contract blocks failed source bindings"
 Assert-Condition (@(Convert-ToArray $sqlApplyForce.Plan.sql_executor_plan.operation_bundle_contract.statement_phase_order | Where-Object { $_ -eq "persist_rollback_snapshot_entry" }).Count -eq 1) "operation bundle persists rollback snapshot before mutation"
+
+$journalPlan = $sqlApplyForce.Plan.sql_executor_plan.journal_contract.sql_plan
+foreach ($table in (Convert-ToArray $sqlExecutorContract.expected.required_journal_tables)) {
+  Assert-Condition (@(Convert-ToArray $journalPlan.tables | Where-Object { $_ -eq $table }).Count -eq 1) "rollback journal plan includes table $table"
+}
+
+$journalStatements = @()
+$journalStatements += @(Convert-ToArray $journalPlan.ddl_statements)
+$journalStatements += @(Convert-ToArray $journalPlan.run_insert_statement)
+$journalStatements += @(Convert-ToArray $journalPlan.operation_insert_statements)
+Assert-Condition ($journalStatements.Count -gt 0) "rollback journal SQL plan emits statements"
+foreach ($phase in (Convert-ToArray $sqlExecutorContract.expected.required_journal_statement_phases)) {
+  Assert-Condition (@($journalStatements | Where-Object { $_.phase -eq $phase }).Count -gt 0) "rollback journal SQL plan emits $phase statement"
+}
+$journalSqlText = (($journalStatements | ForEach-Object { [string]$_.sql }) -join "`n").ToLowerInvariant()
+foreach ($fragment in (Convert-ToArray $sqlExecutorContract.expected.required_journal_sql_fragments)) {
+  Assert-Condition ($journalSqlText.Contains(([string]$fragment).ToLowerInvariant())) "rollback journal SQL contains '$fragment'"
+}
+
+$rollbackSkeletons = @(Convert-ToArray $sqlApplyForce.Plan.sql_executor_plan.rollback_operation_plan.operation_skeletons)
+Assert-Condition ($rollbackSkeletons.Count -gt 0) "rollback operation plan emits skeletons"
+foreach ($skeleton in $rollbackSkeletons) {
+  Assert-Equal $skeleton.supported_by_current_slice $false "rollback skeleton is plan-only"
+  Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$skeleton.lookup_statement.sql)) "rollback skeleton has journal lookup SQL"
+}
 
 $missingForceFailed = $false
 try {

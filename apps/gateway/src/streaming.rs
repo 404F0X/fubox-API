@@ -9,7 +9,7 @@ use std::{
 
 use ai_gateway_adapters::{
     AdapterUsage, ChatCompletionRequest, OpenAiChatStream, OpenAiCompatibleClient,
-    OpenAiResponsesStreamTerminalKind,
+    OpenAiResponseRequest, OpenAiResponsesStreamTerminalKind,
 };
 use ai_gateway_billing_ledger::{TokenUsage, rate_usage_from_json};
 use ai_gateway_stream::{
@@ -40,7 +40,7 @@ use crate::{
     finish_request_with_error, open_provider_key_for_route, pre_authorize_before_provider_attempt,
     provider_attempt_fallback_metadata, provider_error_can_fallback,
     record_endpoint_request_final_metrics, record_request_final_route, request_for_upstream,
-    route_snapshot_with_final_attempt,
+    responses_request_for_upstream, route_snapshot_with_final_attempt,
 };
 
 const OPENAI_STREAM_MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
@@ -52,6 +52,17 @@ pub(crate) struct StreamingChatContext<'a> {
     pub(crate) request_id: uuid::Uuid,
     pub(crate) request_started_at: Instant,
     pub(crate) request: &'a ChatCompletionRequest,
+    pub(crate) attempt_routes: &'a [ResolvedChatRoute],
+    pub(crate) upstream_clients: &'a mut OpenAiClientCache,
+    pub(crate) route_snapshot: Value,
+}
+
+pub(crate) struct StreamingResponsesContext<'a> {
+    pub(crate) repository: &'a GatewayRepository,
+    pub(crate) auth: &'a AuthContext,
+    pub(crate) request_id: uuid::Uuid,
+    pub(crate) request_started_at: Instant,
+    pub(crate) request: &'a OpenAiResponseRequest,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) upstream_clients: &'a mut OpenAiClientCache,
     pub(crate) route_snapshot: Value,
@@ -200,6 +211,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         attempt_id,
                         canonical_model_id: route.canonical_model_id,
                         canonical_model_key: route.canonical_model_key.clone(),
+                        protocol: GatewayStreamProtocol::OpenAiChatCompletions,
                         metrics_endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                         request_started_at,
                         provider_started_at,
@@ -262,6 +274,212 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
     unreachable!("non-empty provider attempt loop must return a response");
 }
 
+pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) -> Response {
+    let StreamingResponsesContext {
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        request,
+        attempt_routes,
+        upstream_clients,
+        route_snapshot,
+    } = context;
+
+    debug_assert!(request.is_streaming());
+
+    let mut fallback_events = Vec::new();
+
+    for (attempt_index, route) in attempt_routes.iter().enumerate() {
+        let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
+        if let Some(response) = pre_authorize_before_provider_attempt(
+            crate::METRICS_ENDPOINT_RESPONSES,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+        )
+        .await
+        {
+            return response;
+        }
+
+        let attempt_id = match repository
+            .create_provider_attempt_started(auth, request_id, route, attempt_no)
+            .await
+        {
+            Ok(attempt_id) => attempt_id,
+            Err(error) => {
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        };
+
+        let provider_started_at = Instant::now();
+        let upstream_client = match cached_openai_client(upstream_clients, &route.endpoint) {
+            Ok(client) => client,
+            Err(error) => {
+                let summary = summarize_adapter_error(&error);
+                finish_provider_attempt_with_adapter_error(
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                return adapter_error_response(error);
+            }
+        };
+        let upstream_request = responses_request_for_upstream(request, &route.upstream_model);
+
+        let provider_key = match open_provider_key_for_route(repository, auth, route).await {
+            Ok(provider_key) => provider_key,
+            Err(error) => {
+                finish_provider_attempt_with_error(
+                    repository,
+                    auth,
+                    attempt_id,
+                    provider_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        };
+
+        match upstream_client
+            .responses_stream_with_provider_key(
+                &upstream_request,
+                Some(provider_key.secret.expose_secret()),
+            )
+            .await
+        {
+            Ok(upstream_stream) => {
+                if !upstream_stream
+                    .content_type()
+                    .is_some_and(|content_type| content_type.starts_with("text/event-stream"))
+                {
+                    tracing::warn!(
+                        provider_id = %route.provider_id,
+                        channel_id = %route.channel_id,
+                        content_type = upstream_stream.content_type().unwrap_or("<missing>"),
+                        "upstream responses stream did not declare text/event-stream"
+                    );
+                }
+
+                record_request_final_route(
+                    repository,
+                    auth,
+                    request_id,
+                    route,
+                    route_snapshot_with_final_attempt(
+                        route_snapshot.clone(),
+                        route,
+                        attempt_no,
+                        &fallback_events,
+                    ),
+                )
+                .await;
+
+                return stream_response(
+                    upstream_stream,
+                    StreamLogContext {
+                        repository: repository.clone(),
+                        auth: auth.clone(),
+                        request_id,
+                        attempt_id,
+                        canonical_model_id: route.canonical_model_id,
+                        canonical_model_key: route.canonical_model_key.clone(),
+                        protocol: GatewayStreamProtocol::OpenAiResponses,
+                        metrics_endpoint: crate::METRICS_ENDPOINT_RESPONSES,
+                        request_started_at,
+                        provider_started_at,
+                    },
+                );
+            }
+            Err(error) => {
+                let summary = summarize_adapter_error(&error);
+
+                if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
+                    let next_route = &attempt_routes[attempt_index + 1];
+                    let event = fallback_event(attempt_no, &summary, route, next_route);
+                    finish_provider_attempt_with_adapter_error_and_fallback(
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        Some(summary.error_code.as_str()),
+                        provider_attempt_fallback_metadata(&event),
+                    )
+                    .await;
+                    fallback_events.push(event);
+
+                    tracing::warn!(
+                        attempt_no,
+                        provider_id = %route.provider_id,
+                        channel_id = %route.channel_id,
+                        error_code = %summary.error_code,
+                        "provider responses stream attempt failed before response started; trying fallback route"
+                    );
+                    continue;
+                }
+
+                finish_provider_attempt_with_adapter_error(
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                return adapter_error_response(error);
+            }
+        }
+    }
+
+    unreachable!("non-empty provider attempt loop must return a response");
+}
+
 #[derive(Debug, Clone)]
 struct StreamLogContext {
     repository: GatewayRepository,
@@ -270,6 +488,7 @@ struct StreamLogContext {
     attempt_id: uuid::Uuid,
     canonical_model_id: uuid::Uuid,
     canonical_model_key: String,
+    protocol: GatewayStreamProtocol,
     metrics_endpoint: &'static str,
     request_started_at: Instant,
     provider_started_at: Instant,
@@ -350,7 +569,7 @@ impl ForwardStreamState {
         Self {
             upstream,
             progress: StreamProgress::new(
-                GatewayStreamProtocol::OpenAiChatCompletions,
+                context.protocol,
                 OPENAI_STREAM_MAX_EVENT_BYTES,
                 OPENAI_STREAM_MAX_CHUNK_BYTES,
             ),

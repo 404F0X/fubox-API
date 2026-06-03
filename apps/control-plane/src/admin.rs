@@ -62,6 +62,8 @@ const DEFAULT_PROVIDER_KEY_MASTER_KEY_ID: &str = "env-v1";
 const ROUTE_POLICY_VERSION: &str = "gateway_db_route_v1";
 const ROUTE_PRIORITY_ASSOCIATION_MULTIPLIER: i32 = 1_000_000;
 const HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT: i64 = REQUEST_LOG_MAX_LIMIT;
+const HEALTH_SUMMARY_DEFAULT_WINDOW_MINUTES: i64 = 60;
+const HEALTH_SUMMARY_MAX_WINDOW_MINUTES: i64 = 24 * 60;
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -426,6 +428,28 @@ struct ChannelManualTestRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct ProviderHealthSummaryQuery {
+    #[serde(alias = "minutes")]
+    window_minutes: Option<i64>,
+    sample_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProviderHealthSummaryFilter {
+    window_minutes: i64,
+    sample_limit: i64,
+}
+
+impl ProviderHealthSummaryQuery {
+    fn into_filter(self) -> Result<ProviderHealthSummaryFilter, AdminError> {
+        Ok(ProviderHealthSummaryFilter {
+            window_minutes: health_summary_window_minutes(self.window_minutes)?,
+            sample_limit: health_summary_sample_limit(self.sample_limit)?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct ListRequestLogsQuery {
     limit: Option<i64>,
     status: Option<String>,
@@ -627,8 +651,10 @@ async fn list_providers(
 }
 
 async fn get_provider_health_summary(
+    Query(query): Query<ProviderHealthSummaryQuery>,
     State(state): State<Arc<ControlPlaneState>>,
 ) -> Result<Response, AdminError> {
+    let filter = query.into_filter()?;
     let repository = repo(&state);
     let providers = repository.list_providers(DEFAULT_TENANT_ID).await?;
     let channels = repository.list_channels(DEFAULT_TENANT_ID).await?;
@@ -637,18 +663,7 @@ async fn get_provider_health_summary(
     let associations = repository
         .list_model_associations(DEFAULT_TENANT_ID)
         .await?;
-    let request_logs = repository
-        .list_request_logs(
-            DEFAULT_TENANT_ID,
-            RequestLogListFilter {
-                limit: HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT,
-                status: None,
-                model: None,
-                canonical_model_id: None,
-                channel_id: None,
-            },
-        )
-        .await?;
+    let request_logs = list_health_summary_request_logs(&state, DEFAULT_TENANT_ID, filter).await?;
 
     Ok(Json(json!({
         "data": health_summary_response(
@@ -658,7 +673,7 @@ async fn get_provider_health_summary(
             &models,
             &associations,
             &request_logs,
-            HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT,
+            filter,
         )
     }))
     .into_response())
@@ -1931,6 +1946,88 @@ async fn get_billing_reconciliation(
         .await?;
 
     Ok(Json(json!({ "data": report })).into_response())
+}
+
+async fn list_health_summary_request_logs(
+    state: &ControlPlaneState,
+    tenant_id: Uuid,
+    filter: ProviderHealthSummaryFilter,
+) -> Result<Vec<RequestLogSummary>, AdminError> {
+    let window_minutes = i32::try_from(filter.window_minutes)
+        .map_err(|_| AdminError::bad_request("window_minutes is out of range"))?;
+    let rows = sqlx::query(
+        r#"
+        select
+          id, tenant_id, project_id, virtual_key_id, api_key_profile_id,
+          trace_id, thread_id, client_request_id, inbound_protocol, outbound_protocol,
+          protocol_mode, requested_model, canonical_model_id, upstream_model,
+          resolved_provider_id, resolved_channel_id, provider_key_id, route_policy_version,
+          status, http_status, error_owner, error_code, retryable, partial_sent,
+          stream_end_reason, input_tokens, output_tokens, final_cost::text as final_cost,
+          currency, latency_ms, ttft_ms, payload_policy_id, payload_stored,
+          redaction_status, request_body_hash, response_body_hash,
+          created_at::text as created_at, completed_at::text as completed_at
+        from request_logs
+        where tenant_id = $1
+          and coalesce(completed_at, created_at) >= now() - make_interval(mins => $2::int)
+        order by coalesce(completed_at, created_at) desc, created_at desc, id desc
+        limit $3
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(window_minutes)
+    .bind(filter.sample_limit)
+    .fetch_all(state.db())
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    rows.into_iter()
+        .map(health_summary_request_log_from_row)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| AdminError::from(DbError::Query(error)))
+}
+
+fn health_summary_request_log_from_row(row: PgRow) -> Result<RequestLogSummary, sqlx::Error> {
+    Ok(RequestLogSummary {
+        id: row.try_get("id")?,
+        tenant_id: row.try_get("tenant_id")?,
+        project_id: row.try_get("project_id")?,
+        virtual_key_id: row.try_get("virtual_key_id")?,
+        api_key_profile_id: row.try_get("api_key_profile_id")?,
+        trace_id: row.try_get("trace_id")?,
+        thread_id: row.try_get("thread_id")?,
+        client_request_id: row.try_get("client_request_id")?,
+        inbound_protocol: row.try_get("inbound_protocol")?,
+        outbound_protocol: row.try_get("outbound_protocol")?,
+        protocol_mode: row.try_get("protocol_mode")?,
+        requested_model: row.try_get("requested_model")?,
+        canonical_model_id: row.try_get("canonical_model_id")?,
+        upstream_model: row.try_get("upstream_model")?,
+        resolved_provider_id: row.try_get("resolved_provider_id")?,
+        resolved_channel_id: row.try_get("resolved_channel_id")?,
+        provider_key_id: row.try_get("provider_key_id")?,
+        route_policy_version: row.try_get("route_policy_version")?,
+        status: row.try_get("status")?,
+        http_status: row.try_get("http_status")?,
+        error_owner: row.try_get("error_owner")?,
+        error_code: row.try_get("error_code")?,
+        retryable: row.try_get("retryable")?,
+        partial_sent: row.try_get("partial_sent")?,
+        stream_end_reason: row.try_get("stream_end_reason")?,
+        input_tokens: row.try_get("input_tokens")?,
+        output_tokens: row.try_get("output_tokens")?,
+        final_cost: row.try_get("final_cost")?,
+        currency: row.try_get("currency")?,
+        latency_ms: row.try_get("latency_ms")?,
+        ttft_ms: row.try_get("ttft_ms")?,
+        payload_policy_id: row.try_get("payload_policy_id")?,
+        payload_stored: row.try_get("payload_stored")?,
+        redaction_status: row.try_get("redaction_status")?,
+        request_body_hash: row.try_get("request_body_hash")?,
+        response_body_hash: row.try_get("response_body_hash")?,
+        created_at: row.try_get("created_at")?,
+        completed_at: row.try_get("completed_at")?,
+    })
 }
 
 async fn list_audit_logs(
@@ -3463,6 +3560,27 @@ fn request_log_limit(limit: Option<i64>) -> Result<i64, AdminError> {
     Ok(limit.min(REQUEST_LOG_MAX_LIMIT))
 }
 
+fn health_summary_sample_limit(limit: Option<i64>) -> Result<i64, AdminError> {
+    let limit = limit.unwrap_or(HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT);
+    if limit < 1 {
+        return Err(AdminError::bad_request("sample_limit must be at least 1"));
+    }
+    Ok(limit.min(HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT))
+}
+
+fn health_summary_window_minutes(minutes: Option<i64>) -> Result<i64, AdminError> {
+    let minutes = minutes.unwrap_or(HEALTH_SUMMARY_DEFAULT_WINDOW_MINUTES);
+    if minutes < 1 {
+        return Err(AdminError::bad_request("window_minutes must be at least 1"));
+    }
+    if minutes > HEALTH_SUMMARY_MAX_WINDOW_MINUTES {
+        return Err(AdminError::bad_request(format!(
+            "window_minutes must be at most {HEALTH_SUMMARY_MAX_WINDOW_MINUTES}"
+        )));
+    }
+    Ok(minutes)
+}
+
 fn audit_log_limit(limit: Option<i64>) -> Result<i64, AdminError> {
     let limit = limit.unwrap_or(AUDIT_LOG_DEFAULT_LIMIT);
     if limit < 1 {
@@ -3770,6 +3888,7 @@ struct RecentHealthError {
 #[derive(Debug, Clone, Default)]
 struct RecentHealthStats {
     request_count: usize,
+    success_count: usize,
     error_count: usize,
     last_error: Option<RecentHealthError>,
 }
@@ -3777,6 +3896,10 @@ struct RecentHealthStats {
 impl RecentHealthStats {
     fn observe(&mut self, log: &RequestLogSummary) {
         self.request_count += 1;
+
+        if request_log_counts_as_success(log) {
+            self.success_count += 1;
+        }
 
         if request_log_counts_as_error(log) {
             self.error_count += 1;
@@ -3804,6 +3927,14 @@ struct RecentStatsByEntity {
     models: HashMap<Uuid, RecentHealthStats>,
 }
 
+fn overall_recent_stats(request_logs: &[RequestLogSummary]) -> RecentHealthStats {
+    let mut stats = RecentHealthStats::default();
+    for log in request_logs {
+        stats.observe(log);
+    }
+    stats
+}
+
 fn health_summary_response(
     providers: &[Provider],
     channels: &[Channel],
@@ -3811,9 +3942,10 @@ fn health_summary_response(
     models: &[CanonicalModel],
     associations: &[ModelAssociation],
     request_logs: &[RequestLogSummary],
-    recent_sample_limit: i64,
+    filter: ProviderHealthSummaryFilter,
 ) -> Value {
     let recent = recent_stats_by_entity(request_logs);
+    let overall_recent = overall_recent_stats(request_logs);
     let association_counts = association_counts_by_model(associations, false);
     let enabled_association_counts = association_counts_by_model(associations, true);
     let model_channel_ids = model_channel_index(channels, associations);
@@ -3956,8 +4088,16 @@ fn health_summary_response(
         "tenant_id": DEFAULT_TENANT_ID,
         "recent_window": {
             "source": "request_logs",
-            "sample_limit": recent_sample_limit,
-            "sample_count": request_logs.len(),
+            "window": {
+                "unit": "minutes",
+                "minutes": filter.window_minutes,
+            },
+            "window_minutes": filter.window_minutes,
+            "sample_limit": filter.sample_limit,
+            "sample_count": overall_recent.request_count,
+            "success_count": overall_recent.success_count,
+            "error_count": overall_recent.error_count,
+            "success_rate": success_rate_value(&overall_recent),
         },
         "totals": {
             "providers": providers.len(),
@@ -4016,6 +4156,18 @@ fn request_log_counts_as_error(log: &RequestLogSummary) -> bool {
         )
 }
 
+fn request_log_counts_as_success(log: &RequestLogSummary) -> bool {
+    log.error_code.is_none() && matches!(log.status.as_str(), "succeeded")
+}
+
+fn success_rate_value(stats: &RecentHealthStats) -> Value {
+    if stats.request_count == 0 {
+        return Value::Null;
+    }
+
+    json!(stats.success_count as f64 / stats.request_count as f64)
+}
+
 fn recent_last_error_value(error: Option<&RecentHealthError>) -> Value {
     match error {
         Some(error) => json!({
@@ -4032,7 +4184,9 @@ fn recent_last_error_value(error: Option<&RecentHealthError>) -> Value {
 fn recent_stats_value(stats: Option<&RecentHealthStats>) -> Value {
     json!({
         "request_count": stats.map(|stats| stats.request_count).unwrap_or_default(),
+        "success_count": stats.map(|stats| stats.success_count).unwrap_or_default(),
         "error_count": stats.map(|stats| stats.error_count).unwrap_or_default(),
+        "success_rate": stats.map(success_rate_value).unwrap_or(Value::Null),
         "last_error": recent_last_error_value(stats.and_then(|stats| stats.last_error.as_ref())),
     })
 }
@@ -5247,12 +5401,23 @@ mod tests {
             &[model],
             &[association],
             &logs,
-            500,
+            ProviderHealthSummaryFilter {
+                window_minutes: 15,
+                sample_limit: 500,
+            },
         );
         let serialized = serde_json::to_string(&response).expect("response should serialize");
 
         assert_eq!(response["summary_version"], json!(1));
+        assert_eq!(response["recent_window"]["window_minutes"], json!(15));
+        assert_eq!(
+            response["recent_window"]["window"],
+            json!({ "unit": "minutes", "minutes": 15 })
+        );
         assert_eq!(response["recent_window"]["sample_count"], json!(2));
+        assert_eq!(response["recent_window"]["success_count"], json!(1));
+        assert_eq!(response["recent_window"]["error_count"], json!(1));
+        assert_eq!(response["recent_window"]["success_rate"], json!(0.5));
         assert_eq!(response["status_counts"]["providers"]["enabled"], json!(1));
         assert_eq!(response["status_counts"]["channels"]["enabled"], json!(1));
         assert_eq!(
@@ -5264,7 +5429,15 @@ mod tests {
             response["providers"][0]["recent"]["request_count"],
             json!(2)
         );
+        assert_eq!(
+            response["providers"][0]["recent"]["success_count"],
+            json!(1)
+        );
         assert_eq!(response["providers"][0]["recent"]["error_count"], json!(1));
+        assert_eq!(
+            response["providers"][0]["recent"]["success_rate"],
+            json!(0.5)
+        );
         assert_eq!(
             response["provider_keys"][0]["credential_configured"],
             json!(true)
@@ -5318,9 +5491,21 @@ mod tests {
             json!(true)
         );
         assert_eq!(
+            fixture["examples"]["summary"]["response"]["data"]["recent_window"]["window_minutes"],
+            json!(60)
+        );
+        assert_eq!(
+            fixture["examples"]["summary"]["response"]["data"]["recent_window"]["success_rate"],
+            json!(0.5)
+        );
+        assert_eq!(
             fixture["examples"]["summary"]["response"]["data"]["provider_keys"][0]["recent"]["last_error"]
                 ["code"],
             json!("provider_auth_failed")
+        );
+        assert_eq!(
+            fixture["examples"]["summary"]["response"]["data"]["provider_keys"][0]["recent"]["success_rate"],
+            json!(0.5)
         );
 
         for forbidden in [
@@ -6479,6 +6664,52 @@ mod tests {
         let error = request_log_limit(Some(0)).expect_err("zero limit should be rejected");
 
         assert_eq!(error.code, "bad_request");
+    }
+
+    #[test]
+    fn health_summary_query_defaults_caps_sample_limit_and_rejects_invalid_window() {
+        let filter = ProviderHealthSummaryQuery {
+            window_minutes: None,
+            sample_limit: None,
+        }
+        .into_filter()
+        .expect("default health summary query should be valid");
+        assert_eq!(
+            filter,
+            ProviderHealthSummaryFilter {
+                window_minutes: HEALTH_SUMMARY_DEFAULT_WINDOW_MINUTES,
+                sample_limit: HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT,
+            }
+        );
+
+        let filter = ProviderHealthSummaryQuery {
+            window_minutes: Some(15),
+            sample_limit: Some(10_000),
+        }
+        .into_filter()
+        .expect("large sample limit should be capped");
+        assert_eq!(filter.window_minutes, 15);
+        assert_eq!(filter.sample_limit, HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT);
+
+        for query in [
+            ProviderHealthSummaryQuery {
+                window_minutes: Some(0),
+                sample_limit: Some(10),
+            },
+            ProviderHealthSummaryQuery {
+                window_minutes: Some(HEALTH_SUMMARY_MAX_WINDOW_MINUTES + 1),
+                sample_limit: Some(10),
+            },
+            ProviderHealthSummaryQuery {
+                window_minutes: Some(15),
+                sample_limit: Some(0),
+            },
+        ] {
+            let error = query
+                .into_filter()
+                .expect_err("invalid health summary query should be rejected");
+            assert_eq!(error.code, "bad_request");
+        }
     }
 
     #[test]

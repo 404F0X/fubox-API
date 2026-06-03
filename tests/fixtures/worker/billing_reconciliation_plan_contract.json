@@ -10,7 +10,9 @@
       "missing_settle",
       "unexpected_ledger",
       "amount_mismatch",
-      "zero_cost_matched"
+      "zero_cost_matched",
+      "scheduler_watermark_read_plan",
+      "postgres_read_shape"
     ]
   },
   "input": {
@@ -37,8 +39,16 @@
         "updated_at": "2026-06-02T01:01:30Z"
       }
     },
+    "db_read": {
+      "last_run_source": "worker_job_state.last_run",
+      "watermark_source": "worker_job_state.watermark",
+      "cursor_kind": "window_end",
+      "state_table": "worker_job_state",
+      "read_batch_size": 250
+    },
     "project_ids": ["00000000-0000-0000-0000-000000000020"],
     "discrepancy_limit": 50,
+    "database_url": "postgres://worker:database-url-secret-marker@db.internal/fubox",
     "payload": {
       "body": "fixture-raw-payload-marker",
       "raw_body": "fixture-request-material-marker"
@@ -169,6 +179,26 @@
       "day": "2026-06-02",
       "bounds": "closed_open"
     },
+    "db_read_plan": {
+      "planned": true,
+      "connection_attempted": false,
+      "read_only": true,
+      "db_writes": false,
+      "database_url_output": "omitted",
+      "cursor": {
+        "kind": "window_end",
+        "lower_bound_source": "scheduler.watermark.value",
+        "upper_bound_source": "window.period_end",
+        "bounds": "closed_open",
+        "checkpoint_persisted": false
+      },
+      "postgres_query": {
+        "query_id": "billing_reconciliation_input_select.v1",
+        "project_filter_applied": true,
+        "required_source_tables": ["request_logs", "ledger_entries"],
+        "required_ctes": ["bounds", "periods", "request_usage", "ledger_rollup", "joined"]
+      }
+    },
     "would_report": {
       "discrepancies": true,
       "discrepancy_count": 3,
@@ -187,7 +217,9 @@
       "fixture-wallet-credential-marker",
       "raw_wallet_secret",
       "wallet_secret_value",
-      "scheduler-secret-token-marker"
+      "scheduler-secret-token-marker",
+      "postgres://",
+      "database-url-secret-marker"
     ]
   }
 }

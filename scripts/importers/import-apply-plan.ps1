@@ -1004,6 +1004,250 @@ function New-PostgreSqlUnsupportedOperationPlan {
   }
 }
 
+function New-PostgreSqlRollbackJournalSqlPlan {
+  param(
+    [object[]]$WriteOperations,
+    [string]$TransactionId,
+    [string]$PlanIdempotencyKey,
+    [string]$RollbackSnapshotKey,
+    [object]$IdempotencyManifest,
+    [string]$TenantId
+  )
+
+  $applyRunsDdl = @'
+create table if not exists importer_apply_runs (
+  transaction_id text primary key,
+  plan_idempotency_key text not null unique,
+  rollback_snapshot_idempotency_key text not null,
+  idempotency_manifest_key text not null,
+  tenant_id uuid not null,
+  idempotency_manifest_json jsonb not null,
+  status text not null check (status in ('prepared', 'applied', 'rolled_back', 'blocked')),
+  dry_run_contract boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+'@
+
+  $operationJournalDdl = @'
+create table if not exists importer_apply_operation_journal (
+  snapshot_entry_id text primary key,
+  transaction_id text not null references importer_apply_runs(transaction_id) on delete cascade,
+  operation_id text not null,
+  operation_idempotency_key text not null,
+  target_kind text not null,
+  target_natural_key_hash text not null,
+  rollback_action text not null,
+  before_image_json jsonb not null,
+  before_image_hash text,
+  after_hash text not null,
+  rollback_entry_json jsonb not null,
+  status text not null check (status in ('prepared', 'skipped_same_after_hash', 'applied', 'rolled_back', 'blocked')),
+  error_summary_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (transaction_id, operation_id),
+  unique (operation_idempotency_key, target_kind, target_natural_key_hash)
+);
+'@
+
+  $journalIndexesDdl = @'
+create index if not exists idx_importer_apply_operation_journal_transaction
+  on importer_apply_operation_journal(transaction_id, status);
+create index if not exists idx_importer_apply_operation_journal_target
+  on importer_apply_operation_journal(target_kind, target_natural_key_hash);
+'@
+
+  $runInsertSql = @'
+insert into importer_apply_runs (
+  transaction_id, plan_idempotency_key, rollback_snapshot_idempotency_key,
+  idempotency_manifest_key, tenant_id, idempotency_manifest_json, status, dry_run_contract
+)
+values (
+  :transaction_id, :plan_idempotency_key, :rollback_snapshot_idempotency_key,
+  :idempotency_manifest_key, cast(:tenant_id as uuid), cast(:idempotency_manifest_json as jsonb),
+  'prepared', true
+)
+on conflict (transaction_id) do update
+set plan_idempotency_key = excluded.plan_idempotency_key,
+    rollback_snapshot_idempotency_key = excluded.rollback_snapshot_idempotency_key,
+    idempotency_manifest_key = excluded.idempotency_manifest_key,
+    idempotency_manifest_json = excluded.idempotency_manifest_json,
+    status = 'prepared',
+    updated_at = now();
+'@
+
+  $operationInsertSql = @'
+insert into importer_apply_operation_journal (
+  snapshot_entry_id, transaction_id, operation_id, operation_idempotency_key,
+  target_kind, target_natural_key_hash, rollback_action, before_image_json,
+  before_image_hash, after_hash, rollback_entry_json, status
+)
+values (
+  :snapshot_entry_id, :transaction_id, :operation_id, :operation_idempotency_key,
+  :target_kind, :target_natural_key_hash, :rollback_action, cast(:before_image_json as jsonb),
+  :before_image_hash, :after_hash, cast(:rollback_entry_json as jsonb), 'prepared'
+)
+on conflict (snapshot_entry_id) do update
+set before_image_json = excluded.before_image_json,
+    before_image_hash = excluded.before_image_hash,
+    after_hash = excluded.after_hash,
+    rollback_entry_json = excluded.rollback_entry_json,
+    status = 'prepared',
+    updated_at = now();
+'@
+
+  $runParameters = [ordered]@{
+    transaction_id = $TransactionId
+    plan_idempotency_key = $PlanIdempotencyKey
+    rollback_snapshot_idempotency_key = $RollbackSnapshotKey
+    idempotency_manifest_key = $IdempotencyManifest.manifest_key
+    tenant_id = $TenantId
+    idempotency_manifest_json = Convert-ToCompactJson $IdempotencyManifest 96
+  }
+
+  $operationInsertStatements = New-Object System.Collections.Generic.List[object]
+  foreach ($operation in $WriteOperations) {
+    $rollback = $operation.rollback
+    $beforeImageHash = $null
+    if ($null -ne $rollback.before_image -and $null -ne $rollback.before_image.object_hash) {
+      $beforeImageHash = $rollback.before_image.object_hash
+    }
+
+    $operationParameters = [ordered]@{
+      snapshot_entry_id = $operation.rollback_snapshot_entry_id
+      transaction_id = $TransactionId
+      operation_id = $operation.operation_id
+      operation_idempotency_key = $operation.idempotency_key
+      target_kind = $operation.target.kind
+      target_natural_key_hash = $operation.target.natural_key_hash
+      rollback_action = $rollback.rollback_action
+      before_image_json = Convert-ToCompactJson $rollback.before_image 96
+      before_image_hash = $beforeImageHash
+      after_hash = $rollback.after_preview_hash
+      rollback_entry_json = Convert-ToCompactJson $rollback 96
+    }
+    $operationInsertStatements.Add((New-PostgreSqlStatement "persist_rollback_journal_row" $operation.operation_id $operationInsertSql $operationParameters)) | Out-Null
+  }
+
+  return [ordered]@{
+    schema_version = "importer.rollback-journal-sql-plan.v1"
+    required_for_live_runner = $true
+    dry_run = $true
+    database_writes = $false
+    live_database_connection = $false
+    tables = @("importer_apply_runs", "importer_apply_operation_journal")
+    before_image_persistence = [ordered]@{
+      capture_inside_transaction = $true
+      persist_before_mutation = $true
+      row_lock_required = $true
+      before_image_schema = "importer.before-image.v1"
+      rollback_entry_schema = "importer.rollback-snapshot-entry.v1"
+    }
+    ddl_statements = @(
+      New-PostgreSqlStatement "journal_ddl" "importer_apply_runs" $applyRunsDdl ([ordered]@{})
+      New-PostgreSqlStatement "journal_ddl" "importer_apply_operation_journal" $operationJournalDdl ([ordered]@{})
+      New-PostgreSqlStatement "journal_index_ddl" "importer_apply_operation_journal" $journalIndexesDdl ([ordered]@{})
+    )
+    run_insert_statement = New-PostgreSqlStatement "persist_apply_run" "apply_run" $runInsertSql $runParameters
+    operation_insert_statements = @(Convert-ToObjectArray $operationInsertStatements)
+    persistence_order = @(
+      "create rollback journal tables if missing",
+      "insert apply run row",
+      "capture before-image with SELECT ... FOR UPDATE",
+      "insert operation rollback journal row",
+      "execute mutation",
+      "update operation journal status"
+    )
+  }
+}
+
+function New-PostgreSqlRollbackOperationSkeletonPlan {
+  param(
+    [object[]]$WriteOperations,
+    [string]$TransactionId,
+    [string]$RollbackSnapshotKey,
+    [string]$TenantId
+  )
+
+  $lookupSql = @'
+select before_image_json, rollback_entry_json, rollback_action, status
+from importer_apply_operation_journal
+where transaction_id = :transaction_id
+  and operation_id = :operation_id
+  and snapshot_entry_id = :snapshot_entry_id
+for update;
+'@
+
+  $operationSkeletons = New-Object System.Collections.Generic.List[object]
+  foreach ($operation in $WriteOperations) {
+    $rollbackIntent = "no_compensating_action"
+    if ($operation.rollback.rollback_action -eq "delete_created_object") {
+      $rollbackIntent = "delete_created_object_by_natural_key"
+    } elseif ($operation.rollback.rollback_action -eq "restore_previous_object") {
+      $rollbackIntent = "restore_previous_object_from_before_image_json"
+    }
+
+    $parameters = [ordered]@{
+      tenant_id = $TenantId
+      transaction_id = $TransactionId
+      rollback_snapshot_idempotency_key = $RollbackSnapshotKey
+      operation_id = $operation.operation_id
+      snapshot_entry_id = $operation.rollback_snapshot_entry_id
+      target_kind = $operation.target.kind
+      target_natural_key_hash = $operation.target.natural_key_hash
+      rollback_action = $operation.rollback.rollback_action
+    }
+
+    $operationSkeletons.Add([ordered]@{
+        operation_id = $operation.operation_id
+        target = $operation.target
+        rollback_snapshot_entry_id = $operation.rollback_snapshot_entry_id
+        rollback_action = $operation.rollback.rollback_action
+        compensating_action = $rollbackIntent
+        supported_by_current_slice = $false
+        required_journal_status = @("applied")
+        no_secret_material = $true
+        lookup_statement = New-PostgreSqlStatement "rollback_lookup_journal_entry" $operation.operation_id $lookupSql $parameters
+        compensating_mutation_contract = [ordered]@{
+          schema_version = "importer.rollback-compensating-mutation-contract.v1"
+          future_runner_must_verify = @(
+            "journal row belongs to requested transaction_id and snapshot_entry_id",
+            "operation target hash matches journal target hash",
+            "journal status is applied before compensating mutation",
+            "before_image_json schema is importer.before-image.v1",
+            "before_image_hash matches before_image_json when object_exists=true"
+          )
+          mutation_sql_status = "not_generated_in_this_slice"
+          database_writes = $false
+        }
+      }) | Out-Null
+  }
+
+  return [ordered]@{
+    schema_version = "importer.rollback-operation-plan.v1"
+    execution_status = "refused_no_live_runner"
+    rollback_snapshot_idempotency_key = $RollbackSnapshotKey
+    transaction_id = $TransactionId
+    database_writes = $false
+    live_database_connection = $false
+    compensating_rollback_supported_by_current_slice = $false
+    refusal_contract = [ordered]@{
+      schema_version = "importer.rollback-execution-refusal-contract.v1"
+      refusal_reason = "Rollback execution is plan-only in this slice; no live PostgreSQL runner or compensating mutation writer is implemented, so no database writes were made."
+      execute_supported = $false
+      refuse_execute_when = @(
+        "live PostgreSQL rollback runner is unavailable",
+        "rollback journal rows are not persisted by a live apply transaction",
+        "operation journal status is not applied",
+        "before_image hash verification fails",
+        "target kind rollback adapter is unavailable"
+      )
+    }
+    operation_skeletons = @(Convert-ToObjectArray $operationSkeletons)
+  }
+}
+
 function New-PostgreSqlApplyExecutorPlan {
   param(
     [object[]]$WriteOperations,
@@ -1046,6 +1290,24 @@ function New-PostgreSqlApplyExecutorPlan {
     }
   }
 
+  $rollbackJournalSqlPlan = New-PostgreSqlRollbackJournalSqlPlan `
+    -WriteOperations $WriteOperations `
+    -TransactionId $TransactionId `
+    -PlanIdempotencyKey $PlanIdempotencyKey `
+    -RollbackSnapshotKey $RollbackSnapshotKey `
+    -IdempotencyManifest $IdempotencyManifest `
+    -TenantId $TenantId
+  $rollbackOperationPlan = New-PostgreSqlRollbackOperationSkeletonPlan `
+    -WriteOperations $WriteOperations `
+    -TransactionId $TransactionId `
+    -RollbackSnapshotKey $RollbackSnapshotKey `
+    -TenantId $TenantId
+  $journalStatementCount = @(
+    @(Convert-ToObjectArray $rollbackJournalSqlPlan.ddl_statements).Count
+    1
+    @(Convert-ToObjectArray $rollbackJournalSqlPlan.operation_insert_statements).Count
+  ) | Measure-Object -Sum
+
   return [ordered]@{
     schema_version = "importer.postgresql-sql-executor-plan.v1"
     executor = "postgresql_sql_plan"
@@ -1072,6 +1334,7 @@ function New-PostgreSqlApplyExecutorPlan {
       unsupported_write_operations = $unsupported.Count
       generated_operation_plans = $operationPlans.Count
       generated_sql_statements = @($operationPlans | ForEach-Object { @(Convert-ToObjectArray $_.statements).Count } | Measure-Object -Sum).Sum
+      generated_journal_sql_statements = $journalStatementCount.Sum
     }
     unsupported_operations = @(Convert-ToObjectArray $unsupported)
     idempotency_contract = [ordered]@{
@@ -1113,8 +1376,11 @@ function New-PostgreSqlApplyExecutorPlan {
           tombstone_required_when_creating = $true
         }
       }
+      journal_sql_plan_schema = $rollbackJournalSqlPlan.schema_version
+      rollback_operation_plan_schema = $rollbackOperationPlan.schema_version
     }
     journal_contract = [ordered]@{
+      schema_version = "importer.rollback-journal-contract.v1"
       required_for_live_runner = $true
       proposed_tables = @("importer_apply_runs", "importer_apply_operation_journal")
       minimum_fields = @(
@@ -1138,9 +1404,11 @@ function New-PostgreSqlApplyExecutorPlan {
         "execute mutation",
         "update operation journal status"
       )
+      sql_plan = $rollbackJournalSqlPlan
     }
     refusal_contract = [ordered]@{
       schema_version = "importer.apply-refusal-contract.v1"
+      live_runner_refusal_reason = "This slice can prepare SQL and rollback journal contracts only; a live PostgreSQL runner is unavailable, so no database writes were made."
       refuse_apply_when = @(
         "missing -Force with -Apply",
         "DryRun is false",
@@ -1179,6 +1447,7 @@ function New-PostgreSqlApplyExecutorPlan {
         "or restore_previous_object/delete_created_object from persisted rollback snapshot in a later compensating runner"
       )
     }
+    rollback_operation_plan = $rollbackOperationPlan
     transaction = [ordered]@{
       transaction_id = $TransactionId
       isolation_hint = "single PostgreSQL transaction with row-level FOR UPDATE before-image capture"
@@ -1186,6 +1455,7 @@ function New-PostgreSqlApplyExecutorPlan {
       advisory_lock_sql = "select pg_advisory_xact_lock(hashtextextended(:plan_idempotency_key, 0));"
       commit_sql = "commit;"
       rollback_sql = "rollback;"
+      rollback_journal_sql_plan_schema = $rollbackJournalSqlPlan.schema_version
       operation_plans = @(Convert-ToObjectArray $operationPlans)
     }
   }
@@ -1575,10 +1845,12 @@ foreach ($operation in $writeOperations) {
 $applyExecutionStatus = "not_requested"
 $realApplyStatus = "dry_run_sql_plan"
 $applyRefusalReason = $null
+$realDatabaseWriteRefusalReason = "This slice is plan-only: -Apply -Force prepares SQL, rollback journal DDL/insert plans, and rollback skeletons only; the live PostgreSQL runner is unavailable, so no database writes were made."
 if ($script:ApplyRequested) {
   if ($preflightStatus -eq "pass") {
     $applyExecutionStatus = "prepared_sql_plan"
     $realApplyStatus = "prepared_sql_plan"
+    $applyRefusalReason = $realDatabaseWriteRefusalReason
   } else {
     $applyExecutionStatus = "blocked_by_preflight"
     $realApplyStatus = "blocked_by_preflight"
@@ -1609,6 +1881,7 @@ $transactionContract = [ordered]@{
   dry_run = (-not $script:ApplyRequested)
   execution_status = $applyExecutionStatus
   refusal_reason = $applyRefusalReason
+  real_database_write_refusal_reason = $realDatabaseWriteRefusalReason
   database_writes = $false
   executor = $script:ApplyExecutor
   executor_status = $sqlExecutorPlan.executor_status
@@ -1623,6 +1896,7 @@ $transactionContract = [ordered]@{
     "begin_database_transaction",
     "persist_idempotency_manifest",
     "capture_and_persist_rollback_snapshot",
+    "persist_rollback_journal_rows",
     "apply_operations_in_order",
     "commit_or_restore_from_rollback_snapshot"
   )
@@ -1673,10 +1947,15 @@ $report = [ordered]@{
     database_writes = $false
     live_database_connection = $false
     refusal_reason = $applyRefusalReason
+    real_database_write_refusal_reason = $realDatabaseWriteRefusalReason
     refusal_contract_schema = $sqlExecutorPlan.refusal_contract.schema_version
     preflight_status = $preflightStatus
     transaction_contract_schema = $transactionContract.schema_version
     sql_executor_plan_schema = $sqlExecutorPlan.schema_version
+    journal_contract_schema = $sqlExecutorPlan.journal_contract.schema_version
+    rollback_journal_sql_plan_schema = $sqlExecutorPlan.journal_contract.sql_plan.schema_version
+    rollback_operation_plan_schema = $sqlExecutorPlan.rollback_operation_plan.schema_version
+    rollback_execution_refusal_contract_schema = $sqlExecutorPlan.rollback_operation_plan.refusal_contract.schema_version
     rollback_snapshot_schema = "importer.rollback-snapshot.v1"
     idempotency_manifest_schema = $idempotencyManifest.schema_version
   }
@@ -1721,7 +2000,7 @@ $report = [ordered]@{
 
 $json = $report | ConvertTo-Json -Depth 96
 $safeJson = Redact-SecretLikeString $json
-if ($safeJson -match "([A-Za-z]:[\\/]|\\\\[^\\/`"\s]+[\\/])") {
+if ($safeJson -match "((?<![A-Za-z])[A-Za-z]:[\\/]|\\\\(?!u[0-9A-Fa-f]{4})[^\\/`"\s]+[\\/])") {
   throw "Refusing to emit apply plan because output still contains an absolute local path."
 }
 if ($safeJson -match "sk-[A-Za-z0-9_-]+" -or $safeJson -match "(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}" -or $safeJson -match "(?i)(api[_-]?key|authorization|token|password)=([^<][^&\s`"]+)") {

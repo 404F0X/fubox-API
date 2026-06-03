@@ -21,7 +21,27 @@
     "refusal_contract_schema": "importer.apply-refusal-contract.v1",
     "operation_bundle_schema": "importer.apply-operation-bundle.v1",
     "rollback_entry_schema": "importer.rollback-snapshot-entry.v1",
+    "journal_contract_schema": "importer.rollback-journal-contract.v1",
+    "journal_sql_plan_schema": "importer.rollback-journal-sql-plan.v1",
+    "rollback_operation_plan_schema": "importer.rollback-operation-plan.v1",
+    "rollback_execution_refusal_contract_schema": "importer.rollback-execution-refusal-contract.v1",
+    "rollback_operation_execution_status": "refused_no_live_runner",
     "source_binding_preflight": "pass",
+    "required_journal_tables": [
+      "importer_apply_runs",
+      "importer_apply_operation_journal"
+    ],
+    "required_journal_statement_phases": [
+      "journal_ddl",
+      "persist_apply_run",
+      "persist_rollback_journal_row"
+    ],
+    "required_journal_sql_fragments": [
+      "create table if not exists importer_apply_runs",
+      "create table if not exists importer_apply_operation_journal",
+      "insert into importer_apply_runs",
+      "insert into importer_apply_operation_journal"
+    ],
     "rollback_contract": {
       "capture_before_apply": true,
       "includes_operation_id": true,

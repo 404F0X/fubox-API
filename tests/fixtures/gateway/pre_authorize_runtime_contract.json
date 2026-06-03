@@ -20,6 +20,12 @@
       "runtime_entry": "apps/gateway/src/main.rs::responses"
     },
     {
+      "name": "responses_stream",
+      "path": "POST /v1/responses",
+      "stream": true,
+      "runtime_entry": "apps/gateway/src/streaming.rs::responses_streaming"
+    },
+    {
       "name": "embeddings_non_stream",
       "path": "POST /v1/embeddings",
       "stream": false,

@@ -340,6 +340,7 @@ function stubAdminFetch() {
     denied_models: ["gpt-internal"],
     id: "profile-1",
     inbound_protocol: "auto",
+    ip_allowlist: ["198.51.100.0/24", "2001:db8:1::/64"],
     model_aliases: {
       "chat-fast": "gpt-4o-mini",
       authorization: bearerPlaceholder("profile-alias-hidden"),
@@ -1029,9 +1030,17 @@ function healthSummaryPayload() {
       },
     ],
     recent_window: {
+      error_count: 1,
       sample_count: 2,
       sample_limit: 500,
       source: "request_logs",
+      success_count: 1,
+      success_rate: 0.5,
+      window: {
+        minutes: 60,
+        unit: "minutes",
+      },
+      window_minutes: 60,
     },
     status_counts: {
       channels: { cooldown: 1 },
@@ -1062,6 +1071,8 @@ function healthSummaryRecent(code: string) {
       status: "failed",
     },
     request_count: 2,
+    success_count: 1,
+    success_rate: 0.5,
   };
 }
 
@@ -1339,6 +1350,9 @@ describe("App", () => {
     expect(screen.getByText("AI Gateway")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
     expect(screen.getByText("Routing health")).toBeInTheDocument();
+    expect(screen.getByText("Window success")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("50%").length).toBeGreaterThan(0));
+    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
     expect(await screen.findByText("Gateway")).toBeInTheDocument();
   });
 
@@ -2068,8 +2082,9 @@ describe("App", () => {
     expect(screen.getAllByText((content) => content.includes("gpt-4o-mini")).length).toBeGreaterThan(0);
     expect(screen.getByText((content) => content.includes("gpt-internal"))).toBeInTheDocument();
     expect(screen.getByText((content) => content.includes("chat-fast=gpt-4o-mini"))).toBeInTheDocument();
-    expect(screen.getByText((content) => content.includes("Profile IP"))).toBeInTheDocument();
-    expect(screen.getByText((content) => content.includes("203.0.113.0/24"))).toBeInTheDocument();
+    expect(document.body.textContent).toMatch(/Profile IP\s*2 entries/);
+    expect(document.body.textContent).not.toContain("198.51.100.0/24");
+    expect(document.body.textContent).not.toContain("203.0.113.0/24");
     expect(document.body.textContent).not.toContain(authorizationBearerPlaceholder("profile-model-hidden"));
     expect(document.body.textContent).not.toContain(bearerPlaceholder("profile-alias-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("profile-alias-hidden"));
@@ -2087,6 +2102,33 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Model aliases JSON"), {
       target: { value: '{"create-fast":"gpt-create-visible"}' },
     });
+    fireEvent.change(screen.getByLabelText("Profile IP allowlist JSON"), {
+      target: { value: "{" },
+    });
+    await user.click(screen.getByRole("button", { name: "Create profile" }));
+
+    expect(await screen.findByText("Profile IP allowlist must be valid JSON.")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).includes("/admin/api-key-profiles") && init?.method === "POST",
+      ),
+    ).toBe(false);
+
+    fireEvent.change(screen.getByLabelText("Profile IP allowlist JSON"), {
+      target: { value: '{"office":"198.51.100.0/24"}' },
+    });
+    await user.click(screen.getByRole("button", { name: "Create profile" }));
+
+    expect(await screen.findByText("Profile IP allowlist must be a JSON array.")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).includes("/admin/api-key-profiles") && init?.method === "POST",
+      ),
+    ).toBe(false);
+
+    fireEvent.change(screen.getByLabelText("Profile IP allowlist JSON"), {
+      target: { value: '["198.51.100.0/24","2001:db8:2::/64"]' },
+    });
     await user.click(screen.getByRole("button", { name: "Create profile" }));
 
     expect(await screen.findByText("created-profile")).toBeInTheDocument();
@@ -2098,6 +2140,7 @@ describe("App", () => {
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       allowed_models: ["gpt-create-visible"],
       denied_models: ["gpt-create-denied"],
+      ip_allowlist: ["198.51.100.0/24", "2001:db8:2::/64"],
       model_aliases: {
         "create-fast": "gpt-create-visible",
       },
@@ -2118,6 +2161,9 @@ describe("App", () => {
     fireEvent.change(within(patchPanel).getByLabelText("Model aliases JSON"), {
       target: { value: '{"chat-fast":"gpt-visible-new"}' },
     });
+    fireEvent.change(within(patchPanel).getByLabelText("Profile IP allowlist JSON"), {
+      target: { value: '["198.51.100.10","2001:db8:3::/64"]' },
+    });
     await user.click(within(patchPanel).getByRole("button", { name: "Save patch" }));
 
     expect(await screen.findByText("Profile updated.")).toBeInTheDocument();
@@ -2129,6 +2175,7 @@ describe("App", () => {
     expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
       allowed_models: ["gpt-4o-mini", "gpt-visible-new"],
       denied_models: ["gpt-denied-new"],
+      ip_allowlist: ["198.51.100.10", "2001:db8:3::/64"],
       model_aliases: {
         "chat-fast": "gpt-visible-new",
       },

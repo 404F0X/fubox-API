@@ -667,6 +667,55 @@ impl OpenAiCompatibleClient {
         })
     }
 
+    pub async fn responses_stream(
+        &self,
+        request: &OpenAiResponseRequest,
+    ) -> Result<OpenAiChatStream, OpenAiAdapterError> {
+        self.responses_stream_with_provider_key(request, None).await
+    }
+
+    pub async fn responses_stream_with_provider_key(
+        &self,
+        request: &OpenAiResponseRequest,
+        provider_key: Option<&str>,
+    ) -> Result<OpenAiChatStream, OpenAiAdapterError> {
+        request.validate()?;
+
+        let response = self
+            .responses_request_builder(request, provider_key)?
+            .send()
+            .await
+            .map_err(map_reqwest_error)?;
+
+        let status = response.status();
+        let retry_after = retry_after_from_headers(response.headers());
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(header_to_str)
+            .map(str::to_string);
+
+        if !status.is_success() {
+            let body = response
+                .bytes()
+                .await
+                .map_err(|error| OpenAiAdapterError::UpstreamRead(error.to_string()))?;
+            Self::parse_responses_response_with_context(
+                status.as_u16(),
+                &body,
+                retry_after,
+                provider_key,
+            )?;
+            unreachable!("non-success upstream status must parse as an error");
+        }
+
+        Ok(OpenAiChatStream {
+            status: status.as_u16(),
+            content_type,
+            response,
+        })
+    }
+
     pub fn build_chat_completions_request(
         &self,
         request: &ChatCompletionRequest,

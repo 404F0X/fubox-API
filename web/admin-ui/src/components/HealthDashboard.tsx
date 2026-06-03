@@ -36,6 +36,8 @@ export function HealthDashboard({
   const online = results.filter((result) => result.status === "online").length;
   const serviceHealthScore = results.length > 0 ? Math.round((online / results.length) * 100) : null;
   const routingHealthScore = routeHealthScore(healthSummary);
+  const windowSuccessRate = successRateText(healthSummary?.recent_window.success_rate);
+  const windowLabel = healthWindowLabel(healthSummary);
   const rows = healthRows(healthSummary);
 
   return (
@@ -45,6 +47,15 @@ export function HealthDashboard({
           <span>Routing health</span>
           <strong>{routingHealthScore === null ? "No signal" : `${routingHealthScore}%`}</strong>
           <small>{healthSummary ? `${healthSummary.recent_window.sample_count} recent requests` : "Summary unavailable"}</small>
+        </article>
+        <article className="metric-card">
+          <span>Window success</span>
+          <strong>{windowSuccessRate}</strong>
+          <small>
+            {healthSummary
+              ? `${healthSummary.recent_window.sample_count} requests / ${windowLabel}`
+              : healthSummaryError ?? "Waiting"}
+          </small>
         </article>
         <article className="metric-card">
           <span>Service probes</span>
@@ -243,6 +254,9 @@ function scoreText(score: number | null | undefined): string {
 function signalText(status: string, recent: HealthSummaryRecentStats, configuredError?: string | null): string {
   const recentError = recent.last_error?.code ?? configuredError;
 
+  if (typeof recent.success_rate === "number" && Number.isFinite(recent.success_rate)) {
+    return `${status} / ${successRateText(recent.success_rate)} success`;
+  }
   if (recentError) {
     return `${status} / ${recentError}`;
   }
@@ -251,6 +265,28 @@ function signalText(status: string, recent: HealthSummaryRecentStats, configured
   }
 
   return status;
+}
+
+function successRateText(rate: number | null | undefined): string {
+  if (typeof rate !== "number" || !Number.isFinite(rate)) {
+    return "No signal";
+  }
+
+  return `${Math.round(rate * 100)}%`;
+}
+
+function healthWindowLabel(summary: HealthSummary | null): string {
+  const minutes = summary?.recent_window.window?.minutes ?? summary?.recent_window.window_minutes;
+
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes <= 0) {
+    return "configured window";
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours}h`;
+  }
+
+  return `${minutes}m`;
 }
 
 function pillStatus(healthState: string): ProbeResult["status"] {

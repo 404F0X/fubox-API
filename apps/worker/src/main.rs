@@ -1290,7 +1290,7 @@ mod tests {
                 force: true,
             }
         );
-        assert!(billing_reconciliation_execute_error(true).contains("future DB writer"));
+        assert!(billing_reconciliation_execute_error(true).contains("future DB reader/writer"));
     }
 
     #[test]

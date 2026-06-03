@@ -47,6 +47,7 @@ type VirtualKeyCreateForm = {
 type ProfileCreateForm = {
   allowedModels: string;
   deniedModels: string;
+  ipAllowlist: string;
   modelAliases: string;
   name: string;
   projectId: string;
@@ -56,6 +57,7 @@ type ProfileCreateForm = {
 type ProfileEditForm = {
   allowedModels: string;
   deniedModels: string;
+  ipAllowlist: string;
   modelAliases: string;
   name: string;
   status: ApiKeyProfileStatus;
@@ -85,6 +87,7 @@ const defaultVirtualKeyCreateForm: VirtualKeyCreateForm = {
 const defaultProfileCreateForm: ProfileCreateForm = {
   allowedModels: "[]",
   deniedModels: "[]",
+  ipAllowlist: "[]",
   modelAliases: "{}",
   name: "",
   projectId: "",
@@ -545,6 +548,7 @@ function ProfilesSection() {
   const [editForm, setEditForm] = useState<ProfileEditForm>({
     allowedModels: "[]",
     deniedModels: "[]",
+    ipAllowlist: "[]",
     modelAliases: "{}",
     name: "",
     status: "active",
@@ -594,6 +598,7 @@ function ProfilesSection() {
       await createApiKeyProfile({
         allowed_models: parseSafeJsonArrayField(createForm.allowedModels, "Visible models"),
         denied_models: parseSafeJsonArrayField(createForm.deniedModels, "Denied models"),
+        ip_allowlist: parseIpAllowlistJsonArrayField(createForm.ipAllowlist, "Profile IP allowlist"),
         model_aliases: parseSafeJsonObject(createForm.modelAliases, "Model aliases"),
         name: createForm.name.trim(),
         project_id: nextProjectId,
@@ -639,6 +644,10 @@ function ProfilesSection() {
 
       if (!editBaseline || editForm.deniedModels !== editBaseline.deniedModels) {
         patch.denied_models = parseSafeJsonArrayField(editForm.deniedModels, "Denied models");
+      }
+
+      if (!editBaseline || editForm.ipAllowlist !== editBaseline.ipAllowlist) {
+        patch.ip_allowlist = parseIpAllowlistJsonArrayField(editForm.ipAllowlist, "Profile IP allowlist");
       }
 
       if (!editBaseline || editForm.modelAliases !== editBaseline.modelAliases) {
@@ -820,6 +829,19 @@ function ProfilesSection() {
                 spellCheck={false}
               />
             </label>
+
+            <label className="field">
+              Profile IP allowlist JSON
+              <textarea
+                value={createForm.ipAllowlist}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setCreateForm((current) => ({ ...current, ipAllowlist: value }));
+                }}
+                placeholder={'["203.0.113.10", "2001:db8::/64"]'}
+                spellCheck={false}
+              />
+            </label>
           </div>
 
           <button className="primary-button primary-button--inline" type="submit">
@@ -986,6 +1008,18 @@ function ProfilesSection() {
                   spellCheck={false}
                 />
               </label>
+
+              <label className="field">
+                Profile IP allowlist JSON
+                <textarea
+                  value={editForm.ipAllowlist}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setEditForm((current) => ({ ...current, ipAllowlist: value }));
+                  }}
+                  spellCheck={false}
+                />
+              </label>
             </div>
 
             <div className="action-row">
@@ -1093,9 +1127,10 @@ function ProfileRequestControlSummary({ profile }: { profile: ApiKeyProfile }) {
       <span>
         <strong>Payload</strong> {shortId(profile.payload_policy_id)}
       </span>
+      <ProfileIpAllowlistCountSummary label="Profile IP" value={profile.ip_allowlist} />
       <PolicySummary label="Overrides" value={profile.request_overrides} />
       <ProfileOverrideTypeSummary value={profile.request_overrides} />
-      <ProfileIpAllowlistSummary value={profile.request_overrides} />
+      <ProfileIpAllowlistCountSummary label="Legacy Profile IP" value={profileIpAllowlist(profile.request_overrides)} />
     </>
   );
 }
@@ -1114,16 +1149,16 @@ function ProfileOverrideTypeSummary({ value }: { value: JsonValue }) {
   );
 }
 
-function ProfileIpAllowlistSummary({ value }: { value: JsonValue }) {
-  const allowlist = profileIpAllowlist(value);
+function ProfileIpAllowlistCountSummary({ label, value }: { label: string; value: JsonValue }) {
+  const count = Array.isArray(value) ? value.length : 0;
 
-  if (allowlist.length === 0) {
+  if (count === 0) {
     return null;
   }
 
   return (
     <span>
-      <strong>Profile IP</strong> {summarizeJsonValue(allowlist)}
+      <strong>{label}</strong> {count === 1 ? "1 entry" : `${count} entries`}
     </span>
   );
 }
@@ -1147,6 +1182,7 @@ function profileToEditForm(profile: ApiKeyProfile): ProfileEditForm {
   return {
     allowedModels: safeJsonText(profile.allowed_models),
     deniedModels: safeJsonText(profile.denied_models),
+    ipAllowlist: safeJsonText(profile.ip_allowlist),
     modelAliases: safeJsonText(profile.model_aliases),
     name: safeFieldValue(profile.name),
     status: profile.status,
@@ -1183,6 +1219,21 @@ function parseSafeJsonArrayField(value: string, label: string): JsonValue[] {
   }
 
   return parsed;
+}
+
+function parseIpAllowlistJsonArrayField(value: string, label: string): string[] {
+  const parsed = parseSafeJsonArrayField(value, label);
+  const entries: string[] = [];
+
+  for (const entry of parsed) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error(`${label} entries must be non-empty strings.`);
+    }
+
+    entries.push(entry.trim());
+  }
+
+  return entries;
 }
 
 function summarizeJsonValue(value: JsonValue): string {

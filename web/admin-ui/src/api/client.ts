@@ -22,6 +22,8 @@ export type HealthSummaryRecentStats = {
   error_count: number;
   last_error?: HealthSummaryRecentLastError | null;
   request_count: number;
+  success_count?: number;
+  success_rate?: number | null;
 };
 
 export type HealthSummaryEntityBase = {
@@ -86,9 +88,17 @@ export type HealthSummary = {
   provider_keys: HealthSummaryProviderKey[];
   providers: HealthSummaryProvider[];
   recent_window: {
+    error_count?: number;
     sample_count: number;
     sample_limit: number;
     source: string;
+    success_count?: number;
+    success_rate?: number | null;
+    window?: {
+      minutes: number;
+      unit: "minutes" | string;
+    };
+    window_minutes?: number;
   };
   status_counts: {
     channels: Record<string, number>;
@@ -105,6 +115,11 @@ export type HealthSummary = {
     provider_keys: number;
     providers: number;
   };
+};
+
+export type HealthSummaryFilters = {
+  sample_limit?: number;
+  window_minutes?: number;
 };
 
 export type ServiceName = "gateway" | "controlPlane" | "mockProvider";
@@ -993,9 +1008,10 @@ export function listAuditLogs(
 }
 
 export function getProviderHealthSummary(
+  filters: HealthSummaryFilters = {},
   options: Omit<JsonRequestOptions, "body" | "method"> = {},
 ): Promise<HealthSummary> {
-  return apiJson<HealthSummary>("/admin/providers/health-summary", {
+  return apiJson<HealthSummary>(`/admin/providers/health-summary${queryString(filters)}`, {
     ...options,
     method: "GET",
   });

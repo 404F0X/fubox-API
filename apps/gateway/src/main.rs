@@ -805,27 +805,6 @@ async fn responses(
     };
     let request_body_hash = sha256_hex(&body);
 
-    if request.is_streaming() {
-        let error = OpenAiAdapterError::StreamingNotImplemented;
-        start_and_finish_request_error_for_endpoint(
-            METRICS_ENDPOINT_RESPONSES,
-            repository,
-            &auth,
-            Some(&request.model),
-            Some(&request_body_hash),
-            request_payload_log(&payload_policy, &body),
-            RequestRouteLog::unresolved(route_snapshot_for_rejection(
-                &auth,
-                Some(&request.model),
-                "responses_stream_not_implemented",
-            )),
-            started_at,
-            summarize_adapter_error(&error),
-        )
-        .await;
-        return adapter_error_response(error);
-    }
-
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &request.model)
         .await
@@ -919,6 +898,21 @@ async fn responses(
     };
 
     let mut upstream_clients = OpenAiClientCache::with_capacity(attempt_routes.len());
+
+    if request.is_streaming() {
+        return streaming::responses_streaming(streaming::StreamingResponsesContext {
+            repository,
+            auth: &auth,
+            request_id,
+            request_started_at: started_at,
+            request: &request,
+            attempt_routes: &attempt_routes,
+            upstream_clients: &mut upstream_clients,
+            route_snapshot,
+        })
+        .await;
+    }
+
     let mut fallback_events = Vec::new();
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
@@ -6973,7 +6967,7 @@ mod tests {
             fixture["scenario"],
             "gateway_pre_authorize_runtime_contract_v1"
         );
-        assert_eq!(fixture["endpoints"].as_array().expect("endpoints").len(), 6);
+        assert_eq!(fixture["endpoints"].as_array().expect("endpoints").len(), 7);
         assert_eq!(fixture["rejected_contract"]["http_status"], 402);
         assert_eq!(
             fixture["rejected_contract"]["openai_error"]["code"],
@@ -7047,6 +7041,7 @@ mod tests {
                 "chat_completions_non_stream",
                 "chat_completions_stream",
                 "responses_non_stream",
+                "responses_stream",
                 "embeddings_non_stream",
                 "anthropic_messages_non_stream",
                 "gemini_generate_content_native_passthrough"
@@ -7070,7 +7065,7 @@ mod tests {
         let streaming_section = source_section(
             streaming_source,
             "pub(crate) async fn chat_completions_streaming(",
-            "struct StreamLogContext",
+            "pub(crate) async fn responses_streaming(",
         );
         assert_pre_authorize_gates_provider_side_effects(
             streaming_section,
@@ -7084,6 +7079,17 @@ mod tests {
             responses_section,
             "responses_non_stream",
             ".responses_with_provider_key(",
+        );
+
+        let responses_streaming_section = source_section(
+            streaming_source,
+            "pub(crate) async fn responses_streaming(",
+            "struct StreamLogContext",
+        );
+        assert_pre_authorize_gates_provider_side_effects(
+            responses_streaming_section,
+            "responses_stream",
+            ".responses_stream_with_provider_key(",
         );
 
         let embeddings_section = source_section(
@@ -7118,6 +7124,86 @@ mod tests {
             "gemini_generate_content_native_passthrough",
             "send_native_passthrough_request(",
         );
+    }
+
+    #[test]
+    fn responses_stream_runtime_contract_is_routed_and_secret_safe() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/responses_stream_runtime_contract.json"
+        ))
+        .expect("responses stream runtime contract fixture should be valid json");
+        let main_source = include_str!("main.rs");
+        let streaming_source = include_str!("streaming.rs");
+        let responses_section =
+            source_section(main_source, "async fn responses(", "async fn embeddings(");
+        let streaming_section = source_section(
+            streaming_source,
+            "pub(crate) async fn responses_streaming(",
+            "struct StreamLogContext",
+        );
+
+        assert_eq!(
+            fixture["endpoint"]["previous_501_removed"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(
+            !responses_section.contains("responses_stream_not_implemented"),
+            "responses stream=true must not keep the old 501 rejection branch"
+        );
+        assert!(
+            !responses_section.contains("StreamingNotImplemented"),
+            "responses stream=true must route into streaming runtime"
+        );
+        assert_marker_before(
+            responses_section,
+            ".create_request_started(",
+            "streaming::responses_streaming(",
+            "responses_stream",
+        );
+        assert_marker_before(
+            responses_section,
+            "OpenAiClientCache::with_capacity(",
+            "streaming::responses_streaming(",
+            "responses_stream",
+        );
+        assert_pre_authorize_gates_provider_side_effects(
+            streaming_section,
+            "responses_stream",
+            ".responses_stream_with_provider_key(",
+        );
+        assert_eq!(
+            fixture["provider_contract"]["provider_key_secret_logged"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            fixture["provider_contract"]["authorization_logged"],
+            serde_json::Value::Bool(false)
+        );
+        assert!(
+            streaming_section.contains("GatewayStreamProtocol::OpenAiResponses"),
+            "responses stream finalizer must parse terminal events with the Responses protocol"
+        );
+        assert!(
+            streaming_section.contains("crate::METRICS_ENDPOINT_RESPONSES"),
+            "responses stream finalizer must record endpoint-specific metrics"
+        );
+
+        let mut fixture_without_markers = fixture.clone();
+        fixture_without_markers
+            .as_object_mut()
+            .expect("fixture object")
+            .remove("forbidden_markers");
+        let fixture_text = fixture_without_markers.to_string();
+        for marker in fixture["forbidden_markers"]
+            .as_array()
+            .expect("forbidden markers")
+        {
+            let marker = marker.as_str().expect("forbidden marker string");
+            assert!(
+                !fixture_text.contains(marker),
+                "responses stream fixture leaked forbidden marker: {marker}"
+            );
+        }
     }
 
     #[test]
