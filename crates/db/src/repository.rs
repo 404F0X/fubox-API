@@ -361,7 +361,7 @@ impl DbRepository {
             select
               id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             from api_key_profiles
             where tenant_id = $1 and id = $2 and deleted_at is null
@@ -387,14 +387,14 @@ impl DbRepository {
             insert into api_key_profiles (
               tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             returning
               id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             "#,
         )
@@ -409,6 +409,7 @@ impl DbRepository {
         .bind(profile.allowed_channel_tags)
         .bind(profile.blocked_provider_ids)
         .bind(profile.trace_header_rules)
+        .bind(profile.ip_allowlist)
         .bind(profile.request_overrides)
         .bind(profile.payload_policy_id)
         .bind(profile.status)
@@ -429,7 +430,7 @@ impl DbRepository {
             select
               id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             from api_key_profiles
             where tenant_id = $1
@@ -465,15 +466,16 @@ impl DbRepository {
                 allowed_channel_tags = $9,
                 blocked_provider_ids = $10,
                 trace_header_rules = $11,
-                request_overrides = $12,
-                payload_policy_id = $13,
-                status = $14,
+                ip_allowlist = $12,
+                request_overrides = $13,
+                payload_policy_id = $14,
+                status = $15,
                 updated_at = now()
             where tenant_id = $1 and id = $2 and deleted_at is null
             returning
               id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             "#,
         )
@@ -488,6 +490,7 @@ impl DbRepository {
         .bind(update.allowed_channel_tags)
         .bind(update.blocked_provider_ids)
         .bind(update.trace_header_rules)
+        .bind(update.ip_allowlist)
         .bind(update.request_overrides)
         .bind(update.payload_policy_id)
         .bind(update.status)
@@ -514,7 +517,7 @@ impl DbRepository {
             returning
               id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             "#,
         )
@@ -543,7 +546,7 @@ impl DbRepository {
             returning
               id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
               model_aliases, allowed_models, denied_models, allowed_channel_tags,
-              blocked_provider_ids, trace_header_rules, request_overrides,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
               payload_policy_id, status
             "#,
         )
@@ -574,7 +577,8 @@ impl DbRepository {
               p.id, p.tenant_id, p.project_id, p.name, p.inbound_protocol,
               p.default_protocol_mode, p.model_aliases, p.allowed_models,
               p.denied_models, p.allowed_channel_tags, p.blocked_provider_ids,
-              p.trace_header_rules, p.request_overrides, p.payload_policy_id, p.status
+              p.trace_header_rules, p.ip_allowlist, p.request_overrides,
+              p.payload_policy_id, p.status
             from virtual_key_profile_bindings b
             join api_key_profiles p
               on p.tenant_id = b.tenant_id
@@ -2761,6 +2765,7 @@ fn api_key_profile_from_row(row: PgRow) -> Result<ApiKeyProfile, sqlx::Error> {
         allowed_channel_tags: row.try_get("allowed_channel_tags")?,
         blocked_provider_ids: row.try_get("blocked_provider_ids")?,
         trace_header_rules: row.try_get("trace_header_rules")?,
+        ip_allowlist: row.try_get("ip_allowlist")?,
         request_overrides: row.try_get("request_overrides")?,
         payload_policy_id: row.try_get("payload_policy_id")?,
         status: row.try_get("status")?,

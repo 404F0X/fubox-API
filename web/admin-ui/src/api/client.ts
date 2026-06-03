@@ -425,6 +425,28 @@ export type RequestTraceSummary = {
   trace_id: string;
 };
 
+export type AuditLogListFilters = {
+  action?: string;
+  actor_user_id?: string;
+  limit?: number;
+  resource_type?: string;
+};
+
+export type AuditLog = {
+  action: string;
+  actor_user_id?: string | null;
+  after_snapshot?: JsonValue | null;
+  before_snapshot?: JsonValue | null;
+  created_at: string;
+  id: string;
+  metadata: JsonValue;
+  request_id?: string | null;
+  resource_id?: string | null;
+  resource_tenant_id?: string | null;
+  resource_type: string;
+  tenant_id: string;
+};
+
 export type ModelAssociationDryRunRequest = {
   canonical_model_id?: string;
   canonical_model_key?: string;
@@ -548,6 +570,7 @@ export type ApiKeyProfile = {
   denied_models: JsonValue;
   id: string;
   inbound_protocol: string;
+  ip_allowlist: JsonValue;
   model_aliases: JsonValue;
   name: string;
   payload_policy_id?: string | null;
@@ -569,6 +592,7 @@ export type CreateApiKeyProfileRequest = {
   default_protocol_mode?: string;
   denied_models?: JsonValue;
   inbound_protocol?: string;
+  ip_allowlist?: JsonValue;
   model_aliases?: JsonValue;
   name: string;
   payload_policy_id?: string | null;
@@ -953,6 +977,16 @@ export function listRequestLogs(
   options: Omit<JsonRequestOptions, "body" | "method"> = {},
 ): Promise<RequestLogSummary[]> {
   return apiJson<RequestLogSummary[]>(`/admin/request-logs${queryString(filters)}`, {
+    ...options,
+    method: "GET",
+  });
+}
+
+export function listAuditLogs(
+  filters: AuditLogListFilters = {},
+  options: Omit<JsonRequestOptions, "body" | "method"> = {},
+): Promise<AuditLog[]> {
+  return apiJson<AuditLog[]>(`/admin/audit-logs${queryString(filters)}`, {
     ...options,
     method: "GET",
   });

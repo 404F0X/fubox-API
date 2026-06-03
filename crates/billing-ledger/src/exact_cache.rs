@@ -11,8 +11,16 @@ use crate::{
 pub enum ExactCacheBillingError {
     #[error("exact cache key must be a sha256 digest")]
     InvalidCacheKeyHash,
-    #[error("exact cache hit requires a cache entry id")]
+    #[error("exact cache hit or partial hit requires a cache entry id")]
     CacheHitEntryIdRequired,
+    #[error("exact cache cached input tokens must not exceed input tokens")]
+    CacheReadTokensExceedInputTokens,
+    #[error("exact cache hit requires all input tokens to be cached")]
+    InvalidHitTokenSplit,
+    #[error("exact cache miss must not include cached input tokens")]
+    InvalidMissTokenSplit,
+    #[error("exact cache partial hit requires both cached and uncached input tokens")]
+    InvalidPartialHitTokenSplit,
     #[error("exact cache money field `{field}` must not be negative")]
     NegativeMoney { field: &'static str },
     #[error(transparent)]
@@ -26,6 +34,7 @@ pub enum ExactCacheBillingError {
 pub enum ExactCacheStatus {
     Hit,
     Miss,
+    PartialHit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,10 +80,31 @@ pub struct ExactCacheBillingRequest {
     pub write_policy: ExactCacheWritePolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExactCacheDecisionInput {
+    pub cache_entry_id: Option<Uuid>,
+    pub input_tokens: u64,
+    pub matched_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExactCacheDecision {
+    pub cache_status: ExactCacheStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_entry_id: Option<Uuid>,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub billable_input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExactCacheRatingResult {
     pub cache_status: ExactCacheStatus,
     pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
@@ -96,6 +126,10 @@ pub struct ExactCacheBillingPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_operation_idempotency_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_idempotency_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_idempotency_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ledger_idempotency_key: Option<String>,
     pub rating: ExactCacheRatingResult,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,9 +150,43 @@ pub struct ExactCacheLedgerMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExactCacheUsageSummary {
     pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub billable_input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+}
+
+pub fn decide_exact_cache_request(
+    input: ExactCacheDecisionInput,
+) -> Result<ExactCacheDecision, ExactCacheBillingError> {
+    if input.matched_input_tokens > input.input_tokens {
+        return Err(ExactCacheBillingError::CacheReadTokensExceedInputTokens);
+    }
+
+    if input.matched_input_tokens > 0 && input.cache_entry_id.is_none() {
+        return Err(ExactCacheBillingError::CacheHitEntryIdRequired);
+    }
+
+    let billable_input_tokens = input.input_tokens - input.matched_input_tokens;
+    let cache_status = match (input.matched_input_tokens, billable_input_tokens) {
+        (0, _) => ExactCacheStatus::Miss,
+        (_, 0) => ExactCacheStatus::Hit,
+        _ => ExactCacheStatus::PartialHit,
+    };
+
+    Ok(ExactCacheDecision {
+        cache_status,
+        cache_entry_id: match cache_status {
+            ExactCacheStatus::Hit | ExactCacheStatus::PartialHit => input.cache_entry_id,
+            ExactCacheStatus::Miss => None,
+        },
+        input_tokens: input.input_tokens,
+        cached_input_tokens: input.matched_input_tokens,
+        billable_input_tokens,
+        cache_read_tokens: input.matched_input_tokens,
+        cache_write_tokens: billable_input_tokens,
+    })
 }
 
 pub fn exact_cache_read_idempotency_key(
@@ -143,19 +211,30 @@ pub fn plan_exact_cache_billing(
     existing_entries: &[LedgerEntryRecord],
 ) -> Result<ExactCacheBillingPlan, ExactCacheBillingError> {
     validate_cache_key_hash(&request.cache_key_hash)?;
-    if request.cache_status == ExactCacheStatus::Hit && request.cache_entry_id.is_none() {
-        return Err(ExactCacheBillingError::CacheHitEntryIdRequired);
-    }
+    validate_cache_request_shape(&request)?;
 
-    let cache_operation_idempotency_key = match request.cache_status {
-        ExactCacheStatus::Hit => Some(exact_cache_read_idempotency_key(
-            request.request_id,
-            &request.cache_key_hash,
-        )?),
-        ExactCacheStatus::Miss if request.write_policy != ExactCacheWritePolicy::Disabled => Some(
-            exact_cache_write_idempotency_key(request.request_id, &request.cache_key_hash)?,
+    let cache_read_idempotency_key = match request.cache_status {
+        ExactCacheStatus::Hit | ExactCacheStatus::PartialHit => Some(
+            exact_cache_read_idempotency_key(request.request_id, &request.cache_key_hash)?,
         ),
         ExactCacheStatus::Miss => None,
+    };
+    let cache_write_idempotency_key = match request.cache_status {
+        ExactCacheStatus::Miss | ExactCacheStatus::PartialHit
+            if request.write_policy != ExactCacheWritePolicy::Disabled =>
+        {
+            Some(exact_cache_write_idempotency_key(
+                request.request_id,
+                &request.cache_key_hash,
+            )?)
+        }
+        ExactCacheStatus::Hit | ExactCacheStatus::Miss | ExactCacheStatus::PartialHit => None,
+    };
+    let cache_operation_idempotency_key = match request.cache_status {
+        ExactCacheStatus::Hit | ExactCacheStatus::PartialHit => Some(
+            exact_cache_read_idempotency_key(request.request_id, &request.cache_key_hash)?,
+        ),
+        ExactCacheStatus::Miss => cache_write_idempotency_key.clone(),
     };
 
     let rating = rate_exact_cache_request(&request, pricing)?;
@@ -184,6 +263,8 @@ pub fn plan_exact_cache_billing(
                     write_policy: request.write_policy,
                     usage_summary: ExactCacheUsageSummary {
                         input_tokens: request.input_tokens,
+                        cached_input_tokens: rating.cached_input_tokens,
+                        billable_input_tokens: rating.billable_input_tokens,
                         output_tokens: request.output_tokens,
                         cache_read_tokens: request.cache_read_tokens,
                         cache_write_tokens: request.cache_write_tokens,
@@ -196,6 +277,8 @@ pub fn plan_exact_cache_billing(
     Ok(ExactCacheBillingPlan {
         cache_status: request.cache_status,
         cache_operation_idempotency_key,
+        cache_read_idempotency_key,
+        cache_write_idempotency_key,
         ledger_idempotency_key,
         rating,
         ledger_plan,
@@ -209,10 +292,18 @@ fn rate_exact_cache_request(
     ensure_pricing_is_non_negative(pricing)?;
 
     let zero = FixedDecimal::zero(pricing.scale)?;
+    let cached_input_tokens = match request.cache_status {
+        ExactCacheStatus::Hit | ExactCacheStatus::PartialHit => request.cache_read_tokens,
+        ExactCacheStatus::Miss => 0,
+    };
+    let billable_input_tokens = request.input_tokens - cached_input_tokens;
     let (input_cost, output_cost, fixed_request_cost) = match request.cache_status {
         ExactCacheStatus::Hit => (zero, zero, zero),
-        ExactCacheStatus::Miss => (
-            crate::rating::rate_tokens(request.input_tokens, pricing.input_token_rate_per_million)?,
+        ExactCacheStatus::Miss | ExactCacheStatus::PartialHit => (
+            crate::rating::rate_tokens(
+                billable_input_tokens,
+                pricing.input_token_rate_per_million,
+            )?,
             crate::rating::rate_tokens(
                 request.output_tokens,
                 pricing.output_token_rate_per_million,
@@ -222,24 +313,31 @@ fn rate_exact_cache_request(
     };
 
     let cache_read_cost = match (request.cache_status, request.read_policy) {
-        (ExactCacheStatus::Hit, ExactCacheReadPolicy::DiscountedInputTokens) => {
-            crate::rating::rate_tokens(
-                request.cache_read_tokens,
-                pricing.cache_read_token_rate_per_million,
-            )?
+        (
+            ExactCacheStatus::Hit | ExactCacheStatus::PartialHit,
+            ExactCacheReadPolicy::DiscountedInputTokens,
+        ) => crate::rating::rate_tokens(
+            request.cache_read_tokens,
+            pricing.cache_read_token_rate_per_million,
+        )?,
+        (ExactCacheStatus::Hit | ExactCacheStatus::PartialHit, ExactCacheReadPolicy::FixedCost) => {
+            pricing.fixed_cache_read_cost
         }
-        (ExactCacheStatus::Hit, ExactCacheReadPolicy::FixedCost) => pricing.fixed_cache_read_cost,
         _ => zero,
     };
 
     let cache_write_cost = match (request.cache_status, request.write_policy) {
-        (ExactCacheStatus::Miss, ExactCacheWritePolicy::TokenRate) => crate::rating::rate_tokens(
+        (
+            ExactCacheStatus::Miss | ExactCacheStatus::PartialHit,
+            ExactCacheWritePolicy::TokenRate,
+        ) => crate::rating::rate_tokens(
             request.cache_write_tokens,
             pricing.cache_write_token_rate_per_million,
         )?,
-        (ExactCacheStatus::Miss, ExactCacheWritePolicy::FixedCost) => {
-            pricing.fixed_cache_write_cost
-        }
+        (
+            ExactCacheStatus::Miss | ExactCacheStatus::PartialHit,
+            ExactCacheWritePolicy::FixedCost,
+        ) => pricing.fixed_cache_write_cost,
         _ => zero,
     };
 
@@ -252,6 +350,8 @@ fn rate_exact_cache_request(
     Ok(ExactCacheRatingResult {
         cache_status: request.cache_status,
         input_tokens: request.input_tokens,
+        cached_input_tokens,
+        billable_input_tokens,
         output_tokens: request.output_tokens,
         cache_read_tokens: request.cache_read_tokens,
         cache_write_tokens: request.cache_write_tokens,
@@ -266,6 +366,40 @@ fn rate_exact_cache_request(
         currency: pricing.currency.clone(),
         scale: pricing.scale,
     })
+}
+
+fn validate_cache_request_shape(
+    request: &ExactCacheBillingRequest,
+) -> Result<(), ExactCacheBillingError> {
+    if request.cache_read_tokens > request.input_tokens {
+        return Err(ExactCacheBillingError::CacheReadTokensExceedInputTokens);
+    }
+
+    match request.cache_status {
+        ExactCacheStatus::Hit => {
+            if request.cache_entry_id.is_none() {
+                return Err(ExactCacheBillingError::CacheHitEntryIdRequired);
+            }
+            if request.cache_read_tokens != request.input_tokens {
+                return Err(ExactCacheBillingError::InvalidHitTokenSplit);
+            }
+        }
+        ExactCacheStatus::Miss => {
+            if request.cache_read_tokens != 0 {
+                return Err(ExactCacheBillingError::InvalidMissTokenSplit);
+            }
+        }
+        ExactCacheStatus::PartialHit => {
+            if request.cache_entry_id.is_none() {
+                return Err(ExactCacheBillingError::CacheHitEntryIdRequired);
+            }
+            if request.cache_read_tokens == 0 || request.cache_read_tokens == request.input_tokens {
+                return Err(ExactCacheBillingError::InvalidPartialHitTokenSplit);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_cache_key_hash(cache_key_hash: &str) -> Result<(), ExactCacheBillingError> {
@@ -418,6 +552,104 @@ mod tests {
                 existing_entry_id: LEDGER_ID
             }
         );
+    }
+
+    #[test]
+    fn cache_decision_derives_hit_miss_and_partial_hit_from_matched_tokens() {
+        let hit = decide_exact_cache_request(ExactCacheDecisionInput {
+            cache_entry_id: Some(CACHE_ENTRY_ID),
+            input_tokens: 1_000,
+            matched_input_tokens: 1_000,
+        })
+        .expect("hit decision");
+        assert_eq!(hit.cache_status, ExactCacheStatus::Hit);
+        assert_eq!(hit.cached_input_tokens, 1_000);
+        assert_eq!(hit.billable_input_tokens, 0);
+
+        let miss = decide_exact_cache_request(ExactCacheDecisionInput {
+            cache_entry_id: None,
+            input_tokens: 1_000,
+            matched_input_tokens: 0,
+        })
+        .expect("miss decision");
+        assert_eq!(miss.cache_status, ExactCacheStatus::Miss);
+        assert_eq!(miss.cache_entry_id, None);
+        assert_eq!(miss.cache_write_tokens, 1_000);
+
+        let partial_hit = decide_exact_cache_request(ExactCacheDecisionInput {
+            cache_entry_id: Some(CACHE_ENTRY_ID),
+            input_tokens: 1_000,
+            matched_input_tokens: 400,
+        })
+        .expect("partial hit decision");
+        assert_eq!(partial_hit.cache_status, ExactCacheStatus::PartialHit);
+        assert_eq!(partial_hit.cached_input_tokens, 400);
+        assert_eq!(partial_hit.billable_input_tokens, 600);
+        assert_eq!(partial_hit.cache_read_tokens, 400);
+        assert_eq!(partial_hit.cache_write_tokens, 600);
+    }
+
+    #[test]
+    fn partial_hit_discounts_cached_input_and_charges_uncached_input() {
+        let plan = plan_exact_cache_billing(
+            ExactCacheBillingRequest {
+                request_id: REQUEST_ID,
+                cache_status: ExactCacheStatus::PartialHit,
+                cache_key_hash: CACHE_KEY_HASH.to_string(),
+                cache_entry_id: Some(CACHE_ENTRY_ID),
+                input_tokens: 2_000,
+                output_tokens: 250,
+                cache_read_tokens: 1_500,
+                cache_write_tokens: 500,
+                read_policy: ExactCacheReadPolicy::DiscountedInputTokens,
+                write_policy: ExactCacheWritePolicy::TokenRate,
+            },
+            &pricing(),
+            &[],
+        )
+        .expect("partial hit should plan");
+
+        assert_eq!(plan.rating.cached_input_tokens, 1_500);
+        assert_eq!(plan.rating.billable_input_tokens, 500);
+        assert_eq!(plan.rating.input_cost.to_string(), "0.00050000");
+        assert_eq!(plan.rating.cache_read_cost.to_string(), "0.00007500");
+        assert_eq!(plan.rating.cache_write_cost.to_string(), "0.00001000");
+        assert_eq!(plan.rating.total_cost.to_string(), "0.00118500");
+        assert!(plan.cache_read_idempotency_key.is_some());
+        assert!(plan.cache_write_idempotency_key.is_some());
+    }
+
+    #[test]
+    fn invalid_cache_token_splits_are_rejected() {
+        let error = decide_exact_cache_request(ExactCacheDecisionInput {
+            cache_entry_id: Some(CACHE_ENTRY_ID),
+            input_tokens: 100,
+            matched_input_tokens: 101,
+        })
+        .expect_err("oversized matched tokens should be rejected");
+        assert_eq!(
+            error,
+            ExactCacheBillingError::CacheReadTokensExceedInputTokens
+        );
+
+        let error = plan_exact_cache_billing(
+            ExactCacheBillingRequest {
+                request_id: REQUEST_ID,
+                cache_status: ExactCacheStatus::PartialHit,
+                cache_key_hash: CACHE_KEY_HASH.to_string(),
+                cache_entry_id: Some(CACHE_ENTRY_ID),
+                input_tokens: 1_000,
+                output_tokens: 0,
+                cache_read_tokens: 1_000,
+                cache_write_tokens: 0,
+                read_policy: ExactCacheReadPolicy::Disabled,
+                write_policy: ExactCacheWritePolicy::Disabled,
+            },
+            &pricing(),
+            &[],
+        )
+        .expect_err("partial hit needs cached and uncached tokens");
+        assert_eq!(error, ExactCacheBillingError::InvalidPartialHitTokenSplit);
     }
 
     #[test]

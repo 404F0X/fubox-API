@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -38,6 +38,8 @@ const ADMIN_COOKIE_SECURE_ENV: &str = "AI_GATEWAY_ADMIN_COOKIE_SECURE";
 const ADMIN_LOGIN_FAILURE_LIMIT_ENV: &str = "AI_GATEWAY_ADMIN_LOGIN_FAILURE_LIMIT";
 const ADMIN_LOGIN_FAILURE_WINDOW_SECONDS_ENV: &str =
     "AI_GATEWAY_ADMIN_LOGIN_FAILURE_WINDOW_SECONDS";
+const OIDC_STATE_TTL_SECONDS: i32 = 300;
+const OIDC_STATE_MAX_ENTRIES: usize = 2048;
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -303,7 +305,9 @@ fn record_login_failure_error(
 
 async fn oidc_authorize_url() -> Result<Response, AuthError> {
     let config = OidcAuthorizeConfig::from_env().map_err(|_| AuthError::oidc_unavailable())?;
+    let now_epoch_seconds = current_epoch_seconds();
     let response = oidc_authorize_response(&config);
+    persist_oidc_authorize_state(&config, &response, now_epoch_seconds)?;
 
     Ok(Json(json!({ "data": response })).into_response())
 }
@@ -311,9 +315,13 @@ async fn oidc_authorize_url() -> Result<Response, AuthError> {
 async fn oidc_callback(
     Query(query): Query<BTreeMap<String, String>>,
 ) -> Result<Response, AuthError> {
-    let _config = OidcAuthorizeConfig::from_env().map_err(|_| AuthError::oidc_unavailable())?;
+    let config = OidcAuthorizeConfig::from_env().map_err(|_| AuthError::oidc_unavailable())?;
 
-    Err(oidc_callback_error(&query))
+    Err(oidc_callback_error(
+        &query,
+        &config.provider,
+        current_epoch_seconds(),
+    ))
 }
 
 async fn me(session: AdminSession) -> Result<Response, AuthError> {
@@ -523,22 +531,72 @@ fn oidc_authorize_response(config: &OidcAuthorizeConfig) -> OidcAuthorizeRespons
         nonce,
         scopes: config.scopes.clone(),
         response_type: "code",
-        state_ttl_seconds: 300,
-        server_state_persisted: false,
+        state_ttl_seconds: OIDC_STATE_TTL_SECONDS,
+        server_state_persisted: true,
         callback_implemented: false,
     }
 }
 
-fn oidc_callback_error(query: &BTreeMap<String, String>) -> AuthError {
+fn persist_oidc_authorize_state(
+    config: &OidcAuthorizeConfig,
+    response: &OidcAuthorizeResponse,
+    now_epoch_seconds: u64,
+) -> Result<(), AuthError> {
+    let Ok(mut store) = oidc_state_store().lock() else {
+        return Err(AuthError::service_unavailable());
+    };
+    store.insert(
+        response.state.clone(),
+        StoredOidcState {
+            provider: config.provider.clone(),
+            nonce: response.nonce.clone(),
+            expires_at_epoch_seconds: now_epoch_seconds + OIDC_STATE_TTL_SECONDS as u64,
+        },
+        now_epoch_seconds,
+    );
+    Ok(())
+}
+
+fn oidc_callback_error(
+    query: &BTreeMap<String, String>,
+    expected_provider: &str,
+    now_epoch_seconds: u64,
+) -> AuthError {
     if oidc_callback_contains_direct_claims(query) {
-        AuthError::oidc_claims_not_accepted()
-    } else {
-        AuthError::oidc_state_not_persisted()
+        return AuthError::oidc_claims_not_accepted();
+    }
+
+    let Some(state) = oidc_callback_state(query) else {
+        return AuthError::oidc_state_missing();
+    };
+    if !valid_oidc_state_shape(state) {
+        return AuthError::oidc_state_invalid();
+    }
+
+    let Ok(mut store) = oidc_state_store().lock() else {
+        return AuthError::service_unavailable();
+    };
+    match store.validate_and_consume(state, expected_provider, now_epoch_seconds) {
+        OidcCallbackStateValidation::Valid => AuthError::oidc_callback_exchange_unimplemented(),
+        OidcCallbackStateValidation::Expired => AuthError::oidc_state_expired(),
+        OidcCallbackStateValidation::Missing => AuthError::oidc_state_invalid(),
     }
 }
 
 fn oidc_callback_contains_direct_claims(query: &BTreeMap<String, String>) -> bool {
     callback_contains_direct_federated_credentials(query)
+}
+
+fn oidc_callback_state(query: &BTreeMap<String, String>) -> Option<&str> {
+    query
+        .get("state")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn valid_oidc_state_shape(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn callback_contains_direct_federated_credentials(query: &BTreeMap<String, String>) -> bool {
@@ -565,6 +623,76 @@ fn callback_contains_direct_federated_credentials(query: &BTreeMap<String, Strin
                 | "user_info"
         )
     })
+}
+
+fn oidc_state_store() -> &'static Mutex<OidcStateStore> {
+    static STORE: OnceLock<Mutex<OidcStateStore>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(OidcStateStore::default()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredOidcState {
+    provider: String,
+    nonce: String,
+    expires_at_epoch_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OidcCallbackStateValidation {
+    Missing,
+    Expired,
+    Valid,
+}
+
+#[derive(Debug, Default)]
+struct OidcStateStore {
+    states: BTreeMap<String, StoredOidcState>,
+}
+
+impl OidcStateStore {
+    fn insert(&mut self, state: String, record: StoredOidcState, now_epoch_seconds: u64) {
+        self.prune_expired(now_epoch_seconds);
+        if self.states.len() >= OIDC_STATE_MAX_ENTRIES {
+            self.remove_oldest();
+        }
+        self.states.insert(state, record);
+    }
+
+    fn validate_and_consume(
+        &mut self,
+        state: &str,
+        expected_provider: &str,
+        now_epoch_seconds: u64,
+    ) -> OidcCallbackStateValidation {
+        let Some(record) = self.states.remove(state) else {
+            return OidcCallbackStateValidation::Missing;
+        };
+        if record.expires_at_epoch_seconds <= now_epoch_seconds {
+            return OidcCallbackStateValidation::Expired;
+        }
+        if record.provider != expected_provider || record.nonce.is_empty() {
+            return OidcCallbackStateValidation::Missing;
+        }
+
+        OidcCallbackStateValidation::Valid
+    }
+
+    fn prune_expired(&mut self, now_epoch_seconds: u64) {
+        self.states
+            .retain(|_, record| record.expires_at_epoch_seconds > now_epoch_seconds);
+    }
+
+    fn remove_oldest(&mut self) {
+        let Some(oldest_state) = self
+            .states
+            .iter()
+            .min_by_key(|(_, record)| record.expires_at_epoch_seconds)
+            .map(|(state, _)| state.clone())
+        else {
+            return;
+        };
+        self.states.remove(&oldest_state);
+    }
 }
 
 #[cfg(test)]
@@ -1399,11 +1527,38 @@ impl AuthError {
         }
     }
 
-    fn oidc_state_not_persisted() -> Self {
+    fn oidc_state_missing() -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
-            code: "oidc_state_not_persisted",
-            message: "oidc callback requires server-side state and nonce validation",
+            code: "oidc_state_missing",
+            message: "oidc callback state is required",
+            retry_after_seconds: None,
+        }
+    }
+
+    fn oidc_state_invalid() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "oidc_state_invalid",
+            message: "oidc callback state is invalid",
+            retry_after_seconds: None,
+        }
+    }
+
+    fn oidc_state_expired() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "oidc_state_expired",
+            message: "oidc callback state has expired",
+            retry_after_seconds: None,
+        }
+    }
+
+    fn oidc_callback_exchange_unimplemented() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "oidc_callback_exchange_unimplemented",
+            message: "oidc callback state validated; code exchange and token verification are not implemented",
             retry_after_seconds: None,
         }
     }
@@ -1473,6 +1628,10 @@ mod tests {
 
     fn fixed_token(byte: char) -> String {
         format!("sess_{}", byte.to_string().repeat(64))
+    }
+
+    fn fixed_oidc_state(byte: char) -> String {
+        byte.to_string().repeat(32)
     }
 
     fn admin_session_with_roles(roles: Vec<Role>) -> AdminSession {
@@ -1693,7 +1852,7 @@ mod tests {
         assert_eq!(response.provider, "acme");
         assert_eq!(response.scopes, vec!["openid", "email", "profile"]);
         assert_eq!(response.response_type, "code");
-        assert!(!response.server_state_persisted);
+        assert!(response.server_state_persisted);
         assert!(!response.callback_implemented);
         assert_eq!(response.state.len(), 32);
         assert_eq!(response.nonce.len(), 32);
@@ -1779,7 +1938,69 @@ mod tests {
     }
 
     #[test]
-    fn oidc_callback_rejects_without_server_side_state_and_redacts_code() {
+    fn oidc_state_store_validates_missing_expired_and_valid_states() {
+        let mut store = OidcStateStore::default();
+        let missing_state = fixed_oidc_state('a');
+        let expired_state = fixed_oidc_state('b');
+        let valid_state = fixed_oidc_state('c');
+
+        assert_eq!(
+            store.validate_and_consume(&missing_state, "acme", 100),
+            OidcCallbackStateValidation::Missing
+        );
+
+        store.insert(
+            expired_state.clone(),
+            StoredOidcState {
+                provider: "acme".to_string(),
+                nonce: fixed_oidc_state('d'),
+                expires_at_epoch_seconds: 150,
+            },
+            100,
+        );
+        assert_eq!(
+            store.validate_and_consume(&expired_state, "acme", 151),
+            OidcCallbackStateValidation::Expired
+        );
+        assert_eq!(
+            store.validate_and_consume(&expired_state, "acme", 151),
+            OidcCallbackStateValidation::Missing
+        );
+
+        store.insert(
+            valid_state.clone(),
+            StoredOidcState {
+                provider: "acme".to_string(),
+                nonce: fixed_oidc_state('e'),
+                expires_at_epoch_seconds: 200,
+            },
+            100,
+        );
+        assert_eq!(
+            store.validate_and_consume(&valid_state, "other", 150),
+            OidcCallbackStateValidation::Missing
+        );
+        store.insert(
+            valid_state.clone(),
+            StoredOidcState {
+                provider: "acme".to_string(),
+                nonce: fixed_oidc_state('e'),
+                expires_at_epoch_seconds: 200,
+            },
+            100,
+        );
+        assert_eq!(
+            store.validate_and_consume(&valid_state, "acme", 150),
+            OidcCallbackStateValidation::Valid
+        );
+        assert_eq!(
+            store.validate_and_consume(&valid_state, "acme", 150),
+            OidcCallbackStateValidation::Missing
+        );
+    }
+
+    #[test]
+    fn oidc_callback_distinguishes_missing_expired_and_valid_state_without_echoing_values() {
         let query = BTreeMap::from([
             ("code".to_string(), "provider-code-never-return".to_string()),
             (
@@ -1788,15 +2009,79 @@ mod tests {
             ),
         ]);
 
-        let error = oidc_callback_error(&query);
+        let error = oidc_callback_error(&query, "acme", 100);
         let body = error.body().to_string();
 
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
-        assert_eq!(error.code, "oidc_state_not_persisted");
+        assert_eq!(error.code, "oidc_state_invalid");
         assert!(!body.contains("provider-code-never-return"));
         assert!(!body.contains("browser-state-never-return"));
         assert!(!body.contains("client-secret"));
         assert!(!body.contains("issuer.example.com"));
+
+        let missing_error = oidc_callback_error(&BTreeMap::new(), "acme", 100);
+        assert_eq!(missing_error.code, "oidc_state_missing");
+
+        let expired_state = fixed_oidc_state('1');
+        {
+            let mut store = oidc_state_store()
+                .lock()
+                .expect("oidc state store lock should be healthy");
+            store.insert(
+                expired_state.clone(),
+                StoredOidcState {
+                    provider: "acme".to_string(),
+                    nonce: fixed_oidc_state('2'),
+                    expires_at_epoch_seconds: 99,
+                },
+                90,
+            );
+        }
+        let expired_error = oidc_callback_error(
+            &BTreeMap::from([
+                ("code".to_string(), "provider-code-never-return".to_string()),
+                ("state".to_string(), expired_state.clone()),
+            ]),
+            "acme",
+            100,
+        );
+        assert_eq!(expired_error.code, "oidc_state_expired");
+        assert!(!expired_error.body().to_string().contains(&expired_state));
+
+        let valid_state = fixed_oidc_state('3');
+        {
+            let mut store = oidc_state_store()
+                .lock()
+                .expect("oidc state store lock should be healthy");
+            store.insert(
+                valid_state.clone(),
+                StoredOidcState {
+                    provider: "acme".to_string(),
+                    nonce: fixed_oidc_state('4'),
+                    expires_at_epoch_seconds: 150,
+                },
+                100,
+            );
+        }
+        let valid_error = oidc_callback_error(
+            &BTreeMap::from([
+                ("code".to_string(), "provider-code-never-return".to_string()),
+                ("state".to_string(), valid_state.clone()),
+            ]),
+            "acme",
+            100,
+        );
+        let valid_body = valid_error.body().to_string();
+        assert_eq!(valid_error.code, "oidc_callback_exchange_unimplemented");
+        assert!(!valid_body.contains(&valid_state));
+        assert!(!valid_body.contains("provider-code-never-return"));
+
+        let replay_error = oidc_callback_error(
+            &BTreeMap::from([("state".to_string(), valid_state)]),
+            "acme",
+            100,
+        );
+        assert_eq!(replay_error.code, "oidc_state_invalid");
     }
 
     #[test]
@@ -1811,7 +2096,7 @@ mod tests {
             ("access_token".to_string(), "ya29.never-return".to_string()),
         ]);
 
-        let error = oidc_callback_error(&query);
+        let error = oidc_callback_error(&query, "acme", 100);
         let body = error.body().to_string();
 
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
@@ -1959,7 +2244,7 @@ mod tests {
             ),
         ]);
 
-        let error = oidc_callback_error(&query);
+        let error = oidc_callback_error(&query, "acme", 100);
         let body = error.body().to_string();
 
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
@@ -2079,7 +2364,27 @@ mod tests {
         assert_eq!(fixture["secret_safe"], json!(true));
         assert_eq!(
             fixture["oidc"]["remaining_gaps"][0],
-            json!("server_side_state_nonce_persistence")
+            json!("authorization_code_exchange")
+        );
+        assert_eq!(
+            fixture["oidc"]["state_nonce_persistence"]["authorize_url_server_state_persisted"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["oidc"]["state_nonce_persistence"]["callback_state_results"]["missing_state"]["expected_error_code"],
+            json!("oidc_state_missing")
+        );
+        assert_eq!(
+            fixture["oidc"]["state_nonce_persistence"]["callback_state_results"]["expired_state"]["expected_error_code"],
+            json!("oidc_state_expired")
+        );
+        assert_eq!(
+            fixture["oidc"]["state_nonce_persistence"]["callback_state_results"]["valid_state"]["expected_error_code"],
+            json!("oidc_callback_exchange_unimplemented")
+        );
+        assert_eq!(
+            fixture["oidc"]["state_nonce_persistence"]["callback_response_echoes_raw_code_state_token_or_claims"],
+            json!(false)
         );
         assert_eq!(
             fixture["saml"]["remaining_gaps"][0],
@@ -2093,7 +2398,7 @@ mod tests {
         assert!(openapi.contains("direct_client_claims_allowed: false"));
         assert!(openapi.contains("FederatedAuthMappingDecision"));
         assert!(openapi.contains("SamlMetadataSummary"));
-        assert!(openapi.contains("server_side_state_nonce_persistence"));
+        assert!(openapi.contains("server_side_state_nonce_persistence_implemented: true"));
         assert!(openapi.contains("saml_xml_signature_validation"));
     }
 

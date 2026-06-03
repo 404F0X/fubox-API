@@ -72,10 +72,9 @@ x-federated-auth-contract:
   oidc:
     token_exchange_implemented: false
     jwks_id_token_validation_implemented: false
-    server_side_state_nonce_persistence_implemented: false
+    server_side_state_nonce_persistence_implemented: true
     session_creation_implemented: false
     remaining_gaps:
-      - server_side_state_nonce_persistence
       - authorization_code_exchange
       - id_token_jwks_signature_validation
       - user_identity_binding_lookup
@@ -176,7 +175,7 @@ paths:
       security: []
       responses:
         '200':
-          description: Authorization URL draft. The client must store state/nonce; callback exchange is not implemented in this slice.
+          description: Authorization URL draft. State and nonce are persisted server-side for callback validation, but callback exchange is not implemented in this slice.
           content:
             application/json:
               schema:
@@ -186,7 +185,7 @@ paths:
   /admin/auth/oidc/callback:
     get:
       tags: [Auth]
-      summary: Reject OIDC callback until server-side validation is implemented
+      summary: Validate OIDC callback state and reject until exchange is implemented
       operationId: oidcCallback
       security: []
       parameters:
@@ -201,7 +200,7 @@ paths:
           required: false
           schema:
             type: string
-          description: Browser-returned state. Rejected until server-side state persistence exists and never echoed in errors.
+          description: Browser-returned state. Validated against in-memory server-side state and never echoed in errors.
         - name: error
           in: query
           required: false
@@ -210,7 +209,7 @@ paths:
           description: Provider error marker. Not trusted for login and never echoed in errors.
       responses:
         '400':
-          description: Callback is rejected because server-side state/nonce persistence, code exchange, and ID token/JWKS validation are not implemented. Caller-supplied roles, groups, ID/access tokens, Authorization headers, SAMLResponse values, assertions, or raw claims are not accepted for login and are never echoed.
+          description: Callback distinguishes missing, expired, invalid, and valid server-side state. Even with valid state it is rejected because authorization-code exchange and ID token/JWKS validation are not implemented. Caller-supplied roles, groups, ID/access tokens, Authorization headers, SAMLResponse values, assertions, raw code, state, or raw claims are not accepted for login and are never echoed.
           content:
             application/json:
               schema:
@@ -1630,8 +1629,8 @@ components:
           example: 300
         server_state_persisted:
           type: boolean
-          const: false
-          description: Server-side state persistence is pending; clients must store state/nonce for this draft slice.
+          const: true
+          description: State and nonce are persisted in process-local server memory for callback validation in this slice.
         callback_implemented:
           type: boolean
           const: false
@@ -2805,6 +2804,7 @@ components:
         - allowed_channel_tags
         - blocked_provider_ids
         - trace_header_rules
+        - ip_allowlist
         - request_overrides
         - status
       properties:
@@ -2836,6 +2836,10 @@ components:
           $ref: '#/components/schemas/JsonValue'
         trace_header_rules:
           $ref: '#/components/schemas/JsonValue'
+        ip_allowlist:
+          allOf:
+            - $ref: '#/components/schemas/JsonValue'
+          description: Array of profile-level IP/CIDR entries that tightens virtual key allowlists.
         request_overrides:
           $ref: '#/components/schemas/JsonValue'
         payload_policy_id:
@@ -2870,6 +2874,10 @@ components:
           $ref: '#/components/schemas/JsonValue'
         trace_header_rules:
           $ref: '#/components/schemas/JsonValue'
+        ip_allowlist:
+          allOf:
+            - $ref: '#/components/schemas/JsonValue'
+          description: Optional array of profile-level IP/CIDR entries.
         request_overrides:
           $ref: '#/components/schemas/JsonValue'
         payload_policy_id:
@@ -2900,6 +2908,10 @@ components:
           $ref: '#/components/schemas/JsonValue'
         trace_header_rules:
           $ref: '#/components/schemas/JsonValue'
+        ip_allowlist:
+          allOf:
+            - $ref: '#/components/schemas/JsonValue'
+          description: Optional replacement array of profile-level IP/CIDR entries.
         request_overrides:
           $ref: '#/components/schemas/JsonValue'
         payload_policy_id:

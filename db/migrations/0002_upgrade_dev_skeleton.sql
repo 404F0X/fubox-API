@@ -94,6 +94,7 @@ create table if not exists api_key_profiles (
   allowed_channel_tags jsonb not null default '[]'::jsonb,
   blocked_provider_ids jsonb not null default '[]'::jsonb,
   trace_header_rules jsonb not null default '{}'::jsonb,
+  ip_allowlist jsonb not null default '[]'::jsonb,
   request_overrides jsonb not null default '[]'::jsonb,
   payload_policy_id uuid null,
   status text not null default 'active',
@@ -115,6 +116,7 @@ create table if not exists api_key_profiles (
   check (jsonb_typeof(allowed_channel_tags) = 'array'),
   check (jsonb_typeof(blocked_provider_ids) = 'array'),
   check (jsonb_typeof(trace_header_rules) = 'object'),
+  check (jsonb_typeof(ip_allowlist) = 'array'),
   check (jsonb_typeof(request_overrides) = 'array')
 );
 

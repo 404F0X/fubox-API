@@ -83,7 +83,7 @@
 
 - [~] **E2-005 实现 IP allowlist 和过期检查**  
   优先级：P0  
-  验收：被拒绝请求不进入上游调用。当前 Gateway 已做 key 过期/禁用拒绝；IP allowlist 第一切片已接入：使用 ConnectInfo TCP peer IP，不信任未授权的 `X-Forwarded-For`/`X-Real-IP`；读取 `virtual_keys.ip_allowlist`，空列表允许；支持单 IP/CIDR IPv4/IPv6；非法条目忽略且不放行；拒绝时返回 OpenAI-compatible 403 `api_key_ip_forbidden`，不创建 `request_logs`/`provider_attempts`，不进入上游。`server.trusted_proxy_allowlist` 已接入：默认空列表，仅当 TCP peer 命中受信代理单 IP/CIDR 时才使用 `X-Forwarded-For` 首个 IP 或 `X-Real-IP`，畸形 forwarded IP 在 auth 阶段拒绝；profile 独立 allowlist 第一切片已在 Gateway auth 中接入：解析 `x-ai-profile`/key 默认 profile 后，从 `api_key_profiles.request_overrides` 中读取 `type=profile_ip_allowlist` policy，key allowlist 先放行、profile allowlist 再收紧，空 profile allowlist 不额外限制，畸形/非法条目不放行。专用 `api_key_profiles.ip_allowlist` schema/API/UI 尚未完成。
+  验收：被拒绝请求不进入上游调用。当前 Gateway 已做 key 过期/禁用拒绝；IP allowlist 第一切片已接入：使用 ConnectInfo TCP peer IP，不信任未授权的 `X-Forwarded-For`/`X-Real-IP`；读取 `virtual_keys.ip_allowlist`，空列表允许；支持单 IP/CIDR IPv4/IPv6；非法条目忽略且不放行；拒绝时返回 OpenAI-compatible 403 `api_key_ip_forbidden`，不创建 `request_logs`/`provider_attempts`，不进入上游。`server.trusted_proxy_allowlist` 已接入：默认空列表，仅当 TCP peer 命中受信代理单 IP/CIDR 时才使用 `X-Forwarded-For` 首个 IP 或 `X-Real-IP`，畸形 forwarded IP 在 auth 阶段拒绝；profile 独立 allowlist 已接入：`api_key_profiles.ip_allowlist` 专用 schema/API/Gateway 读取已落地，key allowlist 先放行、profile allowlist 再收紧，空 profile allowlist 不额外限制，畸形/非法条目不放行；旧版 `request_overrides` 中的 `type=profile_ip_allowlist` policy 仍保持兼容。Admin UI 专用表单和 live smoke 尚未完成。
 
 ---
 
@@ -433,6 +433,7 @@
 
 - [~] **E15-002 Exact Cache 和 cache billing**  
   优先级：P1
+  当前 `ai-gateway-billing-ledger` 已新增 exact cache billing 纯函数合约切片：支持由 matched input tokens 推导 request cache `hit`/`miss`/`partial_hit`，partial hit 会把 cached input tokens 与 billable input tokens 分离，cached input 可按 read policy 免费、折扣 token rate 或固定成本计价，uncached input/output/fixed request 仍按正常请求计价；plan 同时输出 read/write cache operation idempotency keys 与 settle key，ledger metadata 只序列化 cache key hash、cache entry id、策略和 token 摘要，不携带 raw key/payload/secret/idempotency key；`tests/fixtures/billing/exact_cache_billing_contract.json` 已覆盖 hit/miss/partial-hit、免费/折扣/固定读写、幂等 replay、非法 token split 和非幂等重复 settle。Gateway runtime exact cache lookup/store、cache hit response path、对象存储/Redis 后端、pre_authorize/reserve 集成和 live smoke 尚未完成。
 
 - [~] **E15-003 OIDC/SAML 完整集成**  
   优先级：P1
@@ -442,6 +443,7 @@
 
 - [~] **E15-005 ClickHouse Log Store**  
   优先级：P1
+  当前 Worker 已新增 `ai-worker clickhouse-log-store --dry-run --input ...` plan-only 切片，复用 `ai-gateway-observability` ClickHouse config/contract 校验并输出 secret-safe ingestion plan，覆盖 bounded queue、backpressure、dedup keys、request_logs/provider_attempts/event_log table mapping、payload policy 和 credential presence；默认不读写 DB、不写队列、不连接 ClickHouse、不发网络请求，`--execute`/`--send` 需 `--force` 且当前切片仍明确拒绝。真实 ClickHouse writer、durable queue/WAL、DB changefeed/export cursor、dedup journal、load/retention smoke 尚未完成。
 
 - [~] **E15-006 MCP Gateway**  
   优先级：P2

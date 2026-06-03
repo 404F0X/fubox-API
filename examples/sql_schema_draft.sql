@@ -160,6 +160,7 @@ create table if not exists api_key_profiles (
   allowed_channel_tags jsonb not null default '[]'::jsonb,
   blocked_provider_ids jsonb not null default '[]'::jsonb,
   trace_header_rules jsonb not null default '{}'::jsonb,
+  ip_allowlist jsonb not null default '[]'::jsonb,
   request_overrides jsonb not null default '[]'::jsonb,
   payload_policy_id uuid null,
   status text not null default 'active',

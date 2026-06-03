@@ -602,6 +602,7 @@ impl GatewayRepository {
                 else vk.status
               end as effective_status,
               p.status as profile_status,
+              p.ip_allowlist as profile_ip_allowlist,
               p.request_overrides as profile_request_overrides,
               pp.id as payload_policy_id,
               pp.mode as payload_policy_mode
@@ -686,6 +687,11 @@ impl GatewayRepository {
         }
 
         let key_ip_allowlist = row.get::<Json<Value>, _>("key_ip_allowlist").0;
+        let profile_ip_allowlist = row
+            .try_get::<Option<Json<Value>>, _>("profile_ip_allowlist")
+            .ok()
+            .flatten()
+            .map(|value| value.0);
         let profile_request_overrides = row
             .try_get::<Option<Json<Value>>, _>("profile_request_overrides")
             .ok()
@@ -693,6 +699,7 @@ impl GatewayRepository {
             .map(|value| value.0);
         enforce_auth_ip_allowlists(
             &key_ip_allowlist,
+            profile_ip_allowlist.as_ref(),
             profile_request_overrides.as_ref(),
             client_ip,
         )?;
@@ -1574,16 +1581,27 @@ fn confirmed_settle_ledger_usage_snapshot(entry: &LedgerSettleEntry<'_>) -> Valu
 
 fn enforce_auth_ip_allowlists(
     key_allowlist: &Value,
+    profile_allowlist: Option<&Value>,
     profile_request_overrides: Option<&Value>,
     client_ip: IpAddr,
 ) -> Result<(), GatewayApiError> {
     enforce_ip_allowlist(key_allowlist, client_ip)?;
+
+    if let Some(profile_allowlist) = profile_allowlist
+        && !is_empty_json_array(profile_allowlist)
+    {
+        enforce_ip_allowlist(profile_allowlist, client_ip)?;
+    }
 
     if let Some(profile_request_overrides) = profile_request_overrides {
         enforce_profile_ip_allowlist(profile_request_overrides, client_ip)?;
     }
 
     Ok(())
+}
+
+fn is_empty_json_array(value: &Value) -> bool {
+    value.as_array().is_some_and(Vec::is_empty)
 }
 
 fn enforce_ip_allowlist(allowlist: &Value, client_ip: IpAddr) -> Result<(), GatewayApiError> {
@@ -2074,6 +2092,7 @@ mod tests {
         assert!(
             enforce_auth_ip_allowlists(
                 &key_allowlist,
+                None,
                 Some(&profile_request_overrides),
                 IpAddr::V4(Ipv4Addr::new(203, 0, 113, 42)),
             )
@@ -2082,6 +2101,7 @@ mod tests {
 
         let error = enforce_auth_ip_allowlists(
             &key_allowlist,
+            None,
             Some(&profile_request_overrides),
             IpAddr::V4(Ipv4Addr::new(203, 0, 113, 43)),
         )
@@ -2090,6 +2110,50 @@ mod tests {
         assert_eq!(error.status, axum::http::StatusCode::FORBIDDEN);
         assert_eq!(error.code, "api_key_ip_forbidden");
         assert_eq!(error.stage, "auth");
+    }
+
+    #[test]
+    fn dedicated_profile_ip_allowlist_tightens_key_ip_allowlist() {
+        let key_allowlist = json!(["203.0.113.0/24"]);
+        let profile_allowlist = json!(["203.0.113.42"]);
+
+        assert!(
+            enforce_auth_ip_allowlists(
+                &key_allowlist,
+                Some(&profile_allowlist),
+                None,
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 42)),
+            )
+            .is_ok()
+        );
+
+        let error = enforce_auth_ip_allowlists(
+            &key_allowlist,
+            Some(&profile_allowlist),
+            None,
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 43)),
+        )
+        .expect_err("dedicated profile allowlist should tighten the key allowlist");
+
+        assert_eq!(error.status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(error.code, "api_key_ip_forbidden");
+        assert_eq!(error.stage, "auth");
+    }
+
+    #[test]
+    fn empty_dedicated_profile_ip_allowlist_does_not_add_restriction() {
+        let key_allowlist = json!(["203.0.113.0/24"]);
+        let profile_allowlist = json!([]);
+
+        assert!(
+            enforce_auth_ip_allowlists(
+                &key_allowlist,
+                Some(&profile_allowlist),
+                None,
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 43)),
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2104,6 +2168,7 @@ mod tests {
 
         let error = enforce_auth_ip_allowlists(
             &key_allowlist,
+            None,
             Some(&profile_request_overrides),
             IpAddr::V4(Ipv4Addr::new(203, 0, 113, 42)),
         )
@@ -2127,6 +2192,7 @@ mod tests {
         assert!(
             enforce_auth_ip_allowlists(
                 &key_allowlist,
+                None,
                 Some(&profile_request_overrides),
                 IpAddr::V4(Ipv4Addr::new(203, 0, 113, 43)),
             )
@@ -2147,6 +2213,7 @@ mod tests {
         assert!(
             enforce_auth_ip_allowlists(
                 &key_allowlist,
+                None,
                 Some(&profile_request_overrides),
                 IpAddr::V4(Ipv4Addr::new(203, 0, 113, 43)),
             )
@@ -2165,6 +2232,7 @@ mod tests {
 
         let error = enforce_auth_ip_allowlists(
             &json!([]),
+            None,
             Some(&profile_request_overrides),
             IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
         )
@@ -2185,6 +2253,7 @@ mod tests {
 
         let error = enforce_auth_ip_allowlists(
             &json!([]),
+            None,
             Some(&profile_request_overrides),
             IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
         )
@@ -2205,8 +2274,16 @@ mod tests {
         assert_eq!(fixture["scenario"], "gateway_profile_ip_allowlist_smoke");
         assert_eq!(
             fixture["profile_policy"]["source"],
-            "api_key_profiles.request_overrides"
+            "api_key_profiles.ip_allowlist"
         );
+        assert!(ip_allowlist_allows(
+            &fixture["profile_policy"]["ip_allowlist_example"],
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 42))
+        ));
+        assert!(!ip_allowlist_allows(
+            &fixture["profile_policy"]["ip_allowlist_example"],
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 43))
+        ));
 
         let request_overrides = &fixture["profile_policy"]["request_overrides_example"];
         let ProfileIpAllowlistPolicy::Configured(allowlist) =

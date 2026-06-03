@@ -57,8 +57,32 @@
       "jwks_id_token_validation_implemented": false,
       "session_creation_implemented": false
     },
+    "state_nonce_persistence": {
+      "authorize_url_server_state_persisted": true,
+      "state_ttl_seconds": 300,
+      "state_storage": "in_memory_process_local",
+      "callback_state_results": {
+        "missing_state": {
+          "expected_error_code": "oidc_state_missing",
+          "code_exchange_attempted": false,
+          "session_created": false
+        },
+        "expired_state": {
+          "expected_error_code": "oidc_state_expired",
+          "code_exchange_attempted": false,
+          "session_created": false
+        },
+        "valid_state": {
+          "expected_error_code": "oidc_callback_exchange_unimplemented",
+          "state_consumed": true,
+          "code_exchange_attempted": false,
+          "id_token_validation_attempted": false,
+          "session_created": false
+        }
+      },
+      "callback_response_echoes_raw_code_state_token_or_claims": false
+    },
     "remaining_gaps": [
-      "server_side_state_nonce_persistence",
       "authorization_code_exchange",
       "id_token_jwks_signature_validation",
       "user_identity_binding_lookup",

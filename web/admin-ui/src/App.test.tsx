@@ -60,6 +60,7 @@ function stubHealthyFetch(roles = ["owner"]) {
     }
 
     if (
+      requestUrl.includes("/admin/audit-logs") ||
       requestUrl.includes("/admin/request-logs") ||
       requestUrl.includes("/admin/price-versions") ||
       requestUrl.includes("/admin/ledger/entries") ||
@@ -501,6 +502,49 @@ function stubAdminFetch() {
     },
     tenant_id: "tenant-1",
   };
+  const auditLog = {
+    action: "provider_key.update",
+    actor_user_id: "00000000-0000-0000-0000-000000000070",
+    after_snapshot: {
+      key_alias: "openai-main",
+      metadata: {
+        owner: "platform",
+        secret_note: skPlaceholder("audit-after-hidden"),
+      },
+      status: "manual_disabled",
+      token: bearerPlaceholder("audit-after-hidden"),
+    },
+    before_snapshot: {
+      headers: {
+        [AUTH_HEADER_NAME]: bearerPlaceholder("audit-before-hidden"),
+      },
+      key_alias: "openai-main",
+      metadata: {
+        owner: "platform",
+        secret_note: skPlaceholder("audit-before-hidden"),
+      },
+      raw_payload: "raw before payload hidden",
+      status: "enabled",
+    },
+    created_at: "2026-06-02T13:00:00Z",
+    id: "audit-1",
+    metadata: {
+      actor_session_id: "00000000-0000-0000-0000-000000000701",
+      client_ip_sha256: "client-ip-hash",
+      payload: {
+        body: "raw audit metadata payload hidden",
+      },
+      raw_headers: {
+        cookie: "session hidden",
+      },
+      user_agent_sha256: "ua-hash",
+    },
+    request_id: "req_1",
+    resource_id: "provider-key-1",
+    resource_tenant_id: "tenant-1",
+    resource_type: "provider_key",
+    tenant_id: "tenant-1",
+  };
   const createdVirtualKey = {
     ...virtualKey,
     id: "virtual-key-2",
@@ -563,6 +607,10 @@ function stubAdminFetch() {
 
     if (requestUrl.includes("/admin/request-logs")) {
       return jsonResponse([requestLog]);
+    }
+
+    if (requestUrl.includes("/admin/audit-logs")) {
+      return jsonResponse([auditLog]);
     }
 
     if (requestUrl.includes("/admin/providers/provider-1") && method === "PATCH") {
@@ -1300,6 +1348,7 @@ describe("App", () => {
     await renderSignedInApp();
 
     expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Audit Logs/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Provider Keys/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Virtual Keys/ })).toBeInTheDocument();
@@ -1311,6 +1360,7 @@ describe("App", () => {
     await renderSignedInApp();
 
     expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Audit Logs/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Overview/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Provider Keys/ })).not.toBeInTheDocument();
@@ -1324,6 +1374,7 @@ describe("App", () => {
     await renderSignedInApp();
 
     expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Audit Logs/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Request\/Trace/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Providers/ })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Billing / Prices" })).toBeInTheDocument();
@@ -1336,6 +1387,7 @@ describe("App", () => {
 
     expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Audit Logs/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Providers/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Provider Keys/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Billing/ })).not.toBeInTheDocument();
@@ -1413,6 +1465,50 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("raw trace prompt hidden");
     expect(document.body.textContent).not.toContain("raw trace response hidden");
     expect(document.body.textContent).not.toContain(bearerPlaceholder("trace-route-hidden"));
+  });
+
+  it("renders audit logs with filters and secret-safe snapshots", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Audit Logs" })).toBeInTheDocument();
+    expect(await screen.findByText("audit-1")).toBeInTheDocument();
+    expect(screen.getByText("provider_key.update")).toBeInTheDocument();
+    expect(screen.getByText("provider_key")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View audit log audit-1" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Audit Detail" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Before Snapshot" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "After Snapshot" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Metadata" })).toBeInTheDocument();
+    expect(document.body.textContent).toContain("manual_disabled");
+    expect(document.body.textContent).toContain("client-ip-hash");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("audit-before-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("audit-after-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("audit-before-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("audit-after-hidden"));
+    expect(document.body.textContent).not.toContain("raw before payload hidden");
+    expect(document.body.textContent).not.toContain("raw audit metadata payload hidden");
+    expect(document.body.textContent).not.toContain("raw_headers");
+    expect(document.body.textContent).not.toContain('"payload"');
+
+    await user.type(screen.getByLabelText("Action"), "provider_key.update");
+    await user.type(screen.getByLabelText("Resource"), "provider_key");
+    await user.type(screen.getByLabelText("Actor ID"), "00000000-0000-0000-0000-000000000070");
+    await user.clear(screen.getByLabelText("Limit"));
+    await user.type(screen.getByLabelText("Limit"), "5");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=00000000-0000-0000-0000-000000000070&limit=5&resource_type=provider_key",
+      ),
+    );
   });
 
   it("runs routing dry-run and renders selected candidates without secret material", async () => {

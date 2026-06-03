@@ -1,13 +1,22 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { getProviderHealthSummary, type HealthSummary, logoutAdmin, type ProbeResult, probeServices } from "./api/client";
 import { HealthDashboard } from "./components/HealthDashboard";
-import { Activity, Database, Key, Network, ScrollText } from "./components/icons";
+import { Activity, Database, Key, Network, ScrollText, ShieldCheck } from "./components/icons";
 import { type AdminSession, LoginPanel } from "./components/LoginPanel";
 import { Navigation, type NavItem } from "./components/Navigation";
 import { ProviderKeysPage } from "./components/ProviderKeysPage";
 import { ProvidersPage } from "./components/ProvidersPage";
 
-type AppView = "overview" | "requestLogs" | "billing" | "providerKeys" | "providers" | "models" | "routing" | "keys";
+type AppView =
+  | "overview"
+  | "requestLogs"
+  | "auditLogs"
+  | "billing"
+  | "providerKeys"
+  | "providers"
+  | "models"
+  | "routing"
+  | "keys";
 type AdminCapability =
   | "provider.read"
   | "provider.manage"
@@ -27,6 +36,7 @@ type AdminCapability =
   | "health.readiness";
 
 const BillingPage = lazy(() => import("./components/BillingPage"));
+const AuditLogsPage = lazy(() => import("./components/AuditLogsPage"));
 const ModelsPage = lazy(() => import("./components/ModelsPage"));
 const RequestLogsPage = lazy(() =>
   import("./components/RequestLogsPage").then((module) => ({ default: module.RequestLogsPage })),
@@ -42,6 +52,13 @@ const navItems: NavItem<AppView>[] = [
     icon: ScrollText,
     permission: "Audit",
     capabilities: ["request_log.read", "trace.read"],
+  },
+  {
+    id: "auditLogs",
+    label: "Audit Logs",
+    icon: ShieldCheck,
+    permission: "Audit",
+    capabilities: ["audit.read"],
   },
   {
     id: "billing",
@@ -134,17 +151,19 @@ export function App() {
       ? "Gateway Control"
       : selectedView === "requestLogs"
         ? "Request/Trace"
-        : selectedView === "billing"
-          ? "Billing / Prices"
-          : selectedView === "providerKeys"
-            ? "Provider Keys"
-            : selectedView === "providers"
-              ? "Providers"
-              : selectedView === "models"
-                ? "Models"
-                : selectedView === "routing"
-                  ? "Routing"
-                  : "Virtual Keys";
+        : selectedView === "auditLogs"
+          ? "Audit Logs"
+          : selectedView === "billing"
+            ? "Billing / Prices"
+            : selectedView === "providerKeys"
+              ? "Provider Keys"
+              : selectedView === "providers"
+                ? "Providers"
+                : selectedView === "models"
+                  ? "Models"
+                  : selectedView === "routing"
+                    ? "Routing"
+                    : "Virtual Keys";
 
   return (
     <main className="shell">
@@ -189,6 +208,16 @@ export function App() {
             }
           >
             <RequestLogsPage />
+          </Suspense>
+        ) : selectedView === "auditLogs" ? (
+          <Suspense
+            fallback={
+              <section className="admin-panel">
+                <p className="muted-copy">Loading audit logs.</p>
+              </section>
+            }
+          >
+            <AuditLogsPage />
           </Suspense>
         ) : selectedView === "billing" ? (
           <Suspense

@@ -7,7 +7,10 @@ use std::{
     time::Instant,
 };
 
-use ai_gateway_adapters::{ChatCompletionRequest, OpenAiChatStream};
+use ai_gateway_adapters::{
+    AdapterUsage, ChatCompletionRequest, OpenAiChatStream, OpenAiCompatibleClient,
+    OpenAiResponsesStreamTerminalKind,
+};
 use ai_gateway_billing_ledger::{TokenUsage, rate_usage_from_json};
 use ai_gateway_stream::{
     SseDecodeError, SseDecoder, SseEvent, StreamEndReason, StreamEndSignal, StreamProtocol,
@@ -197,6 +200,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         attempt_id,
                         canonical_model_id: route.canonical_model_id,
                         canonical_model_key: route.canonical_model_key.clone(),
+                        metrics_endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                         request_started_at,
                         provider_started_at,
                     },
@@ -266,6 +270,7 @@ struct StreamLogContext {
     attempt_id: uuid::Uuid,
     canonical_model_id: uuid::Uuid,
     canonical_model_key: String,
+    metrics_endpoint: &'static str,
     request_started_at: Instant,
     provider_started_at: Instant,
 }
@@ -345,6 +350,7 @@ impl ForwardStreamState {
         Self {
             upstream,
             progress: StreamProgress::new(
+                GatewayStreamProtocol::OpenAiChatCompletions,
                 OPENAI_STREAM_MAX_EVENT_BYTES,
                 OPENAI_STREAM_MAX_CHUNK_BYTES,
             ),
@@ -399,6 +405,7 @@ impl ForwardStreamState {
 }
 
 struct StreamProgress {
+    protocol: GatewayStreamProtocol,
     decoder: SseDecoder,
     max_chunk_bytes: usize,
     partial_sent: bool,
@@ -409,8 +416,13 @@ struct StreamProgress {
 }
 
 impl StreamProgress {
-    fn new(max_event_bytes: usize, max_chunk_bytes: usize) -> Self {
+    fn new(
+        protocol: GatewayStreamProtocol,
+        max_event_bytes: usize,
+        max_chunk_bytes: usize,
+    ) -> Self {
         Self {
+            protocol,
             decoder: SseDecoder::new(max_event_bytes),
             max_chunk_bytes,
             partial_sent: false,
@@ -435,7 +447,7 @@ impl StreamProgress {
         }
 
         for event in self.decoder.push(chunk)? {
-            self.observe_event(&event, request_started_at, provider_started_at);
+            self.observe_event(&event, request_started_at, provider_started_at)?;
         }
         Ok(())
     }
@@ -446,7 +458,7 @@ impl StreamProgress {
         provider_started_at: Instant,
     ) -> Result<StreamEndReason, StreamChunkError> {
         for event in self.decoder.finish()? {
-            self.observe_event(&event, request_started_at, provider_started_at);
+            self.observe_event(&event, request_started_at, provider_started_at)?;
         }
 
         Ok(stream_end_reason_for_terminal_kind(
@@ -460,11 +472,17 @@ impl StreamProgress {
         event: &SseEvent,
         request_started_at: Instant,
         provider_started_at: Instant,
-    ) {
-        let terminal_kind = terminal_event_kind(StreamProtocol::OpenAiChatCompletions, event);
+    ) -> Result<(), StreamChunkError> {
+        let observation = self.protocol.observe_event(event)?;
+
+        if let Some(usage) = observation.usage {
+            self.usage = usage;
+        }
+
+        let terminal_kind = observation.terminal_kind;
         if terminal_kind.is_terminal() {
             self.terminal_kind = terminal_kind;
-            return;
+            return Ok(());
         }
 
         if !event.data.is_empty() && !self.partial_sent {
@@ -473,8 +491,53 @@ impl StreamProgress {
             self.provider_ttft_ms = Some(elapsed_ms(provider_started_at));
         }
 
-        if let Some(usage) = openai_stream_usage_from_event(event) {
-            self.usage = usage;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GatewayStreamProtocol {
+    OpenAiChatCompletions,
+    OpenAiResponses,
+}
+
+impl GatewayStreamProtocol {
+    const fn stream_protocol(self) -> StreamProtocol {
+        match self {
+            Self::OpenAiChatCompletions => StreamProtocol::OpenAiChatCompletions,
+            Self::OpenAiResponses => StreamProtocol::OpenAiResponses,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiChatCompletions => "openai_chat_completions",
+            Self::OpenAiResponses => "openai_responses",
+        }
+    }
+
+    fn observe_event(self, event: &SseEvent) -> Result<StreamEventObservation, StreamChunkError> {
+        match self {
+            Self::OpenAiChatCompletions => Ok(StreamEventObservation {
+                terminal_kind: terminal_event_kind(self.stream_protocol(), event),
+                usage: openai_chat_stream_usage_from_event(event),
+            }),
+            Self::OpenAiResponses => openai_responses_stream_event_observation(event),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StreamEventObservation {
+    terminal_kind: TerminalEventKind,
+    usage: Option<StreamUsageUpdate>,
+}
+
+impl Default for StreamEventObservation {
+    fn default() -> Self {
+        Self {
+            terminal_kind: TerminalEventKind::None,
+            usage: None,
         }
     }
 }
@@ -482,7 +545,14 @@ impl StreamProgress {
 #[derive(Debug, PartialEq, Eq)]
 enum StreamChunkError {
     Decode(SseDecodeError),
-    ChunkTooLarge { len: usize, max: usize },
+    ProtocolParser {
+        protocol: GatewayStreamProtocol,
+        message: String,
+    },
+    ChunkTooLarge {
+        len: usize,
+        max: usize,
+    },
 }
 
 impl From<SseDecodeError> for StreamChunkError {
@@ -495,6 +565,13 @@ impl fmt::Display for StreamChunkError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Decode(error) => write!(formatter, "{error}"),
+            Self::ProtocolParser { protocol, message } => {
+                write!(
+                    formatter,
+                    "{} stream parser error: {message}",
+                    protocol.as_str()
+                )
+            }
             Self::ChunkTooLarge { len, max } => write!(
                 formatter,
                 "upstream SSE chunk exceeds backpressure limit: {len} bytes > {max} bytes"
@@ -522,6 +599,7 @@ impl From<&StreamChunkError> for StreamForwardFailureKind {
     fn from(error: &StreamChunkError) -> Self {
         match error {
             StreamChunkError::Decode(_) => Self::DecodeError,
+            StreamChunkError::ProtocolParser { .. } => Self::DecodeError,
             StreamChunkError::ChunkTooLarge { .. } => Self::ChunkTooLarge,
         }
     }
@@ -630,7 +708,7 @@ impl StreamFinalizationSnapshot {
             rating.clone(),
         );
         record_endpoint_request_final_metrics(EndpointRequestFinalMetrics {
-            endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
+            endpoint: self.context.metrics_endpoint,
             outcome: request_update.status,
             http_status: request_update.http_status,
             error_owner: request_update.error_owner.as_deref(),
@@ -707,13 +785,80 @@ struct StreamRatingUpdate {
     price_version_id: uuid::Uuid,
 }
 
-fn openai_stream_usage_from_event(event: &SseEvent) -> Option<StreamUsageUpdate> {
+fn openai_chat_stream_usage_from_event(event: &SseEvent) -> Option<StreamUsageUpdate> {
     if event.data.is_empty() {
         return None;
     }
 
     let payload: Value = serde_json::from_slice(&event.data).ok()?;
     openai_stream_usage_from_value(&payload)
+}
+
+fn openai_responses_stream_event_observation(
+    event: &SseEvent,
+) -> Result<StreamEventObservation, StreamChunkError> {
+    if event.data.is_empty() {
+        return Ok(StreamEventObservation::default());
+    }
+
+    let stream_terminal_kind = terminal_event_kind(StreamProtocol::OpenAiResponses, event);
+    let adapter_event =
+        OpenAiCompatibleClient::parse_responses_stream_event(&event.data).map_err(|error| {
+            StreamChunkError::ProtocolParser {
+                protocol: GatewayStreamProtocol::OpenAiResponses,
+                message: error.to_string(),
+            }
+        })?;
+
+    Ok(StreamEventObservation {
+        terminal_kind: merge_terminal_kinds(
+            stream_terminal_kind,
+            responses_adapter_terminal_kind(adapter_event.terminal_kind.clone()),
+        ),
+        usage: adapter_event
+            .usage()
+            .and_then(stream_usage_from_adapter_usage),
+    })
+}
+
+const fn responses_adapter_terminal_kind(
+    terminal_kind: OpenAiResponsesStreamTerminalKind,
+) -> TerminalEventKind {
+    match terminal_kind {
+        OpenAiResponsesStreamTerminalKind::None => TerminalEventKind::None,
+        OpenAiResponsesStreamTerminalKind::Completed => TerminalEventKind::Completed,
+        OpenAiResponsesStreamTerminalKind::Failed | OpenAiResponsesStreamTerminalKind::Error => {
+            TerminalEventKind::Failed
+        }
+    }
+}
+
+const fn merge_terminal_kinds(
+    stream_terminal_kind: TerminalEventKind,
+    adapter_terminal_kind: TerminalEventKind,
+) -> TerminalEventKind {
+    match (stream_terminal_kind, adapter_terminal_kind) {
+        (TerminalEventKind::Failed, _) | (_, TerminalEventKind::Failed) => {
+            TerminalEventKind::Failed
+        }
+        (TerminalEventKind::Completed, _) | (_, TerminalEventKind::Completed) => {
+            TerminalEventKind::Completed
+        }
+        (TerminalEventKind::None, TerminalEventKind::None) => TerminalEventKind::None,
+    }
+}
+
+fn stream_usage_from_adapter_usage(usage: AdapterUsage) -> Option<StreamUsageUpdate> {
+    let update = StreamUsageUpdate {
+        input_tokens: usage.prompt_tokens.and_then(u64_to_i64),
+        output_tokens: usage.completion_tokens.and_then(u64_to_i64),
+    };
+
+    if update.input_tokens.is_some() || update.output_tokens.is_some() {
+        Some(update)
+    } else {
+        None
+    }
 }
 
 fn openai_stream_usage_from_value(payload: &Value) -> Option<StreamUsageUpdate> {
@@ -984,7 +1129,27 @@ fn stream_io_error(end_reason: StreamEndReason) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use super::*;
+
+    fn openai_stream_fixture_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("adapters")
+            .join("openai")
+            .join("streams")
+            .join(file_name)
+    }
+
+    fn load_openai_stream_fixture(file_name: &str) -> Vec<u8> {
+        let path = openai_stream_fixture_path(file_name);
+        fs::read(&path)
+            .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()))
+    }
 
     #[test]
     fn stream_final_update_payload_records_completed_partial_ttft() {
@@ -1147,7 +1312,8 @@ mod tests {
     fn stream_progress_tracks_partial_usage_and_terminal_done() {
         let request_started_at = Instant::now();
         let provider_started_at = Instant::now();
-        let mut progress = StreamProgress::new(1024, 1024);
+        let mut progress =
+            StreamProgress::new(GatewayStreamProtocol::OpenAiChatCompletions, 1024, 1024);
 
         progress
             .observe_chunk(
@@ -1184,10 +1350,164 @@ mod tests {
     }
 
     #[test]
+    fn responses_stream_progress_tracks_terminal_usage_and_error_terminals() {
+        let request_started_at = Instant::now();
+        let provider_started_at = Instant::now();
+        let mut completed = StreamProgress::new(GatewayStreamProtocol::OpenAiResponses, 4096, 4096);
+
+        completed
+            .observe_chunk(
+                &load_openai_stream_fixture("responses_stream_completed.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("completed responses stream should parse");
+        assert!(completed.partial_sent);
+        assert!(completed.request_ttft_ms.is_some());
+        assert_eq!(completed.terminal_kind, TerminalEventKind::None);
+        let completed_end = completed
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("completed responses EOF should classify");
+        assert_eq!(completed_end, StreamEndReason::Completed);
+        assert_eq!(completed.terminal_kind, TerminalEventKind::Completed);
+        assert_eq!(
+            completed.usage,
+            StreamUsageUpdate {
+                input_tokens: Some(3),
+                output_tokens: Some(2),
+            }
+        );
+        let completed_update = stream_request_final_update(
+            17,
+            completed.partial_sent,
+            completed_end,
+            completed.request_ttft_ms,
+            completed.usage,
+            Some(StreamRatingUpdate {
+                final_cost: "0.00000123".to_string(),
+                currency: "USD".to_string(),
+                price_version_id: uuid::Uuid::from_u128(61),
+            }),
+        );
+        assert_eq!(completed_update.status, "succeeded");
+        assert_eq!(completed_update.input_tokens, Some(3));
+        assert_eq!(completed_update.output_tokens, Some(2));
+        assert_eq!(completed_update.final_cost.as_deref(), Some("0.00000123"));
+
+        let mut failed = StreamProgress::new(GatewayStreamProtocol::OpenAiResponses, 4096, 4096);
+        failed
+            .observe_chunk(
+                &load_openai_stream_fixture("responses_stream_failed.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("failed responses stream should parse");
+        assert!(failed.partial_sent);
+        assert_eq!(failed.terminal_kind, TerminalEventKind::None);
+        let failed_end = failed
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("failed responses EOF should classify");
+        assert_eq!(failed_end, StreamEndReason::UpstreamError);
+        assert_eq!(failed.terminal_kind, TerminalEventKind::Failed);
+        let failed_update = stream_request_final_update(
+            19,
+            failed.partial_sent,
+            failed_end,
+            failed.request_ttft_ms,
+            failed.usage,
+            None,
+        );
+        assert_eq!(failed_update.status, "partial");
+        assert_eq!(
+            failed_update.error_code.as_deref(),
+            Some("stream_upstream_error")
+        );
+        assert_eq!(failed_update.input_tokens, None);
+
+        let mut error_terminal =
+            StreamProgress::new(GatewayStreamProtocol::OpenAiResponses, 4096, 4096);
+        error_terminal
+            .observe_chunk(
+                &load_openai_stream_fixture("responses_stream_error.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("error responses stream should parse through adapter helper");
+        assert!(!error_terminal.partial_sent);
+        assert_eq!(error_terminal.terminal_kind, TerminalEventKind::None);
+        let error_end = error_terminal
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("error responses EOF should classify");
+        assert_eq!(error_end, StreamEndReason::UpstreamError);
+        assert_eq!(error_terminal.terminal_kind, TerminalEventKind::Failed);
+        let error_update = stream_request_final_update(
+            23,
+            error_terminal.partial_sent,
+            error_end,
+            error_terminal.request_ttft_ms,
+            error_terminal.usage,
+            None,
+        );
+        assert_eq!(error_update.status, "failed");
+        assert_eq!(
+            error_update.error_code.as_deref(),
+            Some("stream_upstream_error")
+        );
+    }
+
+    #[test]
+    fn responses_stream_progress_keeps_bounds_and_maps_adapter_parse_errors() {
+        let request_started_at = Instant::now();
+        let provider_started_at = Instant::now();
+        let completed_fixture = load_openai_stream_fixture("responses_stream_completed.sse");
+        let mut bounded = StreamProgress::new(GatewayStreamProtocol::OpenAiResponses, 4096, 8);
+
+        let too_large = bounded
+            .observe_chunk(&completed_fixture, request_started_at, provider_started_at)
+            .expect_err("responses stream chunk guard should reject oversized chunks");
+        assert_eq!(
+            too_large,
+            StreamChunkError::ChunkTooLarge {
+                len: completed_fixture.len(),
+                max: 8,
+            }
+        );
+        assert!(!bounded.partial_sent);
+
+        let mut invalid = StreamProgress::new(GatewayStreamProtocol::OpenAiResponses, 4096, 4096);
+        invalid
+            .observe_chunk(
+                &load_openai_stream_fixture("responses_stream_invalid_json.sse"),
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("unterminated invalid JSON fixture is buffered until EOF");
+        let parse_error = invalid
+            .observe_eof(request_started_at, provider_started_at)
+            .expect_err("responses adapter parser should reject invalid JSON events");
+        match &parse_error {
+            StreamChunkError::ProtocolParser { protocol, message } => {
+                assert_eq!(*protocol, GatewayStreamProtocol::OpenAiResponses);
+                assert!(!message.contains("Authorization"));
+                assert!(!message.contains("secret"));
+            }
+            other => panic!("expected protocol parser error, got {other:?}"),
+        }
+        assert_eq!(
+            stream_forward_failure_contract(StreamForwardFailureKind::from(&parse_error))
+                .end_reason,
+            StreamEndReason::ParserError
+        );
+        assert!(!invalid.partial_sent);
+        assert_eq!(invalid.terminal_kind, TerminalEventKind::None);
+    }
+
+    #[test]
     fn stream_progress_rejects_oversized_chunk_before_mutating_progress() {
         let request_started_at = Instant::now();
         let provider_started_at = Instant::now();
-        let mut progress = StreamProgress::new(1024, 8);
+        let mut progress =
+            StreamProgress::new(GatewayStreamProtocol::OpenAiChatCompletions, 1024, 8);
 
         let error = progress
             .observe_chunk(b"data: 123\n\n", request_started_at, provider_started_at)
@@ -1259,7 +1579,7 @@ mod tests {
             ),
         };
 
-        let usage = openai_stream_usage_from_event(&event).expect("usage chunk should parse");
+        let usage = openai_chat_stream_usage_from_event(&event).expect("usage chunk should parse");
 
         assert_eq!(
             usage,
@@ -1278,7 +1598,7 @@ mod tests {
     fn openai_stream_usage_observation_ignores_missing_or_non_json_usage() {
         let null_usage = openai_stream_usage_from_value(&json!({ "usage": null }));
         let no_usage = openai_stream_usage_from_value(&json!({ "choices": [] }));
-        let invalid_json = openai_stream_usage_from_event(&SseEvent {
+        let invalid_json = openai_chat_stream_usage_from_event(&SseEvent {
             event: None,
             data: Bytes::from_static(b"{not-json"),
         });

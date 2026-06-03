@@ -5,10 +5,11 @@ mod rating;
 mod reconciliation;
 
 pub use exact_cache::{
-    ExactCacheBillingError, ExactCacheBillingPlan, ExactCacheBillingRequest,
-    ExactCacheLedgerMetadata, ExactCachePricingRules, ExactCacheRatingResult, ExactCacheReadPolicy,
-    ExactCacheStatus, ExactCacheUsageSummary, ExactCacheWritePolicy,
-    exact_cache_read_idempotency_key, exact_cache_write_idempotency_key, plan_exact_cache_billing,
+    ExactCacheBillingError, ExactCacheBillingPlan, ExactCacheBillingRequest, ExactCacheDecision,
+    ExactCacheDecisionInput, ExactCacheLedgerMetadata, ExactCachePricingRules,
+    ExactCacheRatingResult, ExactCacheReadPolicy, ExactCacheStatus, ExactCacheUsageSummary,
+    ExactCacheWritePolicy, decide_exact_cache_request, exact_cache_read_idempotency_key,
+    exact_cache_write_idempotency_key, plan_exact_cache_billing,
 };
 pub use ledger::{
     LedgerContractError, LedgerEntryDraft, LedgerEntryMetadata, LedgerEntryRecord,

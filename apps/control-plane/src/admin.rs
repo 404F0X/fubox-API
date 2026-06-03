@@ -301,6 +301,7 @@ struct CreateApiKeyProfileRequest {
     allowed_channel_tags: Option<Value>,
     blocked_provider_ids: Option<Value>,
     trace_header_rules: Option<Value>,
+    ip_allowlist: Option<Value>,
     request_overrides: Option<Value>,
     payload_policy_id: Option<Uuid>,
     status: Option<String>,
@@ -317,6 +318,7 @@ struct PatchApiKeyProfileRequest {
     allowed_channel_tags: Option<Value>,
     blocked_provider_ids: Option<Value>,
     trace_header_rules: Option<Value>,
+    ip_allowlist: Option<Value>,
     request_overrides: Option<Value>,
     payload_policy_id: Option<Uuid>,
     status: Option<String>,
@@ -2919,6 +2921,7 @@ impl AuditResource for ApiKeyProfile {
             "allowed_channel_tags_count": array_len(&self.allowed_channel_tags),
             "blocked_provider_ids_count": array_len(&self.blocked_provider_ids),
             "trace_header_rules_keys": object_keys(&self.trace_header_rules),
+            "ip_allowlist_count": array_len(&self.ip_allowlist),
             "request_overrides_count": array_len(&self.request_overrides),
             "payload_policy_id": self.payload_policy_id,
             "status": self.status,
@@ -3103,6 +3106,7 @@ fn build_new_api_key_profile(
             json!({}),
             "trace_header_rules",
         )?,
+        ip_allowlist: json_array_or_default(request.ip_allowlist, json!([]), "ip_allowlist")?,
         request_overrides: json_array_or_default(
             request.request_overrides,
             json!([]),
@@ -3161,6 +3165,10 @@ fn build_update_api_key_profile(
                 validate_json_object(trace_header_rules, "trace_header_rules")?
             }
             None => current.trace_header_rules,
+        },
+        ip_allowlist: match request.ip_allowlist {
+            Some(ip_allowlist) => validate_json_array(ip_allowlist, "ip_allowlist")?,
+            None => current.ip_allowlist,
         },
         request_overrides: match request.request_overrides {
             Some(request_overrides) => validate_json_array(request_overrides, "request_overrides")?,

@@ -1,5 +1,6 @@
 mod alert_webhook;
 mod billing_reconciliation;
+mod clickhouse_log_store;
 mod prompt_eval_shadow;
 
 use ai_gateway_config::AppConfig;
@@ -12,6 +13,10 @@ use billing_reconciliation::{
     BillingReconciliationInputSource, BillingReconciliationMode,
     billing_reconciliation_execute_error, billing_reconciliation_plan,
     read_billing_reconciliation_input,
+};
+use clickhouse_log_store::{
+    ClickHouseLogStoreInputSource, ClickHouseLogStoreMode, clickhouse_log_store_execute_error,
+    clickhouse_log_store_plan, read_clickhouse_log_store_input,
 };
 use prompt_eval_shadow::{
     PromptEvalShadowInputSource, PromptEvalShadowMode, prompt_eval_shadow_execute_error,
@@ -96,6 +101,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             prompt_eval_shadow_execute_error(force),
+        )
+        .into()),
+        Ok(WorkerCommand::ClickHouseLogStore {
+            mode: ClickHouseLogStoreMode::DryRun,
+            tenant_id,
+            input_path,
+            ..
+        }) => run_clickhouse_log_store_dry_run(tenant_id, input_path).await,
+        Ok(WorkerCommand::ClickHouseLogStore {
+            mode: ClickHouseLogStoreMode::Execute,
+            force,
+            ..
+        }) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            clickhouse_log_store_execute_error(force),
         )
         .into()),
         Err(message) => Err(std::io::Error::new(
@@ -248,6 +268,30 @@ async fn run_prompt_eval_shadow_dry_run(
     Ok(())
 }
 
+async fn run_clickhouse_log_store_dry_run(
+    tenant_id: Option<Uuid>,
+    input_path: Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (source, input) =
+        read_clickhouse_log_store_input(input_path.as_deref()).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, safe_error_text(&error))
+        })?;
+    let source = match source {
+        ClickHouseLogStoreInputSource::InputJson { path } => {
+            ClickHouseLogStoreInputSource::InputJson {
+                path: safe_plan_text(&path),
+            }
+        }
+    };
+    let plan = clickhouse_log_store_plan(tenant_id, source, input).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, safe_error_text(&error))
+    })?;
+
+    serde_json::to_writer_pretty(std::io::stdout(), &plan)?;
+    println!();
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkerCommand {
     RunWorker,
@@ -273,6 +317,12 @@ enum WorkerCommand {
     },
     PromptEvalShadow {
         mode: PromptEvalShadowMode,
+        tenant_id: Option<Uuid>,
+        input_path: Option<String>,
+        force: bool,
+    },
+    ClickHouseLogStore {
+        mode: ClickHouseLogStoreMode,
         tenant_id: Option<Uuid>,
         input_path: Option<String>,
         force: bool,
@@ -538,6 +588,60 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<WorkerCommand
                 force,
             })
         }
+        "clickhouse-log-store" | "clickhouse-log-store-plan" => {
+            let mut tenant_id = None;
+            let mut input_path = None;
+            let mut force = false;
+            let mut explicit_mode = None;
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--dry-run" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            "--dry-run",
+                        )?;
+                    }
+                    "--execute" | "--send" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::Execute,
+                            arg.as_str(),
+                        )?;
+                    }
+                    "--force" => {
+                        force = true;
+                    }
+                    "--input" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| "--input requires a JSON file path".to_string())?;
+                        input_path = Some(raw);
+                    }
+                    "--tenant-id" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| "--tenant-id requires a UUID value".to_string())?;
+                        tenant_id = Some(
+                            raw.parse()
+                                .map_err(|_| format!("invalid --tenant-id UUID `{raw}`"))?,
+                        );
+                    }
+                    "--help" | "-h" => return Err(usage()),
+                    other => {
+                        return Err(format!("unknown clickhouse-log-store argument `{other}`"));
+                    }
+                }
+            }
+
+            Ok(WorkerCommand::ClickHouseLogStore {
+                mode: explicit_mode.unwrap_or(ClickHouseLogStoreMode::DryRun),
+                tenant_id,
+                input_path,
+                force,
+            })
+        }
         "--help" | "-h" => Err(usage()),
         other => Err(format!("unknown worker command `{other}`")),
     }
@@ -611,8 +715,25 @@ fn set_prompt_eval_shadow_mode(
     Ok(())
 }
 
+fn set_clickhouse_log_store_mode(
+    explicit_mode: &mut Option<ClickHouseLogStoreMode>,
+    mode: ClickHouseLogStoreMode,
+    flag: &str,
+) -> Result<(), String> {
+    if let Some(existing_mode) = explicit_mode
+        && *existing_mode != mode
+    {
+        return Err(format!(
+            "choose either --dry-run or --execute/--send for clickhouse-log-store, not both; `{flag}` conflicts with the existing mode"
+        ));
+    }
+
+    *explicit_mode = Some(mode);
+    Ok(())
+}
+
 fn usage() -> String {
-    "Usage:\n  ai-worker\n  ai-worker recovery-probe [--dry-run|--execute] [--tenant-id <uuid>] [--limit <n>]\n  ai-worker alert-webhook [--dry-run] [--input <json>] [--tenant-id <uuid>]  # emits sender contract, no network send\n  ai-worker alert-webhook --send|--execute [--force]  # refused in this dry-run slice\n  ai-worker billing-reconciliation [--dry-run] --input <json> [--day <YYYY-MM-DD>] [--tenant-id <uuid>] [--project-id <uuid>] [--limit <n>]\n  ai-worker billing-reconciliation --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker prompt-eval-shadow [--dry-run] --input <json> [--tenant-id <uuid>]  # emits prompt registry/eval dataset/shadow traffic plan, no writes or sends\n  ai-worker prompt-eval-shadow --execute|--send [--force]  # refused in this dry-run slice"
+    "Usage:\n  ai-worker\n  ai-worker recovery-probe [--dry-run|--execute] [--tenant-id <uuid>] [--limit <n>]\n  ai-worker alert-webhook [--dry-run] [--input <json>] [--tenant-id <uuid>]  # emits sender contract, no network send\n  ai-worker alert-webhook --send|--execute [--force]  # refused in this dry-run slice\n  ai-worker billing-reconciliation [--dry-run] --input <json> [--day <YYYY-MM-DD>] [--tenant-id <uuid>] [--project-id <uuid>] [--limit <n>]\n  ai-worker billing-reconciliation --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker prompt-eval-shadow [--dry-run] --input <json> [--tenant-id <uuid>]  # emits prompt registry/eval dataset/shadow traffic plan, no writes or sends\n  ai-worker prompt-eval-shadow --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker clickhouse-log-store [--dry-run] --input <json> [--tenant-id <uuid>]  # emits queue/backpressure/dedup/table mapping plan, no DB or network\n  ai-worker clickhouse-log-store --execute|--send [--force]  # refused in this dry-run slice"
         .to_string()
 }
 
@@ -1239,6 +1360,64 @@ mod tests {
             "--dry-run".to_string(),
         ])
         .expect_err("conflicting prompt eval shadow modes should fail");
+
+        assert!(error.contains("either --dry-run or --execute/--send"));
+    }
+
+    #[test]
+    fn clickhouse_log_store_command_defaults_to_dry_run_with_input() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_execute_mode_is_parsed_for_refusal() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store-plan".to_string(),
+            "--execute".to_string(),
+            "--force".to_string(),
+        ])
+        .expect("execute mode should parse before runtime refusal");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::Execute,
+                tenant_id: None,
+                input_path: None,
+                force: true,
+            }
+        );
+        assert!(clickhouse_log_store_execute_error(true).contains("ClickHouse write"));
+    }
+
+    #[test]
+    fn clickhouse_log_store_command_rejects_conflicting_modes() {
+        let error = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--execute".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("conflicting ClickHouse log store modes should fail");
 
         assert!(error.contains("either --dry-run or --execute/--send"));
     }

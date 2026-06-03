@@ -1,7 +1,8 @@
 use ai_gateway_billing_ledger::{
-    ExactCacheBillingError, ExactCacheBillingRequest, ExactCachePricingRules, ExactCacheReadPolicy,
-    ExactCacheStatus, ExactCacheWritePolicy, FixedDecimal, LedgerContractError, LedgerEntryRecord,
-    LedgerEntryStatus, LedgerEntryType, LedgerOperationOutcome, plan_exact_cache_billing,
+    ExactCacheBillingError, ExactCacheBillingRequest, ExactCacheDecisionInput,
+    ExactCachePricingRules, ExactCacheReadPolicy, ExactCacheStatus, ExactCacheWritePolicy,
+    FixedDecimal, LedgerContractError, LedgerEntryRecord, LedgerEntryStatus, LedgerEntryType,
+    LedgerOperationOutcome, decide_exact_cache_request, plan_exact_cache_billing,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -31,6 +32,10 @@ struct ContractFixture {
 struct CaseFixture {
     name: String,
     pricing: PricingFixture,
+    #[serde(default)]
+    decision_input: Option<ExactCacheDecisionInput>,
+    #[serde(default)]
+    expect_decision: Option<serde_json::Value>,
     request: RequestFixture,
     existing_entries: Vec<EntryFixture>,
     expect: Option<ExpectedPlan>,
@@ -84,6 +89,10 @@ struct ExpectedPlan {
     #[serde(default)]
     cache_operation_key_shape: Option<String>,
     #[serde(default)]
+    cache_read_key_shape: Option<String>,
+    #[serde(default)]
+    cache_write_key_shape: Option<String>,
+    #[serde(default)]
     ledger_key_shape: Option<String>,
     costs: ExpectedCosts,
     #[serde(default)]
@@ -92,6 +101,8 @@ struct ExpectedPlan {
 
 #[derive(Debug, Deserialize)]
 struct ExpectedCosts {
+    cached_input_tokens: u64,
+    billable_input_tokens: u64,
     input_cost: String,
     output_cost: String,
     cache_read_cost: String,
@@ -136,6 +147,18 @@ fn exact_cache_billing_contract_fixture_matches_pure_plans() {
     assert_eq!(fixture.contract, "billing_ledger_exact_cache_v1");
 
     for case in &fixture.cases {
+        if let Some(decision_input) = &case.decision_input {
+            let decision = decide_exact_cache_request(decision_input.clone())
+                .unwrap_or_else(|error| panic!("{} decision failed: {error}", case.name));
+            let actual = serde_json::to_value(decision).expect("decision json");
+            let expected = case
+                .expect_decision
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} missing expect_decision", case.name));
+            assert_eq!(actual, *expected, "{} decision", case.name);
+            assert_forbidden_terms_absent(&actual.to_string(), &case.name);
+        }
+
         let existing_entries = case
             .existing_entries
             .iter()
@@ -172,6 +195,24 @@ fn exact_cache_billing_contract_fixture_matches_pure_plans() {
                         .as_deref()
                         .map(|shape| render_key_shape(shape, &case.request)),
                     "{} cache operation idempotency key",
+                    case.name
+                );
+                assert_eq!(
+                    plan.cache_read_idempotency_key,
+                    expected
+                        .cache_read_key_shape
+                        .as_deref()
+                        .map(|shape| render_key_shape(shape, &case.request)),
+                    "{} cache read idempotency key",
+                    case.name
+                );
+                assert_eq!(
+                    plan.cache_write_idempotency_key,
+                    expected
+                        .cache_write_key_shape
+                        .as_deref()
+                        .map(|shape| render_key_shape(shape, &case.request)),
+                    "{} cache write idempotency key",
                     case.name
                 );
                 assert_eq!(
@@ -229,6 +270,14 @@ fn assert_costs(
     expected: &ExpectedCosts,
     label: &str,
 ) {
+    assert_eq!(
+        actual.cached_input_tokens, expected.cached_input_tokens,
+        "{label} cached input tokens"
+    );
+    assert_eq!(
+        actual.billable_input_tokens, expected.billable_input_tokens,
+        "{label} billable input tokens"
+    );
     assert_eq!(
         actual.input_cost.to_string(),
         expected.input_cost,
@@ -396,6 +445,12 @@ fn error_tag(error: &ExactCacheBillingError) -> &'static str {
     match error {
         ExactCacheBillingError::InvalidCacheKeyHash => "invalid_cache_key_hash",
         ExactCacheBillingError::CacheHitEntryIdRequired => "cache_hit_entry_id_required",
+        ExactCacheBillingError::CacheReadTokensExceedInputTokens => {
+            "cache_read_tokens_exceed_input_tokens"
+        }
+        ExactCacheBillingError::InvalidHitTokenSplit => "invalid_hit_token_split",
+        ExactCacheBillingError::InvalidMissTokenSplit => "invalid_miss_token_split",
+        ExactCacheBillingError::InvalidPartialHitTokenSplit => "invalid_partial_hit_token_split",
         ExactCacheBillingError::NegativeMoney { .. } => "negative_money",
         ExactCacheBillingError::Rating(_) => "rating_error",
         ExactCacheBillingError::Ledger(error) => ledger_error_tag(error),

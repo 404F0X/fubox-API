@@ -1,0 +1,117 @@
+{
+  "contract": "clickhouse_log_store_worker_plan.v1",
+  "commands": {
+    "dry_run": "ai-worker clickhouse-log-store --dry-run --input tests/fixtures/worker/clickhouse_log_store_plan_contract.json",
+    "execute": "ai-worker clickhouse-log-store --execute --force --input tests/fixtures/worker/clickhouse_log_store_plan_contract.json"
+  },
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "env": {
+      "AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED": "true",
+      "AI_GATEWAY_CLICKHOUSE_ENDPOINT": "https://clickhouse.example.com:8443",
+      "AI_GATEWAY_CLICKHOUSE_DATABASE": "prod_logs",
+      "AI_GATEWAY_CLICKHOUSE_TABLE": "gateway_events",
+      "AI_GATEWAY_CLICKHOUSE_BATCH_SIZE": "2500",
+      "AI_GATEWAY_CLICKHOUSE_FLUSH_INTERVAL_MS": "750",
+      "AI_GATEWAY_CLICKHOUSE_TLS_VERIFY": "false",
+      "AI_GATEWAY_CLICKHOUSE_USERNAME": "ops-user",
+      "AI_GATEWAY_CLICKHOUSE_PASSWORD": "plain-password",
+      "AI_GATEWAY_CLICKHOUSE_TOKEN": "fixture-api-secret",
+      "AI_GATEWAY_CLICKHOUSE_AUTHORIZATION": "Bearer fixture-bearer-secret",
+      "AI_GATEWAY_CLICKHOUSE_BACKPRESSURE_MAX_QUEUE_ROWS": "42",
+      "AI_GATEWAY_CLICKHOUSE_BACKPRESSURE_DROP_POLICY": "drop_oldest",
+      "AI_GATEWAY_CLICKHOUSE_RETRY_MAX_ATTEMPTS": "5",
+      "AI_GATEWAY_CLICKHOUSE_RETRY_INITIAL_BACKOFF_MS": "200",
+      "AI_GATEWAY_CLICKHOUSE_RETRY_MAX_BACKOFF_MS": "4000",
+      "AI_GATEWAY_CLICKHOUSE_PAYLOAD_POLICY": "redacted"
+    }
+  },
+  "expected_output_contract": {
+    "schema_version": "clickhouse_log_store_worker_plan.v1",
+    "dry_run": true,
+    "mode": "plan_only",
+    "read_only": true,
+    "runtime_connected": false,
+    "db_reads": false,
+    "db_writes": false,
+    "outbound_calls": false,
+    "network_requests": false,
+    "clickhouse_config": {
+      "contract": "clickhouse_log_store_plan_v1",
+      "enabled": true,
+      "endpoint": "https://clickhouse.example.com:8443",
+      "database": "prod_logs",
+      "table": "gateway_events"
+    },
+    "queue": {
+      "queue_type": "bounded_in_memory_future",
+      "max_queue_rows": 42,
+      "batch_size": 2500,
+      "flush_interval_ms": 750,
+      "bounded_memory": true
+    },
+    "backpressure": {
+      "drop_policy": "drop_oldest",
+      "overflow_action": "evict_oldest_unflushed_record"
+    },
+    "dedup": {
+      "enabled": true,
+      "strategy": "stable_idempotency_key",
+      "conflict_action": "skip_duplicate_same_hash"
+    },
+    "table_mapping": [
+      {
+        "sink": "request_logs",
+        "qualified_target_table": "prod_logs.gateway_events_request_logs",
+        "dedup_key_fields": [
+          "tenant_id",
+          "request_id"
+        ]
+      },
+      {
+        "sink": "provider_attempts",
+        "qualified_target_table": "prod_logs.gateway_events_provider_attempts",
+        "dedup_key_fields": [
+          "tenant_id",
+          "request_id",
+          "provider_attempt_id"
+        ]
+      },
+      {
+        "sink": "event_log",
+        "qualified_target_table": "prod_logs.gateway_events_event_log",
+        "dedup_key_fields": [
+          "tenant_id",
+          "event_id",
+          "event_type"
+        ]
+      }
+    ]
+  },
+  "safety_contract": {
+    "db_reads": false,
+    "db_writes": false,
+    "clickhouse_network_requests": false,
+    "queue_writes": false,
+    "env_values_output": false,
+    "credential_material_output": false,
+    "payload_body_output": false,
+    "execute_requires_force": true,
+    "force_cannot_enable_network": true
+  },
+  "must_not_echo": [
+    "plain-password",
+    "fixture-api-secret",
+    "fixture-bearer-secret",
+    "Bearer fixture-bearer-secret",
+    "ops-user",
+    "raw_payload"
+  ],
+  "remaining_gaps": [
+    "real_clickhouse_writer",
+    "durable_queue_or_wal",
+    "database_changefeed_or_export_cursor",
+    "dedup_journal_persistence",
+    "load_and_retention_smoke"
+  ]
+}

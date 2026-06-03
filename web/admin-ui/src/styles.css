@@ -661,6 +661,10 @@ h3 {
   min-width: 1080px;
 }
 
+.admin-table--audit-logs {
+  min-width: 1120px;
+}
+
 .admin-table--reconciliation {
   min-width: 1320px;
 }

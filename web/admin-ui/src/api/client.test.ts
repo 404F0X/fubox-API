@@ -180,6 +180,7 @@ describe("api client", () => {
       deleteProviderKey,
       getRequestLogDetail,
       getRequestTraceSummary,
+      listAuditLogs,
       listProviderKeys,
       listRequestLogs,
       patchProviderKey,
@@ -218,6 +219,10 @@ describe("api client", () => {
         return jsonResponse([{ id: "request-1" }]);
       }
 
+      if (requestUrl.includes("/admin/audit-logs")) {
+        return jsonResponse([{ id: "audit-1" }]);
+      }
+
       if (requestUrl.includes("/admin/provider-keys/provider-key-1") && method === "PATCH") {
         return jsonResponse({ id: "provider-key-1", status: "manual_disabled" });
       }
@@ -237,6 +242,12 @@ describe("api client", () => {
     await listRequestLogs({ limit: 10, model: "gpt-4o-mini", status: "succeeded" });
     await getRequestLogDetail("request-1");
     await getRequestTraceSummary("trace-1", { limit: 20 });
+    await listAuditLogs({
+      action: "provider_key.update",
+      actor_user_id: "actor-1",
+      limit: 25,
+      resource_type: "provider_key",
+    });
     await listProviderKeys();
     await createProviderKey({
       channel_id: "channel-1",
@@ -252,13 +263,15 @@ describe("api client", () => {
       "/api/control-plane/admin/request-logs?limit=10&model=gpt-4o-mini&status=succeeded",
       "/api/control-plane/admin/request-logs/request-1",
       "/api/control-plane/admin/traces/trace-1?limit=20",
+      "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=actor-1&limit=25&resource_type=provider_key",
       "/api/control-plane/admin/provider-keys",
       "/api/control-plane/admin/provider-keys",
       "/api/control-plane/admin/provider-keys/provider-key-1",
       "/api/control-plane/admin/provider-keys/provider-key-1",
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "GET" });
-    expect(fetchMock.mock.calls[4][1]).toMatchObject({
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "GET" });
+    expect(fetchMock.mock.calls[5][1]).toMatchObject({
       body: JSON.stringify({
         channel_id: "channel-1",
         key_alias: "primary",
@@ -268,11 +281,11 @@ describe("api client", () => {
       }),
       method: "POST",
     });
-    expect(fetchMock.mock.calls[5][1]).toMatchObject({
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({
       body: JSON.stringify({ metadata: { region: "eu" }, status: "manual_disabled" }),
       method: "PATCH",
     });
-    expect(fetchMock.mock.calls[6][1]).toMatchObject({ method: "DELETE" });
+    expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: "DELETE" });
   });
 
   it("wraps model association dry-run endpoint", async () => {

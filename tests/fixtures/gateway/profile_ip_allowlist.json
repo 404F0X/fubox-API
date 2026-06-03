@@ -8,7 +8,11 @@
     "secret_must_not_be_logged": true
   },
   "profile_policy": {
-    "source": "api_key_profiles.request_overrides",
+    "source": "api_key_profiles.ip_allowlist",
+    "ip_allowlist_example": [
+      "203.0.113.42"
+    ],
+    "legacy_compatibility_source": "api_key_profiles.request_overrides",
     "request_overrides_example": [
       {
         "type": "profile_ip_allowlist",
@@ -46,5 +50,5 @@
       ]
     }
   ],
-  "notes": "This fixture is an acceptance contract. The first Gateway slice reads profile IP allowlist policy from api_key_profiles.request_overrides because the current schema does not expose a dedicated api_key_profiles.ip_allowlist column."
+  "notes": "This fixture is an acceptance contract. The Gateway reads the dedicated api_key_profiles.ip_allowlist column first and keeps api_key_profiles.request_overrides profile_ip_allowlist policies as a backward-compatible tightening path."
 }
