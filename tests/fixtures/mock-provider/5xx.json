@@ -1,0 +1,20 @@
+{
+  "scenario": "5xx",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=5xx",
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=5xx",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "5xx"
+      }
+    },
+    "endpoint": "/__scenario/5xx/v1/chat/completions",
+    "body": {
+      "mock_scenario": "5xx"
+    }
+  },
+  "expected_status": 502,
+  "notes": "Provider failure path for fallback and health-score tests."
+}

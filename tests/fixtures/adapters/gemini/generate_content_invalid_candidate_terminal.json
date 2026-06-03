@@ -1,0 +1,37 @@
+{
+  "name": "gemini_generate_content_invalid_candidate_terminal",
+  "response": {
+    "status": 200,
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Hello."
+              }
+            ]
+          },
+          "finishReason": "UNEXPECTED_REASON",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 4,
+        "candidatesTokenCount": 2,
+        "totalTokenCount": 6
+      }
+    }
+  },
+  "expected_error_mapping": {
+    "http_status": 502,
+    "error_type": "provider_error",
+    "code": "provider_invalid_response",
+    "message": "unsupported Gemini finishReason 'UNEXPECTED_REASON'",
+    "owner": "parser",
+    "stage": "response_transform",
+    "retryable": true,
+    "signal": null
+  }
+}

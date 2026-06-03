@@ -1,0 +1,2 @@
+event: error
+data: {"type":"error","error":{"type":"server_error","message":"overloaded"}}

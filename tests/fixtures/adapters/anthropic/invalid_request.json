@@ -1,0 +1,22 @@
+{
+  "name": "anthropic_invalid_request_missing_max_tokens",
+  "request": {
+    "model": "claude-3-5-sonnet-20241022",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say hello."
+      }
+    ],
+    "stream": false
+  },
+  "expected_error_mapping": {
+    "http_status": 400,
+    "error_type": "invalid_request_error",
+    "code": "invalid_request",
+    "param": "max_tokens",
+    "owner": "client",
+    "stage": "request_validate",
+    "retryable": false
+  }
+}

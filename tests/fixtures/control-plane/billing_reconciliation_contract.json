@@ -1,0 +1,73 @@
+{
+  "endpoint": {
+    "method": "GET",
+    "path": "/admin/billing/reconciliation",
+    "query": {
+      "day": "2026-06-02",
+      "limit": 50
+    }
+  },
+  "response_contract": {
+    "envelope": "data",
+    "read_only": true,
+    "payload_material_omitted": true,
+    "secret_material_omitted": true
+  },
+  "examples": {
+    "report": {
+      "response": {
+        "data": {
+          "report_version": 1,
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "period_start": "2026-06-02 00:00:00+00",
+          "period_end": "2026-06-03 00:00:00+00",
+          "summary": {
+            "request_count": 2,
+            "billable_request_count": 2,
+            "ledger_entry_count": 1,
+            "matched_request_count": 1,
+            "discrepancy_count": 1,
+            "missing_ledger_count": 1,
+            "unexpected_ledger_count": 0,
+            "amount_mismatch_count": 0,
+            "currency_mismatch_count": 0,
+            "returned_discrepancy_count": 1,
+            "currency_totals": [
+              {
+                "currency": "USD",
+                "request_final_cost_total": "1.25000000",
+                "expected_ledger_amount_total": "-1.25000000",
+                "ledger_amount_total": "-0.25000000",
+                "difference_amount": "1.00000000"
+              }
+            ]
+          },
+          "discrepancies": [
+            {
+              "issues": ["missing_ledger"],
+              "request_id": "00000000-0000-0000-0000-000000000011",
+              "ledger_entry_ids": [],
+              "project_id": "00000000-0000-0000-0000-000000000020",
+              "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+              "trace_id": "trace-reconcile-11",
+              "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+              "resolved_provider_id": "00000000-0000-0000-0000-000000000080",
+              "resolved_channel_id": "00000000-0000-0000-0000-000000000090",
+              "requested_model": "mock-gpt",
+              "upstream_model": "mock-gpt",
+              "request_status": "succeeded",
+              "input_tokens": 12,
+              "output_tokens": 34,
+              "request_final_cost": "1.00000000",
+              "expected_ledger_amount": "-1.00000000",
+              "request_currency": "USD",
+              "ledger_amount": null,
+              "ledger_currency": null,
+              "difference_amount": null
+            }
+          ]
+        }
+      }
+    }
+  }
+}

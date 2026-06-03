@@ -1,0 +1,161 @@
+{
+  "scenario": "control_plane_trace_request_summary_contract",
+  "base_path": "/admin",
+  "endpoint": {
+    "method": "GET",
+    "path": "/admin/traces/{trace_id}",
+    "example_path": "/admin/traces/trace-contract-1",
+    "query": {
+      "limit": 2
+    }
+  },
+  "response_contract": {
+    "envelope": "data",
+    "read_only": true,
+    "tenant_scoped": true,
+    "rbac_permission": "log_read_metadata",
+    "limit": {
+      "default": 50,
+      "maximum": 500,
+      "minimum": 1,
+      "zero_or_negative": "bad_request",
+      "above_maximum": "capped_to_500"
+    },
+    "payload_material_omitted": true,
+    "secret_material_redacted": true,
+    "allowed_payload_metadata": [
+      "payload_policy_id",
+      "payload_stored",
+      "redaction_status",
+      "request_body_hash",
+      "response_body_hash"
+    ],
+    "disallowed_response_fields": [
+      "payload_object_ref",
+      "payload",
+      "body",
+      "request_body",
+      "response_body",
+      "route_decision_snapshot"
+    ]
+  },
+  "examples": {
+    "bounded_trace": {
+      "response": {
+        "data": {
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "trace_id": "trace-contract-1",
+          "limit": 2,
+          "limit_reached": true,
+          "request_count": 2,
+          "error_count": 1,
+          "last_error": {
+            "code": "provider_auth_failed",
+            "owner": "provider",
+            "status": "failed",
+            "http_status": 401,
+            "observed_at": "2026-06-02 12:00:02+00"
+          },
+          "total_input_tokens": 24,
+          "total_output_tokens": 68,
+          "currencies": [
+            "USD"
+          ],
+          "first_request_at": "2026-06-02 12:00:01+00",
+          "last_request_at": "2026-06-02 12:00:02+00",
+          "requests": [
+            {
+              "id": "00000000-0000-0000-0000-000000000012",
+              "tenant_id": "00000000-0000-0000-0000-000000000001",
+              "project_id": "00000000-0000-0000-0000-000000000020",
+              "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+              "api_key_profile_id": "00000000-0000-0000-0000-000000000030",
+              "trace_id": "trace-contract-1",
+              "thread_id": "thread-contract-1",
+              "client_request_id": "client-request-2",
+              "inbound_protocol": "openai",
+              "outbound_protocol": "openai",
+              "protocol_mode": "openai_compatible",
+              "requested_model": "gpt-visible",
+              "canonical_model_id": "00000000-0000-0000-0000-000000000101",
+              "upstream_model": "upstream-gpt",
+              "resolved_provider_id": "00000000-0000-0000-0000-000000000201",
+              "resolved_channel_id": "00000000-0000-0000-0000-000000000401",
+              "provider_key_id": "00000000-0000-0000-0000-000000000501",
+              "route_policy_version": "gateway_db_route_v1",
+              "status": "failed",
+              "http_status": 401,
+              "error_owner": "provider",
+              "error_code": "provider_auth_failed",
+              "retryable": false,
+              "partial_sent": false,
+              "stream_end_reason": "completed",
+              "input_tokens": 12,
+              "output_tokens": 34,
+              "final_cost": "0.01000000",
+              "currency": "USD",
+              "latency_ms": 120,
+              "ttft_ms": 40,
+              "payload_policy_id": null,
+              "payload_stored": false,
+              "redaction_status": "hash_only",
+              "request_body_hash": "sha256:req-contract-2",
+              "response_body_hash": "sha256:resp-contract-2",
+              "created_at": "2026-06-02 12:00:02+00",
+              "completed_at": "2026-06-02 12:00:02+00"
+            },
+            {
+              "id": "00000000-0000-0000-0000-000000000011",
+              "tenant_id": "00000000-0000-0000-0000-000000000001",
+              "project_id": "00000000-0000-0000-0000-000000000020",
+              "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+              "api_key_profile_id": "00000000-0000-0000-0000-000000000030",
+              "trace_id": "trace-contract-1",
+              "thread_id": "thread-contract-1",
+              "client_request_id": "client-request-1",
+              "inbound_protocol": "openai",
+              "outbound_protocol": "openai",
+              "protocol_mode": "openai_compatible",
+              "requested_model": "gpt-visible",
+              "canonical_model_id": "00000000-0000-0000-0000-000000000101",
+              "upstream_model": "upstream-gpt",
+              "resolved_provider_id": "00000000-0000-0000-0000-000000000201",
+              "resolved_channel_id": "00000000-0000-0000-0000-000000000401",
+              "provider_key_id": "00000000-0000-0000-0000-000000000501",
+              "route_policy_version": "gateway_db_route_v1",
+              "status": "succeeded",
+              "http_status": 200,
+              "error_owner": null,
+              "error_code": null,
+              "retryable": null,
+              "partial_sent": false,
+              "stream_end_reason": "completed",
+              "input_tokens": 12,
+              "output_tokens": 34,
+              "final_cost": "0.01000000",
+              "currency": "USD",
+              "latency_ms": 90,
+              "ttft_ms": 30,
+              "payload_policy_id": null,
+              "payload_stored": false,
+              "redaction_status": "hash_only",
+              "request_body_hash": "sha256:req-contract-1",
+              "response_body_hash": "sha256:resp-contract-1",
+              "created_at": "2026-06-02 12:00:01+00",
+              "completed_at": "2026-06-02 12:00:01+00"
+            }
+          ]
+        }
+      }
+    },
+    "secret_redaction": {
+      "response_fields": {
+        "trace_id": "trace Bearer [REDACTED]",
+        "requests[0].thread_id": "thread [REDACTED]",
+        "requests[0].client_request_id": "client [REDACTED]",
+        "last_error.code": "provider_auth_failed [REDACTED]"
+      }
+    }
+  },
+  "notes": "Contract fixture only. The endpoint reads request_logs by tenant_id and trace_id, applies the capped limit, and returns metadata-only request summaries."
+}

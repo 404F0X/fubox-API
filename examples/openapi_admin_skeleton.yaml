@@ -1,0 +1,5061 @@
+openapi: 3.1.0
+info:
+  title: AI Gateway Admin API
+  version: 0.1.0
+  description: Draft OpenAPI contract for the implemented control-plane admin surface.
+servers:
+  - url: http://localhost:8081
+    description: Local control-plane service
+security:
+  - AdminBearerAuth: []
+  - AdminSessionHeader: []
+  - AdminSessionCookie: []
+x-control-plane-rbac-capability-summary:
+  backend_only: false
+  secret_safe: true
+  auth_me_response_includes_capabilities: true
+  source: apps/control-plane/src/rbac.rs
+  fixture: tests/fixtures/control-plane/rbac_matrix_contract.json
+  role_mapping:
+    SuperAdmin: owner
+    TenantAdmin: admin
+    Ops: ops
+    Billing: billing
+    Developer: developer
+    Viewer: viewer
+  permissions:
+    provider_manage:
+      allowed_roles: [owner, admin, ops]
+    provider_key_manage:
+      required_permission: key_manage
+      control_plane_allowed_roles: [owner, admin, ops]
+      allowed_roles: [owner, admin, ops]
+    billing_read:
+      allowed_roles: [owner, admin, billing, viewer]
+    billing_adjust:
+      allowed_roles: [owner, billing]
+    audit_read:
+      allowed_roles: [owner, admin, ops, viewer]
+    request_log_metadata:
+      allowed_roles: [owner, admin, ops, developer, viewer]
+  sensitive_read_policy:
+    viewer_denied_credential_sensitive_reads: true
+    auth_me_exposes_permission_names: false
+    exposed_summary_fields: [roles, personas, capabilities, denied_capabilities, secret_safe]
+x-federated-auth-contract:
+  source: apps/control-plane/src/auth.rs
+  fixture: tests/fixtures/control-plane/oidc_saml_auth_contract.json
+  default_deny: true
+  secret_safe: true
+  output_must_not_echo:
+    - provider authorization code
+    - id token value
+    - access token value
+    - refresh token value
+    - SAMLResponse value
+    - assertion value
+    - claim values
+    - metadata XML body
+    - Authorization header
+  direct_client_claims_allowed: false
+  role_group_mapping:
+    input_source: server-verified OIDC ID token/userinfo or server-verified SAML assertion only
+    oidc_claims: [roles, realm_access.roles, groups]
+    saml_claims: [Role, memberOf, groups]
+    mapped_roles: [owner, admin, ops, billing, developer, viewer]
+    unknown_values: ignored
+    no_mapped_roles: denied
+  trust_checks:
+    issuer_allowlist_required: true
+    audience_allowlist_required: true
+    email_domain_allowlist_required: true
+  oidc:
+    token_exchange_implemented: false
+    jwks_id_token_validation_implemented: false
+    server_side_state_nonce_persistence_implemented: false
+    session_creation_implemented: false
+    remaining_gaps:
+      - server_side_state_nonce_persistence
+      - authorization_code_exchange
+      - id_token_jwks_signature_validation
+      - user_identity_binding_lookup
+      - session_creation_after_verified_claims
+  saml:
+    metadata_summary_only: true
+    metadata_url_requires_https: true
+    metadata_url_query_allowed: false
+    metadata_xml_external_entities_allowed: false
+    network_fetch_implemented: false
+    xml_signature_validation_implemented: false
+    session_creation_implemented: false
+    remaining_gaps:
+      - saml_xml_signature_validation
+      - saml_assertion_decryption_if_needed
+      - saml_response_binding_validation
+      - user_identity_binding_lookup
+      - session_creation_after_verified_assertion
+tags:
+  - name: Health
+  - name: Auth
+  - name: Providers
+  - name: Channels
+  - name: ProviderKeys
+  - name: ApiKeyProfiles
+  - name: VirtualKeys
+  - name: Models
+  - name: ModelAssociations
+  - name: PromptEvalShadow
+  - name: RequestLogs
+  - name: AuditLogs
+  - name: Alerts
+  - name: Ledger
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Control-plane liveness
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Control-plane readiness
+      operationId: getReadiness
+      security: []
+      responses:
+        '200':
+          description: Database connectivity is ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '503':
+          description: Database connectivity is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+  /admin/auth/login:
+    post:
+      tags: [Auth]
+      summary: Create an admin session
+      operationId: loginAdmin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session created. The token is returned once and also set as an HttpOnly cookie.
+          headers:
+            Set-Cookie:
+              description: HttpOnly admin session cookie scoped to /.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/auth/oidc/authorize-url:
+    get:
+      tags: [Auth]
+      summary: Build an OIDC authorization URL
+      operationId: getOidcAuthorizeUrl
+      security: []
+      responses:
+        '200':
+          description: Authorization URL draft. The client must store state/nonce; callback exchange is not implemented in this slice.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OidcAuthorizeEnvelope'
+        '503':
+          description: OIDC login is disabled or not configured.
+  /admin/auth/oidc/callback:
+    get:
+      tags: [Auth]
+      summary: Reject OIDC callback until server-side validation is implemented
+      operationId: oidcCallback
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Provider authorization code. Not exchanged in this slice and never echoed in errors.
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Browser-returned state. Rejected until server-side state persistence exists and never echoed in errors.
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Provider error marker. Not trusted for login and never echoed in errors.
+      responses:
+        '400':
+          description: Callback is rejected because server-side state/nonce persistence, code exchange, and ID token/JWKS validation are not implemented. Caller-supplied roles, groups, ID/access tokens, Authorization headers, SAMLResponse values, assertions, or raw claims are not accepted for login and are never echoed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: OIDC login is disabled or not configured.
+  /admin/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current admin user and session
+      operationId: getAdminMe
+      responses:
+        '200':
+          description: Current admin session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current admin session
+      operationId: logoutAdmin
+      responses:
+        '200':
+          description: Session revoked and cookie cleared.
+          headers:
+            Set-Cookie:
+              description: Expired admin session cookie scoped to /.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/providers:
+    get:
+      tags: [Providers]
+      summary: List providers
+      operationId: listProviders
+      responses:
+        '200':
+          description: Provider list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProvidersEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Providers]
+      summary: Create or upsert a provider
+      operationId: createProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderCreateRequest'
+      responses:
+        '201':
+          description: Provider created or upserted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/providers/health-summary:
+    get:
+      tags: [Providers]
+      summary: Summarize provider routing health
+      operationId: getProviderHealthSummary
+      description: Returns a best-effort provider/channel/provider-key/model health dashboard summary from configured status fields and a bounded request-log sample. Provider key credential material is never returned.
+      responses:
+        '200':
+          description: Provider health summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/providers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Providers]
+      summary: Get a provider
+      operationId: getProvider
+      responses:
+        '200':
+          description: Provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Providers]
+      summary: Patch a provider
+      operationId: patchProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderPatchRequest'
+      responses:
+        '200':
+          description: Updated provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Providers]
+      summary: Soft-delete a provider
+      operationId: deleteProvider
+      responses:
+        '200':
+          description: Soft-deleted provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels:
+    get:
+      tags: [Channels]
+      summary: List channels
+      operationId: listChannels
+      responses:
+        '200':
+          description: Channel list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Channels]
+      summary: Create or upsert a channel
+      operationId: createChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelCreateRequest'
+      responses:
+        '201':
+          description: Channel created or upserted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/channels/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Channels]
+      summary: Get a channel
+      operationId: getChannel
+      responses:
+        '200':
+          description: Channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Channels]
+      summary: Patch a channel
+      operationId: patchChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelPatchRequest'
+      responses:
+        '200':
+          description: Updated channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Channels]
+      summary: Soft-delete a channel
+      operationId: deleteChannel
+      responses:
+        '200':
+          description: Soft-deleted channel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/channels/{id}/manual-test:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [Channels]
+      summary: Dry-run a manual channel test
+      operationId: dryRunChannelManualTest
+      description: Builds a non-billable manual test plan for one channel without calling the upstream provider or returning provider key material.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelManualTestRequest'
+      responses:
+        '200':
+          description: Dry-run manual test plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelManualTestEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/provider-keys:
+    get:
+      tags: [ProviderKeys]
+      summary: List provider keys
+      operationId: listProviderKeys
+      responses:
+        '200':
+          description: Provider key list. Secret material is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderKeysEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [ProviderKeys]
+      summary: Create a provider key
+      operationId: createProviderKey
+      description: Accepts exactly one plaintext secret input, either secret or api_key. The response omits secret, api_key, encrypted_secret, and secret_fingerprint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderKeyCreateRequest'
+      responses:
+        '201':
+          description: Provider key created with secret material redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderKeyEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /admin/provider-keys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [ProviderKeys]
+      summary: Get a provider key
+      operationId: getProviderKey
+      responses:
+        '200':
+          description: Provider key. Secret material is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderKeyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [ProviderKeys]
+      summary: Patch provider key status or metadata
+      operationId: patchProviderKey
+      description: Secret rotation is intentionally not accepted by this endpoint. Admin patch may move a key only to enabled, manual_disabled, degraded, or recovery_probe; runtime-managed auth_failed, quota_exhausted, and cooldown statuses are written by Gateway or Worker only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderKeyPatchRequest'
+      responses:
+        '200':
+          description: Updated provider key with secret material redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderKeyEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [ProviderKeys]
+      summary: Soft-delete a provider key
+      operationId: deleteProviderKey
+      responses:
+        '200':
+          description: Soft-deleted provider key with secret material redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderKeyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/api-key-profiles:
+    get:
+      tags: [ApiKeyProfiles]
+      summary: List API key profiles for a project
+      operationId: listApiKeyProfiles
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdQuery'
+      responses:
+        '200':
+          description: API key profile list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyProfilesEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [ApiKeyProfiles]
+      summary: Create an API key profile
+      operationId: createApiKeyProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyProfileCreateRequest'
+      responses:
+        '201':
+          description: API key profile created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/api-key-profiles/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [ApiKeyProfiles]
+      summary: Get an API key profile
+      operationId: getApiKeyProfile
+      responses:
+        '200':
+          description: API key profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [ApiKeyProfiles]
+      summary: Patch an API key profile
+      operationId: patchApiKeyProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiKeyProfilePatchRequest'
+      responses:
+        '200':
+          description: Updated API key profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [ApiKeyProfiles]
+      summary: Soft-delete an API key profile
+      operationId: deleteApiKeyProfile
+      responses:
+        '200':
+          description: Soft-deleted API key profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/virtual-keys:
+    get:
+      tags: [VirtualKeys]
+      summary: List virtual keys for a project
+      operationId: listVirtualKeys
+      parameters:
+        - $ref: '#/components/parameters/ProjectIdQuery'
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/VirtualKeyStatus'
+      responses:
+        '200':
+          description: Virtual key list. Secrets and secret hashes are never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeysEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [VirtualKeys]
+      summary: Create a virtual key
+      operationId: createVirtualKey
+      description: The key secret is generated by the server and returned only in this create response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VirtualKeyCreateRequest'
+      responses:
+        '201':
+          description: Virtual key created. The secret field is one-time only.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeyCreatedEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/virtual-keys/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [VirtualKeys]
+      summary: Get a virtual key
+      operationId: getVirtualKey
+      responses:
+        '200':
+          description: Virtual key with secret redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/virtual-keys/{id}/disable:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [VirtualKeys]
+      summary: Disable a virtual key
+      operationId: disableVirtualKey
+      responses:
+        '200':
+          description: Disabled virtual key with secret redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/virtual-keys/{id}/expire:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [VirtualKeys]
+      summary: Expire a virtual key
+      operationId: expireVirtualKey
+      responses:
+        '200':
+          description: Expired virtual key with secret redacted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualKeyEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/models:
+    get:
+      tags: [Models]
+      summary: List canonical models
+      operationId: listModels
+      responses:
+        '200':
+          description: Canonical model list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Models]
+      summary: Create or upsert a canonical model
+      operationId: createModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelCreateRequest'
+      responses:
+        '201':
+          description: Canonical model created or upserted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/models/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Models]
+      summary: Get a canonical model
+      operationId: getModel
+      responses:
+        '200':
+          description: Canonical model.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Models]
+      summary: Patch a canonical model
+      operationId: patchModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelPatchRequest'
+      responses:
+        '200':
+          description: Updated canonical model.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Models]
+      summary: Soft-delete a canonical model
+      operationId: deleteModel
+      responses:
+        '200':
+          description: Soft-deleted canonical model.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/model-associations:
+    get:
+      tags: [ModelAssociations]
+      summary: List model associations
+      operationId: listModelAssociations
+      responses:
+        '200':
+          description: Model association list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelAssociationsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [ModelAssociations]
+      summary: Create a model association
+      operationId: createModelAssociation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelAssociationCreateRequest'
+      responses:
+        '201':
+          description: Model association created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelAssociationEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/model-associations/dry-run:
+    post:
+      tags: [ModelAssociations]
+      summary: Dry-run model association routing
+      operationId: dryRunModelAssociation
+      description: Resolves the requested model through the current gateway DB route policy without calling an upstream provider. Provider credential material is never returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelAssociationDryRunRequest'
+      responses:
+        '200':
+          description: Dry-run route decision with candidate details and a route decision snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelAssociationDryRunEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/prompt-eval-shadow/dry-run:
+    post:
+      tags: [PromptEvalShadow]
+      summary: Validate a prompt eval shadow dry-run plan
+      operationId: dryRunPromptEvalShadow
+      description: Validates prompt registry, eval dataset, and shadow traffic inputs without writing database rows, reading object storage, calling Gateway, or sending network requests. The response returns only hashes, counts, labels, and boolean flags.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptEvalShadowDryRunRequest'
+      responses:
+        '200':
+          description: Safe dry-run plan. Raw prompt and body material, auth headers, tokens, secrets, and provider key material are not returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromptEvalShadowDryRunEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/model-associations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [ModelAssociations]
+      summary: Get a model association
+      operationId: getModelAssociation
+      responses:
+        '200':
+          description: Model association.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelAssociationEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [ModelAssociations]
+      summary: Patch a model association
+      operationId: patchModelAssociation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelAssociationPatchRequest'
+      responses:
+        '200':
+          description: Updated model association.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelAssociationEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [ModelAssociations]
+      summary: Soft-delete a model association
+      operationId: deleteModelAssociation
+      responses:
+        '200':
+          description: Soft-deleted model association.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelAssociationEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/request-logs:
+    get:
+      tags: [RequestLogs]
+      summary: List request logs
+      operationId: listRequestLogs
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: model
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: canonical_model_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: channel_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: resolved_channel_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Request log summaries. Payload object references and bodies are not exposed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestLogsEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/request-logs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [RequestLogs]
+      summary: Get request log detail
+      operationId: getRequestLogDetail
+      responses:
+        '200':
+          description: Request log detail without payload object references or payload bodies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestLogDetailEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/traces/{trace_id}:
+    parameters:
+      - $ref: '#/components/parameters/TraceIdPath'
+    get:
+      tags: [RequestLogs]
+      summary: Get request summaries for a trace
+      operationId: getTraceRequestSummary
+      description: Read-only tenant-scoped trace lookup over request_logs. The bounded response returns request metadata, hashes, token totals, and error summary only; payload bodies, payload object references, route snapshots, and secret material are not exposed.
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Bounded trace request summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestTraceEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/audit-logs:
+    get:
+      tags: [AuditLogs]
+      summary: List audit logs
+      operationId: listAuditLogs
+      description: Read-only tenant-scoped audit log query under audit_read permission. The bounded response sanitizes before/after snapshots and metadata; auth headers, cookies, payload/body fields, raw headers, and provider key material are not returned.
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - name: tenant_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Optional current tenant filter. Requests for another tenant are rejected.
+        - name: actor_user_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: actor_session_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+          example: provider_key.update
+        - name: resource_type
+          in: query
+          required: false
+          schema:
+            type: string
+          example: provider_key
+        - name: resource_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: resource_tenant_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: created_from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: created_to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Audit log list with secret-safe snapshots and metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/alerts/webhook/dry-run:
+    post:
+      tags: [Alerts]
+      summary: Validate an alert webhook configuration
+      operationId: dryRunAlertWebhook
+      description: Validates and redacts an alert webhook configuration without sending an outbound webhook request. URL path/query, secrets, sensitive headers, and payload bodies are not returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertWebhookDryRunRequest'
+      responses:
+        '200':
+          description: Dry-run validation result. No outbound webhook request was sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertWebhookDryRunEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/billing/reconciliation:
+    get:
+      tags: [Ledger]
+      summary: Get billing reconciliation report
+      operationId: getBillingReconciliation
+      description: Read-only daily reconciliation of request log costs against settle/refund ledger entries. Payload bodies and secret material are not exposed.
+      parameters:
+        - name: day
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: UTC calendar day to reconcile. Defaults to the previous UTC day.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: Maximum discrepancy rows returned; summary counts remain full-period.
+      responses:
+        '200':
+          description: Reconciliation report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingReconciliationReportEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /admin/price-versions:
+    get:
+      tags: [Ledger]
+      summary: List price versions
+      operationId: listPriceVersions
+      description: Read-only list of price_versions rows. Pricing rule JSON is returned through the control-plane safe JSON sanitizer; payload bodies and secret material are not exposed.
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - name: price_book_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: canonical_model_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, active, retired]
+      responses:
+        '200':
+          description: Price version list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceVersionsEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Ledger]
+      summary: Create price version
+      operationId: createPriceVersion
+      description: Creates a new price_versions row under BillingAdjust permission and writes a success audit_log in the same database transaction. pricing_rules must use the billing rating schema, include a currency matching the price book currency, and must not contain payload, secret, credential, or raw key fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PriceVersionCreateRequest'
+      responses:
+        '201':
+          description: Created price version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceVersionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /admin/ledger/entries:
+    get:
+      tags: [Ledger]
+      summary: List ledger entries
+      operationId: listLedgerEntries
+      description: Read-only list of ledger_entries rows. usage_snapshot, policy_snapshot, and metadata are returned through the control-plane safe JSON sanitizer; payload bodies and secret material are not exposed.
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - name: project_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: request_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: wallet_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ledger entry list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerEntriesEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+components:
+  securitySchemes:
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: admin-session-token
+      description: Admin session token returned once by POST /admin/auth/login.
+    AdminSessionHeader:
+      type: apiKey
+      in: header
+      name: x-admin-session
+      description: Admin session token header.
+    AdminSessionCookie:
+      type: apiKey
+      in: cookie
+      name: ai_gateway_admin_session
+      description: HttpOnly admin session cookie.
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TraceIdPath:
+      name: trace_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    ProjectIdQuery:
+      name: project_id
+      in: query
+      required: true
+      schema:
+        type: string
+        format: uuid
+    LimitQuery:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        maximum: 500
+        default: 50
+  responses:
+    BadRequest:
+      description: Bad request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing, invalid, or expired admin session.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Authenticated admin session lacks the required permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ServerError:
+      description: Internal service or configuration error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    JsonValue:
+      description: Arbitrary JSON value.
+      oneOf:
+        - type: 'null'
+        - type: boolean
+        - type: number
+        - type: string
+        - type: array
+          items:
+            $ref: '#/components/schemas/JsonValue'
+        - type: object
+          additionalProperties:
+            $ref: '#/components/schemas/JsonValue'
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [service, status]
+      properties:
+        service:
+          type: string
+          example: control-plane
+        status:
+          type: string
+          example: ok
+    ReadyResponse:
+      type: object
+      additionalProperties: true
+      required: [service, status, database_driver, redis]
+      properties:
+        service:
+          type: string
+          example: control-plane
+        status:
+          type: string
+          enum: [ready, not_ready]
+        database_driver:
+          type: string
+          example: postgres
+        database_error:
+          type: string
+        redis:
+          type: string
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: admin@example.local
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          example: <admin-password-placeholder>
+    LoginEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/LoginResponse'
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [user, session, session_token_once]
+      properties:
+        user:
+          $ref: '#/components/schemas/AdminUser'
+        session:
+          $ref: '#/components/schemas/AdminSession'
+        session_token_once:
+          type: string
+          description: One-time admin session token. Store client-side only if cookie auth is not used.
+          example: <admin-session-token-once>
+    OidcAuthorizeEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/OidcAuthorizeResponse'
+    OidcAuthorizeResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - provider
+        - authorization_url
+        - state
+        - nonce
+        - scopes
+        - response_type
+        - state_ttl_seconds
+        - server_state_persisted
+        - callback_implemented
+      properties:
+        provider:
+          type: string
+          example: default
+        authorization_url:
+          type: string
+          format: uri
+          description: OIDC provider authorization endpoint with response_type=code, client_id, redirect_uri, scope, state, and nonce.
+        state:
+          type: string
+          description: Client-side state value to persist until callback validation.
+        nonce:
+          type: string
+          description: Client-side nonce value to persist until ID token validation.
+        scopes:
+          type: array
+          items:
+            type: string
+          example: [openid, email, profile]
+        response_type:
+          type: string
+          const: code
+        state_ttl_seconds:
+          type: integer
+          example: 300
+        server_state_persisted:
+          type: boolean
+          const: false
+          description: Server-side state persistence is pending; clients must store state/nonce for this draft slice.
+        callback_implemented:
+          type: boolean
+          const: false
+          description: Session-creating callback exchange is pending; the callback route rejects safely in this slice.
+    FederatedAuthMappingDecision:
+      type: object
+      additionalProperties: false
+      description: Secret-safe OIDC/SAML role and group mapping decision. It summarizes trust checks and mapped internal roles without returning tokens, caller-supplied claim values, raw claims, assertions, metadata XML, or Authorization headers.
+      required:
+        - protocol
+        - accepted
+        - mapped_roles
+        - denied_reasons
+        - trust_checks
+        - ignored_unmapped_role_values
+        - ignored_unmapped_group_values
+        - secret_safe
+        - claim_values_returned
+        - token_values_returned
+        - authorization_header_returned
+      properties:
+        protocol:
+          type: string
+          enum: [oidc, saml]
+        accepted:
+          type: boolean
+          description: True only after server-verified claims satisfy issuer, audience, email-domain, and role/group mapping checks.
+        mapped_roles:
+          type: array
+          items:
+            type: string
+            enum: [owner, admin, ops, billing, developer, viewer]
+        denied_reasons:
+          type: array
+          items:
+            type: string
+            enum:
+              - mapping_config_invalid
+              - client_submitted_claims_not_accepted
+              - issuer_not_allowed
+              - audience_not_allowed
+              - email_domain_not_allowed
+              - claim_value_invalid
+              - no_mapped_roles
+        trust_checks:
+          $ref: '#/components/schemas/FederatedAuthTrustChecks'
+        ignored_unmapped_role_values:
+          type: integer
+          minimum: 0
+        ignored_unmapped_group_values:
+          type: integer
+          minimum: 0
+        secret_safe:
+          type: boolean
+          const: true
+        claim_values_returned:
+          type: boolean
+          const: false
+        token_values_returned:
+          type: boolean
+          const: false
+        authorization_header_returned:
+          type: boolean
+          const: false
+    FederatedAuthTrustChecks:
+      type: object
+      additionalProperties: false
+      required:
+        - requires_server_verified_claims
+        - source_server_verified
+        - issuer_allowlist_configured
+        - issuer_allowed
+        - audience_allowlist_configured
+        - audience_allowed
+        - email_domain_allowlist_configured
+        - email_domain_allowed
+        - mapping_configured
+        - default_deny
+        - direct_client_claims_allowed
+        - token_exchange_implemented
+        - oidc_jwks_validation_implemented
+        - saml_xml_signature_validation_implemented
+        - session_creation_implemented
+      properties:
+        requires_server_verified_claims:
+          type: boolean
+          const: true
+        source_server_verified:
+          type: boolean
+        issuer_allowlist_configured:
+          type: boolean
+        issuer_allowed:
+          type: boolean
+        audience_allowlist_configured:
+          type: boolean
+        audience_allowed:
+          type: boolean
+        email_domain_allowlist_configured:
+          type: boolean
+        email_domain_allowed:
+          type: boolean
+        mapping_configured:
+          type: boolean
+        default_deny:
+          type: boolean
+          const: true
+        direct_client_claims_allowed:
+          type: boolean
+          const: false
+        token_exchange_implemented:
+          type: boolean
+          const: false
+        oidc_jwks_validation_implemented:
+          type: boolean
+          const: false
+        saml_xml_signature_validation_implemented:
+          type: boolean
+          const: false
+        session_creation_implemented:
+          type: boolean
+          const: false
+    SamlMetadataSummary:
+      type: object
+      additionalProperties: false
+      description: Secret-safe SAML metadata URL/XML configuration summary. URL summaries expose only the HTTPS origin; XML summaries expose only counts and booleans.
+      required:
+        - source
+        - accepted
+        - metadata_url_origin
+        - metadata_url_https
+        - entity_descriptor_present
+        - idp_sso_descriptor_present
+        - single_sign_on_service_count
+        - x509_certificate_count
+        - xml_size_bytes
+        - network_fetch_implemented
+        - xml_signature_validation_implemented
+        - xml_body_returned
+        - secret_safe
+        - denied_reasons
+      properties:
+        source:
+          type: string
+          enum: [url, xml]
+        accepted:
+          type: boolean
+        metadata_url_origin:
+          type:
+            - string
+            - 'null'
+          description: HTTPS scheme and authority only; path, query, and fragment are not returned.
+          example: https://idp.example.com
+        metadata_url_https:
+          type: boolean
+        entity_descriptor_present:
+          type: boolean
+        idp_sso_descriptor_present:
+          type: boolean
+        single_sign_on_service_count:
+          type: integer
+          minimum: 0
+        x509_certificate_count:
+          type: integer
+          minimum: 0
+        xml_size_bytes:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+        network_fetch_implemented:
+          type: boolean
+          const: false
+        xml_signature_validation_implemented:
+          type: boolean
+          const: false
+        xml_body_returned:
+          type: boolean
+          const: false
+        secret_safe:
+          type: boolean
+          const: true
+        denied_reasons:
+          type: array
+          items:
+            type: string
+            enum:
+              - metadata_url_invalid
+              - metadata_xml_invalid
+              - metadata_xml_external_entity_rejected
+              - metadata_xml_entity_descriptor_missing
+    MeEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [user, session, capability_summary]
+          properties:
+            user:
+              $ref: '#/components/schemas/AdminUser'
+            session:
+              $ref: '#/components/schemas/AdminSession'
+            capability_summary:
+              $ref: '#/components/schemas/ControlPlaneCapabilitySummary'
+    ControlPlaneCapabilitySummary:
+      type: object
+      additionalProperties: false
+      description: Secret-safe admin menu capability summary derived from the current user's roles. It exposes capability keys only, not internal permission names or credential material.
+      required: [roles, personas, capabilities, denied_capabilities, secret_safe]
+      properties:
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [owner, admin, ops, billing, developer, viewer]
+        personas:
+          type: array
+          items:
+            type: string
+            enum: [SuperAdmin, TenantAdmin, Ops, Billing, Developer, Viewer]
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ControlPlaneCapabilityKey'
+        denied_capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ControlPlaneCapabilityKey'
+        secret_safe:
+          type: boolean
+          const: true
+    ControlPlaneCapabilityKey:
+      type: string
+      enum:
+        - provider.read
+        - provider.manage
+        - key.read
+        - key.manage
+        - request_log.read
+        - trace.read
+        - billing.read
+        - price.read
+        - reconciliation.read
+        - price_version.create
+        - manual_test.run
+        - provider_health.read
+        - alert_webhook.validate
+        - health.liveness
+        - health.readiness
+    LogoutEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [logged_out]
+          properties:
+            logged_out:
+              type: boolean
+              const: true
+    AdminUser:
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, email, display_name, roles]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [owner, admin, ops, billing, developer, viewer]
+    AdminSession:
+      type: object
+      additionalProperties: false
+      required: [id, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        expires_at:
+          type: string
+    ProviderStatus:
+      type: string
+      enum: [enabled, disabled, deleted]
+    ChannelStatus:
+      type: string
+      enum: [enabled, disabled, degraded, cooldown, deleted]
+    ProtocolMode:
+      type: string
+      enum: [openai_compatible, native_proxy, adapter_transform]
+    ProtocolModeInput:
+      type: string
+      enum: [openai, openai_compatible, native, native_proxy, adapter, adapter_transform]
+    Provider:
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, code, name, status, metadata]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProviderStatus'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+    ProviderCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name]
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        provider_type:
+          type: string
+          example: openai_compatible
+        base_url:
+          type: string
+          format: uri
+          example: http://mock-provider:18080
+        status:
+          $ref: '#/components/schemas/ProviderStatus'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+    ProviderPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        provider_type:
+          type: string
+        base_url:
+          type: string
+          format: uri
+        status:
+          $ref: '#/components/schemas/ProviderStatus'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+    ProviderEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Provider'
+    ProvidersEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Provider'
+    HealthSummaryStatusCounts:
+      type: object
+      additionalProperties:
+        type: integer
+        minimum: 0
+      description: Counts keyed by status string for the entity type.
+    HealthSummaryRecentLastError:
+      type: object
+      additionalProperties: false
+      required: [code, owner, status, http_status, observed_at]
+      properties:
+        code:
+          type: [string, 'null']
+        owner:
+          type: [string, 'null']
+          enum: [client, gateway, provider, network, parser, billing, policy, task, null]
+        status:
+          $ref: '#/components/schemas/RequestStatus'
+        http_status:
+          type: [integer, 'null']
+          format: int32
+          minimum: 100
+          maximum: 599
+        observed_at:
+          type: string
+    HealthSummaryRecentStats:
+      type: object
+      additionalProperties: false
+      required: [request_count, error_count, last_error]
+      properties:
+        request_count:
+          type: integer
+          minimum: 0
+        error_count:
+          type: integer
+          minimum: 0
+        last_error:
+          oneOf:
+            - $ref: '#/components/schemas/HealthSummaryRecentLastError'
+            - type: 'null'
+    HealthSummaryHealthState:
+      type: string
+      enum: [healthy, degraded, unhealthy, no_signal]
+    HealthSummaryProvider:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - code
+        - name
+        - status
+        - health_score
+        - health_state
+        - channel_count
+        - enabled_channel_count
+        - provider_key_count
+        - enabled_provider_key_count
+        - recent
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProviderStatus'
+        health_score:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: Average finite health_score across configured channels, or null when no channel signal exists.
+        health_state:
+          $ref: '#/components/schemas/HealthSummaryHealthState'
+        channel_count:
+          type: integer
+          minimum: 0
+        enabled_channel_count:
+          type: integer
+          minimum: 0
+        provider_key_count:
+          type: integer
+          minimum: 0
+        enabled_provider_key_count:
+          type: integer
+          minimum: 0
+        recent:
+          $ref: '#/components/schemas/HealthSummaryRecentStats'
+    HealthSummaryChannel:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - provider_id
+        - name
+        - status
+        - protocol_mode
+        - region
+        - priority
+        - weight
+        - health_score
+        - health_state
+        - provider_key_count
+        - enabled_provider_key_count
+        - model_count
+        - recent
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/ChannelStatus'
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolMode'
+        region:
+          type: [string, 'null']
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+        weight:
+          type: integer
+          format: int32
+          minimum: 0
+        health_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        health_state:
+          $ref: '#/components/schemas/HealthSummaryHealthState'
+        provider_key_count:
+          type: integer
+          minimum: 0
+        enabled_provider_key_count:
+          type: integer
+          minimum: 0
+        model_count:
+          type: integer
+          minimum: 0
+        recent:
+          $ref: '#/components/schemas/HealthSummaryRecentStats'
+    HealthSummaryProviderKey:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - channel_id
+        - key_alias
+        - status
+        - credential_configured
+        - health_score
+        - health_state
+        - cooldown_until
+        - configured_last_error_code
+        - limits
+        - recent
+      properties:
+        id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        key_alias:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProviderKeyStatus'
+        credential_configured:
+          type: boolean
+          description: True when server-side provider credential material is configured; no credential value or fingerprint is returned.
+        health_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        health_state:
+          $ref: '#/components/schemas/HealthSummaryHealthState'
+        cooldown_until:
+          type: [string, 'null']
+        configured_last_error_code:
+          type: [string, 'null']
+          description: Last configured provider-key error code placeholder from key state.
+        limits:
+          type: object
+          additionalProperties: false
+          required: [rpm, tpm, concurrency]
+          properties:
+            rpm:
+              type: [integer, 'null']
+              format: int32
+              minimum: 1
+            tpm:
+              type: [integer, 'null']
+              format: int32
+              minimum: 1
+            concurrency:
+              type: [integer, 'null']
+              format: int32
+              minimum: 1
+        recent:
+          $ref: '#/components/schemas/HealthSummaryRecentStats'
+    HealthSummaryModelRoutingState:
+      type: string
+      enum: [routable, no_route, disabled]
+    HealthSummaryModel:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - model_key
+        - display_name
+        - family
+        - visibility
+        - status
+        - association_count
+        - enabled_association_count
+        - routable_channel_count
+        - routing_state
+        - recent
+      properties:
+        id:
+          type: string
+          format: uuid
+        model_key:
+          type: string
+        display_name:
+          type: string
+        family:
+          type: [string, 'null']
+        visibility:
+          $ref: '#/components/schemas/ModelVisibility'
+        status:
+          $ref: '#/components/schemas/ModelStatus'
+        association_count:
+          type: integer
+          minimum: 0
+        enabled_association_count:
+          type: integer
+          minimum: 0
+        routable_channel_count:
+          type: integer
+          minimum: 0
+        routing_state:
+          $ref: '#/components/schemas/HealthSummaryModelRoutingState'
+        recent:
+          $ref: '#/components/schemas/HealthSummaryRecentStats'
+    HealthSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - summary_version
+        - tenant_id
+        - recent_window
+        - totals
+        - status_counts
+        - providers
+        - channels
+        - provider_keys
+        - models
+      properties:
+        summary_version:
+          type: integer
+          const: 1
+        tenant_id:
+          type: string
+          format: uuid
+        recent_window:
+          type: object
+          additionalProperties: false
+          required: [source, sample_limit, sample_count]
+          properties:
+            source:
+              type: string
+              const: request_logs
+            sample_limit:
+              type: integer
+              minimum: 1
+            sample_count:
+              type: integer
+              minimum: 0
+        totals:
+          type: object
+          additionalProperties: false
+          required: [providers, channels, provider_keys, models, model_associations]
+          properties:
+            providers:
+              type: integer
+              minimum: 0
+            channels:
+              type: integer
+              minimum: 0
+            provider_keys:
+              type: integer
+              minimum: 0
+            models:
+              type: integer
+              minimum: 0
+            model_associations:
+              type: integer
+              minimum: 0
+        status_counts:
+          type: object
+          additionalProperties: false
+          required: [providers, channels, provider_keys, models]
+          properties:
+            providers:
+              $ref: '#/components/schemas/HealthSummaryStatusCounts'
+            channels:
+              $ref: '#/components/schemas/HealthSummaryStatusCounts'
+            provider_keys:
+              $ref: '#/components/schemas/HealthSummaryStatusCounts'
+            models:
+              $ref: '#/components/schemas/HealthSummaryStatusCounts'
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthSummaryProvider'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthSummaryChannel'
+        provider_keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthSummaryProviderKey'
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthSummaryModel'
+    HealthSummaryEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/HealthSummary'
+    Channel:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - provider_id
+        - name
+        - endpoint
+        - protocol_mode
+        - status
+        - priority
+        - weight
+        - tags
+        - model_mappings
+        - request_overrides
+        - timeout_policy
+        - probe_policy
+        - health_score
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        endpoint:
+          type: string
+          format: uri
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolMode'
+        status:
+          $ref: '#/components/schemas/ChannelStatus'
+        region:
+          type: [string, 'null']
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+        weight:
+          type: integer
+          format: int32
+          minimum: 0
+        tags:
+          $ref: '#/components/schemas/JsonValue'
+        model_mappings:
+          $ref: '#/components/schemas/JsonValue'
+        request_overrides:
+          $ref: '#/components/schemas/JsonValue'
+        timeout_policy:
+          $ref: '#/components/schemas/JsonValue'
+        probe_policy:
+          $ref: '#/components/schemas/JsonValue'
+        health_score:
+          type: number
+          minimum: 0
+          maximum: 1
+    ChannelCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [provider_id, name]
+      anyOf:
+        - required: [endpoint]
+        - required: [base_url]
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        endpoint:
+          type: string
+          format: uri
+        base_url:
+          type: string
+          format: uri
+          description: Alias accepted by the implementation for endpoint.
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolModeInput'
+        protocol:
+          $ref: '#/components/schemas/ProtocolModeInput'
+        status:
+          $ref: '#/components/schemas/ChannelStatus'
+        region:
+          type: string
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 100
+        weight:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 100
+        tags:
+          $ref: '#/components/schemas/JsonValue'
+        model_mappings:
+          $ref: '#/components/schemas/JsonValue'
+        request_overrides:
+          $ref: '#/components/schemas/JsonValue'
+        timeout_policy:
+          $ref: '#/components/schemas/JsonValue'
+        probe_policy:
+          $ref: '#/components/schemas/JsonValue'
+        health_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1
+    ChannelPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        endpoint:
+          type: string
+          format: uri
+        base_url:
+          type: string
+          format: uri
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolModeInput'
+        protocol:
+          $ref: '#/components/schemas/ProtocolModeInput'
+        status:
+          $ref: '#/components/schemas/ChannelStatus'
+        region:
+          type: string
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+        weight:
+          type: integer
+          format: int32
+          minimum: 0
+        tags:
+          $ref: '#/components/schemas/JsonValue'
+        model_mappings:
+          $ref: '#/components/schemas/JsonValue'
+        request_overrides:
+          $ref: '#/components/schemas/JsonValue'
+        timeout_policy:
+          $ref: '#/components/schemas/JsonValue'
+        probe_policy:
+          $ref: '#/components/schemas/JsonValue'
+        health_score:
+          type: number
+          minimum: 0
+          maximum: 1
+    ChannelEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Channel'
+    ChannelsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Channel'
+    ChannelManualTestRequest:
+      type: object
+      additionalProperties: false
+      required: [model]
+      properties:
+        model:
+          type: string
+          description: Client-requested model name for the manual test plan.
+        requested_model:
+          type: string
+          description: Alias accepted by the implementation for model.
+        upstream_model_name:
+          type: string
+          description: Optional explicit upstream model override for the dry-run plan.
+        dry_run:
+          type: boolean
+          default: true
+          description: Only true is currently accepted; false is reserved for a future non-billable live probe.
+    ChannelManualTestChannel:
+      type: object
+      additionalProperties: false
+      required: [id, name, status, protocol_mode, endpoint, priority, weight, health_score]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/ChannelStatus'
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolMode'
+        endpoint:
+          type: string
+        priority:
+          type: integer
+          format: int32
+        weight:
+          type: integer
+          format: int32
+        health_score:
+          type: number
+    ChannelManualTestProvider:
+      type: object
+      additionalProperties: false
+      required: [id, code, name, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProviderStatus'
+    ChannelManualTestBilling:
+      type: object
+      additionalProperties: false
+      required: [billable, ledger_write, request_log_write]
+      properties:
+        billable:
+          type: boolean
+          const: false
+        ledger_write:
+          type: boolean
+          const: false
+        request_log_write:
+          type: boolean
+          const: false
+    ChannelManualTestCredentialMaterial:
+      type: object
+      additionalProperties: false
+      required: [provider_key_secret, secret_fingerprint]
+      properties:
+        provider_key_secret:
+          type: string
+          const: omitted
+        secret_fingerprint:
+          type: string
+          const: omitted
+    ChannelManualTestRequestPlan:
+      type: object
+      additionalProperties: false
+      required: [method, path, protocol_mode, model]
+      properties:
+        method:
+          type: string
+          const: POST
+        path:
+          type: string
+          const: /v1/chat/completions
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolMode'
+        model:
+          type: string
+    ChannelManualTestResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - dry_run
+        - test_mode
+        - upstream_call
+        - requested_model
+        - upstream_model
+        - channel
+        - provider
+        - billing
+        - credential_material
+        - request_plan
+        - next_steps
+      properties:
+        dry_run:
+          type: boolean
+          const: true
+        test_mode:
+          type: string
+          const: channel_manual_test
+        upstream_call:
+          type: boolean
+          const: false
+        requested_model:
+          type: string
+        upstream_model:
+          type: string
+        channel:
+          $ref: '#/components/schemas/ChannelManualTestChannel'
+        provider:
+          $ref: '#/components/schemas/ChannelManualTestProvider'
+        billing:
+          $ref: '#/components/schemas/ChannelManualTestBilling'
+        credential_material:
+          $ref: '#/components/schemas/ChannelManualTestCredentialMaterial'
+        request_plan:
+          $ref: '#/components/schemas/ChannelManualTestRequestPlan'
+        next_steps:
+          type: array
+          items:
+            type: string
+    ChannelManualTestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ChannelManualTestResponse'
+    ProviderKeyStatus:
+      type: string
+      enum: [enabled, manual_disabled, degraded, cooldown, recovery_probe, auth_failed, quota_exhausted, deleted]
+    ProviderKeyManualPatchStatus:
+      type: string
+      enum: [enabled, manual_disabled, degraded, recovery_probe]
+      description: Statuses an operator may set through PATCH /admin/provider-keys/{id}. Runtime-managed error states are intentionally excluded.
+    ProviderKey:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - channel_id
+        - key_alias
+        - credential_configured
+        - status
+        - health_score
+        - metadata
+        - secret_redacted
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        key_alias:
+          type: string
+        credential_configured:
+          type: boolean
+          description: Indicates whether server-side credential material exists; secret, fingerprint, and current_window_state are never returned.
+        status:
+          $ref: '#/components/schemas/ProviderKeyStatus'
+        health_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        cooldown_until:
+          type: [string, 'null']
+        last_error_code:
+          type: [string, 'null']
+        rpm_limit:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+        tpm_limit:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+        concurrency_limit:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+        secret_redacted:
+          type: boolean
+          const: true
+    ProviderKeyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [channel_id, key_alias]
+      anyOf:
+        - required: [secret]
+        - required: [api_key]
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        key_alias:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProviderKeyStatus'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+        secret:
+          type: string
+          writeOnly: true
+          example: <provider-secret-placeholder>
+        api_key:
+          type: string
+          writeOnly: true
+          description: Alias for secret accepted by the implementation.
+          example: <provider-secret-placeholder>
+    ProviderKeyPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        status:
+          $ref: '#/components/schemas/ProviderKeyManualPatchStatus'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+    ProviderKeyEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ProviderKey'
+    ProviderKeysEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderKey'
+    ApiKeyProfileStatus:
+      type: string
+      enum: [active, disabled, deleted]
+    ApiKeyProfile:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - project_id
+        - name
+        - inbound_protocol
+        - default_protocol_mode
+        - model_aliases
+        - allowed_models
+        - denied_models
+        - allowed_channel_tags
+        - blocked_provider_ids
+        - trace_header_rules
+        - request_overrides
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        inbound_protocol:
+          type: string
+          enum: [auto, openai, anthropic, gemini]
+        default_protocol_mode:
+          $ref: '#/components/schemas/ProtocolModeInput'
+        model_aliases:
+          $ref: '#/components/schemas/JsonValue'
+        allowed_models:
+          $ref: '#/components/schemas/JsonValue'
+        denied_models:
+          $ref: '#/components/schemas/JsonValue'
+        allowed_channel_tags:
+          $ref: '#/components/schemas/JsonValue'
+        blocked_provider_ids:
+          $ref: '#/components/schemas/JsonValue'
+        trace_header_rules:
+          $ref: '#/components/schemas/JsonValue'
+        request_overrides:
+          $ref: '#/components/schemas/JsonValue'
+        payload_policy_id:
+          type: [string, 'null']
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ApiKeyProfileStatus'
+    ApiKeyProfileCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, name]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        inbound_protocol:
+          type: string
+          enum: [auto, openai, anthropic, gemini]
+        default_protocol_mode:
+          $ref: '#/components/schemas/ProtocolModeInput'
+        model_aliases:
+          $ref: '#/components/schemas/JsonValue'
+        allowed_models:
+          $ref: '#/components/schemas/JsonValue'
+        denied_models:
+          $ref: '#/components/schemas/JsonValue'
+        allowed_channel_tags:
+          $ref: '#/components/schemas/JsonValue'
+        blocked_provider_ids:
+          $ref: '#/components/schemas/JsonValue'
+        trace_header_rules:
+          $ref: '#/components/schemas/JsonValue'
+        request_overrides:
+          $ref: '#/components/schemas/JsonValue'
+        payload_policy_id:
+          type: [string, 'null']
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ApiKeyProfileStatus'
+    ApiKeyProfilePatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        inbound_protocol:
+          type: string
+          enum: [auto, openai, anthropic, gemini]
+        default_protocol_mode:
+          $ref: '#/components/schemas/ProtocolMode'
+        model_aliases:
+          $ref: '#/components/schemas/JsonValue'
+        allowed_models:
+          $ref: '#/components/schemas/JsonValue'
+        denied_models:
+          $ref: '#/components/schemas/JsonValue'
+        allowed_channel_tags:
+          $ref: '#/components/schemas/JsonValue'
+        blocked_provider_ids:
+          $ref: '#/components/schemas/JsonValue'
+        trace_header_rules:
+          $ref: '#/components/schemas/JsonValue'
+        request_overrides:
+          $ref: '#/components/schemas/JsonValue'
+        payload_policy_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ApiKeyProfileStatus'
+    ApiKeyProfileEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ApiKeyProfile'
+    ApiKeyProfilesEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiKeyProfile'
+    VirtualKeyStatus:
+      type: string
+      enum: [active, disabled, expired, deleted]
+    VirtualKey:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - project_id
+        - name
+        - key_prefix
+        - status
+        - default_profile_id
+        - ip_allowlist
+        - rate_limit_policy
+        - budget_policy
+        - metadata
+        - secret_redacted
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: Non-secret prefix used for identification.
+        status:
+          $ref: '#/components/schemas/VirtualKeyStatus'
+        default_profile_id:
+          type: [string, 'null']
+          format: uuid
+        ip_allowlist:
+          $ref: '#/components/schemas/JsonValue'
+        rate_limit_policy:
+          $ref: '#/components/schemas/JsonValue'
+        budget_policy:
+          $ref: '#/components/schemas/JsonValue'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+        secret_redacted:
+          type: boolean
+    VirtualKeyCreated:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - project_id
+        - name
+        - key_prefix
+        - status
+        - default_profile_id
+        - ip_allowlist
+        - rate_limit_policy
+        - budget_policy
+        - metadata
+        - secret_redacted
+        - secret
+        - secret_once
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        key_prefix:
+          type: string
+        status:
+          $ref: '#/components/schemas/VirtualKeyStatus'
+        default_profile_id:
+          type: [string, 'null']
+          format: uuid
+        ip_allowlist:
+          $ref: '#/components/schemas/JsonValue'
+        rate_limit_policy:
+          $ref: '#/components/schemas/JsonValue'
+        budget_policy:
+          $ref: '#/components/schemas/JsonValue'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+        secret_redacted:
+          type: boolean
+          const: false
+        secret:
+          type: string
+          description: One-time virtual key secret returned only by create.
+          example: <virtual-key-secret-once>
+        secret_once:
+          type: boolean
+          const: true
+    VirtualKeyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, name, default_profile_id]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        default_profile_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/VirtualKeyStatus'
+        ip_allowlist:
+          $ref: '#/components/schemas/JsonValue'
+        rate_limit_policy:
+          $ref: '#/components/schemas/JsonValue'
+        budget_policy:
+          $ref: '#/components/schemas/JsonValue'
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+    VirtualKeyEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/VirtualKey'
+    VirtualKeyCreatedEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/VirtualKeyCreated'
+    VirtualKeysEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/VirtualKey'
+    ModelStatus:
+      type: string
+      enum: [active, deprecated, disabled, deleted]
+    ModelVisibility:
+      type: string
+      enum: [public, internal, hidden]
+    CanonicalModel:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - model_key
+        - display_name
+        - capabilities
+        - supports_stream
+        - supports_tools
+        - supports_vision
+        - supports_audio
+        - supports_reasoning
+        - visibility
+        - status
+        - default_price_book_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        model_key:
+          type: string
+        display_name:
+          type: string
+        family:
+          type: [string, 'null']
+        capabilities:
+          $ref: '#/components/schemas/JsonValue'
+        context_length:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+        max_output_tokens:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+        supports_stream:
+          type: boolean
+        supports_tools:
+          type: boolean
+        supports_vision:
+          type: boolean
+        supports_audio:
+          type: boolean
+        supports_reasoning:
+          type: boolean
+        visibility:
+          $ref: '#/components/schemas/ModelVisibility'
+        status:
+          $ref: '#/components/schemas/ModelStatus'
+        default_price_book_id:
+          type: [string, 'null']
+          format: uuid
+          description: Tenant-scoped default price book selector. The active effective price version under this book is selected at rating time.
+    ModelCreateRequest:
+      type: object
+      additionalProperties: false
+      anyOf:
+        - required: [model_key]
+        - required: [name]
+      properties:
+        model_key:
+          type: string
+        name:
+          type: string
+          description: Alias accepted by the implementation for model_key.
+        display_name:
+          type: string
+        family:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/JsonValue'
+        context_length:
+          type: integer
+          format: int32
+          minimum: 1
+        max_output_tokens:
+          type: integer
+          format: int32
+          minimum: 1
+        supports_stream:
+          type: boolean
+          default: true
+        supports_tools:
+          type: boolean
+          default: false
+        supports_vision:
+          type: boolean
+          default: false
+        supports_audio:
+          type: boolean
+          default: false
+        supports_reasoning:
+          type: boolean
+          default: false
+        visibility:
+          $ref: '#/components/schemas/ModelVisibility'
+        status:
+          $ref: '#/components/schemas/ModelStatus'
+        default_price_book_id:
+          type: string
+          format: uuid
+          description: Optional tenant-scoped default price book selector. The server validates that the price book belongs to the canonical model tenant and is not archived; write audit metadata contains only UUID/currency selector summaries.
+    ModelPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        model_key:
+          type: string
+        name:
+          type: string
+        display_name:
+          type: string
+        family:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/JsonValue'
+        context_length:
+          type: integer
+          format: int32
+          minimum: 1
+        max_output_tokens:
+          type: integer
+          format: int32
+          minimum: 1
+        supports_stream:
+          type: boolean
+        supports_tools:
+          type: boolean
+        supports_vision:
+          type: boolean
+        supports_audio:
+          type: boolean
+        supports_reasoning:
+          type: boolean
+        visibility:
+          $ref: '#/components/schemas/ModelVisibility'
+        status:
+          $ref: '#/components/schemas/ModelStatus'
+        default_price_book_id:
+          type: string
+          format: uuid
+          description: Optional tenant-scoped default price book selector. The server validates the canonical model/price book tenant relationship and audits the write without raw request content or secret material.
+    ModelEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/CanonicalModel'
+    ModelsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CanonicalModel'
+    ModelAssociationStatus:
+      type: string
+      enum: [enabled, disabled, deleted]
+    ModelAssociationType:
+      type: string
+      enum: [explicit_channel, channel_tag, model_pattern, global]
+    ModelAssociation:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - canonical_model_id
+        - association_type
+        - priority
+        - conditions
+        - fallback_allowed
+        - canary_percent
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        canonical_model_id:
+          type: string
+          format: uuid
+        association_type:
+          $ref: '#/components/schemas/ModelAssociationType'
+        channel_id:
+          type: [string, 'null']
+          format: uuid
+        channel_tag:
+          type: [string, 'null']
+        model_pattern:
+          type: [string, 'null']
+        upstream_model_name:
+          type: [string, 'null']
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+        conditions:
+          $ref: '#/components/schemas/JsonValue'
+        fallback_allowed:
+          type: boolean
+        canary_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        status:
+          $ref: '#/components/schemas/ModelAssociationStatus'
+    ModelAssociationCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [canonical_model_id, association_type]
+      properties:
+        canonical_model_id:
+          type: string
+          format: uuid
+        association_type:
+          $ref: '#/components/schemas/ModelAssociationType'
+        channel_id:
+          type: string
+          format: uuid
+        channel_tag:
+          type: string
+        model_pattern:
+          type: string
+        upstream_model_name:
+          type: string
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+          default: 100
+        conditions:
+          $ref: '#/components/schemas/JsonValue'
+        fallback_allowed:
+          type: boolean
+          default: true
+        canary_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          default: 100
+        status:
+          $ref: '#/components/schemas/ModelAssociationStatus'
+    ModelAssociationPatchRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        canonical_model_id:
+          type: string
+          format: uuid
+        association_type:
+          $ref: '#/components/schemas/ModelAssociationType'
+        channel_id:
+          type: string
+          format: uuid
+        channel_tag:
+          type: string
+        model_pattern:
+          type: string
+        upstream_model_name:
+          type: string
+        priority:
+          type: integer
+          format: int32
+          minimum: 0
+        conditions:
+          $ref: '#/components/schemas/JsonValue'
+        fallback_allowed:
+          type: boolean
+        canary_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        status:
+          $ref: '#/components/schemas/ModelAssociationStatus'
+    ModelAssociationDryRunRequest:
+      type: object
+      additionalProperties: false
+      required: [project_id, profile_id]
+      anyOf:
+        - required: [requested_model]
+        - required: [canonical_model_id]
+        - required: [canonical_model_key]
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        profile_id:
+          type: string
+          format: uuid
+        requested_model:
+          type: string
+          description: Client-requested model name to resolve.
+        canonical_model_id:
+          type: string
+          format: uuid
+        canonical_model_key:
+          type: string
+        seed:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+        trace_id:
+          type: string
+        previous_successful_channel_id:
+          type: string
+          description: Optional prior successful channel id used for trace affinity.
+    ModelAssociationDryRunCanonicalModel:
+      type: object
+      additionalProperties: false
+      required: [id, model_key, display_name, family, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        model_key:
+          type: string
+        display_name:
+          type: string
+        family:
+          type: [string, 'null']
+        status:
+          $ref: '#/components/schemas/ModelStatus'
+    RouteDryRunPolicy:
+      type: object
+      additionalProperties: false
+      required: [seed]
+      properties:
+        seed:
+          type: integer
+          format: int64
+          minimum: 0
+    RouteDryRunTraceAffinity:
+      type: object
+      additionalProperties: false
+      required: [status, trace_id, previous_successful_channel_id, applied_channel_id]
+      properties:
+        status:
+          type: string
+          enum:
+            - Disabled
+            - NoTraceId
+            - NoPreviousSuccess
+            - PreviousChannelNotCandidate
+            - PreviousChannelFiltered
+            - Applied
+        trace_id:
+          type: [string, 'null']
+        previous_successful_channel_id:
+          type: [string, 'null']
+        applied_channel_id:
+          type: [string, 'null']
+    RouteDryRunSelectedRoute:
+      type: object
+      additionalProperties: false
+      required: [channel_id, provider_id, provider_model, priority, weight]
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        provider_model:
+          type: string
+        priority:
+          type: integer
+          format: int32
+        weight:
+          type: integer
+          format: int64
+          minimum: 0
+    RouteDryRunSelection:
+      type: object
+      additionalProperties: false
+      required: [status, selected_channel_id, selected]
+      properties:
+        status:
+          type: string
+          enum:
+            - selected
+            - no_route_candidates
+            - model_not_found_or_not_allowed
+            - all_candidates_filtered
+        selected_channel_id:
+          type: [string, 'null']
+          format: uuid
+        selected:
+          oneOf:
+            - $ref: '#/components/schemas/RouteDryRunSelectedRoute'
+            - type: 'null'
+    RouteDryRunCandidateScore:
+      type: object
+      additionalProperties: false
+      required: [priority, weight, trace_affinity_bonus, total]
+      properties:
+        priority:
+          type: integer
+          format: int32
+        weight:
+          type: integer
+          format: int64
+          minimum: 0
+        trace_affinity_bonus:
+          type: integer
+          format: int64
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+    RouteDryRunCandidate:
+      type: object
+      additionalProperties: false
+      required:
+        - association_id
+        - association_type
+        - association_priority
+        - fallback_allowed
+        - canonical_model_id
+        - channel_id
+        - channel_name
+        - channel_status
+        - channel_priority
+        - channel_weight
+        - channel_health_score
+        - provider_id
+        - provider_code
+        - provider_name
+        - provider_status
+        - provider_model
+        - upstream_model
+        - protocol_mode
+        - priority
+        - weight
+        - routing_status
+        - routing_health
+        - rate_limit_available
+        - filtered
+        - filter_reason
+        - score
+        - selected
+        - trace_affinity_match
+      properties:
+        association_id:
+          type: string
+          format: uuid
+        association_type:
+          $ref: '#/components/schemas/ModelAssociationType'
+        association_priority:
+          type: integer
+          format: int32
+        fallback_allowed:
+          type: boolean
+          description: Whether this model association can be used as a fallback target.
+        canonical_model_id:
+          type: string
+          format: uuid
+        channel_id:
+          type: string
+          format: uuid
+        channel_name:
+          type: string
+        channel_status:
+          $ref: '#/components/schemas/ChannelStatus'
+        channel_priority:
+          type: integer
+          format: int32
+        channel_weight:
+          type: integer
+          format: int32
+        channel_health_score:
+          type: number
+        provider_id:
+          type: string
+          format: uuid
+        provider_code:
+          type: string
+        provider_name:
+          type: string
+        provider_status:
+          $ref: '#/components/schemas/ProviderStatus'
+        provider_model:
+          type: string
+        upstream_model:
+          type: string
+        protocol_mode:
+          $ref: '#/components/schemas/ProtocolMode'
+        priority:
+          type: [integer, 'null']
+          format: int32
+        weight:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+        routing_status:
+          type: [string, 'null']
+          enum:
+            - Enabled
+            - Degraded
+            - Disabled
+            - CoolingDown
+            - RecoveryProbe
+            - AuthFailed
+            - QuotaExhausted
+            - ManualDisabled
+            - Deleted
+            - null
+        routing_health:
+          type: [string, 'null']
+          enum: [Healthy, Degraded, Unhealthy, null]
+        rate_limit_available:
+          type: [boolean, 'null']
+        filtered:
+          type: boolean
+        filter_reason:
+          type: [string, 'null']
+          enum:
+            - Disabled
+            - CoolingDown
+            - RecoveryProbe
+            - AuthFailed
+            - QuotaExhausted
+            - ManualDisabled
+            - Deleted
+            - RateLimitExceeded
+            - Unhealthy
+            - ZeroWeight
+            - null
+        score:
+          oneOf:
+            - $ref: '#/components/schemas/RouteDryRunCandidateScore'
+            - type: 'null'
+        selected:
+          type: boolean
+        trace_affinity_match:
+          type: boolean
+    RouteDryRunSnapshotCandidate:
+      type: object
+      additionalProperties: false
+      required:
+        - channel_id
+        - provider_id
+        - provider_model
+        - priority
+        - weight
+        - status
+        - health
+        - rate_limit_available
+        - filtered
+        - filter_reason
+        - score
+        - selected
+        - trace_affinity_match
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        provider_model:
+          type: string
+        priority:
+          type: integer
+          format: int32
+        weight:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          type: string
+          enum:
+            - Enabled
+            - Degraded
+            - Disabled
+            - CoolingDown
+            - RecoveryProbe
+            - AuthFailed
+            - QuotaExhausted
+            - ManualDisabled
+            - Deleted
+        health:
+          type: string
+          enum: [Healthy, Degraded, Unhealthy]
+        rate_limit_available:
+          type: boolean
+        filtered:
+          type: boolean
+        filter_reason:
+          type: [string, 'null']
+          enum:
+            - Disabled
+            - CoolingDown
+            - RecoveryProbe
+            - AuthFailed
+            - QuotaExhausted
+            - ManualDisabled
+            - Deleted
+            - RateLimitExceeded
+            - Unhealthy
+            - ZeroWeight
+            - null
+        score:
+          oneOf:
+            - $ref: '#/components/schemas/RouteDryRunCandidateScore'
+            - type: 'null'
+        selected:
+          type: boolean
+        trace_affinity_match:
+          type: boolean
+    RouteDryRunDecisionSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - requested_model
+        - canonical_model
+        - policy
+        - trace_id
+        - trace_affinity
+        - selected_channel_id
+        - selected
+        - candidates
+      properties:
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+        requested_model:
+          type: string
+        canonical_model:
+          type: [string, 'null']
+        policy:
+          $ref: '#/components/schemas/RouteDryRunPolicy'
+        trace_id:
+          type: [string, 'null']
+        trace_affinity:
+          $ref: '#/components/schemas/RouteDryRunTraceAffinity'
+        selected_channel_id:
+          type: [string, 'null']
+          format: uuid
+        selected:
+          oneOf:
+            - $ref: '#/components/schemas/RouteDryRunSelectedRoute'
+            - type: 'null'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteDryRunSnapshotCandidate'
+    ModelAssociationDryRunResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - project_id
+        - profile_id
+        - requested_model
+        - canonical_model
+        - route_policy_version
+        - decision_snapshot_version
+        - policy
+        - trace_id
+        - trace_affinity
+        - selection
+        - selected_candidate
+        - candidates
+        - route_decision_snapshot
+      properties:
+        project_id:
+          type: string
+          format: uuid
+        profile_id:
+          type: string
+          format: uuid
+        requested_model:
+          type: string
+        canonical_model:
+          oneOf:
+            - $ref: '#/components/schemas/ModelAssociationDryRunCanonicalModel'
+            - type: 'null'
+        route_policy_version:
+          type: string
+          const: gateway_db_route_v1
+        decision_snapshot_version:
+          type: integer
+          format: int32
+          minimum: 1
+        policy:
+          $ref: '#/components/schemas/RouteDryRunPolicy'
+        trace_id:
+          type: [string, 'null']
+        trace_affinity:
+          $ref: '#/components/schemas/RouteDryRunTraceAffinity'
+        selection:
+          $ref: '#/components/schemas/RouteDryRunSelection'
+        selected_candidate:
+          oneOf:
+            - $ref: '#/components/schemas/RouteDryRunCandidate'
+            - type: 'null'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteDryRunCandidate'
+        route_decision_snapshot:
+          $ref: '#/components/schemas/RouteDryRunDecisionSnapshot'
+    ModelAssociationDryRunEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ModelAssociationDryRunResponse'
+    PromptEvalShadowRegistryInput:
+      type: object
+      additionalProperties: false
+      required: [item_id, version]
+      anyOf:
+        - required: [template]
+        - required: [hash_sha256]
+      properties:
+        item_id:
+          type: string
+          description: Public prompt registry item label.
+        version:
+          type: string
+          description: Public prompt registry version label.
+        template:
+          $ref: '#/components/schemas/JsonValue'
+          description: Raw prompt template accepted as input only; response returns only a sha256 hash.
+        hash_sha256:
+          type: string
+          pattern: '^sha256:[0-9a-fA-F]{64}$|^[0-9a-fA-F]{64}$'
+          description: Precomputed prompt template sha256 digest.
+    PromptEvalShadowDatasetInput:
+      type: object
+      additionalProperties: false
+      required: [dataset_id, version]
+      properties:
+        dataset_id:
+          type: string
+          description: Public eval dataset label.
+        version:
+          type: string
+          description: Public eval dataset version label.
+        payload_policy:
+          $ref: '#/components/schemas/PromptEvalShadowStoragePolicyInput'
+        samples:
+          type: array
+          default: []
+          description: Eval samples accepted as input only; response returns only sample hashes and count.
+          items:
+            $ref: '#/components/schemas/JsonValue'
+    PromptEvalShadowStoragePolicyInput:
+      type: object
+      additionalProperties: false
+      properties:
+        policy_id:
+          type: string
+        mode:
+          type: string
+          enum: [metadata_only, metadata, hash, hash_only, redacted, redact, full, sampled, sample]
+    PromptEvalShadowRouteInput:
+      type: object
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+    PromptEvalShadowTrafficInput:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        percentage:
+          type: number
+          minimum: 0
+          maximum: 100
+        percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Alias accepted by the implementation for percentage.
+        candidate_route_labels:
+          type: array
+          items:
+            type: string
+        route_labels:
+          type: array
+          description: Alias accepted by the implementation for candidate_route_labels.
+          items:
+            type: string
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PromptEvalShadowRouteInput'
+    PromptEvalShadowDryRunRequest:
+      type: object
+      additionalProperties: false
+      required: [registry, dataset]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        registry:
+          $ref: '#/components/schemas/PromptEvalShadowRegistryInput'
+        prompt_registry:
+          $ref: '#/components/schemas/PromptEvalShadowRegistryInput'
+          description: Alias accepted by the implementation for registry.
+        dataset:
+          $ref: '#/components/schemas/PromptEvalShadowDatasetInput'
+        eval_dataset:
+          $ref: '#/components/schemas/PromptEvalShadowDatasetInput'
+          description: Alias accepted by the implementation for dataset.
+        payload_policy:
+          $ref: '#/components/schemas/PromptEvalShadowStoragePolicyInput'
+        shadow_traffic:
+          $ref: '#/components/schemas/PromptEvalShadowTrafficInput'
+        shadow:
+          $ref: '#/components/schemas/PromptEvalShadowTrafficInput'
+          description: Alias accepted by the implementation for shadow_traffic.
+    PromptEvalShadowLabels:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, registry_item_id, registry_version, dataset_id, dataset_version, route_labels]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        registry_item_id:
+          type: string
+        registry_version:
+          type: string
+        dataset_id:
+          type: string
+        dataset_version:
+          type: string
+        route_labels:
+          type: array
+          items:
+            type: string
+    PromptEvalShadowSampleHash:
+      type: object
+      additionalProperties: false
+      required: [sample_label, hash_sha256]
+      properties:
+        sample_label:
+          type: [string, 'null']
+        hash_sha256:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+    PromptEvalShadowHashes:
+      type: object
+      additionalProperties: false
+      required: [registry_template_sha256, dataset_sample_hashes]
+      properties:
+        registry_template_sha256:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        dataset_sample_hashes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PromptEvalShadowSampleHash'
+    PromptEvalShadowCounts:
+      type: object
+      additionalProperties: false
+      required: [dataset_samples, route_labels]
+      properties:
+        dataset_samples:
+          type: integer
+          minimum: 0
+        route_labels:
+          type: integer
+          minimum: 0
+    PromptEvalShadowStoragePolicy:
+      type: object
+      additionalProperties: false
+      required: [policy_id, requested, effective, recognized, unsafe_policy_downgraded]
+      properties:
+        policy_id:
+          type: [string, 'null']
+        requested:
+          type: string
+        effective:
+          type: string
+          enum: [metadata_only, hash]
+        recognized:
+          type: boolean
+        unsafe_policy_downgraded:
+          type: boolean
+    PromptEvalShadowShadowSummary:
+      type: object
+      additionalProperties: false
+      required: [enabled, percentage]
+      properties:
+        enabled:
+          type: boolean
+        percentage:
+          type: number
+          minimum: 0
+          maximum: 100
+    PromptEvalShadowFlags:
+      type: object
+      additionalProperties: false
+      required:
+        - valid
+        - dry_run
+        - plan_only
+        - business_db_read
+        - db_write
+        - object_storage_read
+        - object_storage_write
+        - gateway_call
+        - network_request
+        - raw_prompt_output
+        - raw_body_output
+        - sensitive_material_output
+        - hash_only
+        - labels_only
+      properties:
+        valid:
+          type: boolean
+          const: true
+        dry_run:
+          type: boolean
+          const: true
+        plan_only:
+          type: boolean
+          const: true
+        business_db_read:
+          type: boolean
+          const: false
+        db_write:
+          type: boolean
+          const: false
+        object_storage_read:
+          type: boolean
+          const: false
+        object_storage_write:
+          type: boolean
+          const: false
+        gateway_call:
+          type: boolean
+          const: false
+        network_request:
+          type: boolean
+          const: false
+        raw_prompt_output:
+          type: boolean
+          const: false
+        raw_body_output:
+          type: boolean
+          const: false
+        sensitive_material_output:
+          type: boolean
+          const: false
+        hash_only:
+          type: boolean
+          const: true
+        labels_only:
+          type: boolean
+          const: true
+    PromptEvalShadowDryRunResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - dry_run
+        - mode
+        - labels
+        - hashes
+        - counts
+        - storage_policy
+        - shadow
+        - flags
+      properties:
+        schema_version:
+          type: string
+          const: prompt_eval_shadow_admin_dry_run.v1
+        dry_run:
+          type: boolean
+          const: true
+        mode:
+          type: string
+          const: validate_plan_only
+        labels:
+          $ref: '#/components/schemas/PromptEvalShadowLabels'
+        hashes:
+          $ref: '#/components/schemas/PromptEvalShadowHashes'
+        counts:
+          $ref: '#/components/schemas/PromptEvalShadowCounts'
+        storage_policy:
+          $ref: '#/components/schemas/PromptEvalShadowStoragePolicy'
+        shadow:
+          $ref: '#/components/schemas/PromptEvalShadowShadowSummary'
+        flags:
+          $ref: '#/components/schemas/PromptEvalShadowFlags'
+    PromptEvalShadowDryRunEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/PromptEvalShadowDryRunResponse'
+    ModelAssociationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/ModelAssociation'
+    ModelAssociationsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelAssociation'
+    RequestStatus:
+      type: string
+      enum: [started, succeeded, failed, cancelled, partial, rejected]
+    RequestLogSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - status
+        - partial_sent
+        - input_tokens
+        - output_tokens
+        - final_cost
+        - currency
+        - payload_stored
+        - redaction_status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        virtual_key_id:
+          type: [string, 'null']
+          format: uuid
+        api_key_profile_id:
+          type: [string, 'null']
+          format: uuid
+        trace_id:
+          type: [string, 'null']
+        thread_id:
+          type: [string, 'null']
+        client_request_id:
+          type: [string, 'null']
+        inbound_protocol:
+          type: [string, 'null']
+        outbound_protocol:
+          type: [string, 'null']
+        protocol_mode:
+          type: [string, 'null']
+        requested_model:
+          type: [string, 'null']
+        canonical_model_id:
+          type: [string, 'null']
+          format: uuid
+        upstream_model:
+          type: [string, 'null']
+        resolved_provider_id:
+          type: [string, 'null']
+          format: uuid
+        resolved_channel_id:
+          type: [string, 'null']
+          format: uuid
+        provider_key_id:
+          type: [string, 'null']
+          format: uuid
+        route_policy_version:
+          type: [string, 'null']
+        status:
+          $ref: '#/components/schemas/RequestStatus'
+        http_status:
+          type: [integer, 'null']
+          format: int32
+          minimum: 100
+          maximum: 599
+        error_owner:
+          type: [string, 'null']
+          enum: [client, gateway, provider, network, parser, billing, policy, task, null]
+        error_code:
+          type: [string, 'null']
+        retryable:
+          type: [boolean, 'null']
+        partial_sent:
+          type: boolean
+        stream_end_reason:
+          type: [string, 'null']
+          enum: [completed, client_cancel, upstream_eof, upstream_error, parser_error, timeout, gateway_abort, null]
+        input_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        final_cost:
+          type: string
+          description: Decimal amount encoded as a string.
+        currency:
+          type: string
+        latency_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+        ttft_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+        payload_policy_id:
+          type: [string, 'null']
+          format: uuid
+        payload_stored:
+          type: boolean
+        redaction_status:
+          type: string
+          enum: [metadata_only, hash_only, redacted, full, sampled]
+        request_body_hash:
+          type: [string, 'null']
+          description: Hash metadata only; payload bodies are not exposed.
+        response_body_hash:
+          type: [string, 'null']
+          description: Hash metadata only; payload bodies are not exposed.
+        created_at:
+          type: string
+        completed_at:
+          type: [string, 'null']
+    ProviderAttempt:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - request_id
+        - attempt_no
+        - status
+        - input_tokens
+        - output_tokens
+        - started_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        request_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: [string, 'null']
+          format: uuid
+        channel_id:
+          type: [string, 'null']
+          format: uuid
+        provider_key_id:
+          type: [string, 'null']
+          format: uuid
+        attempt_no:
+          type: integer
+          format: int32
+          minimum: 1
+        upstream_model:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [candidate, skipped, started, succeeded, failed, cancelled]
+        http_status:
+          type: [integer, 'null']
+          format: int32
+          minimum: 100
+          maximum: 599
+        error_owner:
+          type: [string, 'null']
+          enum: [client, gateway, provider, network, parser, billing, policy, task, null]
+        error_code:
+          type: [string, 'null']
+        retryable:
+          type: [boolean, 'null']
+        fallback_reason:
+          type: [string, 'null']
+        latency_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+        ttft_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+        provider_request_id:
+          type: [string, 'null']
+        input_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        started_at:
+          type: string
+        completed_at:
+          type: [string, 'null']
+    RequestLogDetail:
+      type: object
+      additionalProperties: false
+      required: [request_log, provider_attempts, route_decision_snapshot]
+      properties:
+        request_log:
+          $ref: '#/components/schemas/RequestLogSummary'
+        provider_attempts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderAttempt'
+        route_decision_snapshot:
+          $ref: '#/components/schemas/JsonValue'
+    RequestTrace:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - trace_id
+        - limit
+        - limit_reached
+        - request_count
+        - error_count
+        - last_error
+        - total_input_tokens
+        - total_output_tokens
+        - currencies
+        - first_request_at
+        - last_request_at
+        - requests
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        trace_id:
+          type: string
+          description: Trace identifier with secret-like substrings redacted.
+        limit:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 500
+        limit_reached:
+          type: boolean
+          description: True when the bounded result set reached the requested limit; more matching rows may exist.
+        request_count:
+          type: integer
+          minimum: 0
+          description: Number of request summaries returned in this bounded response.
+        error_count:
+          type: integer
+          minimum: 0
+        last_error:
+          anyOf:
+            - $ref: '#/components/schemas/RequestTraceErrorSummary'
+            - type: 'null'
+        total_input_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        total_output_tokens:
+          type: integer
+          format: int64
+          minimum: 0
+        currencies:
+          type: array
+          items:
+            type: string
+        first_request_at:
+          type: [string, 'null']
+        last_request_at:
+          type: [string, 'null']
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestLogSummary'
+    RequestTraceErrorSummary:
+      type: object
+      additionalProperties: false
+      required: [code, owner, status, http_status, observed_at]
+      properties:
+        code:
+          type: [string, 'null']
+          description: Error code with secret-like substrings redacted.
+        owner:
+          type: [string, 'null']
+        status:
+          $ref: '#/components/schemas/RequestStatus'
+        http_status:
+          type: [integer, 'null']
+          format: int32
+          minimum: 100
+          maximum: 599
+        observed_at:
+          type: string
+    RequestLogsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestLogSummary'
+    RequestLogDetailEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/RequestLogDetail'
+    RequestTraceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/RequestTrace'
+    AuditLog:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - actor_user_id
+        - request_id
+        - action
+        - resource_type
+        - resource_id
+        - resource_tenant_id
+        - before_snapshot
+        - after_snapshot
+        - metadata
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        actor_user_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        action:
+          type: string
+          example: provider_key.update
+        resource_type:
+          type: string
+          example: provider_key
+        resource_id:
+          type: [string, 'null']
+          format: uuid
+        resource_tenant_id:
+          type: [string, 'null']
+          format: uuid
+        before_snapshot:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/JsonValue'
+          description: Sanitized resource snapshot. Sensitive fields are redacted.
+        after_snapshot:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/JsonValue'
+          description: Sanitized resource snapshot. Sensitive fields are redacted.
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+          description: Sanitized audit metadata. Auth headers, cookies, payload/body fields, raw headers, and provider key material are redacted or omitted.
+        created_at:
+          type: string
+    AuditLogsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLog'
+    AlertWebhookDryRunRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: Defaults to false; validation remains no-op and never sends a webhook.
+        url:
+          type: string
+          format: uri
+          description: HTTPS webhook URL. Response redacts path and query values.
+        secret:
+          type: string
+          writeOnly: true
+          description: Optional webhook signing secret. Never returned.
+        secret_header:
+          type: [string, 'null']
+          description: Optional header name used by a future sender for secret material.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Optional outbound headers. Response returns only configured/redacted markers, never values.
+        payload:
+          $ref: '#/components/schemas/JsonValue'
+          description: Optional sample payload. Response returns only a redacted summary.
+        body:
+          $ref: '#/components/schemas/JsonValue'
+          description: Alias for payload; raw body is not returned.
+        raw_body:
+          $ref: '#/components/schemas/JsonValue'
+          description: Alias for payload; raw body is not returned.
+    AlertWebhookHeaderRedactions:
+      type: object
+      additionalProperties:
+        type: string
+        enum: [configured, '[REDACTED]']
+    AlertWebhookPayloadSummary:
+      type: object
+      additionalProperties: false
+      required: [provided, redacted]
+      properties:
+        provided:
+          type: boolean
+        kind:
+          type: string
+          enum: [null, boolean, number, string, array, object]
+        top_level_item_count:
+          type: integer
+          minimum: 0
+        redacted:
+          type: boolean
+          const: true
+    AlertWebhookSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - enabled
+        - url_redacted
+        - scheme
+        - host
+        - port
+        - path_redacted
+        - query_redacted
+        - secret_configured
+        - secret_redacted
+        - secret_header
+        - headers_redacted
+        - header_count
+      properties:
+        enabled:
+          type: boolean
+        url_redacted:
+          type: string
+          description: URL with path and query values replaced by redaction markers.
+        scheme:
+          type: string
+          const: https
+        host:
+          type: string
+        port:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 65535
+        path_redacted:
+          type: boolean
+        query_redacted:
+          type: boolean
+        secret_configured:
+          type: boolean
+        secret_redacted:
+          type: boolean
+        secret_header:
+          type: [string, 'null']
+        headers_redacted:
+          $ref: '#/components/schemas/AlertWebhookHeaderRedactions'
+        header_count:
+          type: integer
+          minimum: 0
+    AlertWebhookDeliverySummary:
+      type: object
+      additionalProperties: false
+      required: [implemented, dry_run_only, request_body_redacted, note]
+      properties:
+        implemented:
+          type: boolean
+          const: false
+        dry_run_only:
+          type: boolean
+          const: true
+        request_body_redacted:
+          type: boolean
+          const: true
+        note:
+          type: string
+    AlertWebhookSsrfGuard:
+      type: object
+      additionalProperties: false
+      required:
+        - https_required
+        - localhost_rejected
+        - private_literal_ip_rejected
+        - link_local_literal_ip_rejected
+        - dns_not_resolved
+        - dry_run_only
+      properties:
+        https_required:
+          type: boolean
+          const: true
+        localhost_rejected:
+          type: boolean
+          const: true
+        private_literal_ip_rejected:
+          type: boolean
+          const: true
+        link_local_literal_ip_rejected:
+          type: boolean
+          const: true
+        dns_not_resolved:
+          type: boolean
+          const: true
+        dry_run_only:
+          type: boolean
+          const: true
+    AlertWebhookDryRunResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - valid
+        - dry_run
+        - mode
+        - outbound_call
+        - webhook
+        - payload
+        - delivery
+        - ssrf_guard
+      properties:
+        valid:
+          type: boolean
+          const: true
+        dry_run:
+          type: boolean
+          const: true
+        mode:
+          type: string
+          const: validate_only
+        outbound_call:
+          type: boolean
+          const: false
+        webhook:
+          $ref: '#/components/schemas/AlertWebhookSummary'
+        payload:
+          $ref: '#/components/schemas/AlertWebhookPayloadSummary'
+        delivery:
+          $ref: '#/components/schemas/AlertWebhookDeliverySummary'
+        ssrf_guard:
+          $ref: '#/components/schemas/AlertWebhookSsrfGuard'
+    AlertWebhookDryRunEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/AlertWebhookDryRunResponse'
+    BillingReconciliationReportEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/BillingReconciliationReport'
+    BillingReconciliationReport:
+      type: object
+      additionalProperties: false
+      required:
+        - report_version
+        - tenant_id
+        - period_start
+        - period_end
+        - summary
+        - discrepancies
+      properties:
+        report_version:
+          type: integer
+          enum: [1]
+        tenant_id:
+          type: string
+          format: uuid
+        period_start:
+          type: string
+        period_end:
+          type: string
+        summary:
+          $ref: '#/components/schemas/BillingReconciliationSummary'
+        discrepancies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingReconciliationDiscrepancy'
+    BillingReconciliationSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - request_count
+        - billable_request_count
+        - ledger_entry_count
+        - matched_request_count
+        - discrepancy_count
+        - missing_ledger_count
+        - unexpected_ledger_count
+        - amount_mismatch_count
+        - currency_mismatch_count
+        - returned_discrepancy_count
+        - currency_totals
+      properties:
+        request_count:
+          type: integer
+          minimum: 0
+        billable_request_count:
+          type: integer
+          minimum: 0
+        ledger_entry_count:
+          type: integer
+          format: int64
+          minimum: 0
+        matched_request_count:
+          type: integer
+          minimum: 0
+        discrepancy_count:
+          type: integer
+          minimum: 0
+        missing_ledger_count:
+          type: integer
+          minimum: 0
+        unexpected_ledger_count:
+          type: integer
+          minimum: 0
+        amount_mismatch_count:
+          type: integer
+          minimum: 0
+        currency_mismatch_count:
+          type: integer
+          minimum: 0
+        returned_discrepancy_count:
+          type: integer
+          minimum: 0
+        currency_totals:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingReconciliationCurrencyTotal'
+    BillingReconciliationCurrencyTotal:
+      type: object
+      additionalProperties: false
+      required:
+        - currency
+        - request_final_cost_total
+        - expected_ledger_amount_total
+        - ledger_amount_total
+        - difference_amount
+      properties:
+        currency:
+          type: string
+        request_final_cost_total:
+          type: string
+          description: Decimal amount encoded as a string.
+        expected_ledger_amount_total:
+          type: string
+          description: Decimal amount encoded as a string. Settle debits are negative.
+        ledger_amount_total:
+          type: string
+          description: Decimal amount encoded as a string.
+        difference_amount:
+          type: string
+          description: ledger_amount_total minus expected_ledger_amount_total.
+    BillingReconciliationIssue:
+      type: string
+      enum: [missing_ledger, unexpected_ledger, amount_mismatch, currency_mismatch]
+    BillingReconciliationDiscrepancy:
+      type: object
+      additionalProperties: false
+      required:
+        - issues
+        - ledger_entry_ids
+      properties:
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingReconciliationIssue'
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        ledger_entry_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        virtual_key_id:
+          type: [string, 'null']
+          format: uuid
+        trace_id:
+          type: [string, 'null']
+        canonical_model_id:
+          type: [string, 'null']
+          format: uuid
+        resolved_provider_id:
+          type: [string, 'null']
+          format: uuid
+        resolved_channel_id:
+          type: [string, 'null']
+          format: uuid
+        requested_model:
+          type: [string, 'null']
+        upstream_model:
+          type: [string, 'null']
+        request_status:
+          type: [string, 'null']
+        input_tokens:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+        output_tokens:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+        request_final_cost:
+          type: [string, 'null']
+          description: Decimal amount encoded as a string.
+        expected_ledger_amount:
+          type: [string, 'null']
+          description: Decimal amount encoded as a string. Expected settle debit is negative request final_cost.
+        request_currency:
+          type: [string, 'null']
+        ledger_amount:
+          type: [string, 'null']
+          description: Decimal amount encoded as a string.
+        ledger_currency:
+          type: [string, 'null']
+        difference_amount:
+          type: [string, 'null']
+          description: ledger_amount minus expected_ledger_amount when currencies match.
+    PriceVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - price_book_id
+        - version
+        - pricing_rules
+        - effective_at
+        - status
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        price_book_id:
+          type: string
+          format: uuid
+        canonical_model_id:
+          type: [string, 'null']
+          format: uuid
+        version:
+          type: string
+        pricing_rules:
+          $ref: '#/components/schemas/JsonValue'
+          description: Safe JSON output; secret-like values and sensitive keys are redacted.
+        effective_at:
+          type: string
+        retired_at:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [draft, active, retired]
+        created_at:
+          type: string
+    PriceVersionCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - price_book_id
+        - version
+        - pricing_rules
+      properties:
+        price_book_id:
+          type: string
+          format: uuid
+        canonical_model_id:
+          type: [string, 'null']
+          format: uuid
+        version:
+          type: string
+          minLength: 1
+        pricing_rules:
+          type: object
+          additionalProperties: false
+          required:
+            - currency
+          properties:
+            currency:
+              type: string
+              pattern: '^[A-Z][A-Z0-9_]{2,31}$'
+              description: Must match the price book currency.
+            scale:
+              type: integer
+              minimum: 0
+              maximum: 18
+              default: 8
+            input_token_rate_per_1m:
+              oneOf:
+                - type: string
+                  pattern: '^[+]?[0-9]+(\.[0-9]+)?$'
+                - type: integer
+                  minimum: 0
+            output_token_rate_per_1m:
+              oneOf:
+                - type: string
+                  pattern: '^[+]?[0-9]+(\.[0-9]+)?$'
+                - type: integer
+                  minimum: 0
+            cache_token_rate_per_1m:
+              oneOf:
+                - type: string
+                  pattern: '^[+]?[0-9]+(\.[0-9]+)?$'
+                - type: integer
+                  minimum: 0
+            reasoning_token_rate_per_1m:
+              oneOf:
+                - type: string
+                  pattern: '^[+]?[0-9]+(\.[0-9]+)?$'
+                - type: integer
+                  minimum: 0
+            fixed_request_cost:
+              oneOf:
+                - type: string
+                  pattern: '^[+]?[0-9]+(\.[0-9]+)?$'
+                - type: integer
+                  minimum: 0
+          description: At least one rate or fixed_request_cost field is required. Float money values and payload/secret/raw key fields are rejected.
+        effective_at:
+          type: [string, 'null']
+          description: Optional timestamp accepted by Postgres timestamptz parsing; omitted values default to now().
+        retired_at:
+          type: [string, 'null']
+          description: Optional retirement timestamp accepted by Postgres timestamptz parsing; must be after effective_at when provided.
+        status:
+          type: string
+          enum: [draft, active, retired]
+          default: draft
+    PriceVersionEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/PriceVersion'
+    PriceVersionsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriceVersion'
+    LedgerEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - entry_type
+        - amount
+        - currency
+        - status
+        - idempotency_key
+        - usage_snapshot
+        - policy_snapshot
+        - metadata
+        - occurred_at
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        virtual_key_id:
+          type: [string, 'null']
+          format: uuid
+        trace_id:
+          type: [string, 'null']
+        related_ledger_entry_id:
+          type: [string, 'null']
+          format: uuid
+        entry_type:
+          type: string
+          enum: [reserve, settle, refund, adjust, expire, credit_grant, credit_expire]
+        amount:
+          type: string
+          description: Decimal amount encoded as a string.
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [pending, confirmed, reversed]
+        idempotency_key:
+          type: string
+        price_version_id:
+          type: [string, 'null']
+          format: uuid
+        usage_snapshot:
+          $ref: '#/components/schemas/JsonValue'
+          description: Safe JSON output; payload-like keys and secret-like values are redacted.
+        policy_snapshot:
+          $ref: '#/components/schemas/JsonValue'
+          description: Safe JSON output; payload-like keys and secret-like values are redacted.
+        metadata:
+          $ref: '#/components/schemas/JsonValue'
+          description: Safe JSON output; payload-like keys and secret-like values are redacted.
+        occurred_at:
+          type: string
+        created_at:
+          type: string
+    LedgerEntriesEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEntry'

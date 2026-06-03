@@ -1,0 +1,85 @@
+{
+  "schema_version": "importer.existing-state.sample.v1",
+  "canonical_models": [
+    {
+      "model_key": "gpt-4o",
+      "display_name": "GPT-4o legacy",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "vision",
+        "tool"
+      ],
+      "capability_flags": {
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": true,
+        "supports_audio": false,
+        "supports_reasoning": false
+      },
+      "context_length": null,
+      "max_output_tokens": null,
+      "default_price_book_id": null,
+      "visibility": "internal",
+      "status": "active",
+      "source_aliases": [
+        "chatgpt-4o-legacy"
+      ]
+    },
+    {
+      "model_key": "gpt-4o-mini",
+      "display_name": "GPT-4o mini",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "tool"
+      ],
+      "capability_flags": {
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": false,
+        "supports_audio": false,
+        "supports_reasoning": false
+      },
+      "context_length": null,
+      "max_output_tokens": null,
+      "default_price_book_id": null,
+      "visibility": "internal",
+      "status": "active",
+      "source_aliases": [
+        "gpt-4o-mini-latest"
+      ]
+    }
+  ],
+  "model_associations": [
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "gpt-4o",
+      "association_type": "explicit_channel",
+      "channel_source_id": "new-api:channel:101",
+      "channel_tag": null,
+      "model_pattern": null,
+      "upstream_model_name": "gpt-4o-2024-08-06",
+      "priority": 5,
+      "weight": 100,
+      "conditions": {
+        "tags": [
+          "default",
+          "paid"
+        ]
+      },
+      "fallback_allowed": true,
+      "canary_percent": 100,
+      "status": "enabled"
+    }
+  ],
+  "channel_mapping_entries": [
+    {
+      "channel_source_id": "new-api:channel:101",
+      "requested_model": "gpt-4o",
+      "canonical_model_key": "gpt-4o",
+      "upstream_model_name": "gpt-4o-2024-08-06",
+      "mapping_policy": "explicit_upstream_name"
+    }
+  ]
+}

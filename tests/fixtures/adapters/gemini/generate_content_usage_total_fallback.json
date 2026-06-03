@@ -1,0 +1,65 @@
+{
+  "name": "gemini_generate_content_usage_total_fallback",
+  "request": {
+    "model": "gemini-1.5-flash",
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Keep it short."
+          }
+        ]
+      }
+    ]
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1beta/models/gemini-1.5-flash:generateContent",
+    "stream": false,
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Keep it short."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Short."
+              }
+            ]
+          },
+          "finishReason": "MAX_TOKENS",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 7,
+        "totalTokenCount": 12
+      }
+    }
+  },
+  "expected_finish_reason_mapping": {
+    "finishReason": "MAX_TOKENS",
+    "finish_reason": "length"
+  },
+  "expected_usage": {
+    "prompt_tokens": 7,
+    "completion_tokens": 5,
+    "total_tokens": 12
+  }
+}

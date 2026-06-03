@@ -1,0 +1,22 @@
+{{- if .Values.global.config.enabled -}}
+{{- if not .Values.global.config.name -}}
+{{- fail "global.config.name is required when global.config.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.global.config.fileName -}}
+{{- fail "global.config.fileName is required when global.config.enabled=true" -}}
+{{- end -}}
+{{- if not (hasPrefix "/" .Values.global.config.mountPath) -}}
+{{- fail "global.config.mountPath must be an absolute path" -}}
+{{- end -}}
+{{- if not .Values.global.config.content -}}
+{{- fail "global.config.content is required when global.config.enabled=true" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fubox.configMapName" . }}
+  labels:
+    {{- include "fubox.labels" . | nindent 4 }}
+data:
+  {{ .Values.global.config.fileName | quote }}: {{ tpl (toString .Values.global.config.content) . | quote }}
+{{- end }}

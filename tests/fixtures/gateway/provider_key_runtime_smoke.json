@@ -1,0 +1,52 @@
+{
+  "scenario": "provider_key_runtime_live_strict_smoke",
+  "base_path": "/v1/chat/completions",
+  "request": {
+    "model": "mock-gpt-4o-mini",
+    "stream": false
+  },
+  "compose": {
+    "file": "deploy/docker-compose/docker-compose.yml",
+    "required_services": [
+      "postgres",
+      "gateway",
+      "mock-provider"
+    ],
+    "provider_key_master_key_env": "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64",
+    "provider_key_master_key_id_env": "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_ID"
+  },
+  "dev_seed": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "provider_id": "00000000-0000-0000-0000-000000000060",
+    "channel_id": "00000000-0000-0000-0000-000000000070",
+    "provider_key_id": "00000000-0000-0000-0000-000000000075",
+    "key_alias": "mock-dev-key",
+    "encrypted_secret_algorithm": "aes-256-gcm",
+    "encrypted_secret_version": 1,
+    "master_key_id": "dev-seed-v1",
+    "secret_fingerprint": "hmac-sha256-v1:850e131450a7c691b8300375967287a7532bdab7d922dbc2db974f5a0f1bea2a",
+    "metadata_flags": [
+      "dev_seed",
+      "sealed_placeholder"
+    ]
+  },
+  "live_checks": [
+    {
+      "name": "gateway_chat_success",
+      "expected": "HTTP 200 chat.completion from mock-provider through gateway"
+    },
+    {
+      "name": "provider_key_id_persisted",
+      "expected": [
+        "request_logs.provider_key_id is populated",
+        "provider_attempts.provider_key_id is populated"
+      ]
+    },
+    {
+      "name": "provider_error_redaction",
+      "request": "POST /v1/chat/completions with mock_scenario=429",
+      "expected": "error response does not include sealed provider key payload, provider key fingerprint, or raw provider key"
+    }
+  ],
+  "notes": "Dry-run validates dev seed, compose env, fixture, and script structure only. Live mode requires the local compose stack and postgres to be available."
+}

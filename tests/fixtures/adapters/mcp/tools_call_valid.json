@@ -1,0 +1,55 @@
+{
+  "name": "mcp_tools_call_valid",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "tool-call-1",
+    "method": "tools/call",
+    "params": {
+      "name": "weather_summary",
+      "arguments": {
+        "city": "London",
+        "units": "metric"
+      }
+    }
+  },
+  "expected_routing": {
+    "request_id": "tool-call-1",
+    "method": "tools/call",
+    "tool_name": "weather_summary",
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/mcp",
+    "stream": false,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": "tool-call-1",
+      "method": "tools/call",
+      "params": {
+        "name": "weather_summary",
+        "arguments": {
+          "city": "London",
+          "units": "metric"
+        }
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": "tool-call-1",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Weather summary fixture."
+          }
+        ],
+        "isError": false
+      }
+    }
+  },
+  "expected_usage": null
+}

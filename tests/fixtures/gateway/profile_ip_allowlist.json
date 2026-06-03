@@ -1,0 +1,50 @@
+{
+  "scenario": "gateway_profile_ip_allowlist_smoke",
+  "base_path": "/v1",
+  "profile_header": "x-ai-profile",
+  "auth": {
+    "type": "virtual_key_bearer",
+    "token_source": "GATEWAY_AUTH_TOKEN",
+    "secret_must_not_be_logged": true
+  },
+  "profile_policy": {
+    "source": "api_key_profiles.request_overrides",
+    "request_overrides_example": [
+      {
+        "type": "profile_ip_allowlist",
+        "ip_allowlist": [
+          "203.0.113.42"
+        ]
+      }
+    ],
+    "empty_ip_allowlist": "no additional profile restriction",
+    "malformed_or_invalid_entries": "must not grant access"
+  },
+  "semantics": [
+    "Gateway resolves x-ai-profile or the key default profile before evaluating the profile IP allowlist.",
+    "virtual_keys.ip_allowlist is evaluated first.",
+    "The profile IP allowlist can only further restrict a request already allowed by the key allowlist.",
+    "A missing profile IP allowlist does not add a restriction.",
+    "An empty profile IP allowlist does not add a restriction.",
+    "Malformed profile policies or invalid IP entries do not grant access."
+  ],
+  "acceptance_checks": [
+    {
+      "name": "profile_allowlist_allows_matching_client_ip",
+      "request": "GET /v1/models or POST /v1/chat/completions with x-ai-profile and client IP 203.0.113.42",
+      "expected": "request continues past auth when the key allowlist also allows 203.0.113.42"
+    },
+    {
+      "name": "profile_allowlist_rejects_non_matching_client_ip",
+      "request": "GET /v1/models or POST /v1/chat/completions with x-ai-profile and client IP 203.0.113.43",
+      "expected_status": 403,
+      "expected_error_code": "api_key_ip_forbidden",
+      "expected_side_effects": [
+        "no request_logs row is created",
+        "no provider_attempts row is created",
+        "no upstream provider request is attempted"
+      ]
+    }
+  ],
+  "notes": "This fixture is an acceptance contract. The first Gateway slice reads profile IP allowlist policy from api_key_profiles.request_overrides because the current schema does not expose a dedicated api_key_profiles.ip_allowlist column."
+}

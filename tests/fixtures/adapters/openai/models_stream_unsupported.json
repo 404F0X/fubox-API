@@ -1,0 +1,17 @@
+{
+  "name": "openai_models_stream_unsupported",
+  "request": {
+    "stream": true
+  },
+  "expected_error_mapping": {
+    "http_status": 400,
+    "error_type": "invalid_request_error",
+    "code": "invalid_request",
+    "message": "stream is not supported for /v1/models; omit stream or set stream=false",
+    "param": "stream",
+    "owner": "client",
+    "stage": "request_validate",
+    "retryable": false,
+    "signal": null
+  }
+}

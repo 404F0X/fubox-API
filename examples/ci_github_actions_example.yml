@@ -1,0 +1,75 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_gateway
+          POSTGRES_PASSWORD: ai_gateway
+          POSTGRES_DB: ai_gateway
+        ports: ['5432:5432']
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Unit tests
+        run: cargo test --workspace --lib --bins --all-features
+      - name: Contract tests
+        run: cargo test --workspace --all-features contract_
+      - name: Integration tests
+        run: cargo test --workspace --all-features integration_
+      - name: Secret scan
+        run: make scan-secrets
+      - name: Supply-chain scan
+        shell: pwsh
+        run: ./scripts/scan_supply_chain.ps1 -SkipNetwork
+      - name: Supply-chain artifact self-test
+        shell: pwsh
+        run: ./scripts/test_supply_chain_artifacts.ps1
+      - name: Build image
+        run: |
+          mkdir -p artifacts/supply-chain
+          docker build -f deploy/docker-compose/Dockerfile --iidfile artifacts/supply-chain/image.iid .
+      - name: Generate SBOM/provenance artifacts
+        shell: pwsh
+        run: ./scripts/generate_supply_chain_artifacts.ps1 -OutputDirectory artifacts/supply-chain -ImageIdFile artifacts/supply-chain/image.iid
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-sbom-provenance
+          path: artifacts/supply-chain/
+          if-no-files-found: error
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cd web/admin-ui && npm ci
+      - run: cd web/admin-ui && npm run typecheck
+      - run: cd web/admin-ui && npm test
+      - run: cd web/admin-ui && npm run build

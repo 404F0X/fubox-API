@@ -1,0 +1,47 @@
+# Rust build output
+/target/
+/target-codex*/
+
+# Node build output and dependencies
+node_modules/
+web/admin-ui/node_modules/
+web/admin-ui/dist/
+tests/integration/sdk-smoke/node_modules/
+*.tsbuildinfo
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and runtime artifacts
+*.log
+*.pid
+*.tmp
+artifacts/
+tmp/
+temp/
+__pycache__/
+*.pyc
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+admin-ui-*.png
+
+# Archives and imported docs
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.docx
+
+# Local unpacked source/reference bundles
+dev_starter_unpacked/
+.docx_unpacked/

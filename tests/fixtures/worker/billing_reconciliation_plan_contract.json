@@ -1,0 +1,193 @@
+{
+  "scenario": "worker_billing_reconciliation_plan_contract",
+  "command": "ai-worker billing-reconciliation --dry-run --input tests/fixtures/worker/billing_reconciliation_plan_contract.json",
+  "input_contract": {
+    "source": "fixture_json",
+    "network_send_default": false,
+    "db_write_default": false,
+    "execute_or_send_flags_refused": ["--execute", "--send"],
+    "covered_scenarios": [
+      "missing_settle",
+      "unexpected_ledger",
+      "amount_mismatch",
+      "zero_cost_matched"
+    ]
+  },
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "day": "2026-06-02",
+    "window": {
+      "period_start": "2026-06-02 00:00:00+00",
+      "period_end": "2026-06-03 00:00:00+00"
+    },
+    "scheduler": {
+      "now_utc": "2026-06-03T01:15:00Z",
+      "last_run": {
+        "run_id": "recon-run-20260601",
+        "status": "succeeded",
+        "started_at": "2026-06-02T01:00:00Z",
+        "finished_at": "2026-06-02T01:01:30Z",
+        "window_day": "2026-06-01",
+        "window_start": "2026-06-01T00:00:00Z",
+        "window_end": "2026-06-02T00:00:00Z"
+      },
+      "watermark": {
+        "kind": "window_end",
+        "value": "2026-06-02T00:00:00Z",
+        "updated_at": "2026-06-02T01:01:30Z"
+      }
+    },
+    "project_ids": ["00000000-0000-0000-0000-000000000020"],
+    "discrepancy_limit": 50,
+    "payload": {
+      "body": "fixture-raw-payload-marker",
+      "raw_body": "fixture-request-material-marker"
+    },
+    "headers": {
+      "X-Fixture-Credential": "fixture-header-marker"
+    },
+    "provider_key_value": "fixture-provider-credential-marker",
+    "wallet_secret_value": "fixture-wallet-credential-marker",
+    "raw_wallet_secret": "fixture-wallet-credential-marker",
+    "scheduler_secret_token": "scheduler-secret-token-marker",
+    "rows": [
+      {
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "period_start": "2026-06-02 00:00:00+00",
+        "period_end": "2026-06-03 00:00:00+00",
+        "request_id": "00000000-0000-0000-0000-000000000010",
+        "project_id": "00000000-0000-0000-0000-000000000020",
+        "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+        "trace_id": "trace-reconcile-10",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+        "resolved_provider_id": "00000000-0000-0000-0000-000000000080",
+        "resolved_channel_id": "00000000-0000-0000-0000-000000000090",
+        "requested_model": "mock-gpt",
+        "upstream_model": "mock-gpt",
+        "request_status": "succeeded",
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "request_final_cost": "0.25000000",
+        "request_currency": "USD",
+        "ledger_entry_ids": ["00000000-0000-0000-0000-000000001010"],
+        "ledger_entry_count": 1,
+        "ledger_amount": "-0.25000000",
+        "ledger_currency": "USD"
+      },
+      {
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "period_start": "2026-06-02 00:00:00+00",
+        "period_end": "2026-06-03 00:00:00+00",
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "project_id": "00000000-0000-0000-0000-000000000020",
+        "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+        "trace_id": "fixture-header-credential-marker",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+        "resolved_provider_id": "00000000-0000-0000-0000-000000000080",
+        "resolved_channel_id": "00000000-0000-0000-0000-000000000090",
+        "requested_model": "mock-gpt",
+        "upstream_model": "mock-gpt",
+        "request_status": "succeeded",
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "request_final_cost": "1.00000000",
+        "request_currency": "USD",
+        "ledger_entry_ids": [],
+        "ledger_entry_count": 0
+      },
+      {
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "period_start": "2026-06-02 00:00:00+00",
+        "period_end": "2026-06-03 00:00:00+00",
+        "request_id": "00000000-0000-0000-0000-000000000012",
+        "project_id": "00000000-0000-0000-0000-000000000020",
+        "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+        "trace_id": "trace-reconcile-12",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+        "resolved_provider_id": "00000000-0000-0000-0000-000000000080",
+        "resolved_channel_id": "00000000-0000-0000-0000-000000000090",
+        "requested_model": "fixture-provider-credential-marker",
+        "upstream_model": "mock-gpt",
+        "request_status": "succeeded",
+        "input_tokens": 12,
+        "output_tokens": 34,
+        "request_final_cost": "2.00000000",
+        "request_currency": "USD",
+        "ledger_entry_ids": ["00000000-0000-0000-0000-000000001012"],
+        "ledger_entry_count": 1,
+        "ledger_amount": "-1.75000000",
+        "ledger_currency": "USD"
+      },
+      {
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "period_start": "2026-06-02 00:00:00+00",
+        "period_end": "2026-06-03 00:00:00+00",
+        "ledger_entry_ids": ["00000000-0000-0000-0000-000000000099"],
+        "ledger_entry_count": 1,
+        "project_id": "00000000-0000-0000-0000-000000000020",
+        "ledger_amount": "-0.12500000",
+        "ledger_currency": "USD"
+      },
+      {
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "period_start": "2026-06-02 00:00:00+00",
+        "period_end": "2026-06-03 00:00:00+00",
+        "request_id": "00000000-0000-0000-0000-000000000041",
+        "project_id": "00000000-0000-0000-0000-000000000020",
+        "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+        "trace_id": "trace-reconcile-41",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+        "resolved_provider_id": "00000000-0000-0000-0000-000000000080",
+        "resolved_channel_id": "00000000-0000-0000-0000-000000000090",
+        "requested_model": "mock-gpt",
+        "upstream_model": "mock-gpt",
+        "request_status": "succeeded",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "request_final_cost": "0.00000000",
+        "request_currency": "USD",
+        "ledger_entry_ids": [],
+        "ledger_entry_count": 0
+      }
+    ]
+  },
+  "expected_output_contract": {
+    "schema_version": "billing_reconciliation_plan.v1",
+    "dry_run": true,
+    "read_only": true,
+    "db_writes": false,
+    "outbound_calls": false,
+    "alert_send": false,
+    "scheduler": {
+      "cadence": "daily",
+      "timezone": "UTC",
+      "window_policy": "previous_completed_utc_day",
+      "last_run_present": true,
+      "watermark_present": true
+    },
+    "window": {
+      "day": "2026-06-02",
+      "bounds": "closed_open"
+    },
+    "would_report": {
+      "discrepancies": true,
+      "discrepancy_count": 3,
+      "missing_settle_count": 1,
+      "unexpected_ledger_count": 1,
+      "amount_mismatch_count": 1,
+      "zero_cost_matched_count": 1
+    },
+    "must_not_echo": [
+      "fixture-raw-payload-marker",
+      "fixture-request-material-marker",
+      "X-Fixture-Credential",
+      "fixture-header-marker",
+      "fixture-provider-credential-marker",
+      "provider_key_value",
+      "fixture-wallet-credential-marker",
+      "raw_wallet_secret",
+      "wallet_secret_value",
+      "scheduler-secret-token-marker"
+    ]
+  }
+}

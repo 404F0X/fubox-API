@@ -1,0 +1,302 @@
+{
+  "contract": "clickhouse_log_store_plan_v1",
+  "network_requests": "never",
+  "runtime_connected": false,
+  "default": {
+    "env": {},
+    "expected": {
+      "contract": "clickhouse_log_store_plan_v1",
+      "enabled": false,
+      "network_requests": "never",
+      "connectivity_check_enabled": false,
+      "endpoint": null,
+      "database": "ai_gateway",
+      "table": "gateway_logs",
+      "batch_size": 1000,
+      "flush_interval_ms": 1000,
+      "tls": {
+        "enabled": false,
+        "verify_certificate": true
+      },
+      "credentials": {
+        "basic_user_present": false,
+        "basic_secret_present": false,
+        "api_secret_present": false,
+        "bearer_header_present": false,
+        "endpoint_userinfo_present": false,
+        "redaction": "presence_only"
+      },
+      "sinks": [
+        {
+          "name": "request_logs",
+          "table": "gateway_logs_request_logs",
+          "schema_version": 1,
+          "enabled": false
+        },
+        {
+          "name": "provider_attempts",
+          "table": "gateway_logs_provider_attempts",
+          "schema_version": 1,
+          "enabled": false
+        },
+        {
+          "name": "event_log",
+          "table": "gateway_logs_event_log",
+          "schema_version": 1,
+          "enabled": false
+        }
+      ],
+      "backpressure": {
+        "max_queue_rows": 100000,
+        "drop_policy": "drop_newest"
+      },
+      "retry": {
+        "max_attempts": 3,
+        "initial_backoff_ms": 100,
+        "max_backoff_ms": 5000,
+        "jitter": true,
+        "retry_on": [
+          "transport_error",
+          "timeout",
+          "http_429",
+          "http_5xx"
+        ]
+      },
+      "payload_policy": {
+        "requested_policy": "hash",
+        "effective_policy": "hash",
+        "policy_was_recognized": true,
+        "default_storage_mode": "hash",
+        "sampled_storage_mode": null,
+        "payload_body_by_default": false,
+        "payload_body_storage_enabled": false,
+        "fallback_reason": null
+      }
+    }
+  },
+  "plans": [
+    {
+      "name": "enabled_https_presence_only",
+      "env": {
+        "AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED": "true",
+        "AI_GATEWAY_CLICKHOUSE_ENDPOINT": "https://clickhouse.example.com:8443",
+        "AI_GATEWAY_CLICKHOUSE_DATABASE": "prod_logs",
+        "AI_GATEWAY_CLICKHOUSE_TABLE": "gateway_events",
+        "AI_GATEWAY_CLICKHOUSE_BATCH_SIZE": "2500",
+        "AI_GATEWAY_CLICKHOUSE_FLUSH_INTERVAL_MS": "750",
+        "AI_GATEWAY_CLICKHOUSE_TLS_VERIFY": "false",
+        "AI_GATEWAY_CLICKHOUSE_USERNAME": "ops-user",
+        "AI_GATEWAY_CLICKHOUSE_PASSWORD": "plain-password",
+        "AI_GATEWAY_CLICKHOUSE_TOKEN": "fixture-api-secret",
+        "AI_GATEWAY_CLICKHOUSE_AUTHORIZATION": "Bearer fixture-bearer-secret",
+        "AI_GATEWAY_CLICKHOUSE_BACKPRESSURE_MAX_QUEUE_ROWS": "42",
+        "AI_GATEWAY_CLICKHOUSE_BACKPRESSURE_DROP_POLICY": "drop_oldest",
+        "AI_GATEWAY_CLICKHOUSE_RETRY_MAX_ATTEMPTS": "5",
+        "AI_GATEWAY_CLICKHOUSE_RETRY_INITIAL_BACKOFF_MS": "200",
+        "AI_GATEWAY_CLICKHOUSE_RETRY_MAX_BACKOFF_MS": "4000",
+        "AI_GATEWAY_CLICKHOUSE_PAYLOAD_POLICY": "redacted"
+      },
+      "expected": {
+        "contract": "clickhouse_log_store_plan_v1",
+        "enabled": true,
+        "network_requests": "never",
+        "connectivity_check_enabled": false,
+        "endpoint": "https://clickhouse.example.com:8443",
+        "database": "prod_logs",
+        "table": "gateway_events",
+        "batch_size": 2500,
+        "flush_interval_ms": 750,
+        "tls": {
+          "enabled": true,
+          "verify_certificate": false
+        },
+        "credentials": {
+          "basic_user_present": true,
+          "basic_secret_present": true,
+          "api_secret_present": true,
+          "bearer_header_present": true,
+          "endpoint_userinfo_present": false,
+          "redaction": "presence_only"
+        },
+        "sinks": [
+          {
+            "name": "request_logs",
+            "table": "gateway_events_request_logs",
+            "schema_version": 1,
+            "enabled": true
+          },
+          {
+            "name": "provider_attempts",
+            "table": "gateway_events_provider_attempts",
+            "schema_version": 1,
+            "enabled": true
+          },
+          {
+            "name": "event_log",
+            "table": "gateway_events_event_log",
+            "schema_version": 1,
+            "enabled": true
+          }
+        ],
+        "backpressure": {
+          "max_queue_rows": 42,
+          "drop_policy": "drop_oldest"
+        },
+        "retry": {
+          "max_attempts": 5,
+          "initial_backoff_ms": 200,
+          "max_backoff_ms": 4000,
+          "jitter": true,
+          "retry_on": [
+            "transport_error",
+            "timeout",
+            "http_429",
+            "http_5xx"
+          ]
+        },
+        "payload_policy": {
+          "requested_policy": "redacted",
+          "effective_policy": "redacted",
+          "policy_was_recognized": true,
+          "default_storage_mode": "redacted",
+          "sampled_storage_mode": null,
+          "payload_body_by_default": false,
+          "payload_body_storage_enabled": false,
+          "fallback_reason": null
+        }
+      }
+    },
+    {
+      "name": "full_payload_policy_downgrades_to_hash",
+      "env": {
+        "AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED": "true",
+        "AI_GATEWAY_CLICKHOUSE_ENDPOINT": "http://localhost:8123",
+        "AI_GATEWAY_CLICKHOUSE_PAYLOAD_POLICY": "full"
+      },
+      "expected": {
+        "contract": "clickhouse_log_store_plan_v1",
+        "enabled": true,
+        "network_requests": "never",
+        "connectivity_check_enabled": false,
+        "endpoint": "http://localhost:8123",
+        "database": "ai_gateway",
+        "table": "gateway_logs",
+        "batch_size": 1000,
+        "flush_interval_ms": 1000,
+        "tls": {
+          "enabled": false,
+          "verify_certificate": false
+        },
+        "credentials": {
+          "basic_user_present": false,
+          "basic_secret_present": false,
+          "api_secret_present": false,
+          "bearer_header_present": false,
+          "endpoint_userinfo_present": false,
+          "redaction": "presence_only"
+        },
+        "sinks": [
+          {
+            "name": "request_logs",
+            "table": "gateway_logs_request_logs",
+            "schema_version": 1,
+            "enabled": true
+          },
+          {
+            "name": "provider_attempts",
+            "table": "gateway_logs_provider_attempts",
+            "schema_version": 1,
+            "enabled": true
+          },
+          {
+            "name": "event_log",
+            "table": "gateway_logs_event_log",
+            "schema_version": 1,
+            "enabled": true
+          }
+        ],
+        "backpressure": {
+          "max_queue_rows": 100000,
+          "drop_policy": "drop_newest"
+        },
+        "retry": {
+          "max_attempts": 3,
+          "initial_backoff_ms": 100,
+          "max_backoff_ms": 5000,
+          "jitter": true,
+          "retry_on": [
+            "transport_error",
+            "timeout",
+            "http_429",
+            "http_5xx"
+          ]
+        },
+        "payload_policy": {
+          "requested_policy": "full",
+          "effective_policy": "hash",
+          "policy_was_recognized": true,
+          "default_storage_mode": "hash",
+          "sampled_storage_mode": null,
+          "payload_body_by_default": false,
+          "payload_body_storage_enabled": false,
+          "fallback_reason": "payload_body_storage_disabled"
+        }
+      }
+    }
+  ],
+  "errors": [
+    {
+      "name": "endpoint_userinfo_and_query_are_redacted",
+      "env": {
+        "AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED": "true",
+        "AI_GATEWAY_CLICKHOUSE_ENDPOINT": "https://alice:plain-password@clickhouse.example.com:8443?api_key=fixture-api-secret"
+      },
+      "expected_error_contains": [
+        "[REDACTED]",
+        "clickhouse.example.com",
+        "query strings"
+      ],
+      "expected_error_excludes": [
+        "alice",
+        "plain-password",
+        "api_key",
+        "fixture-api-secret"
+      ]
+    },
+    {
+      "name": "invalid_drop_policy_is_safe",
+      "env": {
+        "AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED": "true",
+        "AI_GATEWAY_CLICKHOUSE_ENDPOINT": "http://localhost:8123",
+        "AI_GATEWAY_CLICKHOUSE_BACKPRESSURE_DROP_POLICY": "unsafe policy"
+      },
+      "expected_error_contains": [
+        "invalid ClickHouse backpressure drop policy",
+        "drop_newest"
+      ],
+      "expected_error_excludes": [
+        "plain-password",
+        "fixture-api-secret"
+      ]
+    }
+  ],
+  "secret_safe_output_excludes": [
+    "plain-password",
+    "fixture-api-secret",
+    "fixture-bearer-secret",
+    "Bearer fixture-bearer-secret",
+    "password",
+    "token",
+    "Authorization",
+    "?api_key",
+    "raw_payload"
+  ],
+  "boundary": [
+    "The ClickHouse log store is disabled unless explicitly enabled.",
+    "Config parsing and write planning are pure and never open sockets, run migrations, or mutate Gateway runtime.",
+    "Endpoint output keeps only the validated http/https endpoint without userinfo, query strings, or fragments.",
+    "Credential inputs are represented as presence booleans only.",
+    "request_logs, provider_attempts, and event_log sinks carry schema_version=1.",
+    "Default payload handling stores hashes or redacted metadata only; payload body storage remains disabled in this slice."
+  ]
+}

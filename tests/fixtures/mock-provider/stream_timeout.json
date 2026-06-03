@@ -1,0 +1,23 @@
+{
+  "scenario": "stream_timeout",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=stream_timeout",
+  "body": {
+    "stream": true
+  },
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=stream_timeout",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "stream_timeout"
+      }
+    },
+    "endpoint": "/__scenario/stream_timeout/v1/chat/completions",
+    "body": {
+      "mock_scenario": "stream_timeout"
+    }
+  },
+  "expected_status": "partial_stream_timeout",
+  "notes": "SSE response sends headers and one valid chunk, then leaves the stream open without [DONE]."
+}

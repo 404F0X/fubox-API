@@ -1,0 +1,34 @@
+{
+  "name": "mcp_provider_429_retry_after",
+  "response": {
+    "status": 429,
+    "headers": {
+      "retry-after": "2",
+      "retry-after-ms": "2000"
+    },
+    "body": {
+      "jsonrpc": "2.0",
+      "id": "rate-limit-1",
+      "error": {
+        "code": -32000,
+        "message": "Rate limit reached for fixture server."
+      }
+    }
+  },
+  "expected_retry_after_header_value": "2",
+  "expected_error_mapping": {
+    "http_status": 429,
+    "error_type": "provider_error",
+    "code": "provider_429",
+    "message": "upstream provider returned HTTP 429",
+    "owner": "provider",
+    "stage": "provider_call",
+    "retryable": true,
+    "retry_after_ms": 2000,
+    "signal": {
+      "status_code": 429,
+      "transport": null,
+      "retry_after_ms": 2000
+    }
+  }
+}

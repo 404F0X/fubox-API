@@ -1,0 +1,11 @@
+[package]
+name = "ai-gateway-app-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ai-gateway-config.workspace = true
+ai-gateway-shared.workspace = true
+serde_json.workspace = true

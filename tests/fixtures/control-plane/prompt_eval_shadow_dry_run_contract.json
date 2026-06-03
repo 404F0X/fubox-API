@@ -1,0 +1,156 @@
+{
+  "scenario": "control_plane_prompt_eval_shadow_dry_run_contract",
+  "base_path": "/admin",
+  "endpoint": {
+    "method": "POST",
+    "path": "/admin/prompt-eval-shadow/dry-run"
+  },
+  "rbac": {
+    "required_permission": "provider_manage",
+    "allowed_roles": ["owner", "admin", "ops"],
+    "denied_roles": ["billing", "developer", "viewer"]
+  },
+  "request_contract": {
+    "required_sections": ["registry", "dataset"],
+    "registry_required_fields": ["item_id", "version"],
+    "registry_material_any_of": ["prompt", "template", "hash_sha256"],
+    "dataset_required_fields": ["dataset_id", "version"],
+    "optional_sections": ["payload_policy", "shadow_traffic"],
+    "accepted_shadow_fields": ["enabled", "percentage", "candidate_route_labels", "routes"]
+  },
+  "response_contract": {
+    "envelope": "data",
+    "schema_version": "prompt_eval_shadow_admin_dry_run.v1",
+    "output_categories": ["hashes", "counts", "labels", "flags"],
+    "required_data_sections": ["labels", "hashes", "counts", "storage_policy", "shadow", "flags"],
+    "business_db_read": false,
+    "db_write": false,
+    "object_storage_read": false,
+    "object_storage_write": false,
+    "gateway_call": false,
+    "network_request": false,
+    "raw_prompt_output": false,
+    "raw_body_output": false,
+    "sensitive_material_output": false
+  },
+  "examples": {
+    "valid": {
+      "request": {
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "registry": {
+          "item_id": "prompt.customer_support.summary",
+          "version": "2026-06-03.1",
+          "template": {
+            "system": "raw-registry-prompt-marker should never appear in the dry-run output",
+            "messages": [
+              {
+                "role": "user",
+                "content": "summarize the customer case with fixture-route-token-marker"
+              }
+            ],
+            "metadata": {
+              "provider_key_value": "fixture-provider-key-marker"
+            }
+          }
+        },
+        "dataset": {
+          "dataset_id": "eval.customer_support.summary",
+          "version": "2026-06-03.1",
+          "payload_policy": {
+            "policy_id": "policy.eval.full-requested",
+            "mode": "full"
+          },
+          "samples": [
+            {
+              "sample_id": "sample-001",
+              "input": {
+                "prompt": "raw-eval-body-marker sample one",
+                "Authorization": "Bearer short-fixture-auth"
+              },
+              "expected": "raw-eval-expected-marker"
+            },
+            {
+              "sample_id": "sample-002",
+              "input": {
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "fixture-provider-key-marker"
+                  }
+                ],
+                "api_token": "fixture-route-token-marker"
+              },
+              "expected": {
+                "answer": "raw-eval-body-marker sample two"
+              }
+            }
+          ]
+        },
+        "shadow_traffic": {
+          "enabled": true,
+          "percentage": 5.0,
+          "candidate_route_labels": [
+            "control-openai-primary",
+            "candidate-anthropic-canary"
+          ],
+          "routes": [
+            {
+              "label": "candidate-gemini-safe"
+            }
+          ],
+          "body": {
+            "prompt": "shadow-raw-body-marker",
+            "Authorization": "Bearer short-shadow-auth"
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "labels": {
+      "registry_item_id": "prompt.customer_support.summary",
+      "registry_version": "2026-06-03.1",
+      "dataset_id": "eval.customer_support.summary",
+      "dataset_version": "2026-06-03.1",
+      "route_labels": [
+        "control-openai-primary",
+        "candidate-anthropic-canary",
+        "candidate-gemini-safe"
+      ]
+    },
+    "counts": {
+      "dataset_samples": 2,
+      "route_labels": 3
+    },
+    "storage_policy": {
+      "requested": "full",
+      "effective": "hash",
+      "unsafe_policy_downgraded": true
+    },
+    "flags": {
+      "business_db_read": false,
+      "db_write": false,
+      "object_storage_read": false,
+      "object_storage_write": false,
+      "gateway_call": false,
+      "network_request": false,
+      "raw_prompt_output": false,
+      "raw_body_output": false,
+      "sensitive_material_output": false
+    },
+    "must_not_echo": [
+      "raw-registry-prompt-marker",
+      "raw-eval-body-marker",
+      "raw-eval-expected-marker",
+      "shadow-raw-body-marker",
+      "fixture-provider-key-marker",
+      "fixture-route-token-marker",
+      "short-fixture-auth",
+      "short-shadow-auth",
+      "Authorization",
+      "provider_key_value",
+      "api_token"
+    ]
+  },
+  "notes": "Contract fixture only. The admin dry-run validates request shape and returns only hashes, counts, labels, and boolean flags; it does not write database rows, read object storage, call Gateway, or send network requests."
+}

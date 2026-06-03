@@ -1,0 +1,112 @@
+{
+  "scenario": "rate_limit_availability_contract",
+  "crate": "ai-gateway-routing",
+  "function": "evaluate_rate_limit_availability",
+  "input_contract": {
+    "windows": {
+      "requests_per_minute": {
+        "limit": "optional integer; null means no configured RPM limit",
+        "used": "optional integer counter read from the current window",
+        "required": "integer request cost, normally 1"
+      },
+      "tokens_per_minute": {
+        "limit": "optional integer; null means no configured TPM limit",
+        "used": "optional integer counter read from the current window",
+        "required": "integer token reservation for the request"
+      },
+      "concurrency": {
+        "limit": "optional integer; null means no configured concurrency limit",
+        "used": "optional integer current in-flight occupancy",
+        "required": "integer occupancy reservation, normally 1"
+      }
+    }
+  },
+  "output_contract": {
+    "filter_reason": "RateLimitExceeded when any configured dimension is unavailable",
+    "blocking_dimensions_order": [
+      "RequestsPerMinute",
+      "TokensPerMinute",
+      "Concurrency"
+    ],
+    "stable_behaviors": [
+      {
+        "name": "under_limits_selectable",
+        "input": {
+          "requests_per_minute": { "limit": 60, "used": 58, "required": 1 },
+          "tokens_per_minute": { "limit": 1000, "used": 800, "required": 100 },
+          "concurrency": { "limit": 4, "used": 3, "required": 1 }
+        },
+        "selectable": true,
+        "filter_reason": null,
+        "blocking_dimensions": []
+      },
+      {
+        "name": "rpm_exceeded",
+        "input": {
+          "requests_per_minute": { "limit": 60, "used": 60, "required": 1 },
+          "tokens_per_minute": { "limit": null, "used": null, "required": 0 },
+          "concurrency": { "limit": null, "used": null, "required": 0 }
+        },
+        "selectable": false,
+        "filter_reason": "RateLimitExceeded",
+        "blocking_dimensions": ["RequestsPerMinute"]
+      },
+      {
+        "name": "tpm_exceeded",
+        "input": {
+          "requests_per_minute": { "limit": null, "used": null, "required": 0 },
+          "tokens_per_minute": { "limit": 1000, "used": 950, "required": 100 },
+          "concurrency": { "limit": null, "used": null, "required": 0 }
+        },
+        "selectable": false,
+        "filter_reason": "RateLimitExceeded",
+        "blocking_dimensions": ["TokensPerMinute"]
+      },
+      {
+        "name": "concurrency_exceeded",
+        "input": {
+          "requests_per_minute": { "limit": null, "used": null, "required": 0 },
+          "tokens_per_minute": { "limit": null, "used": null, "required": 0 },
+          "concurrency": { "limit": 4, "used": 4, "required": 1 }
+        },
+        "selectable": false,
+        "filter_reason": "RateLimitExceeded",
+        "blocking_dimensions": ["Concurrency"]
+      },
+      {
+        "name": "missing_counter_with_limit_is_conservative",
+        "input": {
+          "requests_per_minute": { "limit": 60, "used": null, "required": 1 },
+          "tokens_per_minute": { "limit": null, "used": null, "required": 0 },
+          "concurrency": { "limit": 4, "used": null, "required": 1 }
+        },
+        "selectable": false,
+        "filter_reason": "RateLimitExceeded",
+        "blocking_dimensions": ["RequestsPerMinute", "Concurrency"]
+      },
+      {
+        "name": "missing_limit_is_unlimited",
+        "input": {
+          "requests_per_minute": { "limit": null, "used": null, "required": 1 },
+          "tokens_per_minute": { "limit": null, "used": null, "required": 100 },
+          "concurrency": { "limit": null, "used": null, "required": 1 }
+        },
+        "selectable": true,
+        "filter_reason": null,
+        "blocking_dimensions": []
+      },
+      {
+        "name": "zero_limit_blocks_positive_requirement",
+        "input": {
+          "requests_per_minute": { "limit": 0, "used": 0, "required": 1 },
+          "tokens_per_minute": { "limit": null, "used": null, "required": 0 },
+          "concurrency": { "limit": null, "used": null, "required": 0 }
+        },
+        "selectable": false,
+        "filter_reason": "RateLimitExceeded",
+        "blocking_dimensions": ["RequestsPerMinute"]
+      }
+    ]
+  },
+  "notes": "Contract fixture only. Credential material, request bodies, DB handles, and gateway runtime state are outside the routing core input."
+}

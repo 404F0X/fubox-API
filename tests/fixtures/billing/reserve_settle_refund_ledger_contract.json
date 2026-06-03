@@ -1,0 +1,411 @@
+{
+  "contract": "billing_ledger_reserve_settle_refund_v2",
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "api_key",
+    "secret",
+    "raw_key",
+    "payload",
+    "body"
+  ],
+  "ids": {
+    "request_id": "00000000-0000-0000-0000-000000000011",
+    "reserve_id": "00000000-0000-0000-0000-000000000021",
+    "settle_id": "00000000-0000-0000-0000-000000000031",
+    "refund_id": "00000000-0000-0000-0000-000000000041",
+    "refund_full_id": "00000000-0000-0000-0000-000000000042",
+    "refund_operation_id": "00000000-0000-0000-0000-000000000051"
+  },
+  "cases": [
+    {
+      "name": "reserve_pending_apply",
+      "operation": "reserve",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "amount": "1.25000000",
+        "currency": "USD"
+      },
+      "existing_entries": [],
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011",
+        "entries": [
+          {
+            "entry_type": "reserve",
+            "amount": "-1.25000000",
+            "currency": "USD",
+            "status": "pending",
+            "metadata": {
+              "operation": "reserve",
+              "request_id": "00000000-0000-0000-0000-000000000011"
+            }
+          }
+        ],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "reserve_replay_is_idempotent",
+      "operation": "reserve",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "amount": "1.25000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000021",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "reserve",
+          "amount": "-1.25000000",
+          "currency": "USD",
+          "status": "pending",
+          "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011"
+        }
+      ],
+      "expect": {
+        "outcome": "idempotent",
+        "existing_entry_id": "00000000-0000-0000-0000-000000000021",
+        "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011",
+        "entries": [],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "settle_confirmed_reverses_pending_reserve",
+      "operation": "settle",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "final_cost": "0.75000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000021",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "reserve",
+          "amount": "-1.25000000",
+          "currency": "USD",
+          "status": "pending",
+          "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011"
+        }
+      ],
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "settle:00000000-0000-0000-0000-000000000011",
+        "entries": [
+          {
+            "entry_type": "settle",
+            "amount": "-0.75000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "metadata": {
+              "operation": "settle",
+              "request_id": "00000000-0000-0000-0000-000000000011"
+            }
+          }
+        ],
+        "status_updates": [
+          {
+            "ledger_entry_id": "00000000-0000-0000-0000-000000000021",
+            "from": "pending",
+            "to": "reversed",
+            "reason": "reserve_settled"
+          }
+        ]
+      }
+    },
+    {
+      "name": "settle_replay_is_idempotent_after_reserve_reversal",
+      "operation": "settle",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "final_cost": "0.75000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000021",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "reserve",
+          "amount": "-1.25000000",
+          "currency": "USD",
+          "status": "reversed",
+          "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-0.75000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        }
+      ],
+      "expect": {
+        "outcome": "idempotent",
+        "existing_entry_id": "00000000-0000-0000-0000-000000000031",
+        "idempotency_key": "settle:00000000-0000-0000-0000-000000000011",
+        "entries": [],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "non_idempotent_duplicate_settle_is_rejected",
+      "operation": "settle",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "final_cost": "0.75000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-0.75000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "legacy-settle-key"
+        }
+      ],
+      "expect_error": "request_already_settled"
+    },
+    {
+      "name": "partial_refund_confirmed_credit_apply",
+      "operation": "refund_partial",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "refund_operation_id": "00000000-0000-0000-0000-000000000051",
+        "amount": "0.25000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-1.00000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        }
+      ],
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051",
+        "entries": [
+          {
+            "entry_type": "refund",
+            "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+            "amount": "0.25000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "metadata": {
+              "operation": "refund_partial",
+              "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+              "refund_kind": "partial"
+            }
+          }
+        ],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "partial_refund_replay_is_idempotent",
+      "operation": "refund_partial",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "refund_operation_id": "00000000-0000-0000-0000-000000000051",
+        "amount": "0.25000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-1.00000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000041",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+          "entry_type": "refund",
+          "amount": "0.25000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051"
+        }
+      ],
+      "expect": {
+        "outcome": "idempotent",
+        "existing_entry_id": "00000000-0000-0000-0000-000000000041",
+        "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051",
+        "entries": [],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "same_partial_refund_operation_with_different_amount_is_rejected",
+      "operation": "refund_partial",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "refund_operation_id": "00000000-0000-0000-0000-000000000051",
+        "amount": "0.30000000",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-1.00000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000041",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+          "entry_type": "refund",
+          "amount": "0.25000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051"
+        }
+      ],
+      "expect_error": "idempotency_conflict"
+    },
+    {
+      "name": "full_refund_after_partial_refunds_remaining_amount",
+      "operation": "refund_full",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-1.00000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000041",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+          "entry_type": "refund",
+          "amount": "0.25000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051"
+        }
+      ],
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "refund:00000000-0000-0000-0000-000000000031",
+        "entries": [
+          {
+            "entry_type": "refund",
+            "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+            "amount": "0.75000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "metadata": {
+              "operation": "refund",
+              "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+              "refund_kind": "full"
+            }
+          }
+        ],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "full_refund_replay_is_idempotent",
+      "operation": "refund_full",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-1.00000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000041",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+          "entry_type": "refund",
+          "amount": "0.25000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000042",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+          "entry_type": "refund",
+          "amount": "0.75000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "refund:00000000-0000-0000-0000-000000000031"
+        }
+      ],
+      "expect": {
+        "outcome": "idempotent",
+        "existing_entry_id": "00000000-0000-0000-0000-000000000042",
+        "idempotency_key": "refund:00000000-0000-0000-0000-000000000031",
+        "entries": [],
+        "status_updates": []
+      }
+    },
+    {
+      "name": "same_full_refund_key_with_wrong_amount_is_rejected",
+      "operation": "refund_full",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "currency": "USD"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000031",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "entry_type": "settle",
+          "amount": "-1.00000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+        },
+        {
+          "id": "00000000-0000-0000-0000-000000000042",
+          "request_id": "00000000-0000-0000-0000-000000000011",
+          "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+          "entry_type": "refund",
+          "amount": "0.50000000",
+          "currency": "USD",
+          "status": "confirmed",
+          "idempotency_key": "refund:00000000-0000-0000-0000-000000000031"
+        }
+      ],
+      "expect_error": "idempotency_conflict"
+    }
+  ]
+}

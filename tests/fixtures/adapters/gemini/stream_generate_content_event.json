@@ -1,0 +1,33 @@
+{
+  "name": "gemini_stream_generate_content_event",
+  "event": {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Hello"
+            }
+          ]
+        },
+        "index": 0
+      }
+    ]
+  },
+  "expected_event": {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Hello"
+            }
+          ]
+        },
+        "index": 0
+      }
+    ]
+  }
+}

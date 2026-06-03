@@ -1,0 +1,75 @@
+{
+  "todo": "E4-001",
+  "scope": "control-plane canonical model default price book selector",
+  "read_contract": {
+    "endpoints": ["GET /admin/models", "GET /admin/models/{id}"],
+    "response_field": "default_price_book_id",
+    "nullable": true,
+    "price_version_selector": "active_effective_version_for_default_price_book"
+  },
+  "write_contract": {
+    "endpoints": ["POST /admin/models", "PATCH /admin/models/{id}"],
+    "field": "default_price_book_id",
+    "permission": "model_manage",
+    "no_ui_required": true
+  },
+  "validation_contract": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "canonical_model_must_belong_to_tenant": true,
+    "price_book_must_belong_to_tenant": true,
+    "archived_price_book_rejected": true,
+    "missing_price_book_returns": "404 not_found",
+    "mismatched_tenant_returns": "400 bad_request or 404 not_found"
+  },
+  "audit_contract": {
+    "actions": ["model.create", "model.update"],
+    "metadata_and_snapshot_safe": true,
+    "raw_request_content_omitted": true,
+    "raw_headers_omitted": true,
+    "raw_user_agent_omitted": true,
+    "raw_client_ip_omitted": true,
+    "allowed_selector_metadata": [
+      "default_price_book_id",
+      "price_book_currency",
+      "relationship_validated",
+      "price_version_selector",
+      "sensitive_material_policy"
+    ]
+  },
+  "examples": {
+    "patch": {
+      "request": {
+        "default_price_book_id": "00000000-0000-0000-0000-000000000060"
+      },
+      "response": {
+        "data": {
+          "id": "00000000-0000-0000-0000-000000000101",
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "model_key": "gpt-visible",
+          "display_name": "GPT Visible",
+          "default_price_book_id": "00000000-0000-0000-0000-000000000060",
+          "status": "active"
+        }
+      }
+    },
+    "success_audit_metadata": {
+      "upsert_semantics": false,
+      "default_price_config_contract": {
+        "tenant_price_book_relation_required": true,
+        "canonical_model_relation_required": true,
+        "write_audit_secret_safe": true
+      },
+      "default_price_selector": {
+        "default_price_book_id": "00000000-0000-0000-0000-000000000060",
+        "price_book_currency": "USD",
+        "relationship_validated": "tenant_canonical_model_price_book",
+        "price_version_selector": "active_effective_version_for_default_price_book",
+        "sensitive_material_policy": "uuid_and_currency_only"
+      }
+    }
+  },
+  "remaining_gaps": [
+    "clear default_price_book_id via explicit null is not part of this slice",
+    "transactional coupling between canonical model field update and audit insert is still the broader audit hardening track"
+  ]
+}

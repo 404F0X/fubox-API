@@ -1,0 +1,6 @@
+-- Intentionally empty.
+--
+-- The local gateway smoke reconciliation seed moved to
+-- db/dev-seeds/0003_dev_smoke_seed_reconcile.sql so production migration
+-- pipelines can apply db/migrations without creating development credentials or
+-- routes.

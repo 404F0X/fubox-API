@@ -1,0 +1,81 @@
+{
+  "source": "one-api",
+  "exported_at": "2026-06-02T00:00:00Z",
+  "Channels": [
+    {
+      "Id": 201,
+      "Name": "openai-main",
+      "Type": 1,
+      "BaseURL": "https://api.openai.example/v1",
+      "Key": "${ONE_API_OPENAI_KEY}",
+      "Status": 1,
+      "Weight": 100,
+      "Priority": 10,
+      "Group": "default,paid",
+      "Models": "gpt-4o,gpt-4o-mini",
+      "ModelMapping": "{\"gpt-4o\":\"gpt-4o-2024-08-06\",\"gpt-4o-mini\":\"gpt-4o-mini\"}"
+    },
+    {
+      "Id": 202,
+      "Name": "azure-eastus",
+      "Type": 3,
+      "BaseURL": "https://example-resource.openai.azure.com/openai/deployments",
+      "Keys": [
+        {
+          "Alias": "azure-primary",
+          "Key": "env:AZURE_OPENAI_API_KEY"
+        }
+      ],
+      "Status": 1,
+      "Weight": 50,
+      "Priority": 20,
+      "Groups": ["paid", "enterprise"],
+      "Models": [
+        "gpt-4o-mini",
+        "text-embedding-3-small"
+      ],
+      "ModelMapping": {
+        "gpt-4o-mini": "gpt-4o-mini-eastus",
+        "text-embedding-3-small": "embedding-small-eastus"
+      }
+    }
+  ],
+  "Models": [
+    {
+      "Model": "gpt-4o",
+      "DisplayName": "GPT-4o",
+      "Family": "gpt-4o",
+      "Capabilities": ["text", "vision", "tool"]
+    },
+    {
+      "Model": "gpt-4o-mini",
+      "DisplayName": "GPT-4o mini",
+      "Family": "gpt-4o",
+      "Capabilities": ["text", "tool"]
+    },
+    {
+      "Model": "text-embedding-3-small",
+      "DisplayName": "Text embedding 3 small",
+      "Family": "embedding",
+      "Capabilities": ["embedding"]
+    }
+  ],
+  "ProviderKeys": [
+    {
+      "ChannelId": 202,
+      "Alias": "azure-secondary-placeholder",
+      "Key": "env:AZURE_OPENAI_SECONDARY_KEY"
+    }
+  ],
+  "ModelMappings": [
+    {
+      "ClientModel": "chatgpt-4o-latest",
+      "CanonicalModel": "gpt-4o",
+      "ChannelId": 201,
+      "UpstreamModel": "gpt-4o-2024-08-06",
+      "Priority": 5,
+      "Weight": 100,
+      "Enabled": true
+    }
+  ]
+}

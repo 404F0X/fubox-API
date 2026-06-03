@@ -1,0 +1,130 @@
+{
+  "todo": "E3-004",
+  "scenario": "control_plane_provider_key_status_contract",
+  "base_path": "/admin",
+  "read_contract": {
+    "path": "GET /admin/provider-keys/{id}",
+    "response_envelope": "data",
+    "credential_material_omitted": true,
+    "runtime_window_state_omitted": true,
+    "public_credential_indicator": "credential_configured",
+    "forbidden_response_fields": [
+      "secret",
+      "api_key",
+      "encrypted_secret",
+      "secret_fingerprint",
+      "has_secret_fingerprint",
+      "current_window_state"
+    ]
+  },
+  "patch_contract": {
+    "path": "PATCH /admin/provider-keys/{id}",
+    "allowed_target_statuses": [
+      "enabled",
+      "manual_disabled",
+      "degraded",
+      "recovery_probe"
+    ],
+    "normalized_aliases": {
+      "active": "enabled",
+      "disabled": "manual_disabled"
+    },
+    "forbidden_direct_target_statuses": [
+      "auth_failed",
+      "quota_exhausted",
+      "cooldown",
+      "deleted"
+    ],
+    "runtime_managed_statuses": [
+      "auth_failed",
+      "quota_exhausted",
+      "cooldown"
+    ],
+    "secret_update_fields_rejected": [
+      "secret",
+      "api_key",
+      "encrypted_secret",
+      "secret_fingerprint"
+    ],
+    "metadata_secret_fields_rejected": true,
+    "audit_secret_safe": true
+  },
+  "examples": {
+    "manual_disable": {
+      "request": {
+        "status": "manual_disabled",
+        "metadata": {
+          "owner": "ops"
+        }
+      },
+      "response": {
+        "data": {
+          "id": "00000000-0000-0000-0000-000000000501",
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "channel_id": "00000000-0000-0000-0000-000000000401",
+          "key_alias": "primary",
+          "credential_configured": true,
+          "status": "manual_disabled",
+          "health_score": 0.25,
+          "cooldown_until": "2026-06-02 12:05:00+00",
+          "last_error_code": "provider_auth_failed",
+          "rpm_limit": 60,
+          "tpm_limit": 100000,
+          "concurrency_limit": 8,
+          "metadata": {
+            "owner": "ops"
+          },
+          "secret_redacted": true
+        }
+      }
+    },
+    "manual_probe": {
+      "request": {
+        "status": "recovery_probe"
+      },
+      "response": {
+        "data": {
+          "id": "00000000-0000-0000-0000-000000000501",
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "channel_id": "00000000-0000-0000-0000-000000000401",
+          "key_alias": "primary",
+          "credential_configured": true,
+          "status": "recovery_probe",
+          "health_score": 0.25,
+          "cooldown_until": "2026-06-02 12:05:00+00",
+          "last_error_code": "provider_auth_failed",
+          "rpm_limit": 60,
+          "tpm_limit": 100000,
+          "concurrency_limit": 8,
+          "metadata": {
+            "owner": "ops"
+          },
+          "secret_redacted": true
+        }
+      }
+    },
+    "illegal_cooldown": {
+      "request": {
+        "status": "cooldown"
+      },
+      "response": {
+        "error": {
+          "code": "bad_request",
+          "message": "provider key status `cooldown` is runtime-managed and cannot be entered through admin patch"
+        }
+      }
+    },
+    "illegal_auth_failed": {
+      "request": {
+        "status": "auth_failed"
+      },
+      "response": {
+        "error": {
+          "code": "bad_request",
+          "message": "provider key status `auth_failed` is runtime-managed and cannot be entered through admin patch"
+        }
+      }
+    }
+  },
+  "notes": "Control Plane read/patch contract only. Gateway and worker runtime writers remain responsible for auth_failed, quota_exhausted, and cooldown transitions."
+}

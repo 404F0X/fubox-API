@@ -1,0 +1,5 @@
+-- Intentionally empty.
+--
+-- The local gateway/provider/virtual-key seed moved to
+-- db/dev-seeds/0002_dev_gateway_seed.sql so production migration pipelines can
+-- apply db/migrations without creating development credentials or routes.

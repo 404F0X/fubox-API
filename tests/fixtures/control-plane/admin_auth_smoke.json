@@ -1,0 +1,112 @@
+{
+  "scenario": "control_plane_admin_auth_rbac_smoke",
+  "base_path": "/admin",
+  "auth_endpoints": {
+    "login": {
+      "method": "POST",
+      "path": "/admin/auth/login",
+      "public": true,
+      "request_fields": ["email", "password"],
+      "response_token_field": "data.session_token_once",
+      "failure_rate_limit": {
+        "key": "tenant_id + normalized_email_fingerprint",
+        "default_threshold": 5,
+        "default_window_seconds": 300,
+        "limited_status": 429,
+        "limited_error_code": "login_rate_limited",
+        "retry_after_header": "Retry-After",
+        "invalid_credentials_error_code": "invalid_credentials",
+        "success_clears_failures": true,
+        "does_not_reveal_user_existence": true,
+        "does_not_store_raw_username": true,
+        "redis_distributed_store": "future_trait_implementation"
+      }
+    },
+    "oidc_authorize_url": {
+      "method": "GET",
+      "path": "/admin/auth/oidc/authorize-url",
+      "public": true,
+      "response_fields": [
+        "data.authorization_url",
+        "data.state",
+        "data.nonce",
+        "data.server_state_persisted",
+        "data.callback_implemented"
+      ],
+      "contract": {
+        "response_type": "code",
+        "server_state_persisted": false,
+        "callback_implemented": false,
+        "state_and_nonce_randomized": true,
+        "scope_requires_openid": true
+      }
+    },
+    "oidc_callback": {
+      "method": "GET",
+      "path": "/admin/auth/oidc/callback",
+      "public": true,
+      "expected_status": 400,
+      "accepted_login": false,
+      "error_codes": [
+        "oidc_state_not_persisted",
+        "oidc_claims_not_accepted"
+      ],
+      "security_boundaries": {
+        "requires_server_side_state_and_nonce": true,
+        "code_exchange_implemented": false,
+        "jwks_id_token_validation_implemented": false,
+        "direct_claims_login_accepted": false,
+        "error_body_must_not_echo": [
+          "provider_config",
+          "code",
+          "id_token",
+          "access_token",
+          "claims"
+        ]
+      }
+    },
+    "me": {
+      "method": "GET",
+      "path": "/admin/auth/me",
+      "requires_session": true,
+      "response_fields": [
+        "data.user",
+        "data.session",
+        "data.capability_summary.capabilities",
+        "data.capability_summary.denied_capabilities",
+        "data.capability_summary.secret_safe"
+      ],
+      "forbidden_response_fields": [
+        "data.session_token_once",
+        "data.password_hash",
+        "data.permissions"
+      ]
+    },
+    "logout": {
+      "method": "POST",
+      "path": "/admin/auth/logout",
+      "requires_session": true
+    }
+  },
+  "protected_no_session": {
+    "method": "GET",
+    "path": "/admin/providers",
+    "expected_status": 401,
+    "expected_error_code": "unauthorized"
+  },
+  "optional_role_denials": [
+    {
+      "name": "viewer_provider_write_denied",
+      "role": "viewer",
+      "permission": "provider_manage",
+      "method": "PATCH",
+      "path": "/admin/providers/00000000-0000-0000-0000-000000000000",
+      "expected_status": 403,
+      "expected_error_code": "forbidden",
+      "body": {
+        "name": "auth smoke denied probe"
+      }
+    }
+  ],
+  "notes": "Live smoke verifies real admin login, /admin/auth/me secret-safe capability summary, logout, and post-logout 401. Viewer 403 is optional unless strict mode is enabled because the dev seed only guarantees the owner admin account."
+}

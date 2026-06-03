@@ -1,0 +1,157 @@
+{
+  "scenario": "gateway_retry_fallback_smoke",
+  "base_path": "/v1/chat/completions",
+  "mock_provider_selector_modes": [
+    "query",
+    "header",
+    "endpoint",
+    "body"
+  ],
+  "selector_contract": {
+    "query": "/v1/chat/completions?scenario={scenario}",
+    "header": {
+      "path": "/v1/chat/completions",
+      "header": "X-Mock-Scenario"
+    },
+    "endpoint": "/__scenario/{scenario}/v1/chat/completions",
+    "body_field": "mock_scenario",
+    "precedence": [
+      "query",
+      "header",
+      "endpoint",
+      "body",
+      "default"
+    ]
+  },
+  "gateway_fallback_contract": {
+    "probe_mode": "route_candidate_endpoint",
+    "request_body_must_not_set_mock_scenario": true,
+    "failing_candidate_endpoint_template": "http://mock-provider:18080/__scenario/{scenario}",
+    "success_candidate_endpoint": "http://mock-provider:18080",
+    "strict_live_profile_ref": "Fallback Live Strict Smoke",
+    "strict_live_channel_tag": "fallback-live-strict",
+    "strict_live_seed": "db/dev-seeds/0003_dev_smoke_seed_reconcile.sql",
+    "max_provider_attempts": 3,
+    "provider_attempts_authoritative": true,
+    "request_logs_final_route_fields": [
+      "resolved_provider_id",
+      "resolved_channel_id",
+      "provider_key_id",
+      "upstream_model"
+    ],
+    "fallback_metadata": {
+      "provider_attempts_fallback_reason": "failure_scenarios.expected_gateway_error_code",
+      "provider_attempts_schema": "gateway_retry_fallback_v1",
+      "request_logs_snapshot_schema": "gateway_retry_fallback_v1"
+    },
+    "streaming_no_late_fallback_after_partial_sent": true
+  },
+  "failure_scenarios": [
+    {
+      "name": "rate_limit_then_fallback",
+      "scenario": "429",
+      "strict_live_model": "mock-gpt-4o-mini-fallback-429",
+      "expected_mock_status": 429,
+      "expected_gateway_error_code": "provider_429",
+      "retry_after_seconds": 1,
+      "fallback_expected_status": 200,
+      "expected_provider_attempts": {
+        "minimum_count": 2,
+        "failed_attempt": {
+          "status": "failed",
+          "fallback_reason": "provider_429",
+          "metadata_schema": "gateway_retry_fallback_v1"
+        },
+        "final_attempt": {
+          "status": "succeeded",
+          "http_status": 200
+        }
+      },
+      "expected_request_log": {
+        "status": "succeeded",
+        "http_status": 200,
+        "final_route_fields_update": true,
+        "route_decision_snapshot_fallback_schema": "gateway_retry_fallback_v1"
+      }
+    },
+    {
+      "name": "server_error_then_fallback",
+      "scenario": "5xx",
+      "strict_live_model": "mock-gpt-4o-mini-fallback-5xx",
+      "expected_mock_status": 502,
+      "expected_gateway_error_code": "provider_5xx",
+      "fallback_expected_status": 200,
+      "expected_provider_attempts": {
+        "minimum_count": 2,
+        "failed_attempt": {
+          "status": "failed",
+          "fallback_reason": "provider_5xx",
+          "metadata_schema": "gateway_retry_fallback_v1"
+        },
+        "final_attempt": {
+          "status": "succeeded",
+          "http_status": 200
+        }
+      },
+      "expected_request_log": {
+        "status": "succeeded",
+        "http_status": 200,
+        "final_route_fields_update": true,
+        "route_decision_snapshot_fallback_schema": "gateway_retry_fallback_v1"
+      }
+    },
+    {
+      "name": "timeout_then_fallback",
+      "scenario": "timeout",
+      "strict_live_model": "mock-gpt-4o-mini-fallback-timeout",
+      "expected_mock_status": "timeout",
+      "expected_gateway_error_code": "provider_timeout",
+      "fallback_expected_status": 200,
+      "expected_provider_attempts": {
+        "minimum_count": 2,
+        "failed_attempt": {
+          "status": "failed",
+          "fallback_reason": "provider_timeout",
+          "metadata_schema": "gateway_retry_fallback_v1"
+        },
+        "final_attempt": {
+          "status": "succeeded",
+          "http_status": 200
+        }
+      },
+      "expected_request_log": {
+        "status": "succeeded",
+        "http_status": 200,
+        "final_route_fields_update": true,
+        "route_decision_snapshot_fallback_schema": "gateway_retry_fallback_v1"
+      }
+    },
+    {
+      "name": "eof_then_fallback",
+      "scenario": "eof",
+      "strict_live_model": "mock-gpt-4o-mini-fallback-eof",
+      "expected_mock_status": "connection_closed",
+      "expected_gateway_error_code": "provider_request_failed",
+      "fallback_expected_status": 200,
+      "expected_provider_attempts": {
+        "minimum_count": 2,
+        "failed_attempt": {
+          "status": "failed",
+          "fallback_reason": "provider_request_failed",
+          "metadata_schema": "gateway_retry_fallback_v1"
+        },
+        "final_attempt": {
+          "status": "succeeded",
+          "http_status": 200
+        }
+      },
+      "expected_request_log": {
+        "status": "succeeded",
+        "http_status": 200,
+        "final_route_fields_update": true,
+        "route_decision_snapshot_fallback_schema": "gateway_retry_fallback_v1"
+      }
+    }
+  ],
+  "notes": "Gateway fallback probes must be driven by route candidate endpoint/config fixtures: the failing first candidate points at /__scenario/{scenario}, and the fallback candidate points at the normal mock provider endpoint. The gateway request body must not set mock_scenario, otherwise every route candidate receives the same forced failure. In live mode, DB log checks prove provider_attempts records each attempt and request_logs is rewritten to the final successful provider/channel/key."
+}

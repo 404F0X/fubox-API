@@ -1,0 +1,130 @@
+{
+  "scenario": "gateway_anthropic_messages_runtime_contract_v1",
+  "endpoint": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "stream": false,
+    "runtime_entry": "apps/gateway/src/main.rs::anthropic_messages",
+    "metrics_endpoint": "anthropic_messages"
+  },
+  "request": {
+    "model": "mock-claude",
+    "max_tokens": 64,
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      }
+    ]
+  },
+  "runtime_contract": {
+    "auth_before_request_parse": true,
+    "route_candidates": "resolve_chat_route_candidates",
+    "selected_route_log_created_before_preauthorize": true,
+    "preauthorize_before_provider_attempt": true,
+    "preauthorize_before_provider_key_open": true,
+    "preauthorize_before_upstream_call": true,
+    "provider_attempt_before_provider_key_open": true,
+    "provider_key_open_before_upstream_call": true,
+    "upstream_call": "send_anthropic_messages_request",
+    "upstream_model_rewrite": "anthropic_messages_request_for_upstream",
+    "upstream_headers": {
+      "api_key_header": "x-api-key",
+      "anthropic_version_header": "anthropic-version",
+      "content_type": "application/json"
+    },
+    "fallback_on_retryable_provider_error": true
+  },
+  "streaming_contract": {
+    "request_stream_true": true,
+    "implemented": false,
+    "http_status": 501,
+    "error_code": "streaming_not_implemented",
+    "route_snapshot_reason": "anthropic_messages_stream_not_implemented",
+    "request_log": {
+      "created": true,
+      "final_status": "rejected"
+    },
+    "provider_attempts_created": false,
+    "provider_key_opened": false,
+    "upstream_http_request_sent": false
+  },
+  "preauth_rejection": {
+    "http_status": 402,
+    "openai_error": {
+      "type": "billing_error",
+      "code": "billing_insufficient_balance",
+      "gateway_owner": "billing",
+      "gateway_stage": "preauth",
+      "retryable": false
+    },
+    "request_log": {
+      "created": true,
+      "final_status": "rejected",
+      "http_status": 402,
+      "final_cost": null,
+      "currency": null,
+      "price_version_id": null
+    },
+    "provider_attempts_created": false,
+    "provider_key_opened": false,
+    "upstream_http_request_sent": false
+  },
+  "success_contract": {
+    "request_log": {
+      "final_status": "succeeded",
+      "http_status": 200,
+      "response_body_hash": "recorded",
+      "final_route_rewritten_after_fallback": true
+    },
+    "usage": {
+      "adapter_usage": {
+        "prompt_tokens": 12,
+        "completion_tokens": 34,
+        "total_tokens": 46
+      },
+      "request_log": {
+        "input_tokens": 12,
+        "output_tokens": 34
+      },
+      "rating_usage": {
+        "input_tokens": 12,
+        "output_tokens": 34
+      }
+    },
+    "rating": {
+      "pricing_rules_json": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_1m": "1.00000000",
+        "output_token_rate_per_1m": "2.00000000",
+        "fixed_request_cost": "0.10000000"
+      },
+      "expected_final_cost": "0.10008000",
+      "currency": "USD"
+    },
+    "ledger_settle": {
+      "requires_complete_usage": true,
+      "requires_nonzero_rating": true,
+      "model_source": "route.canonical_model_key"
+    }
+  },
+  "secret_safety": {
+    "provider_key_value_never_logged": true,
+    "request_payload_log_uses_payload_policy": true,
+    "non_json_provider_error_logs_hash_only": true,
+    "forbidden_markers": [
+      "sk-live-secret",
+      "Authorization",
+      "Bearer ",
+      "x-api-key"
+    ]
+  },
+  "remaining_gaps": [
+    "Anthropic Messages streaming runtime",
+    "live smoke with gateway plus mock provider and database",
+    "dedicated Anthropic protocol route or capability constraints beyond shared chat route candidates",
+    "complete Messages tool/content-block runtime semantics"
+  ],
+  "notes": "Dry-run fixture for the first Gateway Anthropic Messages runtime slice. It locks the order auth, request log, preauthorize, provider attempt, provider key open, upstream request, usage rating, and ledger settle for non-streaming requests. Streaming is intentionally stable 501 before provider side effects until runtime streaming is implemented."
+}

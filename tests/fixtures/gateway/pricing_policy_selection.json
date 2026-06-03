@@ -1,0 +1,51 @@
+{
+  "scenario": "gateway_pricing_policy_selection",
+  "selector_priority": [
+    {
+      "priority": 1,
+      "source": "api_key_profiles",
+      "column": "default_price_book_id"
+    },
+    {
+      "priority": 2,
+      "source": "projects",
+      "column": "default_price_book_id"
+    },
+    {
+      "priority": 3,
+      "source": "tenants",
+      "column": "default_price_book_id"
+    },
+    {
+      "priority": 4,
+      "source": "canonical_models",
+      "column": "default_price_book_id"
+    }
+  ],
+  "required_sql_guards": [
+    "p.tenant_id = $1",
+    "p.project_id = $3",
+    "p.status = 'active'",
+    "p.deleted_at is null",
+    "prj.tenant_id = $1",
+    "prj.id = $3",
+    "prj.status = 'active'",
+    "prj.deleted_at is null",
+    "t.id = $1",
+    "t.status = 'active'",
+    "t.deleted_at is null",
+    "pb.tenant_id = $1",
+    "pb.status = 'active'",
+    "pb.project_id is null or pb.project_id = $3",
+    "order by sc.selector_priority asc",
+    "pv.status = 'active'",
+    "pv.effective_at <= now()",
+    "pv.retired_at is null or pv.retired_at > now()",
+    "pv.canonical_model_id = cm.id or pv.canonical_model_id is null",
+    "(pv.canonical_model_id is not null) desc"
+  ],
+  "expected_behavior": {
+    "price_book_scope": "A selected price book may be tenant-wide or scoped to auth.project_id only.",
+    "price_version_selection": "For the selected price book, choose active/effective/not-retired versions, preferring model-specific over generic."
+  }
+}

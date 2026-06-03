@@ -1,0 +1,144 @@
+{
+  "scenario": "worker_prompt_eval_shadow_plan_contract",
+  "command": "ai-worker prompt-eval-shadow --dry-run --input tests/fixtures/worker/prompt_eval_shadow_plan_contract.json",
+  "input_contract": {
+    "source": "fixture_json",
+    "network_send_default": false,
+    "db_write_default": false,
+    "object_store_write_default": false,
+    "gateway_runtime_connected": false,
+    "execute_or_send_flags_refused": ["--execute", "--send"],
+    "covered_surfaces": [
+      "prompt_registry_item",
+      "eval_dataset",
+      "shadow_traffic"
+    ]
+  },
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "registry": {
+      "item_id": "prompt.customer_support.summary",
+      "version": "2026-06-03.1",
+      "prompt": {
+        "system": "raw-registry-prompt-marker should never appear in the dry-run output",
+        "messages": [
+          {
+            "role": "user",
+            "content": "summarize the customer case with fixture-route-token-marker"
+          }
+        ],
+        "metadata": {
+          "provider_key_value": "fixture-provider-key-marker"
+        }
+      }
+    },
+    "dataset": {
+      "dataset_id": "eval.customer_support.summary",
+      "version": "2026-06-03.1",
+      "payload_policy": {
+        "policy_id": "payload-policy.eval.full-requested",
+        "mode": "full"
+      },
+      "samples": [
+        {
+          "sample_id": "sample-001",
+          "input": {
+            "prompt": "raw-eval-payload-marker sample one",
+            "Authorization": "Bearer short-fixture-auth"
+          },
+          "expected": "raw-eval-expected-marker"
+        },
+        {
+          "sample_id": "sample-002",
+          "input": {
+            "messages": [
+              {
+                "role": "user",
+                "content": "fixture-provider-key-marker"
+              }
+            ],
+            "api_token": "fixture-route-token-marker"
+          },
+          "expected": {
+            "answer": "raw-eval-payload-marker sample two"
+          }
+        }
+      ]
+    },
+    "shadow_traffic": {
+      "enabled": true,
+      "percentage": 5.0,
+      "candidate_route_labels": [
+        "control-openai-primary",
+        "candidate-anthropic-canary"
+      ],
+      "routes": [
+        {
+          "label": "candidate-gemini-safe"
+        }
+      ],
+      "payload": {
+        "body": "shadow-raw-payload-marker",
+        "Authorization": "Bearer short-shadow-auth"
+      }
+    },
+    "headers": {
+      "Authorization": "Bearer short-fixture-auth"
+    },
+    "provider_key_value": "fixture-provider-key-marker",
+    "api_token": "fixture-route-token-marker",
+    "raw_payload": "raw-eval-payload-marker"
+  },
+  "expected_output_contract": {
+    "schema_version": "prompt_eval_shadow_plan.v1",
+    "dry_run": true,
+    "read_only": true,
+    "db_writes": false,
+    "object_store_writes": false,
+    "outbound_calls": false,
+    "would_write": false,
+    "would_send": false,
+    "registry": {
+      "item_id": "prompt.customer_support.summary",
+      "version": "2026-06-03.1",
+      "hash_only": true
+    },
+    "dataset": {
+      "dataset_id": "eval.customer_support.summary",
+      "version": "2026-06-03.1",
+      "sample_count": 2,
+      "sample_hash_only": true
+    },
+    "payload_policy": {
+      "requested_policy": "full",
+      "effective_policy": "hash",
+      "raw_payload_storage": false,
+      "raw_payload_output": false
+    },
+    "shadow_traffic": {
+      "percentage": 5.0,
+      "candidate_route_labels": [
+        "control-openai-primary",
+        "candidate-anthropic-canary",
+        "candidate-gemini-safe"
+      ],
+      "would_dispatch": false,
+      "would_send": false
+    },
+    "must_not_echo": [
+      "raw-registry-prompt-marker",
+      "raw-eval-payload-marker",
+      "raw-eval-expected-marker",
+      "shadow-raw-payload-marker",
+      "fixture-provider-key-marker",
+      "fixture-route-token-marker",
+      "short-fixture-auth",
+      "short-shadow-auth",
+      "Authorization",
+      "provider_key_value",
+      "api_token",
+      "token",
+      "secret"
+    ]
+  }
+}

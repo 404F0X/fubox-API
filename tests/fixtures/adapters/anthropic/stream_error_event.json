@@ -1,0 +1,19 @@
+{
+  "name": "anthropic_stream_error_event",
+  "event_name": "error",
+  "event": {
+    "type": "error",
+    "error": {
+      "type": "overloaded_error",
+      "message": "mock overloaded"
+    }
+  },
+  "expected_event": {
+    "type": "error",
+    "error": {
+      "type": "overloaded_error",
+      "message": "mock overloaded"
+    }
+  },
+  "expected_terminal": "error"
+}

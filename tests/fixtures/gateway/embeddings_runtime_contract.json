@@ -1,0 +1,97 @@
+{
+  "scenario": "gateway_embeddings_runtime_contract_v1",
+  "endpoint": {
+    "method": "POST",
+    "path": "/v1/embeddings",
+    "stream": false,
+    "runtime_entry": "apps/gateway/src/main.rs::embeddings",
+    "metrics_endpoint": "embeddings"
+  },
+  "request": {
+    "model": "mock-embedding",
+    "input": [
+      "hi",
+      "bye"
+    ],
+    "encoding_format": "float",
+    "dimensions": 8
+  },
+  "runtime_contract": {
+    "auth_before_request_parse": true,
+    "route_candidates": "resolve_chat_route_candidates",
+    "selected_route_log_created_before_preauthorize": true,
+    "preauthorize_before_provider_attempt": true,
+    "preauthorize_before_provider_key_open": true,
+    "preauthorize_before_upstream_call": true,
+    "provider_attempt_before_provider_key_open": true,
+    "provider_key_open_before_upstream_call": true,
+    "upstream_call": "embeddings_with_provider_key",
+    "upstream_model_rewrite": "embeddings_request_for_upstream",
+    "fallback_on_retryable_provider_error": true
+  },
+  "preauth_rejection": {
+    "http_status": 402,
+    "openai_error": {
+      "type": "billing_error",
+      "code": "billing_insufficient_balance",
+      "gateway_owner": "billing",
+      "gateway_stage": "preauth",
+      "retryable": false
+    },
+    "request_log": {
+      "created": true,
+      "final_status": "rejected",
+      "http_status": 402,
+      "final_cost": null,
+      "currency": null,
+      "price_version_id": null
+    },
+    "provider_attempts_created": false,
+    "provider_key_opened": false,
+    "upstream_http_request_sent": false
+  },
+  "success_contract": {
+    "request_log": {
+      "final_status": "succeeded",
+      "http_status": 200,
+      "response_body_hash": "recorded",
+      "final_route_rewritten_after_fallback": true
+    },
+    "usage": {
+      "adapter_usage": {
+        "prompt_tokens": 37,
+        "completion_tokens": null,
+        "total_tokens": 37
+      },
+      "request_log": {
+        "input_tokens": 37,
+        "output_tokens": 0
+      },
+      "rating_usage": {
+        "input_tokens": 37,
+        "output_tokens": 0
+      }
+    },
+    "rating": {
+      "pricing_rules_json": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_1m": "1.00000000",
+        "fixed_request_cost": "0.10000000"
+      },
+      "expected_final_cost": "0.10003700",
+      "currency": "USD"
+    },
+    "ledger_settle": {
+      "requires_complete_usage": true,
+      "requires_nonzero_rating": true,
+      "model_source": "route.canonical_model_key"
+    }
+  },
+  "remaining_gaps": [
+    "live smoke with gateway plus mock provider and database",
+    "dedicated embedding route or capability constraints",
+    "full OpenAI embeddings input schema coverage"
+  ],
+  "notes": "Dry-run fixture for the first Gateway embeddings runtime slice. It documents that auth and DB route planning happen before provider side effects, and that preauth rejection returns before provider attempts, provider key opening, or upstream HTTP."
+}

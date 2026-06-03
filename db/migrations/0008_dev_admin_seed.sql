@@ -1,0 +1,5 @@
+-- Intentionally empty.
+--
+-- The local admin seed moved to db/dev-seeds/0001_dev_admin_seed.sql so
+-- production migration pipelines can apply db/migrations without creating a
+-- default administrator account.

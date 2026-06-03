@@ -1,0 +1,232 @@
+{
+  "scenario": "route_decision_snapshot_contract",
+  "crate": "ai-gateway-routing",
+  "function": "select_route_from_evaluated",
+  "input": {
+    "request": {
+      "requested_model": "gpt-contract",
+      "canonical_model": "gpt-contract",
+      "policy": {
+        "seed": 0
+      }
+    },
+    "context": {
+      "trace_id": "trace-contract-1",
+      "trace_affinity": {
+        "enabled": true,
+        "previous_successful_channel_id": "channel-primary"
+      }
+    },
+    "evaluated_candidates": [
+      {
+        "candidate": {
+          "channel_id": "channel-primary",
+          "provider_id": "provider-allowed-a",
+          "provider_model": "gpt-contract",
+          "priority": 3000010,
+          "weight": 100,
+          "status": "Enabled",
+          "health": "Healthy",
+          "rate_limit_available": true
+        },
+        "filter_reason": null
+      },
+      {
+        "candidate": {
+          "channel_id": "channel-backup",
+          "provider_id": "provider-allowed-b",
+          "provider_model": "gpt-contract",
+          "priority": 3000020,
+          "weight": 80,
+          "status": "Enabled",
+          "health": "Healthy",
+          "rate_limit_available": true
+        },
+        "filter_reason": null
+      },
+      {
+        "candidate": {
+          "channel_id": "channel-denied-tag",
+          "provider_id": "provider-allowed-c",
+          "provider_model": "gpt-contract",
+          "priority": 3000030,
+          "weight": 70,
+          "status": "Enabled",
+          "health": "Healthy",
+          "rate_limit_available": true
+        },
+        "filter_reason": "ProfileChannelTagDenied"
+      },
+      {
+        "candidate": {
+          "channel_id": "channel-provider-denied",
+          "provider_id": "provider-denied",
+          "provider_model": "gpt-contract",
+          "priority": 3000040,
+          "weight": 60,
+          "status": "Enabled",
+          "health": "Healthy",
+          "rate_limit_available": true
+        },
+        "filter_reason": "ProfileProviderDenied"
+      },
+      {
+        "candidate": {
+          "channel_id": "channel-rate-limited",
+          "provider_id": "provider-allowed-d",
+          "provider_model": "gpt-contract",
+          "priority": 3000050,
+          "weight": 50,
+          "status": "Enabled",
+          "health": "Healthy",
+          "rate_limit_available": false
+        },
+        "filter_reason": "RateLimitExceeded"
+      }
+    ]
+  },
+  "expected_snapshot": {
+    "version": 1,
+    "requested_model": "gpt-contract",
+    "canonical_model": "gpt-contract",
+    "policy": {
+      "seed": 0
+    },
+    "trace_id": "trace-contract-1",
+    "trace_affinity": {
+      "status": "Applied",
+      "trace_id": "trace-contract-1",
+      "previous_successful_channel_id": "channel-primary",
+      "applied_channel_id": "channel-primary"
+    },
+    "selected_channel_id": "channel-primary",
+    "selected": {
+      "channel_id": "channel-primary",
+      "provider_id": "provider-allowed-a",
+      "provider_model": "gpt-contract",
+      "priority": 3000010,
+      "weight": 100
+    },
+    "candidates": [
+      {
+        "channel_id": "channel-primary",
+        "provider_id": "provider-allowed-a",
+        "provider_model": "gpt-contract",
+        "priority": 3000010,
+        "weight": 100,
+        "status": "Enabled",
+        "health": "Healthy",
+        "rate_limit_available": true,
+        "filtered": false,
+        "filter_reason": null,
+        "score": {
+          "priority": 3000010,
+          "weight": 100,
+          "trace_affinity_bonus": 1,
+          "total": 2144483738
+        },
+        "selected": true,
+        "trace_affinity_match": true
+      },
+      {
+        "channel_id": "channel-backup",
+        "provider_id": "provider-allowed-b",
+        "provider_model": "gpt-contract",
+        "priority": 3000020,
+        "weight": 80,
+        "status": "Enabled",
+        "health": "Healthy",
+        "rate_limit_available": true,
+        "filtered": false,
+        "filter_reason": null,
+        "score": {
+          "priority": 3000020,
+          "weight": 80,
+          "trace_affinity_bonus": 0,
+          "total": 2144483707
+        },
+        "selected": false,
+        "trace_affinity_match": false
+      },
+      {
+        "channel_id": "channel-denied-tag",
+        "provider_id": "provider-allowed-c",
+        "provider_model": "gpt-contract",
+        "priority": 3000030,
+        "weight": 70,
+        "status": "Enabled",
+        "health": "Healthy",
+        "rate_limit_available": true,
+        "filtered": true,
+        "filter_reason": "ProfileChannelTagDenied",
+        "score": null,
+        "selected": false,
+        "trace_affinity_match": false
+      },
+      {
+        "channel_id": "channel-provider-denied",
+        "provider_id": "provider-denied",
+        "provider_model": "gpt-contract",
+        "priority": 3000040,
+        "weight": 60,
+        "status": "Enabled",
+        "health": "Healthy",
+        "rate_limit_available": true,
+        "filtered": true,
+        "filter_reason": "ProfileProviderDenied",
+        "score": null,
+        "selected": false,
+        "trace_affinity_match": false
+      },
+      {
+        "channel_id": "channel-rate-limited",
+        "provider_id": "provider-allowed-d",
+        "provider_model": "gpt-contract",
+        "priority": 3000050,
+        "weight": 50,
+        "status": "Enabled",
+        "health": "Healthy",
+        "rate_limit_available": false,
+        "filtered": true,
+        "filter_reason": "RateLimitExceeded",
+        "score": null,
+        "selected": false,
+        "trace_affinity_match": false
+      }
+    ]
+  },
+  "expected_snapshot_summary": {
+    "version": 1,
+    "requested_model": "gpt-contract",
+    "canonical_model": "gpt-contract",
+    "selected_channel_id": "channel-primary",
+    "selected_provider_model": "gpt-contract",
+    "candidate_count": 5,
+    "filtered_count": 3,
+    "filter_reasons": [
+      "ProfileChannelTagDenied",
+      "ProfileProviderDenied",
+      "RateLimitExceeded"
+    ],
+    "selected_score_total": 2144483738,
+    "trace_affinity_status": "Applied"
+  },
+  "response_contract": {
+    "snapshot_required_fields": [
+      "version",
+      "requested_model",
+      "canonical_model",
+      "selected_channel_id",
+      "selected",
+      "candidates",
+      "candidates.score",
+      "candidates.filter_reason",
+      "candidates.selected"
+    ],
+    "credential_material_omitted": true
+  },
+  "notes": [
+    "Pure function contract.",
+    "No storage handle or upstream runtime input is part of this fixture."
+  ]
+}

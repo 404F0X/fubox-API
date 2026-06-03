@@ -1,0 +1,26 @@
+{
+  "scenario": "invalid_json_chunk",
+  "aliases": ["invalid_sse"],
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=invalid_json_chunk",
+  "body": {
+    "stream": true
+  },
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=invalid_json_chunk",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "invalid_json_chunk"
+      }
+    },
+    "endpoint": "/__scenario/invalid_json_chunk/v1/chat/completions",
+    "body": {
+      "mock_scenario": "invalid_json_chunk"
+    }
+  },
+  "expected_status": 200,
+  "expected_content_type": "text/event-stream",
+  "expected_contains": ["data: {not-json}", "data: [DONE]"],
+  "notes": "OpenAI-compatible SSE stream with a syntactically invalid JSON data event between valid framing events."
+}

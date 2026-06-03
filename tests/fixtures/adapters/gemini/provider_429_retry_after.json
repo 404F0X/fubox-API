@@ -1,0 +1,33 @@
+{
+  "name": "gemini_provider_429_retry_after",
+  "response": {
+    "status": 429,
+    "headers": {
+      "retry-after": "2",
+      "retry-after-ms": "2000"
+    },
+    "body": {
+      "error": {
+        "code": 429,
+        "message": "Quota exceeded for the test model.",
+        "status": "RESOURCE_EXHAUSTED"
+      }
+    }
+  },
+  "expected_retry_after_header_value": "2",
+  "expected_error_mapping": {
+    "http_status": 429,
+    "error_type": "provider_error",
+    "code": "provider_429",
+    "message": "upstream provider returned HTTP 429",
+    "owner": "provider",
+    "stage": "provider_call",
+    "retryable": true,
+    "retry_after_ms": 2000,
+    "signal": {
+      "status_code": 429,
+      "transport": null,
+      "retry_after_ms": 2000
+    }
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "todo": "E1-004",
+  "scope": "control-plane provider_key and price_version admin writes plus read-only audit log query API",
+  "transaction_contract": {
+    "business_and_audit_share_transaction": true,
+    "paths": [
+      "POST /admin/provider-keys",
+      "PATCH /admin/provider-keys/{id}",
+      "DELETE /admin/provider-keys/{id}",
+      "POST /admin/price-versions"
+    ],
+    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider_key or price_version write"
+  },
+  "metadata_contract": {
+    "raw_request_body_omitted": true,
+    "raw_headers_omitted": true,
+    "raw_user_agent_omitted": true,
+    "raw_client_ip_omitted": true,
+    "request_context_fields": [
+      "user_agent_sha256",
+      "user_agent_length",
+      "client_ip_sha256",
+      "client_ip_source",
+      "client_ip_kind",
+      "client_ip_scope"
+    ]
+  },
+  "query_contract": {
+    "path": "GET /admin/audit-logs",
+    "required_permission": "audit_read",
+    "tenant_scoped": true,
+    "filters": [
+      "tenant_id",
+      "actor_user_id",
+      "actor_session_id",
+      "action",
+      "resource_type",
+      "resource_id",
+      "resource_tenant_id",
+      "created_from",
+      "created_to",
+      "limit"
+    ],
+    "default_limit": 50,
+    "max_limit": 500,
+    "response_secret_safe": true,
+    "omits_or_redacts": [
+      "auth headers",
+      "cookies",
+      "payload",
+      "body",
+      "raw headers",
+      "provider key material"
+    ]
+  },
+  "examples": {
+    "provider_key_update_success_audit": {
+      "action": "provider_key.update",
+      "resource_type": "provider_key",
+      "before_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000501",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "channel_id": "00000000-0000-0000-0000-000000000003",
+        "key_alias": "primary",
+        "has_secret_fingerprint": true,
+        "status": "auth_failed",
+        "metadata": {
+          "owner": "ops"
+        },
+        "secret_redacted": true
+      },
+      "after_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000501",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "channel_id": "00000000-0000-0000-0000-000000000003",
+        "key_alias": "primary",
+        "has_secret_fingerprint": true,
+        "status": "manual_disabled",
+        "metadata": {
+          "owner": "ops"
+        },
+        "secret_redacted": true
+      },
+      "metadata": {
+        "actor_session_id": "00000000-0000-0000-0000-000000000701",
+        "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+        "source": "control_plane_admin",
+        "request_context": {
+          "user_agent_sha256": "9989b39e7c11817cfd70ea2b8276ed719969cd6c70ed82dbdd8e53718b87102c",
+          "user_agent_length": 16,
+          "client_ip_sha256": "6c01ad4ec05c2ba1a2bd5a964e13c6d018be17855426be232940635ddf73c05c",
+          "client_ip_source": "x-forwarded-for",
+          "client_ip_kind": "ipv4",
+          "client_ip_scope": "routable"
+        }
+      }
+    },
+    "audit_log_query_response": {
+      "request": {
+        "path": "/admin/audit-logs",
+        "query": {
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "actor_user_id": "00000000-0000-0000-0000-000000000070",
+          "action": "provider_key.update",
+          "resource_type": "provider_key",
+          "resource_id": "00000000-0000-0000-0000-000000000501",
+          "created_from": "2026-06-03T00:00:00Z",
+          "created_to": "2026-06-03T23:59:59Z",
+          "limit": 50
+        }
+      },
+      "response": {
+        "data": [
+          {
+            "id": "00000000-0000-0000-0000-000000000801",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "actor_user_id": "00000000-0000-0000-0000-000000000070",
+            "request_id": "00000000-0000-0000-0000-000000000090",
+            "action": "provider_key.update",
+            "resource_type": "provider_key",
+            "resource_id": "00000000-0000-0000-0000-000000000501",
+            "resource_tenant_id": "00000000-0000-0000-0000-000000000001",
+            "before_snapshot": {
+              "status": "auth_failed",
+              "secret_redacted": true
+            },
+            "after_snapshot": {
+              "status": "manual_disabled",
+              "secret_redacted": true
+            },
+            "metadata": {
+              "actor_session_id": "00000000-0000-0000-0000-000000000701",
+              "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+              "source": "control_plane_admin",
+              "request_context": {
+                "user_agent_sha256": "9989b39e7c11817cfd70ea2b8276ed719969cd6c70ed82dbdd8e53718b87102c",
+                "client_ip_sha256": "6c01ad4ec05c2ba1a2bd5a964e13c6d018be17855426be232940635ddf73c05c"
+              }
+            },
+            "created_at": "2026-06-03 12:34:56+00"
+          }
+        ]
+      }
+    }
+  }
+}

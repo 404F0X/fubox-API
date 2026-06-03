@@ -1,0 +1,264 @@
+{
+  "scenario": "control_plane_rbac_capability_matrix_contract",
+  "base_path": "/admin",
+  "summary_contract": {
+    "source": "apps/control-plane/src/rbac.rs",
+    "backend_only": false,
+    "secret_safe": true,
+    "auth_me_response_includes_capabilities": true,
+    "capabilities_expose_only": [
+      "role names",
+      "persona names",
+      "capability keys",
+      "allowed or denied decisions"
+    ],
+    "credential_material_omitted": true,
+    "payload_material_omitted": true
+  },
+  "role_mapping": {
+    "SuperAdmin": "owner",
+    "TenantAdmin": "admin",
+    "Ops": "ops",
+    "Billing": "billing",
+    "Developer": "developer",
+    "Viewer": "viewer"
+  },
+  "assertions": {
+    "provider_manage_only_roles": ["owner", "admin", "ops"],
+    "provider_key_manage_only_roles": ["owner", "admin", "ops"],
+    "billing_adjust_only_roles": ["owner", "billing"],
+    "viewer_denied_credential_sensitive_reads": true,
+    "developer_denied_provider_and_key_manage": true,
+    "request_log_metadata_roles": ["owner", "admin", "ops", "developer", "viewer"],
+    "audit_read_roles": ["owner", "admin", "ops", "viewer"],
+    "billing_read_roles": ["owner", "admin", "billing", "viewer"],
+    "public_health_has_no_business_permission": true
+  },
+  "capabilities": [
+    {
+      "key": "provider.read",
+      "method": "GET",
+      "path": "/admin/providers",
+      "required_permission": "provider_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": true,
+      "secret_safe": true
+    },
+    {
+      "key": "provider.manage",
+      "method": "PATCH",
+      "path": "/admin/providers/{id}",
+      "required_permission": "provider_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "key.read",
+      "method": "GET",
+      "path": "/admin/provider-keys",
+      "required_permission": "key_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": true,
+      "secret_safe": true
+    },
+    {
+      "key": "key.manage",
+      "method": "POST",
+      "path": "/admin/provider-keys",
+      "required_permission": "key_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "request_log.read",
+      "method": "GET",
+      "path": "/admin/request-logs",
+      "required_permission": "log_read_metadata",
+      "allowed_roles": ["owner", "admin", "ops", "developer", "viewer"],
+      "denied_roles": ["billing"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "trace.read",
+      "method": "GET",
+      "path": "/admin/traces/{trace_id}",
+      "required_permission": "log_read_metadata",
+      "allowed_roles": ["owner", "admin", "ops", "developer", "viewer"],
+      "denied_roles": ["billing"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "audit.read",
+      "method": "GET",
+      "path": "/admin/audit-logs",
+      "required_permission": "audit_read",
+      "allowed_roles": ["owner", "admin", "ops", "viewer"],
+      "denied_roles": ["billing", "developer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "billing.read",
+      "method": "GET",
+      "path": "/admin/ledger/entries",
+      "required_permission": "billing_read",
+      "allowed_roles": ["owner", "admin", "billing", "viewer"],
+      "denied_roles": ["ops", "developer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "price.read",
+      "method": "GET",
+      "path": "/admin/price-versions",
+      "required_permission": "billing_read",
+      "allowed_roles": ["owner", "admin", "billing", "viewer"],
+      "denied_roles": ["ops", "developer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "reconciliation.read",
+      "method": "GET",
+      "path": "/admin/billing/reconciliation",
+      "required_permission": "billing_read",
+      "allowed_roles": ["owner", "admin", "billing", "viewer"],
+      "denied_roles": ["ops", "developer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "price_version.create",
+      "method": "POST",
+      "path": "/admin/price-versions",
+      "required_permission": "billing_adjust",
+      "allowed_roles": ["owner", "billing"],
+      "denied_roles": ["admin", "ops", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "manual_test.run",
+      "method": "POST",
+      "path": "/admin/channels/{id}/manual-test",
+      "required_permission": "provider_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "provider_health.read",
+      "method": "GET",
+      "path": "/admin/providers/health-summary",
+      "required_permission": "provider_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": true,
+      "secret_safe": true
+    },
+    {
+      "key": "alert_webhook.validate",
+      "method": "POST",
+      "path": "/admin/alerts/webhook/dry-run",
+      "required_permission": "provider_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "prompt_eval_shadow.validate",
+      "method": "POST",
+      "path": "/admin/prompt-eval-shadow/dry-run",
+      "required_permission": "provider_manage",
+      "allowed_roles": ["owner", "admin", "ops"],
+      "denied_roles": ["billing", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "health.liveness",
+      "method": "GET",
+      "path": "/healthz",
+      "required_permission": null,
+      "allowed_roles": ["owner", "admin", "ops", "billing", "developer", "viewer"],
+      "denied_roles": [],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
+      "key": "health.readiness",
+      "method": "GET",
+      "path": "/readyz",
+      "required_permission": null,
+      "allowed_roles": ["owner", "admin", "ops", "billing", "developer", "viewer"],
+      "denied_roles": [],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    }
+  ],
+  "capability_summary_examples": {
+    "viewer": {
+      "roles": ["viewer"],
+      "personas": ["Viewer"],
+      "capabilities": [
+        "request_log.read",
+        "trace.read",
+        "audit.read",
+        "billing.read",
+        "price.read",
+        "reconciliation.read",
+        "health.liveness",
+        "health.readiness"
+      ],
+      "denied_capabilities": [
+        "provider.read",
+        "provider.manage",
+        "key.read",
+        "key.manage",
+        "price_version.create",
+        "manual_test.run",
+        "provider_health.read",
+        "alert_webhook.validate",
+        "prompt_eval_shadow.validate"
+      ],
+      "secret_safe": true
+    },
+    "billing": {
+      "roles": ["billing"],
+      "personas": ["Billing"],
+      "capabilities": [
+        "billing.read",
+        "price.read",
+        "reconciliation.read",
+        "price_version.create",
+        "health.liveness",
+        "health.readiness"
+      ],
+      "denied_capabilities": [
+        "provider.read",
+        "provider.manage",
+        "key.read",
+        "key.manage",
+        "request_log.read",
+        "trace.read",
+        "audit.read",
+        "manual_test.run",
+        "provider_health.read",
+        "alert_webhook.validate",
+        "prompt_eval_shadow.validate"
+      ],
+      "secret_safe": true
+    }
+  },
+  "notes": "Capability summary is produced by pure RBAC helpers and returned by /admin/auth/me as secret-safe capability_summary for admin UI menu trimming."
+}

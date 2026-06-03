@@ -1,0 +1,90 @@
+{
+  "scenario": "gateway_profile_switching_smoke",
+  "base_path": "/v1",
+  "profile_header": "x-ai-profile",
+  "auth": {
+    "type": "virtual_key_bearer",
+    "token_source": "GATEWAY_AUTH_TOKEN",
+    "secret_must_not_be_logged": true
+  },
+  "endpoints": {
+    "models": {
+      "method": "GET",
+      "path": "/v1/models"
+    },
+    "chat_completions": {
+      "method": "POST",
+      "path": "/v1/chat/completions"
+    }
+  },
+  "profiles": {
+    "default": {
+      "selector": "omit x-ai-profile header",
+      "missing_profile_header_behavior": "use_default_profile",
+      "expected_visible_models": [
+        "mock-gpt-4o-mini"
+      ],
+      "expected_visible_model_visibility": "public"
+    },
+    "switch": {
+      "selector": "send x-ai-profile with a profile name or id bound to the same virtual key",
+      "profile_ref_env": "PROFILE_SMOKE_SWITCH_PROFILE",
+      "example_profile_ref": "Profile Smoke Alternate",
+      "expected_visible_models_env": "PROFILE_SMOKE_SWITCH_MODEL",
+      "example_expected_visible_models": [
+        "profile-smoke-alt-model"
+      ],
+      "example_expected_visible_model_visibility": "internal",
+      "must_differ_from_default_models": true
+    },
+    "invalid": {
+      "profile_ref": "profile-smoke-unbound",
+      "expected_status": 403,
+      "expected_error_code": "api_key_profile_forbidden"
+    }
+  },
+  "model_visibility_contract": {
+    "visible_visibilities": [
+      "public",
+      "internal"
+    ],
+    "default_profile_visibility": "public",
+    "switched_profile_visibility": "internal",
+    "private_models_visible": false,
+    "internal_models_require_profile_binding": true
+  },
+  "acceptance_checks": [
+    {
+      "name": "default_profile_models",
+      "request": "GET /v1/models without x-ai-profile",
+      "expected": "HTTP 200 object=list and data[].id contains the default profile model"
+    },
+    {
+      "name": "switched_profile_models",
+      "request": "GET /v1/models with x-ai-profile",
+      "expected": "HTTP 200 object=list and data[].id differs from the default profile model set"
+    },
+    {
+      "name": "default_profile_chat_route",
+      "request": "POST /v1/chat/completions without x-ai-profile",
+      "expected": "HTTP 200 chat.completion and request_logs.api_key_profile_id matches the default /v1/models profile_id"
+    },
+    {
+      "name": "switched_profile_chat_route",
+      "request": "POST /v1/chat/completions with x-ai-profile",
+      "expected": "HTTP 200 chat.completion and request_logs.api_key_profile_id matches the switched /v1/models profile_id"
+    },
+    {
+      "name": "invalid_profile_rejected",
+      "request": "GET /v1/models and POST /v1/chat/completions with an unbound x-ai-profile",
+      "expected": "HTTP 403 with error.code=api_key_profile_forbidden"
+    }
+  ],
+  "db_preconditions": [
+    "The same virtual key used by GATEWAY_AUTH_TOKEN has one default active profile binding.",
+    "The same virtual key has a second active profile binding addressable by PROFILE_SMOKE_SWITCH_PROFILE or an id/name discoverable from virtual_key_profile_bindings.",
+    "The switched profile exposes at least one model that is not visible through the default profile.",
+    "Both profile model sets have enabled chat routes to an OpenAI-compatible mock or provider channel."
+  ],
+  "notes": "This fixture is an acceptance contract only. The smoke script does not create or mutate DB rows; prepare the multi-profile data through migrations, control-plane setup, or a separate local seed before running live checks."
+}

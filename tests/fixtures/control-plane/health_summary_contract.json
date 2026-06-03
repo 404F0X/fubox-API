@@ -1,0 +1,169 @@
+{
+  "scenario": "control_plane_provider_health_summary_contract",
+  "base_path": "/admin",
+  "endpoint": {
+    "method": "GET",
+    "path": "/admin/providers/health-summary"
+  },
+  "response_contract": {
+    "envelope": "data",
+    "required_data_fields": [
+      "summary_version",
+      "tenant_id",
+      "recent_window",
+      "totals",
+      "status_counts",
+      "providers",
+      "channels",
+      "provider_keys",
+      "models"
+    ],
+    "credential_material_omitted": true,
+    "recent_stats_source": "request_logs",
+    "recent_stats_are_best_effort": true
+  },
+  "examples": {
+    "summary": {
+      "response": {
+        "data": {
+          "summary_version": 1,
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "recent_window": {
+            "source": "request_logs",
+            "sample_limit": 500,
+            "sample_count": 2
+          },
+          "totals": {
+            "providers": 1,
+            "channels": 1,
+            "provider_keys": 1,
+            "models": 1,
+            "model_associations": 1
+          },
+          "status_counts": {
+            "providers": {
+              "enabled": 1
+            },
+            "channels": {
+              "enabled": 1
+            },
+            "provider_keys": {
+              "auth_failed": 1
+            },
+            "models": {
+              "active": 1
+            }
+          },
+          "providers": [
+            {
+              "id": "00000000-0000-0000-0000-000000000201",
+              "code": "provider-a",
+              "name": "Provider A",
+              "status": "enabled",
+              "health_score": 1.0,
+              "health_state": "healthy",
+              "channel_count": 1,
+              "enabled_channel_count": 1,
+              "provider_key_count": 1,
+              "enabled_provider_key_count": 0,
+              "recent": {
+                "request_count": 2,
+                "error_count": 1,
+                "last_error": {
+                  "code": "provider_auth_failed",
+                  "owner": "provider",
+                  "status": "failed",
+                  "http_status": 401,
+                  "observed_at": "2026-06-02 12:00:02+00"
+                }
+              }
+            }
+          ],
+          "channels": [
+            {
+              "id": "00000000-0000-0000-0000-000000000401",
+              "provider_id": "00000000-0000-0000-0000-000000000201",
+              "name": "primary channel",
+              "status": "enabled",
+              "protocol_mode": "openai_compatible",
+              "region": "us",
+              "priority": 10,
+              "weight": 100,
+              "health_score": 1.0,
+              "health_state": "healthy",
+              "provider_key_count": 1,
+              "enabled_provider_key_count": 0,
+              "model_count": 1,
+              "recent": {
+                "request_count": 2,
+                "error_count": 1,
+                "last_error": {
+                  "code": "provider_auth_failed",
+                  "owner": "provider",
+                  "status": "failed",
+                  "http_status": 401,
+                  "observed_at": "2026-06-02 12:00:02+00"
+                }
+              }
+            }
+          ],
+          "provider_keys": [
+            {
+              "id": "00000000-0000-0000-0000-000000000501",
+              "channel_id": "00000000-0000-0000-0000-000000000401",
+              "key_alias": "primary",
+              "status": "auth_failed",
+              "credential_configured": true,
+              "health_score": 0.25,
+              "health_state": "degraded",
+              "cooldown_until": "2026-06-02 12:05:00+00",
+              "configured_last_error_code": "provider_auth_failed",
+              "limits": {
+                "rpm": 60,
+                "tpm": 100000,
+                "concurrency": 8
+              },
+              "recent": {
+                "request_count": 2,
+                "error_count": 1,
+                "last_error": {
+                  "code": "provider_auth_failed",
+                  "owner": "provider",
+                  "status": "failed",
+                  "http_status": 401,
+                  "observed_at": "2026-06-02 12:00:02+00"
+                }
+              }
+            }
+          ],
+          "models": [
+            {
+              "id": "00000000-0000-0000-0000-000000000101",
+              "model_key": "gpt-visible",
+              "display_name": "GPT Visible",
+              "family": "gpt",
+              "visibility": "public",
+              "status": "active",
+              "association_count": 1,
+              "enabled_association_count": 1,
+              "routable_channel_count": 1,
+              "routing_state": "routable",
+              "recent": {
+                "request_count": 2,
+                "error_count": 1,
+                "last_error": {
+                  "code": "provider_auth_failed",
+                  "owner": "provider",
+                  "status": "failed",
+                  "http_status": 401,
+                  "observed_at": "2026-06-02 12:00:02+00"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "notes": "Contract fixture only. The health summary is a best-effort backend slice based on configured status fields plus a bounded request log sample; it does not implement realtime probe scoring."
+}

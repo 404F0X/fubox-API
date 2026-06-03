@@ -1,0 +1,5 @@
+$ErrorActionPreference = "Stop"
+. "$PSScriptRoot\common.ps1"
+
+Invoke-Docker compose -f deploy/docker-compose/docker-compose.yml down
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

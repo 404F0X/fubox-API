@@ -1,0 +1,2 @@
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"unterminated}

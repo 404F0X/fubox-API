@@ -1,0 +1,11 @@
+{
+  "name": "anthropic_stream_message_stop_event",
+  "event_name": "message_stop",
+  "event": {
+    "type": "message_stop"
+  },
+  "expected_event": {
+    "type": "message_stop"
+  },
+  "expected_terminal": "message_stop"
+}

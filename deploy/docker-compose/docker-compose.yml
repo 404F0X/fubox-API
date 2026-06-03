@@ -1,0 +1,101 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ai_gateway
+      POSTGRES_PASSWORD: ai_gateway
+      POSTGRES_DB: ai_gateway
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ../../db:/app/db:ro
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/0000_postgres_init.sh:ro
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  mock-provider:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/mock-provider.Dockerfile
+    ports:
+      - "127.0.0.1:18080:18080"
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile
+      args:
+        BIN: ai-gateway
+    depends_on:
+      - postgres
+      - redis
+      - mock-provider
+    environment:
+      AI_GATEWAY_CONFIG: /app/config/config.yaml
+      AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      AI_GATEWAY_LISTEN: 0.0.0.0:8080
+      AI_GATEWAY_UPSTREAM_BASE_URL: http://mock-provider:18080
+    volumes:
+      - ../../examples/config.example.yaml:/app/config/config.yaml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile
+      args:
+        BIN: ai-control-plane
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      AI_GATEWAY_CONFIG: /app/config/config.yaml
+      AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_ID: dev-seed-v1
+      AI_GATEWAY_CONTROL_LISTEN: 0.0.0.0:8081
+      AI_GATEWAY_CONTROL_CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      AI_GATEWAY_ADMIN_COOKIE_SECURE: "false"
+    volumes:
+      - ../../examples/config.example.yaml:/app/config/config.yaml:ro
+    ports:
+      - "127.0.0.1:8081:8081"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile
+      args:
+        BIN: ai-worker
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      AI_GATEWAY_CONFIG: /app/config/config.yaml
+      AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
+    volumes:
+      - ../../examples/config.example.yaml:/app/config/config.yaml:ro
+
+  admin-ui:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/admin-ui.Dockerfile
+    depends_on:
+      - gateway
+      - control-plane
+      - mock-provider
+    environment:
+      GATEWAY_UPSTREAM: http://gateway:8080
+      CONTROL_PLANE_UPSTREAM: http://control-plane:8081
+      MOCK_PROVIDER_UPSTREAM: http://mock-provider:18080
+    ports:
+      - "127.0.0.1:5173:8080"
+
+volumes:
+  pg_data:

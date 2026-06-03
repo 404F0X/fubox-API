@@ -1,0 +1,26 @@
+{
+  "scenario": "stream_200",
+  "method": "POST",
+  "path": "/v1/chat/completions",
+  "body": {
+    "stream": true
+  },
+  "selectors": {
+    "query": "/v1/chat/completions?stream=true",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "200"
+      }
+    },
+    "endpoint": "/__scenario/200/v1/chat/completions",
+    "body": {
+      "mock_scenario": "200"
+    }
+  },
+  "expected_status": 200,
+  "expected_content_type": "text/event-stream",
+  "expected_object": "chat.completion.chunk",
+  "expected_terminal_event": "data: [DONE]",
+  "notes": "Successful OpenAI-compatible SSE stream response selected by request body."
+}

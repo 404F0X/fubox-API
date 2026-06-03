@@ -1,0 +1,35 @@
+name: "default-production-policy"
+version: 1
+model: "canonical/claude-sonnet"
+max_attempts: 2
+retry:
+  respect_retry_after: true
+  backoff_ms: [100, 300, 1000]
+  max_total_wait_ms: 2000
+streaming:
+  fallback_before_first_byte_only: true
+  require_terminal_event: true
+candidate_filters:
+  - type: "permission"
+  - type: "health"
+    min_health_score: 0.50
+  - type: "rate_limit"
+  - type: "capability"
+scoring:
+  priority_weight: 0.40
+  health_weight: 0.25
+  latency_weight: 0.15
+  cost_weight: 0.10
+  trace_affinity_weight: 0.10
+fallback:
+  on_errors:
+    - provider_429
+    - provider_5xx
+    - network_timeout
+    - network_reset
+    - stream_missing_terminal
+  never_on:
+    - client_cancel
+    - billing_insufficient_balance
+    - policy_model_denied
+    - provider_auth_failed

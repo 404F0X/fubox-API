@@ -1,0 +1,39 @@
+{{- if .Values.ingress.enabled -}}
+{{- $root := . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "fubox.fullname" . }}
+  labels:
+    {{- include "fubox.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          {{- $serviceName := .service }}
+          {{- include "fubox.validateIngressPath" (dict "root" $root "serviceName" $serviceName "path" .path "pathType" .pathType) }}
+          {{- $service := get $root.Values.services $serviceName }}
+          - path: {{ .path | quote }}
+            pathType: {{ default "Prefix" .pathType }}
+            backend:
+              service:
+                name: {{ include "fubox.componentName" (dict "root" $root "name" $serviceName) }}
+                port:
+                  number: {{ $service.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

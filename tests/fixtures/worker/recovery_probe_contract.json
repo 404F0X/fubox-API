@@ -1,0 +1,95 @@
+{
+  "scenario": "worker_recovery_probe_contract",
+  "commands": {
+    "dry_run": "ai-worker recovery-probe --dry-run --tenant-id 00000000-0000-0000-0000-000000000001 --limit 4",
+    "execute": "ai-worker recovery-probe --execute --tenant-id 00000000-0000-0000-0000-000000000001 --limit 4"
+  },
+  "candidate_contract": {
+    "source": "due provider_keys joined to non-deleted channels and enabled providers",
+    "provider_key_statuses": ["cooldown_due", "recovery_probe"],
+    "channel_statuses": ["enabled", "degraded", "cooldown", "recovery_probe"],
+    "raw_fields_not_selected": [
+      "encrypted_secret",
+      "secret_fingerprint",
+      "metadata",
+      "current_window_state"
+    ],
+    "credential_presence_field": "has_secret_fingerprint boolean only"
+  },
+  "safety_contract": {
+    "credential_material_read": false,
+    "credential_material_output": false,
+    "raw_metadata_read": false,
+    "raw_metadata_output": false,
+    "billing_ledger_write": false,
+    "billable": false,
+    "dry_run_upstream_call": false,
+    "execute_uses_mockable_probe_runner": true,
+    "execute_uses_mockable_status_writer": true
+  },
+  "expected_plan": {
+    "dry_run": true,
+    "upstream_calls": false,
+    "candidate_count": 2,
+    "included_statuses": ["cooldown", "recovery_probe"],
+    "excluded_statuses": ["enabled", "auth_failed", "manual_disabled"]
+  },
+  "expected_execution": {
+    "dry_run": false,
+    "upstream_calls": true,
+    "candidate_count": 4,
+    "success_count": 2,
+    "failure_count": 2,
+    "migration_applied_count": 1,
+    "migration_error_count": 1,
+    "results": [
+      {
+        "provider_key_id": "00000000-0000-0000-0000-000000000001",
+        "probe_result": "success",
+        "from": "cooldown",
+        "to": "enabled",
+        "status_update_attempted": true,
+        "status_update_applied": true
+      },
+      {
+        "provider_key_id": "00000000-0000-0000-0000-000000000002",
+        "probe_result": "failure",
+        "from": "cooldown",
+        "to": "cooldown",
+        "status_update_attempted": false,
+        "status_update_applied": false
+      },
+      {
+        "provider_key_id": "00000000-0000-0000-0000-000000000003",
+        "probe_result": "failure",
+        "from": "recovery_probe",
+        "to": "recovery_probe",
+        "status_update_attempted": false,
+        "status_update_applied": false
+      },
+      {
+        "provider_key_id": "00000000-0000-0000-0000-000000000004",
+        "probe_result": "success",
+        "from": "cooldown",
+        "to": "enabled",
+        "status_update_attempted": true,
+        "status_update_applied": false,
+        "status_update_error_redacted": true
+      }
+    ]
+  },
+  "must_not_echo": [
+    "fixture-provider-secret-material-never-return",
+    "fixture-provider-fingerprint-never-return",
+    "fixture-encrypted-secret-material-never-return",
+    "Authorization header",
+    "encrypted_secret",
+    "secret_fingerprint",
+    "provider_key_value",
+    "metadata",
+    "current_window_state",
+    "raw_metadata",
+    "ledger_entry",
+    "billing_ledger"
+  ]
+}

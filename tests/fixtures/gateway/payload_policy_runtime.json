@@ -1,0 +1,68 @@
+{
+  "scenario": "gateway_payload_policy_runtime_v1",
+  "request_log_metadata": {
+    "schema": "gateway_payload_policy_v1",
+    "source_priority": [
+      "api_key_profile",
+      "default"
+    ],
+    "safe_fields": [
+      "payload_len_bytes",
+      "hash_sha256",
+      "redacted_preview",
+      "storage_mode",
+      "full_payload_omitted"
+    ]
+  },
+  "policies": {
+    "metadata_only": {
+      "storage_mode": "metadata_only",
+      "stores_hash": false,
+      "stores_preview": false,
+      "stores_body": false
+    },
+    "hash": {
+      "storage_mode": "hash_only",
+      "stores_hash": true,
+      "stores_preview": false,
+      "stores_body": false
+    },
+    "redacted": {
+      "storage_mode": "redacted",
+      "stores_hash": true,
+      "stores_preview": true,
+      "stores_body": false
+    },
+    "full": {
+      "storage_mode": "hash_only",
+      "stores_hash": true,
+      "stores_preview": false,
+      "stores_body": false
+    }
+  },
+  "redacted_preview_contract": {
+    "runtime_helper": "request_payload_log",
+    "redaction_marker": "[REDACTED]",
+    "sensitive_inputs": [
+      "email_address",
+      "bearer_token_text",
+      "token",
+      "key",
+      "authorization",
+      "credential",
+      "client_secret"
+    ],
+    "safe_inputs": [
+      "model",
+      "model_key",
+      "cache_key",
+      "public_key_id"
+    ],
+    "stores_body": false,
+    "raw_payload_stored": false
+  },
+  "full_policy_fallback": {
+    "fallback_reason": "raw_payload_storage_not_configured",
+    "object_ref_required_before_body_storage": true
+  }
+}

@@ -1,0 +1,152 @@
+{
+  "scenario": "worker_alert_webhook_plan_contract",
+  "command": "ai-worker alert-webhook --dry-run --input tests/fixtures/worker/alert_webhook_plan_contract.json",
+  "input_contract": {
+    "source": "fixture_or_env",
+    "webhook_config": {
+      "network_send_default": false,
+      "send_flags_refused": ["--send", "--execute"],
+      "force_does_not_enable_send_in_this_slice": true,
+      "sender_contract_only": true,
+      "timeout_retry_plan_supported": true
+    },
+    "signals": [
+      "error_rate",
+      "provider_key_cooldown",
+      "ledger_lag"
+    ]
+  },
+  "input": {
+    "webhook": {
+      "enabled": true,
+      "url": "https://hooks.example.com/services/T000/B000/fixture-path-secret?token=fixture-query-secret",
+      "secret": "fixture-webhook-secret",
+      "secret_header": "X-Alert-Signature",
+      "headers": {
+        "Authorization": "Bearer fx-authz",
+        "Cookie": "session=fixture-cookie-token",
+        "X-Alert-Source": "worker"
+      },
+      "timeout_seconds": 7,
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 2
+      },
+      "payload": {
+        "summary": "fixture-raw-payload-secret",
+        "body": "fixture-raw-payload-secret",
+        "severity": "critical"
+      }
+    },
+    "signals": {
+      "error_rate": {
+        "window_seconds": 300,
+        "request_count": 1000,
+        "error_count": 73,
+        "threshold": 0.05,
+        "severity": "critical",
+        "model": "gpt-4.1-mini",
+        "route": "default",
+        "observed_at": "2026-06-03T07:20:00Z"
+      },
+      "provider_key_cooldowns": [
+        {
+          "provider_id": "00000000-0000-0000-0000-000000000010",
+          "provider_code": "openai",
+          "channel_id": "00000000-0000-0000-0000-000000000020",
+          "channel_name": "primary",
+          "provider_key_id": "00000000-0000-0000-0000-000000000030",
+          "key_alias": "primary fixture-provider-key-secret",
+          "provider_key_value": "fixture-provider-key-marker",
+          "secret_fingerprint": "fingerprint-never-return",
+          "status": "cooldown",
+          "cooldown_until": "2026-06-03T07:35:00Z",
+          "last_error_code": "provider_rate_limited",
+          "health_score": 0.12,
+          "severity": "warning",
+          "observed_at": "2026-06-03T07:20:00Z"
+        }
+      ],
+      "ledger_lag": {
+        "pending_event_count": 42,
+        "oldest_unsettled_age_seconds": 1800,
+        "threshold_seconds": 600,
+        "severity": "critical",
+        "queue": "billing-settlement",
+        "observed_at": "2026-06-03T07:20:00Z"
+      }
+    }
+  },
+  "expected_output_contract": {
+    "schema_version": "alert_webhook_plan.v1",
+    "dry_run": true,
+    "outbound_call": false,
+    "sender_contract": {
+      "implemented": false,
+      "network_supported": false,
+      "preflight_schema_version": "alert_webhook_sender_preflight.v1",
+      "preflight_ready": true,
+      "would_send": true,
+      "network_call_allowed": false,
+      "force_cannot_enable_network": true,
+      "validation_order": [
+        "url_ssrf_guard",
+        "dns_resolution_ssrf_recheck",
+        "header_redaction",
+        "payload_body_redaction",
+        "timeout_retry_bounds",
+        "error_sanitization",
+        "network_disabled_gate"
+      ],
+      "dns_resolution_contract": {
+        "resolver_receives_host_only": true,
+        "raw_url_path_query_available_to_resolver": false,
+        "reject_if_any_resolved_ip_forbidden": true,
+        "resolved_ips_serialized": false,
+        "resolution_errors_redacted": true,
+        "force_cannot_bypass_dns_recheck": true
+      },
+      "transaction_schema_version": "alert_webhook_sender_transaction.v1",
+      "attempt_schema_version": "alert_webhook_sender_attempt.v1",
+      "timeout_seconds": 7,
+      "max_attempts": 3,
+      "backoff_seconds": 2,
+      "managed_headers_redacted": {
+        "Content-Type": "application/json",
+        "X-Alert-Signature": "[REDACTED]"
+      },
+      "payload_body_redaction_policy": "metadata_only",
+      "raw_body_available_to_sender_contract": false,
+      "sender_errors_redacted": true
+    },
+    "required_alert_types": [
+      "error_rate",
+      "provider_key_cooldown",
+      "ledger_lag"
+    ],
+    "stable_alert_fields": [
+      "alert_type",
+      "severity",
+      "would_send",
+      "webhook_method",
+      "dedupe_key",
+      "title",
+      "summary",
+      "labels",
+      "facts",
+      "payload"
+    ],
+    "must_not_echo": [
+      "fixture-webhook-secret",
+      "fx-authz",
+      "fixture-cookie-token",
+      "fixture-provider-key-secret",
+      "fixture-path-secret",
+      "fixture-query-secret",
+      "fixture-raw-payload-secret",
+      "provider_key_value",
+      "secret_fingerprint",
+      "fingerprint-never-return"
+    ]
+  }
+}

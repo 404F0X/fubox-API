@@ -1,0 +1,86 @@
+groups:
+  - name: ai-gateway.rules
+    rules:
+      # Active alerts in this file must reference only metrics currently emitted by
+      # crates/observability/src/lib.rs. Do not add ledger lag, key cooldown, or
+      # provider/channel/key dimension alerts until the corresponding runtime
+      # metrics are landed and validate_templates.py is updated with their labels.
+      - alert: AiGatewayHighErrorRate
+        expr: |
+          (
+            sum by (service) (rate(ai_gateway_errors_total[5m]))
+            /
+            clamp_min(sum by (service) (rate(ai_gateway_requests_total[5m])), 1)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: ai-gateway
+        annotations:
+          summary: "AI Gateway error rate is above 5%"
+          description: "Errors from ai_gateway_errors_total exceed 5% of ai_gateway_requests_total for 10 minutes."
+
+      - alert: AiGatewayProviderErrorsHigh
+        expr: |
+          sum by (service, endpoint, method, code, retryable) (rate(ai_gateway_errors_total{owner="provider"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+          component: ai-gateway
+        annotations:
+          summary: "AI Gateway provider error rate is elevated"
+          description: "Provider-owned errors exceed 1 request per second for 10 minutes according to ai_gateway_errors_total."
+
+      - alert: AiGatewayHighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (service, endpoint, method, status_class, outcome, le) (rate(ai_gateway_request_latency_ms_bucket[5m]))
+          ) > 5000
+        for: 15m
+        labels:
+          severity: warning
+          component: ai-gateway
+        annotations:
+          summary: "AI Gateway p95 latency is above 5 seconds"
+          description: "{{ $labels.method }} {{ $labels.endpoint }} p95 ai_gateway_request_latency_ms is above 5000 ms for 15 minutes."
+
+      - alert: AiGatewayHighTTFTP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (service, endpoint, method, status, status_class, outcome, error_owner, error_code, le) (rate(ai_gateway_request_ttft_ms_bucket[5m]))
+          ) > 3000
+        for: 15m
+        labels:
+          severity: warning
+          component: ai-gateway
+        annotations:
+          summary: "AI Gateway p95 TTFT is above 3 seconds"
+          description: "{{ $labels.method }} {{ $labels.endpoint }} p95 ai_gateway_request_ttft_ms is above 3000 ms for 15 minutes."
+
+      - alert: AiGatewayFallbackRateHigh
+        expr: |
+          (
+            sum by (service) (rate(ai_gateway_fallbacks_total[5m]))
+            /
+            clamp_min(sum by (service) (rate(ai_gateway_requests_total[5m])), 1)
+          ) > 0.10
+        for: 15m
+        labels:
+          severity: warning
+          component: ai-gateway
+        annotations:
+          summary: "AI Gateway fallback rate is above 10%"
+          description: "ai_gateway_fallbacks_total is above 10% of ai_gateway_requests_total for 15 minutes."
+
+      - alert: AiGatewayCostSpike
+        expr: |
+          sum by (service, currency) (increase(ai_gateway_request_cost_total[1h])) > 100
+        for: 15m
+        labels:
+          severity: warning
+          component: ai-gateway
+        annotations:
+          summary: "AI Gateway hourly cost is high"
+          description: "{{ $labels.currency }} cost exceeded 100 units in the last hour according to ai_gateway_request_cost_total."

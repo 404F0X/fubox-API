@@ -1,0 +1,64 @@
+{
+  "name": "mcp_initialize_valid",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {
+        "tools": {}
+      },
+      "clientInfo": {
+        "name": "fixture-client",
+        "version": "0.1.0"
+      }
+    }
+  },
+  "expected_routing": {
+    "request_id": 1,
+    "method": "initialize",
+    "tool_name": null,
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/mcp",
+    "stream": false,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {
+          "tools": {}
+        },
+        "clientInfo": {
+          "name": "fixture-client",
+          "version": "0.1.0"
+        }
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {
+          "tools": {
+            "listChanged": false
+          }
+        },
+        "serverInfo": {
+          "name": "fixture-mcp-server",
+          "version": "0.1.0"
+        }
+      }
+    }
+  },
+  "expected_usage": null
+}

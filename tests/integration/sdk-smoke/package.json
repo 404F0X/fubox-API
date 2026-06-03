@@ -1,0 +1,13 @@
+{
+  "name": "ai-gateway-sdk-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check ./sdk_smoke.mjs",
+    "smoke": "node ./sdk_smoke.mjs"
+  },
+  "dependencies": {
+    "openai": "6.41.0"
+  }
+}

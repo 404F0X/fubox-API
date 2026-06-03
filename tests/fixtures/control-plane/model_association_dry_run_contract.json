@@ -1,0 +1,291 @@
+{
+  "scenario": "control_plane_model_association_dry_run_contract",
+  "base_path": "/admin",
+  "endpoint": {
+    "method": "POST",
+    "path": "/admin/model-associations/dry-run"
+  },
+  "request_contract": {
+    "required_fields": ["project_id", "profile_id"],
+    "model_selector_any_of": ["requested_model", "canonical_model_id", "canonical_model_key"],
+    "optional_fields": ["seed", "trace_id", "previous_successful_channel_id"]
+  },
+  "response_contract": {
+    "envelope": "data",
+    "route_policy_version": "gateway_db_route_v1",
+    "decision_snapshot_version": 1,
+    "selection_statuses": [
+      "selected",
+      "no_route_candidates",
+      "model_not_found_or_not_allowed",
+      "all_candidates_filtered"
+    ],
+    "required_data_fields": [
+      "project_id",
+      "profile_id",
+      "requested_model",
+      "canonical_model",
+      "route_policy_version",
+      "decision_snapshot_version",
+      "policy",
+      "trace_id",
+      "trace_affinity",
+      "selection",
+      "selected_candidate",
+      "candidates",
+      "route_decision_snapshot"
+    ],
+    "candidate_required_fields": [
+      "association_id",
+      "association_type",
+      "association_priority",
+      "fallback_allowed",
+      "canonical_model_id",
+      "channel_id",
+      "channel_name",
+      "channel_status",
+      "channel_priority",
+      "channel_weight",
+      "channel_health_score",
+      "provider_id",
+      "provider_code",
+      "provider_name",
+      "provider_status",
+      "provider_model",
+      "upstream_model",
+      "protocol_mode",
+      "priority",
+      "weight",
+      "routing_status",
+      "routing_health",
+      "rate_limit_available",
+      "filtered",
+      "filter_reason",
+      "score",
+      "selected",
+      "trace_affinity_match"
+    ],
+    "credential_material_omitted": true
+  },
+  "examples": {
+    "selected": {
+      "request": {
+        "project_id": "00000000-0000-0000-0000-000000000011",
+        "profile_id": "00000000-0000-0000-0000-000000000012",
+        "requested_model": "gpt-visible",
+        "canonical_model_key": "gpt-visible",
+        "seed": 42,
+        "trace_id": "trace-contract-1",
+        "previous_successful_channel_id": "00000000-0000-0000-0000-000000000401"
+      },
+      "response": {
+        "data": {
+          "project_id": "00000000-0000-0000-0000-000000000011",
+          "profile_id": "00000000-0000-0000-0000-000000000012",
+          "requested_model": "gpt-visible",
+          "canonical_model": {
+            "id": "00000000-0000-0000-0000-000000000101",
+            "model_key": "gpt-visible",
+            "display_name": "GPT Visible",
+            "family": "gpt",
+            "status": "active"
+          },
+          "route_policy_version": "gateway_db_route_v1",
+          "decision_snapshot_version": 1,
+          "policy": {
+            "seed": 42
+          },
+          "trace_id": "trace-contract-1",
+          "trace_affinity": {
+            "status": "Applied",
+            "trace_id": "trace-contract-1",
+            "previous_successful_channel_id": "00000000-0000-0000-0000-000000000401",
+            "applied_channel_id": "00000000-0000-0000-0000-000000000401"
+          },
+          "selection": {
+            "status": "selected",
+            "selected_channel_id": "00000000-0000-0000-0000-000000000401",
+            "selected": {
+              "channel_id": "00000000-0000-0000-0000-000000000401",
+              "provider_id": "00000000-0000-0000-0000-000000000201",
+              "provider_model": "upstream-gpt",
+              "priority": 2000010,
+              "weight": 100
+            }
+          },
+          "selected_candidate": {
+            "association_id": "00000000-0000-0000-0000-000000000301",
+            "association_type": "explicit_channel",
+            "association_priority": 2,
+            "fallback_allowed": true,
+            "canonical_model_id": "00000000-0000-0000-0000-000000000101",
+            "channel_id": "00000000-0000-0000-0000-000000000401",
+            "channel_name": "primary channel",
+            "channel_status": "enabled",
+            "channel_priority": 10,
+            "channel_weight": 100,
+            "channel_health_score": 1.0,
+            "provider_id": "00000000-0000-0000-0000-000000000201",
+            "provider_code": "provider-a",
+            "provider_name": "Provider A",
+            "provider_status": "enabled",
+            "provider_model": "upstream-gpt",
+            "upstream_model": "upstream-gpt",
+            "protocol_mode": "openai_compatible",
+            "priority": 2000010,
+            "weight": 100,
+            "routing_status": "Enabled",
+            "routing_health": "Healthy",
+            "rate_limit_available": true,
+            "filtered": false,
+            "filter_reason": null,
+            "score": {
+              "priority": 2000010,
+              "weight": 100,
+              "trace_affinity_bonus": 1,
+              "total": 2145483738
+            },
+            "selected": true,
+            "trace_affinity_match": true
+          },
+          "candidates": [
+            {
+              "association_id": "00000000-0000-0000-0000-000000000301",
+              "association_type": "explicit_channel",
+              "association_priority": 2,
+              "fallback_allowed": true,
+              "canonical_model_id": "00000000-0000-0000-0000-000000000101",
+              "channel_id": "00000000-0000-0000-0000-000000000401",
+              "channel_name": "primary channel",
+              "channel_status": "enabled",
+              "channel_priority": 10,
+              "channel_weight": 100,
+              "channel_health_score": 1.0,
+              "provider_id": "00000000-0000-0000-0000-000000000201",
+              "provider_code": "provider-a",
+              "provider_name": "Provider A",
+              "provider_status": "enabled",
+              "provider_model": "upstream-gpt",
+              "upstream_model": "upstream-gpt",
+              "protocol_mode": "openai_compatible",
+              "priority": 2000010,
+              "weight": 100,
+              "routing_status": "Enabled",
+              "routing_health": "Healthy",
+              "rate_limit_available": true,
+              "filtered": false,
+              "filter_reason": null,
+              "score": {
+                "priority": 2000010,
+                "weight": 100,
+                "trace_affinity_bonus": 1,
+                "total": 2145483738
+              },
+              "selected": true,
+              "trace_affinity_match": true
+            }
+          ],
+          "route_decision_snapshot": {
+            "version": 1,
+            "requested_model": "gpt-visible",
+            "canonical_model": "gpt-visible",
+            "policy": {
+              "seed": 42
+            },
+            "trace_id": "trace-contract-1",
+            "trace_affinity": {
+              "status": "Applied",
+              "trace_id": "trace-contract-1",
+              "previous_successful_channel_id": "00000000-0000-0000-0000-000000000401",
+              "applied_channel_id": "00000000-0000-0000-0000-000000000401"
+            },
+            "selected_channel_id": "00000000-0000-0000-0000-000000000401",
+            "selected": {
+              "channel_id": "00000000-0000-0000-0000-000000000401",
+              "provider_id": "00000000-0000-0000-0000-000000000201",
+              "provider_model": "upstream-gpt",
+              "priority": 2000010,
+              "weight": 100
+            },
+            "candidates": [
+              {
+                "channel_id": "00000000-0000-0000-0000-000000000401",
+                "provider_id": "00000000-0000-0000-0000-000000000201",
+                "provider_model": "upstream-gpt",
+                "priority": 2000010,
+                "weight": 100,
+                "status": "Enabled",
+                "health": "Healthy",
+                "rate_limit_available": true,
+                "filtered": false,
+                "filter_reason": null,
+                "score": {
+                  "priority": 2000010,
+                  "weight": 100,
+                  "trace_affinity_bonus": 1,
+                  "total": 2145483738
+                },
+                "selected": true,
+                "trace_affinity_match": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    "no_candidate": {
+      "request": {
+        "project_id": "00000000-0000-0000-0000-000000000011",
+        "profile_id": "00000000-0000-0000-0000-000000000012",
+        "requested_model": "missing-model",
+        "seed": 0
+      },
+      "response": {
+        "data": {
+          "project_id": "00000000-0000-0000-0000-000000000011",
+          "profile_id": "00000000-0000-0000-0000-000000000012",
+          "requested_model": "missing-model",
+          "canonical_model": null,
+          "route_policy_version": "gateway_db_route_v1",
+          "decision_snapshot_version": 1,
+          "policy": {
+            "seed": 0
+          },
+          "trace_id": null,
+          "trace_affinity": {
+            "status": "Disabled",
+            "trace_id": null,
+            "previous_successful_channel_id": null,
+            "applied_channel_id": null
+          },
+          "selection": {
+            "status": "model_not_found_or_not_allowed",
+            "selected_channel_id": null,
+            "selected": null
+          },
+          "selected_candidate": null,
+          "candidates": [],
+          "route_decision_snapshot": {
+            "version": 1,
+            "requested_model": "missing-model",
+            "canonical_model": null,
+            "policy": {
+              "seed": 0
+            },
+            "trace_id": null,
+            "trace_affinity": {
+              "status": "Disabled",
+              "trace_id": null,
+              "previous_successful_channel_id": null,
+              "applied_channel_id": null
+            },
+            "selected_channel_id": null,
+            "selected": null,
+            "candidates": []
+          }
+        }
+      }
+    }
+  },
+  "notes": "Contract fixture only. Dry-run resolves local routing state and does not call upstream providers."
+}

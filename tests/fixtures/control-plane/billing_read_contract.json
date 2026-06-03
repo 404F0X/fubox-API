@@ -1,0 +1,100 @@
+{
+  "endpoints": {
+    "price_versions": {
+      "method": "GET",
+      "path": "/admin/price-versions",
+      "query": {
+        "price_book_id": "00000000-0000-0000-0000-000000000060",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+        "status": "active",
+        "limit": 50
+      }
+    },
+    "ledger_entries": {
+      "method": "GET",
+      "path": "/admin/ledger/entries",
+      "query": {
+        "project_id": "00000000-0000-0000-0000-000000000020",
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "wallet_id": "00000000-0000-0000-0000-000000000040",
+        "limit": 50
+      }
+    }
+  },
+  "response_contract": {
+    "envelope": "data",
+    "read_only": true,
+    "billing_read_permission": true,
+    "payload_material_omitted": true,
+    "secret_material_omitted": true,
+    "json_fields_sanitized": [
+      "pricing_rules",
+      "usage_snapshot",
+      "policy_snapshot",
+      "metadata"
+    ]
+  },
+  "examples": {
+    "price_versions": {
+      "response": {
+        "data": [
+          {
+            "id": "00000000-0000-0000-0000-000000000061",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "price_book_id": "00000000-0000-0000-0000-000000000060",
+            "canonical_model_id": "00000000-0000-0000-0000-000000000070",
+            "version": "2026-06-01",
+            "pricing_rules": {
+              "currency": "USD",
+              "unit": "tokens",
+              "input_per_million": "0.15000000",
+              "output_per_million": "0.60000000"
+            },
+            "effective_at": "2026-06-01 00:00:00+00",
+            "retired_at": null,
+            "status": "active",
+            "created_at": "2026-06-01 00:00:00+00"
+          }
+        ]
+      }
+    },
+    "ledger_entries": {
+      "response": {
+        "data": [
+          {
+            "id": "00000000-0000-0000-0000-000000000091",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "project_id": "00000000-0000-0000-0000-000000000020",
+            "wallet_id": "00000000-0000-0000-0000-000000000040",
+            "request_id": "00000000-0000-0000-0000-000000000011",
+            "virtual_key_id": "00000000-0000-0000-0000-000000000050",
+            "trace_id": "trace-ledger-11",
+            "related_ledger_entry_id": null,
+            "entry_type": "settle",
+            "amount": "-0.25000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "idempotency_key": "ledger-settle-000000000011",
+            "price_version_id": "00000000-0000-0000-0000-000000000061",
+            "usage_snapshot": {
+              "input_tokens": 12,
+              "output_tokens": 34,
+              "cache_read_tokens": 0
+            },
+            "policy_snapshot": {
+              "rating_mode": "per_token",
+              "currency": "USD",
+              "price_version_id": "00000000-0000-0000-0000-000000000061"
+            },
+            "metadata": {
+              "source": "gateway",
+              "note": "settlement row"
+            },
+            "occurred_at": "2026-06-02 12:00:00+00",
+            "created_at": "2026-06-02 12:00:01+00"
+          }
+        ]
+      }
+    }
+  }
+}

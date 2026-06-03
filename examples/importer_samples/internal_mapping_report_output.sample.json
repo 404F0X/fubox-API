@@ -1,0 +1,408 @@
+{
+  "importer": "internal-mapping-report-dryrun",
+  "dry_run": true,
+  "generated_at": "2026-06-02T00:00:00Z",
+  "input_files": [
+    "examples/importer_samples/internal_mapping_report_input.sample.json"
+  ],
+  "source_reports": [
+    {
+      "input_file": "examples/importer_samples/internal_mapping_report_input.sample.json",
+      "importer": "newapi-openai-compatible-dryrun",
+      "dry_run": true,
+      "counts": {
+        "providers": 1,
+        "channels": 2,
+        "provider_keys": 0,
+        "models": 2,
+        "associations": 5,
+        "warnings": 0,
+        "unsupported_fields": 0
+      }
+    }
+  ],
+  "counts": {
+    "input_reports": 1,
+    "source_providers": 1,
+    "source_channels": 2,
+    "source_provider_keys": 0,
+    "source_models": 2,
+    "source_associations": 5,
+    "canonical_models": 2,
+    "model_associations": 5,
+    "channel_mappings": 3,
+    "channel_mapping_entries": 5,
+    "conflicts": 2,
+    "manual_review_items": 2
+  },
+  "canonical_models": [
+    {
+      "model_key": "gpt-4o",
+      "display_name": "GPT-4o",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "vision",
+        "tool"
+      ],
+      "capability_flags": {
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": true,
+        "supports_audio": false,
+        "supports_reasoning": false
+      },
+      "context_length": null,
+      "max_output_tokens": null,
+      "default_price_book_id": null,
+      "visibility": "internal",
+      "status": "active",
+      "source_aliases": [
+        "chatgpt-4o-latest"
+      ],
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ],
+      "source_reasons": [
+        "source_model"
+      ],
+      "planned_action": "upsert"
+    },
+    {
+      "model_key": "gpt-4o-mini",
+      "display_name": "GPT-4o mini",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "tool"
+      ],
+      "capability_flags": {
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": false,
+        "supports_audio": false,
+        "supports_reasoning": false
+      },
+      "context_length": null,
+      "max_output_tokens": null,
+      "default_price_book_id": null,
+      "visibility": "internal",
+      "status": "active",
+      "source_aliases": [
+        "gpt-4o-mini-latest"
+      ],
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ],
+      "source_reasons": [
+        "source_model"
+      ],
+      "planned_action": "upsert"
+    }
+  ],
+  "model_associations": [
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "gpt-4o",
+      "association_type": "explicit_channel",
+      "channel_source_id": "new-api:channel:101",
+      "channel_tag": null,
+      "model_pattern": null,
+      "upstream_model_name": "gpt-4o-2024-08-06",
+      "priority": 10,
+      "weight": 100,
+      "conditions": {
+        "tags": [
+          "default",
+          "paid"
+        ]
+      },
+      "fallback_allowed": true,
+      "canary_percent": 100,
+      "status": "enabled",
+      "planned_action": "upsert",
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ]
+    },
+    {
+      "canonical_model_key": "gpt-4o-mini",
+      "requested_model": "gpt-4o-mini",
+      "association_type": "explicit_channel",
+      "channel_source_id": "new-api:channel:102",
+      "channel_tag": null,
+      "model_pattern": null,
+      "upstream_model_name": "gpt-4o-mini-eastus",
+      "priority": 20,
+      "weight": 50,
+      "conditions": {
+        "tags": [
+          "paid",
+          "enterprise"
+        ]
+      },
+      "fallback_allowed": true,
+      "canary_percent": 100,
+      "status": "enabled",
+      "planned_action": "upsert",
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ]
+    },
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "chatgpt-4o-latest",
+      "association_type": "explicit_channel",
+      "channel_source_id": "new-api:channel:101",
+      "channel_tag": null,
+      "model_pattern": null,
+      "upstream_model_name": "gpt-4o-2024-08-06",
+      "priority": 5,
+      "weight": 100,
+      "conditions": {},
+      "fallback_allowed": true,
+      "canary_percent": 100,
+      "status": "enabled",
+      "planned_action": "upsert",
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ]
+    },
+    {
+      "canonical_model_key": "gpt-4o-mini",
+      "requested_model": "chatgpt-4o-latest",
+      "association_type": "explicit_channel",
+      "channel_source_id": "new-api:channel:102",
+      "channel_tag": null,
+      "model_pattern": null,
+      "upstream_model_name": "gpt-4o-mini-eastus",
+      "priority": 30,
+      "weight": 50,
+      "conditions": {
+        "tags": [
+          "enterprise"
+        ]
+      },
+      "fallback_allowed": true,
+      "canary_percent": 100,
+      "status": "enabled",
+      "planned_action": "upsert",
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ]
+    },
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "legacy-gpt-4o",
+      "association_type": "explicit_channel",
+      "channel_source_id": "new-api:channel:999",
+      "channel_tag": null,
+      "model_pattern": null,
+      "upstream_model_name": "gpt-4o-legacy",
+      "priority": 40,
+      "weight": 10,
+      "conditions": {},
+      "fallback_allowed": true,
+      "canary_percent": 100,
+      "status": "enabled",
+      "planned_action": "upsert",
+      "source_reports": [
+        "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+      ]
+    }
+  ],
+  "channel_mappings": [
+    {
+      "channel_source_id": "new-api:channel:101",
+      "channel_present": true,
+      "provider_code": "openai",
+      "channel_name": "openai-primary",
+      "endpoint": "https://api.openai.example/v1",
+      "protocol_mode": "openai_compatible",
+      "priority": 10,
+      "weight": 100,
+      "tags": [
+        "default",
+        "paid"
+      ],
+      "status": "enabled",
+      "mapping_entries": [
+        {
+          "channel_source_id": "new-api:channel:101",
+          "requested_model": "gpt-4o",
+          "canonical_model_key": "gpt-4o",
+          "upstream_model_name": "gpt-4o-2024-08-06",
+          "mapping_policy": "explicit_upstream_name",
+          "sources": [
+            "channel_model_mapping",
+            "model_association"
+          ],
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        },
+        {
+          "channel_source_id": "new-api:channel:101",
+          "requested_model": "chatgpt-4o-latest",
+          "canonical_model_key": "gpt-4o",
+          "upstream_model_name": "gpt-4o-2024-08-06",
+          "mapping_policy": "explicit_upstream_name",
+          "sources": [
+            "model_association"
+          ],
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        }
+      ],
+      "planned_action": "bind_or_create_channel_mapping"
+    },
+    {
+      "channel_source_id": "new-api:channel:102",
+      "channel_present": true,
+      "provider_code": "azure-openai",
+      "channel_name": "azure-eastus",
+      "endpoint": "https://example-resource.openai.azure.com/openai/deployments",
+      "protocol_mode": "openai_compatible",
+      "priority": 20,
+      "weight": 50,
+      "tags": [
+        "paid",
+        "enterprise"
+      ],
+      "status": "enabled",
+      "mapping_entries": [
+        {
+          "channel_source_id": "new-api:channel:102",
+          "requested_model": "gpt-4o-mini",
+          "canonical_model_key": "gpt-4o-mini",
+          "upstream_model_name": "gpt-4o-mini-eastus",
+          "mapping_policy": "explicit_upstream_name",
+          "sources": [
+            "channel_model_mapping",
+            "model_association"
+          ],
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        },
+        {
+          "channel_source_id": "new-api:channel:102",
+          "requested_model": "chatgpt-4o-latest",
+          "canonical_model_key": "gpt-4o-mini",
+          "upstream_model_name": "gpt-4o-mini-eastus",
+          "mapping_policy": "explicit_upstream_name",
+          "sources": [
+            "model_association"
+          ],
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        }
+      ],
+      "planned_action": "bind_or_create_channel_mapping"
+    },
+    {
+      "channel_source_id": "new-api:channel:999",
+      "channel_present": false,
+      "provider_code": null,
+      "channel_name": null,
+      "endpoint": null,
+      "protocol_mode": null,
+      "priority": null,
+      "weight": null,
+      "tags": [],
+      "status": "missing_channel",
+      "mapping_entries": [
+        {
+          "channel_source_id": "new-api:channel:999",
+          "requested_model": "legacy-gpt-4o",
+          "canonical_model_key": "gpt-4o",
+          "upstream_model_name": "gpt-4o-legacy",
+          "mapping_policy": "explicit_upstream_name",
+          "sources": [
+            "model_association"
+          ],
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        }
+      ],
+      "planned_action": "manual_channel_resolution"
+    }
+  ],
+  "conflicts": [
+    {
+      "type": "missing_channel_reference",
+      "severity": "error",
+      "key": "new-api:channel:999",
+      "description": "Association references a channel that is not present in the input report channels list.",
+      "items": [
+        {
+          "canonical_model_key": "gpt-4o",
+          "requested_model": "legacy-gpt-4o",
+          "channel_source_id": "new-api:channel:999",
+          "source": "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+        }
+      ]
+    },
+    {
+      "type": "requested_model_conflict",
+      "severity": "error",
+      "key": "chatgpt-4o-latest",
+      "description": "Requested model maps to multiple canonical models.",
+      "items": [
+        {
+          "requested_model": "chatgpt-4o-latest",
+          "canonical_model_key": "gpt-4o",
+          "channel_source_id": "new-api:channel:101",
+          "upstream_model_name": "gpt-4o-2024-08-06",
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        },
+        {
+          "requested_model": "chatgpt-4o-latest",
+          "canonical_model_key": "gpt-4o-mini",
+          "channel_source_id": "new-api:channel:102",
+          "upstream_model_name": "gpt-4o-mini-eastus",
+          "source_reports": [
+            "internal_mapping_report_input.sample.json:newapi-openai-compatible-dryrun"
+          ]
+        }
+      ]
+    }
+  ],
+  "manual_review_items": [
+    {
+      "type": "missing_channel_reference",
+      "severity": "error",
+      "key": "new-api:channel:999",
+      "summary": "Resolve missing source channel reference before apply.",
+      "details": {
+        "channel_source_id": "new-api:channel:999",
+        "requested_model": "legacy-gpt-4o",
+        "canonical_model_key": "gpt-4o"
+      },
+      "recommended_action": "Map the source channel to an imported channel or remove the association."
+    },
+    {
+      "type": "requested_model_conflict",
+      "severity": "error",
+      "key": "chatgpt-4o-latest",
+      "summary": "Choose one canonical model for this requested model, or split visibility/profile rules before apply.",
+      "details": {
+        "requested_model": "chatgpt-4o-latest",
+        "canonical_model_keys": [
+          "gpt-4o",
+          "gpt-4o-mini"
+        ]
+      },
+      "recommended_action": "Resolve the requested model mapping conflict before apply."
+    }
+  ],
+  "next_steps": [
+    "Resolve all conflicts before apply.",
+    "Bind source channel ids to internal channels before writing model associations or channel mappings."
+  ]
+}

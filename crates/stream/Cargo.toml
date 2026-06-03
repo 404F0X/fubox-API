@@ -1,0 +1,11 @@
+[package]
+name = "ai-gateway-stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,151 @@
+{
+  "scenario": "control_plane_alert_webhook_dry_run_contract",
+  "base_path": "/admin",
+  "endpoint": {
+    "method": "POST",
+    "path": "/admin/alerts/webhook/dry-run"
+  },
+  "security": {
+    "required_permission": "provider_manage",
+    "allowed_roles": ["owner", "admin", "ops"],
+    "viewer_allowed": false,
+    "billing_allowed": false,
+    "developer_allowed": false
+  },
+  "request_contract": {
+    "required_fields": ["url"],
+    "optional_fields": [
+      "enabled",
+      "secret",
+      "secret_header",
+      "headers",
+      "payload",
+      "body",
+      "raw_body"
+    ],
+    "url_constraints": {
+      "scheme": "https",
+      "userinfo_allowed": false,
+      "localhost_allowed": false,
+      "private_literal_ip_allowed": false,
+      "link_local_literal_ip_allowed": false
+    },
+    "delivery": {
+      "outbound_call": false,
+      "dry_run_only": true
+    }
+  },
+  "response_contract": {
+    "envelope": "data",
+    "required_data_fields": [
+      "valid",
+      "dry_run",
+      "mode",
+      "outbound_call",
+      "webhook",
+      "payload",
+      "delivery",
+      "ssrf_guard"
+    ],
+    "webhook_required_fields": [
+      "enabled",
+      "url_redacted",
+      "scheme",
+      "host",
+      "port",
+      "path_redacted",
+      "query_redacted",
+      "secret_configured",
+      "secret_redacted",
+      "secret_header",
+      "headers_redacted",
+      "header_count"
+    ],
+    "must_not_echo": [
+      "webhook secret",
+      "Authorization value",
+      "token query value",
+      "webhook URL path token",
+      "payload raw body"
+    ],
+    "default_behavior": {
+      "enabled_default": false,
+      "outbound_call": false
+    }
+  },
+  "examples": {
+    "valid": {
+      "request": {
+        "enabled": true,
+        "url": "https://hooks.example.com/services/T000/B000/fixture-path-secret?token=fixture-query-secret",
+        "secret": "fixture-webhook-secret",
+        "secret_header": "X-Alert-Signature",
+        "headers": {
+          "Authorization": "Bearer fixture-authorization-token",
+          "X-Alert-Source": "control-plane"
+        },
+        "payload": {
+          "summary": "fixture-raw-body-secret",
+          "severity": "critical"
+        }
+      },
+      "response": {
+        "data": {
+          "valid": true,
+          "dry_run": true,
+          "mode": "validate_only",
+          "outbound_call": false,
+          "webhook": {
+            "enabled": true,
+            "url_redacted": "https://hooks.example.com/[REDACTED_PATH]?[REDACTED_QUERY]",
+            "scheme": "https",
+            "host": "hooks.example.com",
+            "port": null,
+            "path_redacted": true,
+            "query_redacted": true,
+            "secret_configured": true,
+            "secret_redacted": true,
+            "secret_header": "X-Alert-Signature",
+            "headers_redacted": {
+              "Authorization": "[REDACTED]",
+              "X-Alert-Source": "configured"
+            },
+            "header_count": 2
+          },
+          "payload": {
+            "provided": true,
+            "kind": "object",
+            "top_level_item_count": 2,
+            "redacted": true
+          },
+          "delivery": {
+            "implemented": false,
+            "dry_run_only": true,
+            "request_body_redacted": true,
+            "note": "validation only; no webhook request was sent"
+          },
+          "ssrf_guard": {
+            "https_required": true,
+            "localhost_rejected": true,
+            "private_literal_ip_rejected": true,
+            "link_local_literal_ip_rejected": true,
+            "dns_not_resolved": true,
+            "dry_run_only": true
+          }
+        }
+      }
+    },
+    "invalid_url": {
+      "request": {
+        "url": "https://127.0.0.1/alert",
+        "secret": "fixture-webhook-secret"
+      },
+      "expected_error": {
+        "status": 400,
+        "code": "bad_request",
+        "message_contains": "webhook url"
+      }
+    }
+  },
+  "notes": "Contract fixture only. The endpoint validates and redacts alert webhook configuration but does not send outbound webhook requests."
+}

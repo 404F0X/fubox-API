@@ -1,0 +1,1260 @@
+import { FormEvent, useEffect, useState } from "react";
+import {
+  type BillingReconciliationCurrencyTotal,
+  type BillingReconciliationDiscrepancy,
+  type BillingReconciliationReport,
+  type BillingReconciliationReportFilters,
+  type CreatePriceVersionRequest,
+  type JsonObject,
+  type LedgerEntry,
+  type LedgerEntryListFilters,
+  type PriceVersion,
+  type PriceVersionListFilters,
+  type PriceVersionStatus,
+  createPriceVersion,
+  getBillingReconciliationReport,
+  listLedgerEntries,
+  listPriceVersions,
+  type JsonValue,
+} from "../api/client";
+import {
+  StateChip,
+  errorMessage,
+  formatStatus,
+  isSensitiveDisplayText,
+  isJsonRecord,
+  jsonSize,
+  parseJsonObject,
+  safeFieldValue,
+  sanitizeSecretJson,
+  shortId,
+} from "./adminUtils";
+import { Eye, Plus, RefreshCw, Search } from "./icons";
+
+type BillingTab = "priceVersions" | "ledger" | "reconciliation";
+
+type PriceVersionFilterState = {
+  canonicalModelId: string;
+  limit: string;
+  priceBookId: string;
+  status: string;
+};
+
+type PriceVersionCreateForm = {
+  canonicalModelId: string;
+  effectiveAt: string;
+  priceBookId: string;
+  pricingRules: string;
+  retiredAt: string;
+  status: PriceVersionStatus;
+  version: string;
+};
+
+type LedgerFilterState = {
+  limit: string;
+  projectId: string;
+  requestId: string;
+  walletId: string;
+};
+
+type ReconciliationFilterState = {
+  day: string;
+  limit: string;
+};
+
+const defaultPriceVersionFilters: PriceVersionFilterState = {
+  canonicalModelId: "",
+  limit: "25",
+  priceBookId: "",
+  status: "",
+};
+
+const defaultPricingRules = {
+  currency: "USD",
+  fixed_request_cost: "0.00000000",
+  input_token_rate_per_1m: "0.15000000",
+  output_token_rate_per_1m: "0.60000000",
+  scale: 8,
+} satisfies JsonObject;
+
+const defaultPricingRulesJson = JSON.stringify(defaultPricingRules, null, 2);
+
+const defaultPriceVersionCreateForm: PriceVersionCreateForm = {
+  canonicalModelId: "",
+  effectiveAt: "",
+  priceBookId: "",
+  pricingRules: defaultPricingRulesJson,
+  retiredAt: "",
+  status: "draft",
+  version: "",
+};
+
+const defaultLedgerFilters: LedgerFilterState = {
+  limit: "25",
+  projectId: "",
+  requestId: "",
+  walletId: "",
+};
+
+const defaultReconciliationFilters: ReconciliationFilterState = {
+  day: "",
+  limit: "50",
+};
+
+const priceVersionStatuses = ["", "draft", "active", "retired"];
+const priceVersionCreateStatuses: PriceVersionStatus[] = ["draft", "active", "retired"];
+
+export function BillingPage() {
+  const [activeTab, setActiveTab] = useState<BillingTab>("priceVersions");
+
+  return (
+    <div className="admin-page" aria-label="Billing and prices">
+      <div className="tab-list" role="tablist" aria-label="Billing sections">
+        <button
+          aria-selected={activeTab === "priceVersions"}
+          className={`tab-button${activeTab === "priceVersions" ? " tab-button--active" : ""}`}
+          onClick={() => setActiveTab("priceVersions")}
+          role="tab"
+          type="button"
+        >
+          Price Versions
+        </button>
+        <button
+          aria-selected={activeTab === "ledger"}
+          className={`tab-button${activeTab === "ledger" ? " tab-button--active" : ""}`}
+          onClick={() => setActiveTab("ledger")}
+          role="tab"
+          type="button"
+        >
+          Ledger Overview
+        </button>
+        <button
+          aria-selected={activeTab === "reconciliation"}
+          className={`tab-button${activeTab === "reconciliation" ? " tab-button--active" : ""}`}
+          onClick={() => setActiveTab("reconciliation")}
+          role="tab"
+          type="button"
+        >
+          Reconciliation
+        </button>
+      </div>
+
+      {activeTab === "priceVersions" ? (
+        <PriceVersionsSection />
+      ) : activeTab === "ledger" ? (
+        <LedgerOverviewSection />
+      ) : (
+        <ReconciliationSection />
+      )}
+    </div>
+  );
+}
+
+export default BillingPage;
+
+function PriceVersionsSection() {
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createForm, setCreateForm] = useState<PriceVersionCreateForm>(defaultPriceVersionCreateForm);
+  const [creating, setCreating] = useState(false);
+  const [filters, setFilters] = useState<PriceVersionFilterState>(defaultPriceVersionFilters);
+  const [listError, setListError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedVersion, setSelectedVersion] = useState<PriceVersion | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [versions, setVersions] = useState<PriceVersion[]>([]);
+
+  async function loadVersions(nextFilters = filters) {
+    setListError(null);
+    setLoading(true);
+
+    try {
+      const nextVersions = await listPriceVersions(toPriceVersionFilters(nextFilters));
+      setVersions(nextVersions);
+      setSelectedVersion((current) =>
+        current ? nextVersions.find((version) => version.id === current.id) ?? null : null,
+      );
+    } catch (requestError) {
+      setListError(errorMessage(requestError));
+      setVersions([]);
+      setSelectedVersion(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void loadVersions(filters);
+  }
+
+  function updateCreateForm(field: keyof PriceVersionCreateForm, value: string) {
+    setCreateForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function handleCreate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreateError(null);
+    setSuccess(null);
+    setCreating(true);
+
+    try {
+      const request = toCreatePriceVersionRequest(createForm);
+      const created = await createPriceVersion(request);
+      setCreateForm({
+        ...defaultPriceVersionCreateForm,
+        canonicalModelId: createForm.canonicalModelId.trim(),
+        priceBookId: createForm.priceBookId.trim(),
+      });
+      setSuccess(`Price version ${safeFieldValue(created.version)} created.`);
+      await loadVersions(filters);
+      setSelectedVersion(created);
+    } catch (requestError) {
+      if (requestError instanceof PriceVersionFormError) {
+        setCreateError(requestError.message);
+        if (requestError.clearPricingRules) {
+          setCreateForm((current) => ({ ...current, pricingRules: defaultPricingRulesJson }));
+        }
+      } else {
+        setCreateError(errorMessage(requestError));
+      }
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadVersions(defaultPriceVersionFilters);
+  }, []);
+
+  return (
+    <>
+      <section className="admin-panel" aria-label="Create price version">
+        <div className="section-heading">
+          <div>
+            <h2>Create Price Version</h2>
+            <p>Write a new immutable price version and refresh the active list.</p>
+          </div>
+        </div>
+
+        <form className="price-version-form" onSubmit={handleCreate}>
+          <div className="form-grid price-version-form-grid">
+            <label className="field">
+              Price book ID
+              <input
+                value={createForm.priceBookId}
+                onChange={(event) => updateCreateForm("priceBookId", event.currentTarget.value)}
+                placeholder="price book uuid"
+                required
+              />
+            </label>
+            <label className="field">
+              Model ID
+              <input
+                value={createForm.canonicalModelId}
+                onChange={(event) => updateCreateForm("canonicalModelId", event.currentTarget.value)}
+                placeholder="canonical model uuid"
+              />
+            </label>
+            <label className="field">
+              Version
+              <input
+                value={createForm.version}
+                onChange={(event) => updateCreateForm("version", event.currentTarget.value)}
+                placeholder="2026-06-03"
+                required
+              />
+            </label>
+            <label className="field">
+              Status
+              <select
+                value={createForm.status}
+                onChange={(event) => updateCreateForm("status", event.currentTarget.value)}
+              >
+                {priceVersionCreateStatuses.map((status) => (
+                  <option key={status} value={status}>
+                    {formatStatus(status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Effective at
+              <input
+                value={createForm.effectiveAt}
+                onChange={(event) => updateCreateForm("effectiveAt", event.currentTarget.value)}
+                placeholder="2026-06-03T00:00:00Z"
+              />
+            </label>
+            <label className="field">
+              Retired at
+              <input
+                value={createForm.retiredAt}
+                onChange={(event) => updateCreateForm("retiredAt", event.currentTarget.value)}
+                placeholder="2026-12-31T00:00:00Z"
+              />
+            </label>
+          </div>
+
+          <label className="field">
+            Pricing rules JSON
+            <textarea
+              value={createForm.pricingRules}
+              onChange={(event) => updateCreateForm("pricingRules", event.currentTarget.value)}
+              required
+              spellCheck={false}
+            />
+          </label>
+
+          <button className="primary-button primary-button--inline" type="submit" disabled={creating}>
+            <Plus aria-hidden="true" size={17} />
+            {creating ? "Creating" : "Create"}
+          </button>
+        </form>
+
+        {createError ? <p className="form-status form-status--error">{createError}</p> : null}
+        {success ? <p className="form-status form-status--success">{success}</p> : null}
+      </section>
+
+      <section className="admin-panel" aria-label="Price version filters">
+        <div className="section-heading">
+          <div>
+            <h2>Price Versions</h2>
+            <p>Read price version status, scope, effective window, and pricing rule shape.</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => void loadVersions()} disabled={loading}>
+            <RefreshCw aria-hidden="true" size={18} className={loading ? "spin" : undefined} />
+            Refresh
+          </button>
+        </div>
+
+        <form className="filter-bar" onSubmit={handleSubmit}>
+          <label className="field">
+            Status
+            <select
+              value={filters.status}
+              onChange={(event) => setFilters((current) => ({ ...current, status: event.currentTarget.value }))}
+            >
+              {priceVersionStatuses.map((status) => (
+                <option key={status || "all"} value={status}>
+                  {status ? formatStatus(status) : "All"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            Price book ID
+            <input
+              value={filters.priceBookId}
+              onChange={(event) => setFilters((current) => ({ ...current, priceBookId: event.currentTarget.value }))}
+              placeholder="price book uuid"
+            />
+          </label>
+          <label className="field">
+            Model ID
+            <input
+              value={filters.canonicalModelId}
+              onChange={(event) => setFilters((current) => ({ ...current, canonicalModelId: event.currentTarget.value }))}
+              placeholder="canonical model uuid"
+            />
+          </label>
+          <label className="field field--compact">
+            Limit
+            <input
+              min="1"
+              type="number"
+              value={filters.limit}
+              onChange={(event) => setFilters((current) => ({ ...current, limit: event.currentTarget.value }))}
+            />
+          </label>
+          <button className="primary-button primary-button--inline" type="submit">
+            <Search aria-hidden="true" size={17} />
+            Search
+          </button>
+        </form>
+
+        {listError ? <p className="form-status form-status--error">{listError}</p> : null}
+      </section>
+
+      <PriceVersionStats versions={versions} />
+
+      <section aria-label="Price version list">
+        <div className="health-table-wrap">
+          <table className="health-table admin-table admin-table--price-versions">
+            <thead>
+              <tr>
+                <th>Version</th>
+                <th>Status</th>
+                <th>Scope</th>
+                <th>Effective</th>
+                <th>Retired</th>
+                <th>Rules</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={7}>Loading price versions.</td>
+                </tr>
+              ) : versions.length > 0 ? (
+                versions.map((version) => (
+                  <tr key={version.id} className={selectedVersion?.id === version.id ? "table-row--selected" : undefined}>
+                    <td>
+                      <strong>{version.version}</strong>
+                      <span>{shortId(version.id)}</span>
+                    </td>
+                    <td>
+                      <StateChip status={version.status} />
+                    </td>
+                    <td>
+                      <strong>{shortId(version.price_book_id)}</strong>
+                      <span>{version.canonical_model_id ? `Model ${shortId(version.canonical_model_id)}` : "Default model scope"}</span>
+                    </td>
+                    <td>{formatDate(version.effective_at)}</td>
+                    <td>{version.retired_at ? formatDate(version.retired_at) : "-"}</td>
+                    <td>{jsonSize(sanitizeDisplayJson(version.pricing_rules))} rule fields</td>
+                    <td>
+                      <button
+                        aria-label={`View price version ${version.version}`}
+                        className="table-action"
+                        onClick={() => setSelectedVersion(version)}
+                        type="button"
+                      >
+                        <Eye aria-hidden="true" size={15} />
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={7}>No price versions returned.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {selectedVersion ? <PriceVersionDetail version={selectedVersion} /> : null}
+    </>
+  );
+}
+
+function LedgerOverviewSection() {
+  const [entries, setEntries] = useState<LedgerEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<LedgerFilterState>(defaultLedgerFilters);
+  const [loading, setLoading] = useState(true);
+  const [selectedEntry, setSelectedEntry] = useState<LedgerEntry | null>(null);
+
+  async function loadEntries(nextFilters = filters) {
+    setError(null);
+    setLoading(true);
+
+    try {
+      const nextEntries = await listLedgerEntries(toLedgerFilters(nextFilters));
+      setEntries(nextEntries);
+      setSelectedEntry((current) => (current ? nextEntries.find((entry) => entry.id === current.id) ?? null : null));
+    } catch (requestError) {
+      setEntries([]);
+      setError(errorMessage(requestError));
+      setSelectedEntry(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void loadEntries(filters);
+  }
+
+  useEffect(() => {
+    void loadEntries(defaultLedgerFilters);
+  }, []);
+
+  return (
+    <>
+      <section className="admin-panel" aria-label="Ledger filters">
+        <div className="section-heading">
+          <div>
+            <h2>Ledger Overview</h2>
+            <p>Inspect append-only ledger entries by project, wallet, or request.</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => void loadEntries()} disabled={loading}>
+            <RefreshCw aria-hidden="true" size={18} className={loading ? "spin" : undefined} />
+            Refresh
+          </button>
+        </div>
+
+        <form className="filter-bar" onSubmit={handleSubmit}>
+          <label className="field">
+            Project ID
+            <input
+              value={filters.projectId}
+              onChange={(event) => setFilters((current) => ({ ...current, projectId: event.currentTarget.value }))}
+              placeholder="project uuid"
+            />
+          </label>
+          <label className="field">
+            Request ID
+            <input
+              value={filters.requestId}
+              onChange={(event) => setFilters((current) => ({ ...current, requestId: event.currentTarget.value }))}
+              placeholder="request uuid"
+            />
+          </label>
+          <label className="field">
+            Wallet ID
+            <input
+              value={filters.walletId}
+              onChange={(event) => setFilters((current) => ({ ...current, walletId: event.currentTarget.value }))}
+              placeholder="wallet uuid"
+            />
+          </label>
+          <label className="field field--compact">
+            Limit
+            <input
+              min="1"
+              type="number"
+              value={filters.limit}
+              onChange={(event) => setFilters((current) => ({ ...current, limit: event.currentTarget.value }))}
+            />
+          </label>
+          <button className="primary-button primary-button--inline" type="submit">
+            <Search aria-hidden="true" size={17} />
+            Search
+          </button>
+        </form>
+
+        {error ? <p className="form-status form-status--error">{error}</p> : null}
+      </section>
+
+      <LedgerStats entries={entries} />
+
+      <section aria-label="Ledger entry list">
+        <div className="health-table-wrap">
+          <table className="health-table admin-table admin-table--ledger">
+            <thead>
+              <tr>
+                <th>Entry</th>
+                <th>Status</th>
+                <th>Amount</th>
+                <th>Scope</th>
+                <th>Links</th>
+                <th>Occurred</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={7}>Loading ledger entries.</td>
+                </tr>
+              ) : entries.length > 0 ? (
+                entries.map((entry) => (
+                  <tr key={entry.id} className={selectedEntry?.id === entry.id ? "table-row--selected" : undefined}>
+                    <td>
+                      <strong>{formatStatus(entry.entry_type)}</strong>
+                      <span>{shortId(entry.id)}</span>
+                    </td>
+                    <td>
+                      <StateChip status={entry.status} />
+                    </td>
+                    <td>
+                      <strong>{entry.amount}</strong>
+                      <span>{entry.currency}</span>
+                    </td>
+                    <td>
+                      <strong>Project {shortId(entry.project_id)}</strong>
+                      <span>Wallet {shortId(entry.wallet_id)}</span>
+                    </td>
+                    <td>
+                      <span>Request {shortId(entry.request_id)}</span>
+                      <span>Price {shortId(entry.price_version_id)}</span>
+                      <span>Trace {shortId(entry.trace_id)}</span>
+                    </td>
+                    <td>{formatDate(entry.occurred_at)}</td>
+                    <td>
+                      <button
+                        aria-label={`View ledger entry ${entry.id}`}
+                        className="table-action"
+                        onClick={() => setSelectedEntry(entry)}
+                        type="button"
+                      >
+                        <Eye aria-hidden="true" size={15} />
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={7}>No ledger entries returned.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {selectedEntry ? <LedgerEntryDetail entry={selectedEntry} /> : null}
+    </>
+  );
+}
+
+function ReconciliationSection() {
+  const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<ReconciliationFilterState>(defaultReconciliationFilters);
+  const [loading, setLoading] = useState(true);
+  const [report, setReport] = useState<BillingReconciliationReport | null>(null);
+
+  async function loadReport(nextFilters = filters) {
+    setError(null);
+    setLoading(true);
+
+    try {
+      setReport(await getBillingReconciliationReport(toReconciliationFilters(nextFilters)));
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+      setReport(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void loadReport(filters);
+  }
+
+  useEffect(() => {
+    void loadReport(defaultReconciliationFilters);
+  }, []);
+
+  return (
+    <>
+      <section className="admin-panel" aria-label="Reconciliation filters">
+        <div className="section-heading">
+          <div>
+            <h2>Reconciliation</h2>
+            <p>Compare request final costs with settle and refund ledger entries for a UTC day.</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => void loadReport()} disabled={loading}>
+            <RefreshCw aria-hidden="true" size={18} className={loading ? "spin" : undefined} />
+            Refresh
+          </button>
+        </div>
+
+        <form className="filter-bar filter-bar--compact" onSubmit={handleSubmit}>
+          <label className="field">
+            Day
+            <input
+              type="date"
+              value={filters.day}
+              onChange={(event) => {
+                const day = event.currentTarget.value;
+                setFilters((current) => ({ ...current, day }));
+              }}
+            />
+          </label>
+          <label className="field field--compact">
+            Limit
+            <input
+              min="1"
+              max="500"
+              type="number"
+              value={filters.limit}
+              onChange={(event) => {
+                const limit = event.currentTarget.value;
+                setFilters((current) => ({ ...current, limit }));
+              }}
+            />
+          </label>
+          <button className="primary-button primary-button--inline" type="submit">
+            <Search aria-hidden="true" size={17} />
+            Search
+          </button>
+        </form>
+
+        {report ? (
+          <p className="muted-copy">
+            Period {formatDate(report.period_start)} to {formatDate(report.period_end)}.
+          </p>
+        ) : null}
+        {error ? <p className="form-status form-status--error">{error}</p> : null}
+      </section>
+
+      {report ? <ReconciliationStats report={report} /> : null}
+      {report ? <ReconciliationSummaryJson report={report} /> : null}
+
+      <ReconciliationCurrencyTotals loading={loading} totals={report?.summary.currency_totals ?? []} />
+      <ReconciliationDiscrepancies discrepancies={report?.discrepancies ?? []} loading={loading} />
+    </>
+  );
+}
+
+function PriceVersionStats({ versions }: { versions: PriceVersion[] }) {
+  return (
+    <section className="feature-stats" aria-label="Price version summary">
+      <MetricCard label="Versions" tone="neutral" value={versions.length} />
+      <MetricCard label="Active" tone="good" value={countByStatus(versions, "active")} />
+      <MetricCard label="Draft" tone="warn" value={countByStatus(versions, "draft")} />
+      <MetricCard label="Model scoped" tone="neutral" value={versions.filter((version) => version.canonical_model_id).length} />
+    </section>
+  );
+}
+
+function LedgerStats({ entries }: { entries: LedgerEntry[] }) {
+  return (
+    <section className="feature-stats" aria-label="Ledger summary">
+      <MetricCard label="Entries" tone="neutral" value={entries.length} />
+      <MetricCard label="Confirmed" tone="good" value={entries.filter((entry) => entry.status === "confirmed").length} />
+      <MetricCard label="Pending" tone="warn" value={entries.filter((entry) => entry.status === "pending").length} />
+      <MetricCard label="Net amount" tone="neutral" value={ledgerTotals(entries)} />
+    </section>
+  );
+}
+
+function ReconciliationStats({ report }: { report: BillingReconciliationReport }) {
+  const { summary } = report;
+
+  return (
+    <section className="feature-stats" aria-label="Reconciliation summary">
+      <MetricCard label="Requests" tone="neutral" value={summary.request_count} />
+      <MetricCard label="Matched" tone="good" value={summary.matched_request_count} />
+      <MetricCard label="Discrepancies" tone="warn" value={summary.discrepancy_count} />
+      <MetricCard label="Returned Rows" tone="neutral" value={summary.returned_discrepancy_count} />
+    </section>
+  );
+}
+
+function ReconciliationSummaryJson({ report }: { report: BillingReconciliationReport }) {
+  return (
+    <section className="admin-panel" aria-label="Reconciliation safe JSON summary">
+      <h2>Summary JSON</h2>
+      <JsonBlock
+        value={{
+          period_end: report.period_end,
+          period_start: report.period_start,
+          report_version: report.report_version,
+          summary: report.summary as unknown as JsonValue,
+        }}
+      />
+    </section>
+  );
+}
+
+function ReconciliationCurrencyTotals({
+  loading,
+  totals,
+}: {
+  loading: boolean;
+  totals: BillingReconciliationCurrencyTotal[];
+}) {
+  return (
+    <section aria-label="Reconciliation currency totals">
+      <div className="health-table-wrap">
+        <table className="health-table admin-table admin-table--reconciliation-totals">
+          <thead>
+            <tr>
+              <th>Currency</th>
+              <th>Request Final Cost</th>
+              <th>Expected Ledger</th>
+              <th>Ledger Amount</th>
+              <th>Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && totals.length === 0 ? (
+              <tr>
+                <td colSpan={5}>Loading reconciliation totals.</td>
+              </tr>
+            ) : totals.length > 0 ? (
+              totals.map((total) => (
+                <tr key={total.currency}>
+                  <td>
+                    <strong>{safeFieldValue(total.currency)}</strong>
+                  </td>
+                  <td>{safeFieldValue(total.request_final_cost_total)}</td>
+                  <td>{safeFieldValue(total.expected_ledger_amount_total)}</td>
+                  <td>{safeFieldValue(total.ledger_amount_total)}</td>
+                  <td>{safeFieldValue(total.difference_amount)}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={5}>No currency totals returned.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function ReconciliationDiscrepancies({
+  discrepancies,
+  loading,
+}: {
+  discrepancies: BillingReconciliationDiscrepancy[];
+  loading: boolean;
+}) {
+  return (
+    <section aria-label="Reconciliation discrepancy rows">
+      <div className="health-table-wrap">
+        <table className="health-table admin-table admin-table--reconciliation">
+          <thead>
+            <tr>
+              <th>Issues</th>
+              <th>Request</th>
+              <th>Ledger</th>
+              <th>Money</th>
+              <th>Scope</th>
+              <th>Usage</th>
+              <th>Route</th>
+              <th>Models</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && discrepancies.length === 0 ? (
+              <tr>
+                <td colSpan={8}>Loading reconciliation discrepancies.</td>
+              </tr>
+            ) : discrepancies.length > 0 ? (
+              discrepancies.map((discrepancy, index) => (
+                <tr key={(discrepancy.request_id ?? discrepancy.ledger_entry_ids.join(":")) || index}>
+                  <td>
+                    <IssueList issues={discrepancy.issues} />
+                  </td>
+                  <td>
+                    <strong>{safeShortId(discrepancy.request_id)}</strong>
+                    <span>Trace {safeFieldValue(discrepancy.trace_id)}</span>
+                    <span>Status {safeFieldValue(discrepancy.request_status)}</span>
+                  </td>
+                  <td>
+                    <strong>{formatIdList(discrepancy.ledger_entry_ids)}</strong>
+                  </td>
+                  <td>
+                    <strong>{moneyValue(discrepancy.request_final_cost, discrepancy.request_currency)}</strong>
+                    <span>Expected {moneyValue(discrepancy.expected_ledger_amount, discrepancy.request_currency)}</span>
+                    <span>Ledger {moneyValue(discrepancy.ledger_amount, discrepancy.ledger_currency)}</span>
+                    <span>Diff {safeFieldValue(discrepancy.difference_amount)}</span>
+                  </td>
+                  <td>
+                    <span>Project {safeShortId(discrepancy.project_id)}</span>
+                    <span>Virtual Key {safeShortId(discrepancy.virtual_key_id)}</span>
+                  </td>
+                  <td>
+                    <span>Input {safeFieldValue(discrepancy.input_tokens)}</span>
+                    <span>Output {safeFieldValue(discrepancy.output_tokens)}</span>
+                  </td>
+                  <td>
+                    <span>Provider {safeShortId(discrepancy.resolved_provider_id)}</span>
+                    <span>Channel {safeShortId(discrepancy.resolved_channel_id)}</span>
+                    <span>Model {safeShortId(discrepancy.canonical_model_id)}</span>
+                  </td>
+                  <td>
+                    <span>Requested {safeFieldValue(discrepancy.requested_model)}</span>
+                    <span>Upstream {safeFieldValue(discrepancy.upstream_model)}</span>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={8}>No reconciliation discrepancies returned.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function IssueList({ issues }: { issues: string[] }) {
+  return (
+    <div className="issue-list">
+      {issues.length > 0 ? (
+        issues.map((issue) => (
+          <span className={`issue-pill issue-pill--${issueTone(issue)}`} key={issue}>
+            {formatStatus(issue)}
+          </span>
+        ))
+      ) : (
+        <span className="issue-pill issue-pill--neutral">-</span>
+      )}
+    </div>
+  );
+}
+
+function MetricCard({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone: "good" | "neutral" | "warn";
+  value: number | string;
+}) {
+  return (
+    <article className={`metric-card metric-card--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  );
+}
+
+function PriceVersionDetail({ version }: { version: PriceVersion }) {
+  return (
+    <section className="detail-grid" aria-label="Price version detail">
+      <article className="admin-panel">
+        <div className="section-heading">
+          <div>
+            <h2>Price Version Detail</h2>
+            <p>{version.id}</p>
+          </div>
+          <StateChip status={version.status} />
+        </div>
+        <Fields
+          items={[
+            ["Version", version.version],
+            ["Price book", shortId(version.price_book_id)],
+            ["Model", shortId(version.canonical_model_id)],
+            ["Effective", formatDate(version.effective_at)],
+            ["Retired", version.retired_at ? formatDate(version.retired_at) : "-"],
+            ["Created", formatDate(version.created_at)],
+          ]}
+        />
+      </article>
+
+      <article className="admin-panel">
+        <h2>Pricing Rules</h2>
+        <JsonBlock value={sanitizeSecretJson(version.pricing_rules)} />
+      </article>
+    </section>
+  );
+}
+
+function LedgerEntryDetail({ entry }: { entry: LedgerEntry }) {
+  return (
+    <section className="detail-grid" aria-label="Ledger entry detail">
+      <article className="admin-panel">
+        <div className="section-heading">
+          <div>
+            <h2>Ledger Entry Detail</h2>
+            <p>{entry.id}</p>
+          </div>
+          <StateChip status={entry.status} />
+        </div>
+        <Fields
+          items={[
+            ["Type", formatStatus(entry.entry_type)],
+            ["Amount", `${entry.amount} ${entry.currency}`],
+            ["Project", shortId(entry.project_id)],
+            ["Wallet", shortId(entry.wallet_id)],
+            ["Request", shortId(entry.request_id)],
+            ["Price version", shortId(entry.price_version_id)],
+            ["Related entry", shortId(entry.related_ledger_entry_id)],
+            ["Idempotency", entry.idempotency_key],
+          ]}
+        />
+      </article>
+
+      <article className="admin-panel">
+        <h2>Usage Snapshot</h2>
+        <JsonBlock value={sanitizeSecretJson(entry.usage_snapshot)} />
+      </article>
+
+      <article className="admin-panel">
+        <h2>Policy Snapshot</h2>
+        <JsonBlock value={sanitizeSecretJson(entry.policy_snapshot)} />
+      </article>
+
+      <article className="admin-panel">
+        <h2>Metadata</h2>
+        <JsonBlock value={sanitizeSecretJson(entry.metadata)} />
+      </article>
+    </section>
+  );
+}
+
+function Fields({ items }: { items: Array<[string, unknown]> }) {
+  return (
+    <dl className="detail-list">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{safeFieldValue(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function JsonBlock({ value }: { value: JsonValue }) {
+  return <pre className="json-block">{JSON.stringify(sanitizeDisplayJson(value), null, 2)}</pre>;
+}
+
+class PriceVersionFormError extends Error {
+  constructor(
+    message: string,
+    readonly clearPricingRules = false,
+  ) {
+    super(message);
+    this.name = "PriceVersionFormError";
+  }
+}
+
+function toCreatePriceVersionRequest(form: PriceVersionCreateForm): CreatePriceVersionRequest {
+  return {
+    canonical_model_id: optionalString(form.canonicalModelId),
+    effective_at: optionalString(form.effectiveAt),
+    price_book_id: requiredString(form.priceBookId, "Price book ID"),
+    pricing_rules: parsePricingRulesJsonObject(form.pricingRules),
+    retired_at: optionalString(form.retiredAt),
+    status: optionalString(form.status),
+    version: requiredString(form.version, "Version"),
+  };
+}
+
+function parsePricingRulesJsonObject(value: string): JsonObject {
+  const pricingRules = parseJsonObject(value, "Pricing rules");
+
+  if (containsUnsafeBillingJson(pricingRules)) {
+    throw new PriceVersionFormError(
+      "Pricing rules cannot contain unsafe fields: payload, body, auth header, secret, token, API key, or raw key.",
+      true,
+    );
+  }
+
+  return pricingRules;
+}
+
+function toPriceVersionFilters(filters: PriceVersionFilterState): PriceVersionListFilters {
+  return {
+    canonical_model_id: optionalString(filters.canonicalModelId),
+    limit: optionalPositiveInteger(filters.limit, "Limit"),
+    price_book_id: optionalString(filters.priceBookId),
+    status: optionalString(filters.status),
+  };
+}
+
+function toLedgerFilters(filters: LedgerFilterState): LedgerEntryListFilters {
+  return {
+    limit: optionalPositiveInteger(filters.limit, "Limit"),
+    project_id: optionalString(filters.projectId),
+    request_id: optionalString(filters.requestId),
+    wallet_id: optionalString(filters.walletId),
+  };
+}
+
+function toReconciliationFilters(filters: ReconciliationFilterState): BillingReconciliationReportFilters {
+  return {
+    day: optionalIsoDay(filters.day),
+    limit: optionalPositiveInteger(filters.limit, "Limit"),
+  };
+}
+
+function optionalString(value: string): string | undefined {
+  const trimmed = value.trim();
+
+  return trimmed ? trimmed : undefined;
+}
+
+function requiredString(value: string, label: string): string {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    throw new PriceVersionFormError(`${label} is required.`);
+  }
+
+  return trimmed;
+}
+
+function optionalIsoDay(value: string): string | undefined {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    throw new Error("Day must use YYYY-MM-DD format.");
+  }
+
+  return trimmed;
+}
+
+function optionalPositiveInteger(value: string, label: string): number | undefined {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const parsed = Number(trimmed);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+function countByStatus(versions: PriceVersion[], status: string): number {
+  return versions.filter((version) => version.status === status).length;
+}
+
+function ledgerTotals(entries: LedgerEntry[]): string {
+  const totals = new Map<string, number>();
+
+  for (const entry of entries) {
+    const amount = Number(entry.amount);
+
+    if (Number.isFinite(amount)) {
+      totals.set(entry.currency, (totals.get(entry.currency) ?? 0) + amount);
+    }
+  }
+
+  if (totals.size === 0) {
+    return "-";
+  }
+
+  return Array.from(totals.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([currency, amount]) => `${currency} ${formatDecimal(amount)}`)
+    .join(" / ");
+}
+
+function formatIdList(values: string[]): string {
+  if (values.length === 0) {
+    return "-";
+  }
+
+  return values.map(safeShortId).join(", ");
+}
+
+function moneyValue(amount: string | null | undefined, currency: string | null | undefined): string {
+  const safeAmount = safeFieldValue(amount);
+  const safeCurrency = safeFieldValue(currency);
+
+  if (safeAmount === "-" && safeCurrency === "-") {
+    return "-";
+  }
+
+  if (safeCurrency === "-") {
+    return safeAmount;
+  }
+
+  return `${safeCurrency} ${safeAmount}`;
+}
+
+function safeShortId(value: string | null | undefined): string {
+  const safeValue = safeFieldValue(value);
+
+  if (safeValue === "-" || safeValue.includes("[redacted]")) {
+    return safeValue;
+  }
+
+  return shortId(safeValue);
+}
+
+function containsUnsafeBillingJson(value: JsonValue): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsUnsafeBillingJson);
+  }
+
+  if (isJsonRecord(value)) {
+    return Object.entries(value).some(([key, child]) => isUnsafeJsonDisplayKey(key) || containsUnsafeBillingJson(child));
+  }
+
+  return typeof value === "string" && isSensitiveDisplayText(value);
+}
+
+function sanitizeDisplayJson(value: JsonValue): JsonValue {
+  return omitUnsafeJsonFields(sanitizeSecretJson(value));
+}
+
+function omitUnsafeJsonFields(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) {
+    return value.map(omitUnsafeJsonFields);
+  }
+
+  if (isJsonRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !isUnsafeJsonDisplayKey(key))
+        .map(([key, child]) => [key, omitUnsafeJsonFields(child)]),
+    );
+  }
+
+  if (typeof value === "string") {
+    return safeFieldValue(value);
+  }
+
+  return value;
+}
+
+function isUnsafeJsonDisplayKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  return (
+    normalized.includes("accesstoken") ||
+    normalized.includes("authorization") ||
+    normalized.includes("apikey") ||
+    normalized.includes("bearertoken") ||
+    normalized.includes("cookie") ||
+    normalized.includes("credential") ||
+    normalized.includes("encryptedsecret") ||
+    normalized.includes("fingerprint") ||
+    normalized.includes("payload") ||
+    normalized.includes("password") ||
+    normalized.includes("privatekey") ||
+    normalized.includes("rawkey") ||
+    normalized.includes("refreshtoken") ||
+    normalized.includes("secret") ||
+    normalized.includes("secrethash") ||
+    normalized.includes("sessiontoken") ||
+    normalized === "token" ||
+    normalized === "body" ||
+    normalized === "apikey" ||
+    normalized.endsWith("body") ||
+    normalized.endsWith("token") ||
+    normalized.startsWith("raw") ||
+    normalized.includes("rawpolicysnapshot")
+  );
+}
+
+function issueTone(issue: string): "danger" | "neutral" | "warn" {
+  if (issue === "missing_ledger" || issue === "unexpected_ledger") {
+    return "danger";
+  }
+
+  if (issue === "amount_mismatch" || issue === "currency_mismatch") {
+    return "warn";
+  }
+
+  return "neutral";
+}
+
+function formatDecimal(value: number): string {
+  return value.toFixed(8).replace(/\.?0+$/, "");
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString([], {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+  });
+}

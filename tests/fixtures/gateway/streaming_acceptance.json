@@ -1,0 +1,93 @@
+{
+  "scenario": "gateway_openai_chat_streaming_acceptance",
+  "mock_provider_fixture": "../mock-provider/scenarios/openai_chat_streaming.json",
+  "base_path": "/v1/chat/completions",
+  "request_body": {
+    "model": "mock-gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "gateway streaming acceptance probe"
+      }
+    ],
+    "stream": true
+  },
+  "required_mock_scenarios": [
+    "200",
+    "invalid_json_chunk",
+    "large_chunk",
+    "missing_done",
+    "timeout",
+    "eof",
+    "stream_timeout",
+    "stream_eof"
+  ],
+  "runtime_contract": {
+    "pull_model": "one_upstream_chunk_per_downstream_poll",
+    "max_upstream_chunk_bytes": 4194304,
+    "max_sse_event_bytes": 4194304,
+    "oversized_chunk_end_reason": "parser_error",
+    "downstream_body_drop_end_reason": "client_cancel",
+    "downstream_body_drop_sources": ["client_disconnect", "downstream_send_error"],
+    "no_late_fallback_after_response_start": true
+  },
+  "acceptance_checks": [
+    {
+      "name": "normal stream",
+      "mock_scenario": "200",
+      "expected_gateway_status": 200,
+      "expected_content_type": "text/event-stream",
+      "expected_contains": ["chat.completion.chunk", "data: [DONE]"],
+      "expected_request_log": {
+        "status": "succeeded",
+        "partial_sent": true,
+        "stream_end_reason": "completed",
+        "http_status": 200
+      }
+    },
+    {
+      "name": "invalid JSON chunk",
+      "mock_scenario": "invalid_json_chunk",
+      "expected_gateway_behavior": "stream_body_error_after_partial",
+      "expected_request_log": {
+        "status": "partial",
+        "partial_sent": true,
+        "stream_end_reason": "parser_error",
+        "error_code": "stream_parser_error"
+      }
+    },
+    {
+      "name": "large chunk",
+      "mock_scenario": "large_chunk",
+      "expected_gateway_status": 200,
+      "expected_content_type": "text/event-stream",
+      "min_response_bytes": 71680,
+      "expected_request_log": {
+        "status": "succeeded",
+        "partial_sent": true,
+        "stream_end_reason": "completed",
+        "http_status": 200
+      }
+    },
+    {
+      "name": "missing done",
+      "mock_scenario": "missing_done",
+      "expected_gateway_behavior": "clean_eof_without_done",
+      "expected_absent": ["data: [DONE]"],
+      "expected_request_log": {
+        "status": "partial",
+        "partial_sent": true,
+        "stream_end_reason": "upstream_eof",
+        "error_code": "stream_upstream_eof"
+      }
+    },
+    {
+      "name": "timeout/eof transport failures",
+      "mock_scenarios": ["timeout", "eof", "stream_timeout", "stream_eof"],
+      "expected_gateway_behavior": "pre_first_byte_fallback_or_partial_stream_error",
+      "partial_sent_scenarios": ["stream_timeout", "stream_eof"],
+      "no_late_fallback_after_partial_sent": true
+    }
+  ],
+  "notes": "Gateway streaming smoke uses this matrix for /v1/chat/completions stream=true. It records partial_sent and stream_end_reason in request_logs; after partial_sent, late fallback must not occur."
+}

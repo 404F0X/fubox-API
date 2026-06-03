@@ -1,0 +1,8 @@
+target/
+web/admin-ui/node_modules/
+web/admin-ui/dist/
+.git/
+.github/
+references/
+*.zip
+*.docx

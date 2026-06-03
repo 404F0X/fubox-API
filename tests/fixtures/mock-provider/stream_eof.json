@@ -1,0 +1,23 @@
+{
+  "scenario": "stream_eof",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=stream_eof",
+  "body": {
+    "stream": true
+  },
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=stream_eof",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "stream_eof"
+      }
+    },
+    "endpoint": "/__scenario/stream_eof/v1/chat/completions",
+    "body": {
+      "mock_scenario": "stream_eof"
+    }
+  },
+  "expected_status": "connection_closed_mid_stream",
+  "notes": "SSE response starts with a valid chunk and then the upstream connection closes before [DONE]."
+}

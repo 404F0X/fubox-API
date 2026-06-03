@@ -1,0 +1,278 @@
+{
+  "scenario": "provider_error_adapter_bridge_contract",
+  "crate": "ai-gateway-routing",
+  "function": "classify_adapter_provider_error",
+  "input_contract": {
+    "status_code": "optional adapter/provider HTTP status code",
+    "transport": "optional adapter transport error kind: Timeout, Connect, Body, Other",
+    "retry_after_ms": "optional parsed Retry-After value in milliseconds",
+    "owner": "optional adapter error owner, for example provider, network, parser, client",
+    "stage": "optional adapter error stage, for example provider_call or response_transform",
+    "code": "optional adapter error code only; no message, provider body, or credential material"
+  },
+  "cases": [
+    {
+      "name": "provider_429_retry_after",
+      "input": {
+        "status_code": 429,
+        "retry_after_ms": 2000,
+        "owner": "provider",
+        "stage": "provider_call",
+        "code": "provider_429"
+      },
+      "expected": {
+        "classification": {
+          "kind": "RateLimited",
+          "retryable_same_channel": false,
+          "can_fallback": true,
+          "health_impact": "Cooldown",
+          "status_code": 429,
+          "retry_after_ms": 2000,
+          "reason_code": "provider_rate_limited"
+        },
+        "health_impact": "Cooldown",
+        "fallback": {
+          "retry_same_channel": false,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "provider_5xx",
+      "input": {
+        "status_code": 500,
+        "owner": "provider",
+        "stage": "provider_call",
+        "code": "provider_5xx"
+      },
+      "expected": {
+        "classification": {
+          "kind": "ProviderServer",
+          "retryable_same_channel": true,
+          "can_fallback": true,
+          "health_impact": "Degrade",
+          "status_code": 500,
+          "retry_after_ms": null,
+          "reason_code": "provider_server_error"
+        },
+        "health_impact": "Degrade",
+        "fallback": {
+          "retry_same_channel": true,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "auth_401",
+      "input": {
+        "status_code": 401,
+        "owner": "provider",
+        "stage": "provider_call",
+        "code": "provider_auth_failed"
+      },
+      "expected": {
+        "classification": {
+          "kind": "Authentication",
+          "retryable_same_channel": false,
+          "can_fallback": true,
+          "health_impact": "MarkAuthFailed",
+          "status_code": 401,
+          "retry_after_ms": null,
+          "reason_code": "provider_auth_failed"
+        },
+        "health_impact": "MarkAuthFailed",
+        "fallback": {
+          "retry_same_channel": false,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "auth_403",
+      "input": {
+        "status_code": 403,
+        "owner": "provider",
+        "stage": "provider_call",
+        "code": "provider_auth_failed"
+      },
+      "expected": {
+        "classification": {
+          "kind": "Authentication",
+          "retryable_same_channel": false,
+          "can_fallback": true,
+          "health_impact": "MarkAuthFailed",
+          "status_code": 403,
+          "retry_after_ms": null,
+          "reason_code": "provider_auth_failed"
+        },
+        "health_impact": "MarkAuthFailed",
+        "fallback": {
+          "retry_same_channel": false,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "quota_like_403",
+      "input": {
+        "status_code": 403,
+        "owner": "provider",
+        "stage": "provider_call",
+        "code": "insufficient_quota"
+      },
+      "expected": {
+        "classification": {
+          "kind": "RateLimited",
+          "retryable_same_channel": false,
+          "can_fallback": true,
+          "health_impact": "Cooldown",
+          "status_code": 403,
+          "retry_after_ms": null,
+          "reason_code": "provider_quota_exhausted"
+        },
+        "health_impact": "Cooldown",
+        "fallback": {
+          "retry_same_channel": false,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "network_timeout",
+      "input": {
+        "status_code": 504,
+        "transport": "Timeout",
+        "owner": "network",
+        "stage": "provider_call",
+        "code": "provider_timeout"
+      },
+      "expected": {
+        "classification": {
+          "kind": "Timeout",
+          "retryable_same_channel": true,
+          "can_fallback": true,
+          "health_impact": "Degrade",
+          "status_code": 504,
+          "retry_after_ms": null,
+          "reason_code": "provider_transport_timeout"
+        },
+        "health_impact": "Degrade",
+        "fallback": {
+          "retry_same_channel": true,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "network_connect",
+      "input": {
+        "status_code": 502,
+        "transport": "Connect",
+        "owner": "network",
+        "stage": "provider_call",
+        "code": "provider_connect_failed"
+      },
+      "expected": {
+        "classification": {
+          "kind": "Transport",
+          "retryable_same_channel": true,
+          "can_fallback": true,
+          "health_impact": "Degrade",
+          "status_code": 502,
+          "retry_after_ms": null,
+          "reason_code": "provider_transport_connect"
+        },
+        "health_impact": "Degrade",
+        "fallback": {
+          "retry_same_channel": true,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "network_body",
+      "input": {
+        "status_code": 502,
+        "transport": "Body",
+        "owner": "network",
+        "stage": "provider_call",
+        "code": "provider_response_read_failed"
+      },
+      "expected": {
+        "classification": {
+          "kind": "Transport",
+          "retryable_same_channel": true,
+          "can_fallback": true,
+          "health_impact": "Degrade",
+          "status_code": 502,
+          "retry_after_ms": null,
+          "reason_code": "provider_transport_body"
+        },
+        "health_impact": "Degrade",
+        "fallback": {
+          "retry_same_channel": true,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "parser_invalid_json",
+      "input": {
+        "status_code": 502,
+        "owner": "parser",
+        "stage": "response_transform",
+        "code": "provider_invalid_json"
+      },
+      "expected": {
+        "classification": {
+          "kind": "ProviderProtocol",
+          "retryable_same_channel": true,
+          "can_fallback": true,
+          "health_impact": "Degrade",
+          "status_code": 502,
+          "retry_after_ms": null,
+          "reason_code": "provider_response_invalid_json"
+        },
+        "health_impact": "Degrade",
+        "fallback": {
+          "retry_same_channel": true,
+          "fallback_to_next_channel": true
+        }
+      }
+    },
+    {
+      "name": "client_invalid_request",
+      "input": {
+        "status_code": 400,
+        "owner": "client",
+        "stage": "request_validate",
+        "code": "invalid_request"
+      },
+      "expected": {
+        "classification": {
+          "kind": "ClientRequest",
+          "retryable_same_channel": false,
+          "can_fallback": false,
+          "health_impact": "None",
+          "status_code": 400,
+          "retry_after_ms": null,
+          "reason_code": "adapter_rejected_client_request"
+        },
+        "health_impact": "None",
+        "fallback": {
+          "retry_same_channel": false,
+          "fallback_to_next_channel": false
+        }
+      }
+    }
+  ],
+  "response_contract": {
+    "credential_material_omitted": true,
+    "raw_adapter_message_omitted": true,
+    "raw_provider_payload_omitted": true
+  },
+  "notes": [
+    "Pure routing-core bridge only.",
+    "Gateway runtime retry/fallback execution is outside this contract."
+  ]
+}

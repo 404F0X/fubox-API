@@ -1,0 +1,41 @@
+{
+  "name": "openai_responses_non_stream_valid",
+  "request": {
+    "model": "mock-gpt",
+    "input": "Say hello.",
+    "stream": false,
+    "temperature": 0.2,
+    "max_output_tokens": 16
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1/responses",
+    "stream": false,
+    "body": {
+      "model": "mock-gpt",
+      "input": "Say hello.",
+      "stream": false,
+      "temperature": 0.2,
+      "max_output_tokens": 16
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "resp_fixture_ok",
+      "object": "response",
+      "model": "mock-gpt",
+      "output_text": "Hello.",
+      "usage": {
+        "input_tokens": 12,
+        "output_tokens": 3,
+        "total_tokens": 15
+      }
+    }
+  },
+  "expected_usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "mcp_tools_list_valid",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "tools-list-1",
+    "method": "tools/list",
+    "params": {}
+  },
+  "expected_routing": {
+    "request_id": "tools-list-1",
+    "method": "tools/list",
+    "tool_name": null,
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/mcp",
+    "stream": false,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": "tools-list-1",
+      "method": "tools/list",
+      "params": {}
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": "tools-list-1",
+      "result": {
+        "tools": [
+          {
+            "name": "weather_summary",
+            "description": "Returns a fixture-safe weather summary.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                },
+                "units": {
+                  "type": "string",
+                  "enum": [
+                    "metric",
+                    "imperial"
+                  ]
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "expected_usage": null
+}

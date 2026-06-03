@@ -1,0 +1,289 @@
+{
+  "scenario": "routing_coding_agent_profiles_contract",
+  "crate": "ai-gateway-routing",
+  "function": "coding_agent_profile_plan",
+  "scenarios": [
+    {
+      "kind": "codex",
+      "expected_plan": {
+        "kind": "codex",
+        "recommended_model_aliases": [
+          {
+            "alias": "codex/default",
+            "canonical_model": "coding-agent/codex-balanced",
+            "purpose": "balanced"
+          },
+          {
+            "alias": "codex/fast",
+            "canonical_model": "coding-agent/codex-fast",
+            "purpose": "low_latency"
+          },
+          {
+            "alias": "codex/large-context",
+            "canonical_model": "coding-agent/codex-large-context",
+            "purpose": "large_context"
+          }
+        ],
+        "streaming_preference": "preferred",
+        "tool_support_expectation": {
+          "tool_calls": "required",
+          "function_calling": "preferred",
+          "parallel_tool_calls": "preferred"
+        },
+        "large_context_preference": "preferred",
+        "fallback_policy": {
+          "allowed": true,
+          "same_provider_first": true,
+          "cross_provider_allowed": true,
+          "preserve_streaming_preference": true,
+          "preserve_tool_support": true,
+          "max_attempts": 3
+        },
+        "channel_tag_preference": {
+          "required_any": ["coding-agent", "codex"],
+          "preferred": ["streaming", "tool-calls", "large-context"],
+          "denied": ["batch-only", "no-tools"]
+        },
+        "payload_policy_expectation": "redacted_preview"
+      },
+      "expected_route_constraints": {
+        "visible_model_visibilities": ["Public", "Internal"],
+        "allowed_models": [
+          "coding-agent/codex-balanced",
+          "coding-agent/codex-fast",
+          "coding-agent/codex-large-context"
+        ],
+        "denied_models": [],
+        "allowed_channel_tags": ["coding-agent", "codex"],
+        "denied_channel_tags": ["batch-only", "no-tools"],
+        "blocked_provider_ids": []
+      },
+      "expected_route_policy_summary": {
+        "kind": "codex",
+        "recommended_aliases": [
+          "codex/default",
+          "codex/fast",
+          "codex/large-context"
+        ],
+        "allowed_models": [
+          "coding-agent/codex-balanced",
+          "coding-agent/codex-fast",
+          "coding-agent/codex-large-context"
+        ],
+        "visible_model_visibilities": ["Public", "Internal"],
+        "allowed_channel_tags": ["coding-agent", "codex"],
+        "preferred_channel_tags": ["streaming", "tool-calls", "large-context"],
+        "denied_channel_tags": ["batch-only", "no-tools"],
+        "streaming_preference": "preferred",
+        "tool_support_expectation": {
+          "tool_calls": "required",
+          "function_calling": "preferred",
+          "parallel_tool_calls": "preferred"
+        },
+        "large_context_preference": "preferred",
+        "fallback_policy": {
+          "allowed": true,
+          "same_provider_first": true,
+          "cross_provider_allowed": true,
+          "preserve_streaming_preference": true,
+          "preserve_tool_support": true,
+          "max_attempts": 3
+        },
+        "payload_policy_expectation": "redacted_preview"
+      }
+    },
+    {
+      "kind": "claude-code",
+      "expected_plan": {
+        "kind": "claude-code",
+        "recommended_model_aliases": [
+          {
+            "alias": "claude-code/default",
+            "canonical_model": "coding-agent/claude-code-balanced",
+            "purpose": "balanced"
+          },
+          {
+            "alias": "claude-code/fast",
+            "canonical_model": "coding-agent/claude-code-fast",
+            "purpose": "low_latency"
+          },
+          {
+            "alias": "claude-code/large-context",
+            "canonical_model": "coding-agent/claude-code-large-context",
+            "purpose": "large_context"
+          }
+        ],
+        "streaming_preference": "required",
+        "tool_support_expectation": {
+          "tool_calls": "required",
+          "function_calling": "optional",
+          "parallel_tool_calls": "preferred"
+        },
+        "large_context_preference": "required",
+        "fallback_policy": {
+          "allowed": true,
+          "same_provider_first": true,
+          "cross_provider_allowed": false,
+          "preserve_streaming_preference": true,
+          "preserve_tool_support": true,
+          "max_attempts": 2
+        },
+        "channel_tag_preference": {
+          "required_any": ["coding-agent", "claude-code"],
+          "preferred": ["anthropic-tools", "streaming", "large-context"],
+          "denied": ["no-tools", "non-streaming"]
+        },
+        "payload_policy_expectation": "redacted_preview"
+      },
+      "expected_route_constraints": {
+        "visible_model_visibilities": ["Public", "Internal"],
+        "allowed_models": [
+          "coding-agent/claude-code-balanced",
+          "coding-agent/claude-code-fast",
+          "coding-agent/claude-code-large-context"
+        ],
+        "denied_models": [],
+        "allowed_channel_tags": ["coding-agent", "claude-code"],
+        "denied_channel_tags": ["no-tools", "non-streaming"],
+        "blocked_provider_ids": []
+      },
+      "expected_route_policy_summary": {
+        "kind": "claude-code",
+        "recommended_aliases": [
+          "claude-code/default",
+          "claude-code/fast",
+          "claude-code/large-context"
+        ],
+        "allowed_models": [
+          "coding-agent/claude-code-balanced",
+          "coding-agent/claude-code-fast",
+          "coding-agent/claude-code-large-context"
+        ],
+        "visible_model_visibilities": ["Public", "Internal"],
+        "allowed_channel_tags": ["coding-agent", "claude-code"],
+        "preferred_channel_tags": ["anthropic-tools", "streaming", "large-context"],
+        "denied_channel_tags": ["no-tools", "non-streaming"],
+        "streaming_preference": "required",
+        "tool_support_expectation": {
+          "tool_calls": "required",
+          "function_calling": "optional",
+          "parallel_tool_calls": "preferred"
+        },
+        "large_context_preference": "required",
+        "fallback_policy": {
+          "allowed": true,
+          "same_provider_first": true,
+          "cross_provider_allowed": false,
+          "preserve_streaming_preference": true,
+          "preserve_tool_support": true,
+          "max_attempts": 2
+        },
+        "payload_policy_expectation": "redacted_preview"
+      }
+    },
+    {
+      "kind": "opencode",
+      "expected_plan": {
+        "kind": "opencode",
+        "recommended_model_aliases": [
+          {
+            "alias": "opencode/default",
+            "canonical_model": "coding-agent/opencode-balanced",
+            "purpose": "balanced"
+          },
+          {
+            "alias": "opencode/fast",
+            "canonical_model": "coding-agent/opencode-fast",
+            "purpose": "low_latency"
+          },
+          {
+            "alias": "opencode/large-context",
+            "canonical_model": "coding-agent/opencode-large-context",
+            "purpose": "large_context"
+          }
+        ],
+        "streaming_preference": "preferred",
+        "tool_support_expectation": {
+          "tool_calls": "preferred",
+          "function_calling": "required",
+          "parallel_tool_calls": "optional"
+        },
+        "large_context_preference": "preferred",
+        "fallback_policy": {
+          "allowed": true,
+          "same_provider_first": false,
+          "cross_provider_allowed": true,
+          "preserve_streaming_preference": true,
+          "preserve_tool_support": true,
+          "max_attempts": 3
+        },
+        "channel_tag_preference": {
+          "required_any": ["coding-agent", "opencode"],
+          "preferred": ["function-calling", "openai-compatible", "large-context"],
+          "denied": ["batch-only", "no-functions"]
+        },
+        "payload_policy_expectation": "hash_only"
+      },
+      "expected_route_constraints": {
+        "visible_model_visibilities": ["Public", "Internal"],
+        "allowed_models": [
+          "coding-agent/opencode-balanced",
+          "coding-agent/opencode-fast",
+          "coding-agent/opencode-large-context"
+        ],
+        "denied_models": [],
+        "allowed_channel_tags": ["coding-agent", "opencode"],
+        "denied_channel_tags": ["batch-only", "no-functions"],
+        "blocked_provider_ids": []
+      },
+      "expected_route_policy_summary": {
+        "kind": "opencode",
+        "recommended_aliases": [
+          "opencode/default",
+          "opencode/fast",
+          "opencode/large-context"
+        ],
+        "allowed_models": [
+          "coding-agent/opencode-balanced",
+          "coding-agent/opencode-fast",
+          "coding-agent/opencode-large-context"
+        ],
+        "visible_model_visibilities": ["Public", "Internal"],
+        "allowed_channel_tags": ["coding-agent", "opencode"],
+        "preferred_channel_tags": [
+          "function-calling",
+          "openai-compatible",
+          "large-context"
+        ],
+        "denied_channel_tags": ["batch-only", "no-functions"],
+        "streaming_preference": "preferred",
+        "tool_support_expectation": {
+          "tool_calls": "preferred",
+          "function_calling": "required",
+          "parallel_tool_calls": "optional"
+        },
+        "large_context_preference": "preferred",
+        "fallback_policy": {
+          "allowed": true,
+          "same_provider_first": false,
+          "cross_provider_allowed": true,
+          "preserve_streaming_preference": true,
+          "preserve_tool_support": true,
+          "max_attempts": 3
+        },
+        "payload_policy_expectation": "hash_only"
+      }
+    }
+  ],
+  "response_contract": {
+    "pure_function": true,
+    "gateway_runtime_wiring": false,
+    "storage_writes": false,
+    "credential_material_omitted": true,
+    "request_body_material_omitted": true
+  },
+  "notes": [
+    "Model names are internal canonical aliases for future profile binding.",
+    "The fixture contains no provider credential or request content material."
+  ]
+}

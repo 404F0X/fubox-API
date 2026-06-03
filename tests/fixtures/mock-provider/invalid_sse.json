@@ -1,0 +1,13 @@
+{
+  "scenario": "invalid_sse",
+  "aliases": ["invalid_json_chunk"],
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=invalid_sse",
+  "body": {
+    "stream": true
+  },
+  "expected_status": 200,
+  "expected_content_type": "text/event-stream",
+  "expected_contains": ["data: {not-json}", "data: [DONE]"],
+  "notes": "SSE event contains invalid JSON and should map to parser_error. Kept as a compatibility alias for invalid_json_chunk."
+}

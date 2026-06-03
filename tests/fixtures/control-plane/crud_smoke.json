@@ -1,0 +1,47 @@
+{
+  "scenario": "control_plane_provider_channel_model_association_crud",
+  "base_path": "/admin",
+  "resources": [
+    {
+      "name": "provider",
+      "create": "POST /admin/providers",
+      "list": "GET /admin/providers",
+      "read": "GET /admin/providers/{id}",
+      "update": "PATCH /admin/providers/{id}",
+      "delete": "DELETE /admin/providers/{id}",
+      "delete_verification": "GET /admin/providers/{id} returns 404 or status=deleted",
+      "required_response_id_fields": ["id", "data.id", "provider.id"]
+    },
+    {
+      "name": "channel",
+      "create": "POST /admin/channels",
+      "list": "GET /admin/channels",
+      "read": "GET /admin/channels/{id}",
+      "update": "PATCH /admin/channels/{id}",
+      "delete": "DELETE /admin/channels/{id}",
+      "delete_verification": "GET /admin/channels/{id} returns 404 or status=deleted",
+      "required_response_id_fields": ["id", "data.id", "channel.id"]
+    },
+    {
+      "name": "canonical_model",
+      "create": "POST /admin/models",
+      "list": "GET /admin/models",
+      "read": "GET /admin/models/{id}",
+      "update": "PATCH /admin/models/{id}",
+      "delete": "DELETE /admin/models/{id}",
+      "delete_verification": "GET /admin/models/{id} returns 404 or status=deleted",
+      "required_response_id_fields": ["id", "data.id", "model.id"]
+    },
+    {
+      "name": "model_association",
+      "create": "POST /admin/model-associations",
+      "list": "GET /admin/model-associations",
+      "read": "GET /admin/model-associations/{id}",
+      "update": "PATCH /admin/model-associations/{id}",
+      "delete": "DELETE /admin/model-associations/{id}",
+      "delete_verification": "GET /admin/model-associations/{id} returns 404 or status=deleted",
+      "required_response_id_fields": ["id", "data.id", "association.id"]
+    }
+  ],
+  "notes": "Baseline smoke covers create+get. Run scripts/verify_control_plane_crud_smoke.ps1 -IncludeFullCrud to exercise list/patch/delete, or -StrictFullCrud as the full CRUD release gate."
+}

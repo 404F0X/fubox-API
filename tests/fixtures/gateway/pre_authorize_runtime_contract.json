@@ -1,0 +1,95 @@
+{
+  "scenario": "gateway_pre_authorize_runtime_contract_v1",
+  "endpoints": [
+    {
+      "name": "chat_completions_non_stream",
+      "path": "POST /v1/chat/completions",
+      "stream": false,
+      "runtime_entry": "apps/gateway/src/main.rs::chat_completions"
+    },
+    {
+      "name": "chat_completions_stream",
+      "path": "POST /v1/chat/completions",
+      "stream": true,
+      "runtime_entry": "apps/gateway/src/streaming.rs::chat_completions_streaming"
+    },
+    {
+      "name": "responses_non_stream",
+      "path": "POST /v1/responses",
+      "stream": false,
+      "runtime_entry": "apps/gateway/src/main.rs::responses"
+    },
+    {
+      "name": "embeddings_non_stream",
+      "path": "POST /v1/embeddings",
+      "stream": false,
+      "runtime_entry": "apps/gateway/src/main.rs::embeddings"
+    },
+    {
+      "name": "anthropic_messages_non_stream",
+      "path": "POST /v1/messages",
+      "stream": false,
+      "runtime_entry": "apps/gateway/src/main.rs::anthropic_messages"
+    },
+    {
+      "name": "gemini_generate_content_native_passthrough",
+      "path": "POST /v1beta/models/{model}:generateContent",
+      "stream": false,
+      "runtime_entry": "apps/gateway/src/main.rs::gemini_generate_content_native_passthrough"
+    }
+  ],
+  "rejected_contract": {
+    "pre_authorize_decision": [
+      "insufficient_wallet_balance",
+      "insufficient_budget"
+    ],
+    "http_status": 402,
+    "openai_error": {
+      "type": "billing_error",
+      "code": "billing_insufficient_balance",
+      "gateway_owner": "billing",
+      "gateway_stage": "preauth",
+      "retryable": false
+    },
+    "request_logs": {
+      "created_before_preauthorize": true,
+      "final_status": "rejected",
+      "http_status": 402,
+      "error_owner": "billing",
+      "error_code": "billing_insufficient_balance",
+      "final_cost": null,
+      "currency": null,
+      "price_version_id": null
+    },
+    "provider_attempts": {
+      "created": false,
+      "rejected_status_allowed_if_future_schema_requires_row": true
+    },
+    "upstream_call": {
+      "provider_key_opened": false,
+      "http_request_sent": false
+    },
+    "forbidden_response_markers": [
+      "wallet",
+      "wallet_id",
+      "budget_id",
+      "amount",
+      "available_balance",
+      "balance_floor",
+      "remaining_amount",
+      "price_version_id",
+      "credit_grant",
+      "ledger_entries",
+      "secret",
+      "api_key"
+    ]
+  },
+  "allowed_contract": {
+    "pre_authorize_decision": "allow",
+    "provider_attempts": {
+      "created_before_provider_key_open": true,
+      "created_before_upstream_call": true
+    }
+  },
+  "notes": "Dry-run contract fixture for E9-003. Runtime pre_authorize must execute after request_logs start and before provider_attempts insert, provider key open, and upstream provider calls. Insufficient balance or budget returns a generic OpenAI-compatible 402 without wallet, budget, amount, or secret details."
+}

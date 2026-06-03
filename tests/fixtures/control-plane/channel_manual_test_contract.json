@@ -1,0 +1,86 @@
+{
+  "scenario": "control_plane_channel_manual_test_dry_run_contract",
+  "base_path": "/admin",
+  "endpoint": {
+    "method": "POST",
+    "path": "/admin/channels/{id}/manual-test"
+  },
+  "request_contract": {
+    "required_fields": ["model"],
+    "optional_fields": ["upstream_model_name", "dry_run"],
+    "dry_run_only": true
+  },
+  "response_contract": {
+    "envelope": "data",
+    "required_data_fields": [
+      "dry_run",
+      "test_mode",
+      "upstream_call",
+      "requested_model",
+      "upstream_model",
+      "channel",
+      "provider",
+      "billing",
+      "credential_material",
+      "request_plan",
+      "next_steps"
+    ],
+    "credential_material_omitted": true,
+    "billing_ledger_write": false,
+    "request_log_write": false,
+    "upstream_call": false
+  },
+  "examples": {
+    "dry_run": {
+      "request": {
+        "model": "gpt-visible",
+        "dry_run": true
+      },
+      "response": {
+        "data": {
+          "dry_run": true,
+          "test_mode": "channel_manual_test",
+          "upstream_call": false,
+          "requested_model": "gpt-visible",
+          "upstream_model": "upstream-gpt",
+          "channel": {
+            "id": "00000000-0000-0000-0000-000000000401",
+            "name": "primary channel",
+            "status": "enabled",
+            "protocol_mode": "openai_compatible",
+            "endpoint": "https://provider.example/v1",
+            "priority": 10,
+            "weight": 100,
+            "health_score": 1.0
+          },
+          "provider": {
+            "id": "00000000-0000-0000-0000-000000000201",
+            "code": "provider-a",
+            "name": "Provider A",
+            "status": "enabled"
+          },
+          "billing": {
+            "billable": false,
+            "ledger_write": false,
+            "request_log_write": false
+          },
+          "credential_material": {
+            "provider_key_secret": "omitted",
+            "secret_fingerprint": "omitted"
+          },
+          "request_plan": {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "protocol_mode": "openai_compatible",
+            "model": "upstream-gpt"
+          },
+          "next_steps": [
+            "Dry-run only: no upstream provider call was made.",
+            "Run a live manual probe only after provider-key selection and non-billable request logging are implemented."
+          ]
+        }
+      }
+    }
+  },
+  "notes": "Contract fixture only. Manual channel test is dry-run in this slice and never calls upstream providers or writes billing ledger entries."
+}

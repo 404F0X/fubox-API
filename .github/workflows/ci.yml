@@ -1,0 +1,123 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_gateway
+          POSTGRES_PASSWORD: ai_gateway
+          POSTGRES_DB: ai_gateway
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Check
+        run: cargo check --workspace --all-targets --all-features
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Adapter conformance CI contract
+        shell: pwsh
+        run: ./scripts/test_adapter_conformance_ci_contract.ps1
+      - name: Adapter conformance strict
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Invoke-CheckedScript {
+            param(
+              [Parameter(Mandatory = $true)][string]$Path,
+              [hashtable]$Parameters = @{}
+            )
+            $global:LASTEXITCODE = 0
+            & $Path @Parameters
+            $scriptSucceeded = $?
+            $exitCode = $global:LASTEXITCODE
+            if (-not $scriptSucceeded) {
+              if ($null -ne $exitCode -and $exitCode -ne 0) { exit $exitCode }
+              exit 1
+            }
+            if ($null -ne $exitCode -and $exitCode -ne 0) { exit $exitCode }
+          }
+          Invoke-CheckedScript -Path "./scripts/adapter_conformance.ps1" -Parameters @{ Strict = $true }
+      - name: Tests
+        run: cargo test --workspace --all-targets --all-features
+      - name: Smoke dry-run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Invoke-CheckedScript {
+            param(
+              [Parameter(Mandatory = $true)][string]$Path,
+              [hashtable]$Parameters = @{}
+            )
+            $global:LASTEXITCODE = 0
+            & $Path @Parameters
+            $scriptSucceeded = $?
+            $exitCode = $global:LASTEXITCODE
+            if (-not $scriptSucceeded) {
+              if ($null -ne $exitCode -and $exitCode -ne 0) { exit $exitCode }
+              exit 1
+            }
+            if ($null -ne $exitCode -and $exitCode -ne 0) { exit $exitCode }
+          }
+          Invoke-CheckedScript -Path "./scripts/verify_control_plane_auth_smoke.ps1" -Parameters @{ DryRun = $true }
+          Invoke-CheckedScript -Path "./scripts/verify_control_plane_crud_smoke.ps1" -Parameters @{ DryRun = $true }
+          Invoke-CheckedScript -Path "./scripts/verify_gateway_profile_smoke.ps1" -Parameters @{ DryRun = $true }
+          Invoke-CheckedScript -Path "./scripts/verify_gateway_streaming_smoke.ps1" -Parameters @{ DryRun = $true }
+          Invoke-CheckedScript -Path "./scripts/verify_gateway_retry_fallback_smoke.ps1" -Parameters @{ DryRun = $true }
+          Invoke-CheckedScript -Path "./scripts/verify_provider_key_runtime_smoke.ps1" -Parameters @{ DryRun = $true }
+          Invoke-CheckedScript -Path "./scripts/verify_compose_smoke.ps1" -Parameters @{ DryRun = $true }
+      - name: Secret scan
+        shell: pwsh
+        run: ./scripts/scan_secrets.ps1
+      - name: Supply-chain scan
+        shell: pwsh
+        run: ./scripts/scan_supply_chain.ps1 -SkipNetwork
+      - name: Supply-chain artifact self-test
+        shell: pwsh
+        run: ./scripts/test_supply_chain_artifacts.ps1
+      - name: Generate supply-chain artifacts
+        shell: pwsh
+        run: ./scripts/generate_supply_chain_artifacts.ps1 -OutputDirectory artifacts/supply-chain
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-sbom-provenance-checksums
+          path: artifacts/supply-chain/
+          if-no-files-found: error
+      - name: Build images
+        run: make docker-build
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/admin-ui/package-lock.json
+      - run: npm --prefix web/admin-ui ci
+      - run: npm --prefix web/admin-ui run typecheck
+      - run: npm --prefix web/admin-ui test
+      - run: npm --prefix web/admin-ui run build
+      - run: npm --prefix web/admin-ui run check:bundle

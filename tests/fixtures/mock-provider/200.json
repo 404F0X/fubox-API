@@ -1,0 +1,22 @@
+{
+  "scenario": "200",
+  "method": "POST",
+  "path": "/v1/chat/completions",
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=200",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "200"
+      }
+    },
+    "endpoint": "/__scenario/200/v1/chat/completions",
+    "body": {
+      "mock_scenario": "200"
+    }
+  },
+  "expected_status": 200,
+  "expected_object": "chat.completion",
+  "expected_finish_reason": "stop",
+  "notes": "Successful OpenAI-compatible non-stream response."
+}

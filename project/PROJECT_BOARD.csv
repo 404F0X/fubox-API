@@ -1,0 +1,22 @@
+Epic,Task ID,Title,Priority,Status,Dependencies,Acceptance
+E0,E0-001,初始化仓库结构,P0,Done,,Rust workspace/admin-ui/db/deploy/tests 已创建
+E0,E0-002,建立 CI,P0,Done,E0-001,CI workflow 执行 fmt/clippy/test/scan/build；scripts/test smoke 串联已 fail-fast；scripts/test.ps1 已通过全套 cargo tests、smoke dry-run、npm ci/test；wrapper 已修成 hashtable splat，DryRun 参数不再被当位置参数；并补齐 control-plane CRUD 与 retry/fallback dry-run
+E0,E0-003,建立 Docker Compose,P0,Done,E0-001,Docker Compose 已验证启动；gateway/control-plane/mock-provider/admin-ui 健康检查通过；provider key master key 已配置供 dev sealed key 解密
+E0,E0-004,定义配置 schema,P0,Done,E0-001,Rust config crate 可解析并校验 examples/config.example.yaml
+E0,E0-005,provider mock framework,P0,Done,E0-001,mock-provider 支持 200/429/5xx/timeout/eof/invalid_sse/large_chunk
+E1,E1-001,Tenant/Project/User 数据模型,P0,Done,E0-001,PostgreSQL 16 fresh init 通过；单租户默认数据和跨租户 FK 约束已验证
+E2,E2-001,Virtual Key 创建和鉴权,P0,Done,E1-001,secret 只显示一次且 DB 只存 hash；Control Plane/Admin UI 已支持创建、查询、禁用、过期
+E2,E2-005,IP allowlist 和过期检查,P0,InProgress,E2-001,Gateway 已做 key 过期/禁用拒绝；IP allowlist 第一切片已使用 ConnectInfo TCP peer IP 且不信任 X-Forwarded-For/X-Real-IP，读取 virtual_keys.ip_allowlist，空列表允许，支持单 IP/CIDR IPv4/IPv6，非法条目忽略且不放行；拒绝返回 403 api_key_ip_forbidden，不创建 request_logs/provider_attempts，不进入上游；trusted proxy 配置和 profile 独立 allowlist 待完成
+E3,E3-001,Provider/Channel CRUD,P0,Done,E1-001,支持 endpoint/protocol_mode/tags/priority/weight/timeout；Full CRUD smoke 已通过
+E3,E3-002,Provider Key 加密与 runtime,P0,InProgress,E3-001,加密存储/Control Plane 创建/Admin UI 状态管理已接入；Gateway 已选择 provider_key_id、解密 sealed key、注入上游 Authorization 并记录 request_logs/provider_attempts provider_key_id；provider key runtime smoke 脚本/fixture 已接入 scripts/test.ps1 和 CI dry-run，且已校验 gateway/control-plane master key 一致、dev seed sealed payload 可由 Compose master key 打开、fixture fingerprint 不直接打印、seed payload parser 不依赖固定字段顺序；同 channel retry 多 key、状态迁移/轮换、密钥查看审计和 live strict smoke 待完成
+E4,E4-001,Canonical Model 和 Association,P0,InProgress,E3-001,canonical model CRUD、默认 price book selector 和 dry-run OpenAPI/fixture 非 UI 契约已接入；Control Plane 默认价格配置 API/UI、dry-run UI 与 live smoke 未完成
+E4,E4-005,Model Association Dry-run,P0,InProgress,E4-001,POST /admin/model-associations/dry-run 第一切片已返回候选渠道/selection/snapshot；OpenAPI schema、selected/no-candidate fixture 和 fixture 无 secret material 检查已接入；dry-run response/OpenAPI 尚未暴露 fallback_allowed；UI 接入、live smoke 和更完整 key 输入验收未完成；不评估真实 provider key 可用性或 rate-limit
+E5,E5-002,OpenAI Chat 非流式,P0,Done,"E2,E3,E4",OpenAI SDK 基础请求成功；Gateway 已支持强鉴权、非流式转发、请求校验、provider 429 映射和上游 provider key Authorization 注入；provider key live strict smoke 待完成
+E7,E7-001,Unified SSE parser,P0,Done,E5,大 SSE event 与超限拒绝单测通过
+E8,E8-005,Retry/Fallback engine,P0,InProgress,E7,非流式 chat 已对 provider 429/5xx/timeout/EOF/transport 和首字节前错误 fallback 到下一 route candidate 最多 3 次；非流式 UpstreamRead/body-read 失败已禁止 fallback，避免上游已返回 headers/部分响应后的重复调用/计费；streaming pre-response fallback 已接入；ResolvedChatRoute 已读取 model_associations.fallback_allowed，attempt list 只在追加失败后的 fallback 目标时过滤 fallback_allowed=false，初始 selected route 即使 fallback_allowed=false 仍可作为首选；streaming 复用同一 attempt_routes；测试覆盖 chat_attempt_routes_excludes_fallback_disallowed_candidates_but_keeps_selected；dry-run response/OpenAPI 尚未暴露 fallback_allowed；同 channel retry/backoff/健康分 cooldown 写回/live strict fallback seed 待完成
+E9,E9-004,Ledger settle/refund,P0,InProgress,E5,DB 已验证重复 settle 被拒绝；待应用侧 reserve/settle/refund 写入
+E10,E10-001,Request log 和 provider attempts,P0,InProgress,E5,request_logs/provider_attempts 已记录每次上游尝试和 provider_key_id；fallback 第一切片已记录 fallback_reason/metadata 并在最终成功时回写 request log route；同 channel retry/backoff/健康分 cooldown 写回和完整失败链路验收待完成
+E10,E10-002,Trace/Request 观测,P0,InProgress,E5,request/trace/thread schema 与索引已落库；待查询 API/UI 接入
+E11,E11-005,Request/Trace UI,P0,Todo,E10,route trace/ledger 可见
+E12,E12-004,New API Dry-run 导入报告,P0,Todo,"E3,E4,E9",导入报告包含冲突和不可迁移项
+E13,E13-002,Provider key encryption,P0,InProgress,E3-002,Provider key AES-256-GCM 加密/fingerprint、Control Plane 密钥加密创建、Gateway 解密注入、provider key runtime smoke dry-run 接入、master key 一致性与 dev seed sealed payload 可打开校验、fixture fingerprint 不直接打印、seed payload parser 不依赖固定字段顺序和 admin audit 写操作第一切片已完成；密钥查看审计、轮换、运行态状态迁移和 live strict smoke 待完成

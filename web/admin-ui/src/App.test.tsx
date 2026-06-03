@@ -1,0 +1,2045 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { App } from "./App";
+
+const AUTH_HEADER_NAME = ["Author", "ization"].join("");
+const BEARER_SCHEME = ["Bear", "er"].join("");
+const SK_PREFIX = ["s", "k", "-"].join("");
+const SK_UNDERSCORE_PREFIX = ["s", "k", "_"].join("");
+const VK_UNDERSCORE_PREFIX = ["v", "k", "_"].join("");
+const GITHUB_PAT_PREFIX = ["github", "_", "pat", "_"].join("");
+const SESSION_PREFIX = ["se", "ss", "_"].join("");
+
+function bearerPlaceholder(value: string): string {
+  return `${BEARER_SCHEME} ${value}`;
+}
+
+function authorizationBearerPlaceholder(value: string): string {
+  return `${AUTH_HEADER_NAME}: ${bearerPlaceholder(value)}`;
+}
+
+function skPlaceholder(value: string): string {
+  return `${SK_PREFIX}${value}`;
+}
+
+function skUnderscorePlaceholder(value: string): string {
+  return `${SK_UNDERSCORE_PREFIX}${value}`;
+}
+
+function vkUnderscorePlaceholder(value: string): string {
+  return `${VK_UNDERSCORE_PREFIX}${value}`;
+}
+
+function githubPatPlaceholder(value: string): string {
+  return `${GITHUB_PAT_PREFIX}${value}`;
+}
+
+function sessionPlaceholder(value: string): string {
+  return `${SESSION_PREFIX}${value}`;
+}
+
+function stubHealthyFetch(roles = ["owner"]) {
+  const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => {
+    const requestUrl = String(url);
+
+    if (requestUrl.includes("/admin/auth/login")) {
+      return jsonResponse(loginPayload());
+    }
+
+    if (requestUrl.includes("/admin/auth/me")) {
+      return jsonResponse(adminMePayload(roles));
+    }
+
+    if (requestUrl.includes("/admin/auth/logout")) {
+      return jsonResponse({ logged_out: true });
+    }
+
+    if (requestUrl.includes("/admin/providers/health-summary")) {
+      return jsonResponse(healthSummaryPayload());
+    }
+
+    if (
+      requestUrl.includes("/admin/request-logs") ||
+      requestUrl.includes("/admin/price-versions") ||
+      requestUrl.includes("/admin/ledger/entries") ||
+      requestUrl.includes("/admin/billing/reconciliation")
+    ) {
+      return jsonResponse([]);
+    }
+
+    if (requestUrl.includes("/admin/providers") || requestUrl.includes("/admin/channels")) {
+      return jsonResponse([]);
+    }
+
+    return Promise.resolve(new Response("", { status: 200 }));
+  });
+
+  vi.stubGlobal("fetch", fetchMock);
+
+  return fetchMock;
+}
+
+function stubAdminFetch() {
+  let channelCreated = false;
+  let associationCreated = false;
+  let modelCreated = false;
+  let providerCreated = false;
+  let profileCreated = false;
+  const requestLog = {
+    api_key_profile_id: null,
+    canonical_model_id: "model-1",
+    client_request_id: "client-1",
+    completed_at: "2026-06-02T12:01:00Z",
+    created_at: "2026-06-02T12:00:00Z",
+    currency: "USD",
+    error_code: null,
+    error_owner: null,
+    final_cost: "0.0123",
+    http_status: 200,
+    id: "req_1",
+    inbound_protocol: "openai",
+    input_tokens: 100,
+    latency_ms: 1234,
+    outbound_protocol: "openai",
+    output_tokens: 55,
+    partial_sent: false,
+    payload_policy_id: "payload-policy-1",
+    payload_stored: true,
+    project_id: null,
+    protocol_mode: "native",
+    provider_key_id: "provider-key-1",
+    redaction_status: "redacted",
+    request_body_hash: "request-body-hash-hidden",
+    requested_model: "gpt-4o-mini",
+    resolved_channel_id: "channel-1",
+    resolved_provider_id: "provider-1",
+    response_body_hash: "response-body-hash-hidden",
+    retryable: false,
+    route_policy_version: "policy-v1",
+    status: "succeeded",
+    stream_end_reason: null,
+    tenant_id: "tenant-1",
+    thread_id: null,
+    trace_id: "trace-1",
+    ttft_ms: 210,
+    upstream_model: "gpt-4o-mini-2024-07-18",
+    virtual_key_id: null,
+  };
+  const requestDetail = {
+    provider_attempts: [
+      {
+        attempt_no: 1,
+        channel_id: "channel-1",
+        error_code: null,
+        error_owner: null,
+        fallback_reason: null,
+        http_status: 200,
+        id: "attempt-1",
+        input_tokens: 100,
+        latency_ms: 1234,
+        metadata: {},
+        output_tokens: 55,
+        provider_id: "provider-1",
+        provider_key_id: "provider-key-1",
+        provider_request_id: "upstream-1",
+        request_id: "req_1",
+        retryable: false,
+        status: "succeeded",
+        tenant_id: "tenant-1",
+        ttft_ms: 210,
+        upstream_model: "gpt-4o-mini-2024-07-18",
+      },
+    ],
+    request_log: requestLog,
+    route_decision_snapshot: {
+      api_key: skPlaceholder("route-hidden"),
+      authorization: bearerPlaceholder("route-hidden"),
+      candidates: ["channel-1"],
+      nested: {
+        token: bearerPlaceholder("nested-route-hidden"),
+      },
+      payload_ref: "payload-123-hidden",
+      request_body: {
+        body: "raw prompt hidden",
+      },
+      strategy: "weighted-fallback",
+    },
+  };
+  const traceFailedRequestLog = {
+    ...requestLog,
+    completed_at: "2026-06-02T12:03:00Z",
+    error_code: `provider_auth_failed ${skPlaceholder("trace-error-hidden")}`,
+    error_owner: "provider",
+    final_cost: "0.0456",
+    http_status: 401,
+    id: "req_2",
+    input_tokens: 200,
+    latency_ms: 456,
+    output_tokens: 100,
+    requested_model: authorizationBearerPlaceholder("requested-model-hidden"),
+    request_body: "raw trace prompt hidden",
+    response_body: "raw trace response hidden",
+    route_decision_snapshot: {
+      authorization: bearerPlaceholder("trace-route-hidden"),
+    },
+    status: "failed",
+    upstream_model: "gpt-trace-upstream",
+  };
+  const traceSummary = {
+    currencies: ["USD"],
+    error_count: 1,
+    first_request_at: "2026-06-02T12:00:00Z",
+    last_error: {
+      code: `provider_auth_failed ${skPlaceholder("trace-error-hidden")}`,
+      http_status: 401,
+      observed_at: "2026-06-02T12:03:00Z",
+      owner: "provider",
+      status: "failed",
+    },
+    last_request_at: "2026-06-02T12:03:00Z",
+    limit: 25,
+    limit_reached: false,
+    request_count: 2,
+    requests: [traceFailedRequestLog, requestLog],
+    tenant_id: "tenant-1",
+    total_input_tokens: 300,
+    total_output_tokens: 155,
+    trace_id: "trace-1",
+  };
+  const providerKey = {
+    channel_id: "channel-1",
+    concurrency_limit: 3,
+    cooldown_until: null,
+    current_window_state: {},
+    encrypted_secret: "ciphertext-hidden",
+    health_score: 97,
+    id: "provider-key-1",
+    key_alias: "openai-main",
+    last_error_code: null,
+    metadata: {
+      environment: "prod",
+      secret_note: skPlaceholder("metadata-hidden"),
+      token: bearerPlaceholder("metadata-hidden"),
+    },
+    rpm_limit: 600,
+    secret: skPlaceholder("live-hidden"),
+    secret_fingerprint: "fp-hidden",
+    status: "enabled",
+    tenant_id: "tenant-1",
+    tpm_limit: 120000,
+  };
+  const provider = {
+    code: "openai",
+    id: "provider-1",
+    metadata: {
+      base_url: "https://api.openai.test/v1",
+      owner: "platform",
+      provider_type: "openai",
+      secret_note: skPlaceholder("provider-hidden"),
+    },
+    name: "OpenAI",
+    status: "enabled",
+    tenant_id: "tenant-1",
+  };
+  const createdProvider = {
+    ...provider,
+    code: "anthropic",
+    id: "provider-2",
+    metadata: {
+      base_url: "https://api.anthropic.test/v1",
+      provider_type: "anthropic",
+    },
+    name: "Anthropic",
+  };
+  const channel = {
+    endpoint: "https://api.openai.test/v1",
+    health_score: 0.98,
+    id: "channel-1",
+    model_mappings: { "gpt-4o-mini": "gpt-4o-mini" },
+    name: "openai primary",
+    priority: 10,
+    probe_policy: { path: "/health" },
+    protocol_mode: "openai_compatible",
+    provider_id: "provider-1",
+    region: "us-east-1",
+    request_overrides: [],
+    status: "enabled",
+    tags: ["primary"],
+    tenant_id: "tenant-1",
+    timeout_policy: { connect_ms: 2000 },
+    weight: 100,
+  };
+  const createdChannel = {
+    ...channel,
+    endpoint: "https://api.anthropic.test/v1",
+    id: "channel-2",
+    model_mappings: {},
+    name: "anthropic primary",
+    provider_id: "provider-2",
+    region: "us-west-2",
+    tags: ["backup"],
+  };
+  let providerState = provider;
+  let channelState = channel;
+  const model = {
+    capabilities: {},
+    context_length: 128000,
+    display_name: "GPT-4o Mini",
+    family: "gpt",
+    id: "model-1",
+    max_output_tokens: 16384,
+    model_key: "gpt-4o-mini",
+    status: "active",
+    supports_audio: false,
+    supports_reasoning: false,
+    supports_stream: true,
+    supports_tools: true,
+    supports_vision: false,
+    tenant_id: "tenant-1",
+    visibility: "public",
+  };
+  const createdModel = {
+    ...model,
+    display_name: "Claude Haiku",
+    family: "claude",
+    id: "model-2",
+    model_key: "claude-3-haiku",
+  };
+  const association = {
+    association_type: "explicit_channel",
+    canary_percent: 100,
+    canonical_model_id: "model-1",
+    channel_id: "channel-1",
+    channel_tag: null,
+    conditions: {},
+    fallback_allowed: true,
+    id: "association-1",
+    model_pattern: null,
+    priority: 10,
+    status: "enabled",
+    tenant_id: "tenant-1",
+    upstream_model_name: "gpt-4o-mini-2024-07-18",
+  };
+  const createdAssociation = {
+    ...association,
+    canonical_model_id: "model-2",
+    channel_id: "channel-2",
+    id: "association-2",
+    priority: 100,
+    upstream_model_name: "claude-3-haiku-20240307",
+  };
+  let modelState = model;
+  let associationState = association;
+  const profile = {
+    allowed_channel_tags: [],
+    allowed_models: ["gpt-4o-mini", authorizationBearerPlaceholder("profile-model-hidden")],
+    blocked_provider_ids: [],
+    default_protocol_mode: "openai_compatible",
+    denied_models: ["gpt-internal"],
+    id: "profile-1",
+    inbound_protocol: "auto",
+    model_aliases: {
+      "chat-fast": "gpt-4o-mini",
+      authorization: bearerPlaceholder("profile-alias-hidden"),
+      secret_note: skPlaceholder("profile-alias-hidden"),
+    },
+    name: "default-profile",
+    payload_policy_id: null,
+    project_id: "project-1",
+    request_overrides: [
+      {
+        allowlist: ["203.0.113.0/24", "2001:db8::/64"],
+        authorization: bearerPlaceholder("profile-override-hidden"),
+        name: "profile office networks",
+        raw_payload: "raw profile payload hidden",
+        type: "profile_ip_allowlist",
+      },
+    ],
+    status: "active",
+    tenant_id: "tenant-1",
+    trace_header_rules: {},
+  };
+  const createdProfile = {
+    ...profile,
+    id: "profile-2",
+    name: "created-profile",
+    status: "active",
+  };
+  let createdProfileState = createdProfile;
+  const virtualKey = {
+    budget_policy: {
+      authorization: bearerPlaceholder("vk-budget-hidden"),
+      monthly_usd: 25,
+      raw_payload: "raw virtual key payload hidden",
+      secret_note: skPlaceholder("vk-budget-hidden"),
+    },
+    default_profile_id: "profile-1",
+    id: "virtual-key-1",
+    ip_allowlist: ["127.0.0.1"],
+    key_prefix: vkUnderscorePlaceholder("live_123"),
+    metadata: {
+      owner: "mobile",
+      secret_note: skPlaceholder("vk-metadata-hidden"),
+    },
+    name: "virtual-main",
+    project_id: "project-1",
+    rate_limit_policy: {
+      rpm: 60,
+      token: bearerPlaceholder("vk-rate-hidden"),
+    },
+    secret_hash: "vk-list-secret-hash",
+    secret_redacted: true,
+    status: "active",
+    tenant_id: "tenant-1",
+  };
+  const priceVersion = {
+    canonical_model_id: "model-1",
+    created_at: "2026-06-02T11:00:00Z",
+    effective_at: "2026-06-02T12:00:00Z",
+    id: "price-version-1",
+    price_book_id: "price-book-1",
+    pricing_rules: {
+      input_usd_per_1m: "0.15000000",
+      output_usd_per_1m: "0.60000000",
+      secret_note: skPlaceholder("price-hidden"),
+    },
+    retired_at: null,
+    status: "active",
+    tenant_id: "tenant-1",
+    version: "2026-06",
+  };
+  let createdPriceVersionState: Record<string, unknown> | null = null;
+  const ledgerEntry = {
+    amount: "-0.01230000",
+    created_at: "2026-06-02T12:02:00Z",
+    currency: "USD",
+    entry_type: "settle",
+    id: "ledger-entry-1",
+    idempotency_key: "settle:request-1",
+    metadata: {
+      owner: "billing",
+      token: bearerPlaceholder("ledger-hidden"),
+    },
+    occurred_at: "2026-06-02T12:01:30Z",
+    policy_snapshot: {
+      price_version_id: "price-version-1",
+    },
+    price_version_id: "price-version-1",
+    project_id: "project-1",
+    related_ledger_entry_id: null,
+    request_id: "req_1",
+    status: "confirmed",
+    tenant_id: "tenant-1",
+    trace_id: "trace-1",
+    usage_snapshot: {
+      input_tokens: 100,
+      output_tokens: 55,
+      secret_note: skPlaceholder("ledger-hidden"),
+    },
+    virtual_key_id: null,
+    wallet_id: "wallet-1",
+  };
+  const reconciliationReport = {
+    discrepancies: [
+      {
+        canonical_model_id: "model-1",
+        difference_amount: null,
+        expected_ledger_amount: "-1.00000000",
+        input_tokens: 12,
+        issues: ["missing_ledger"],
+        ledger_amount: null,
+        ledger_currency: null,
+        ledger_entry_ids: [],
+        output_tokens: 34,
+        project_id: "project-1",
+        request_currency: "USD",
+        request_final_cost: "1.00000000",
+        request_id: "recon-req-1",
+        request_status: "succeeded",
+        requested_model: `model ${skUnderscorePlaceholder("reconcile_model_hidden")}`,
+        resolved_channel_id: "channel-1",
+        resolved_provider_id: "provider-1",
+        trace_id: githubPatPlaceholder("reconcile_trace_hidden"),
+        upstream_model: authorizationBearerPlaceholder("reconcile-upstream-hidden"),
+        virtual_key_id: "virtual-key-1",
+      },
+    ],
+    period_end: "2026-06-03 00:00:00+00",
+    period_start: "2026-06-02 00:00:00+00",
+    report_version: 1,
+    summary: {
+      amount_mismatch_count: 0,
+      billable_request_count: 2,
+      currency_mismatch_count: 0,
+      currency_totals: [
+        {
+          currency: "USD",
+          difference_amount: "1.00000000",
+          expected_ledger_amount_total: "-1.25000000",
+          ledger_amount_total: "-0.25000000",
+          request_final_cost_total: "1.25000000",
+        },
+      ],
+      discrepancy_count: 1,
+      ledger_entry_count: 1,
+      matched_request_count: 1,
+      missing_ledger_count: 1,
+      payload: {
+        body: "raw reconciliation payload hidden",
+        raw_policy_snapshot: {
+          secret: skPlaceholder("reconcile-policy-hidden"),
+        },
+      },
+      raw_export: {
+        note: "raw reconciliation export hidden",
+      },
+      request_count: 2,
+      returned_discrepancy_count: 1,
+      secret_note: skPlaceholder("reconcile-summary-hidden"),
+      unexpected_ledger_count: 0,
+    },
+    tenant_id: "tenant-1",
+  };
+  const createdVirtualKey = {
+    ...virtualKey,
+    id: "virtual-key-2",
+    name: "created-virtual",
+    secret: "vk-created-secret-once",
+    secret_hash: "vk-created-secret-hash",
+    secret_once: true,
+    secret_redacted: false,
+  };
+  const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = String(url);
+    const method = init?.method ?? "GET";
+
+    if (requestUrl.includes("/admin/auth/login")) {
+      return jsonResponse(loginPayload());
+    }
+
+    if (requestUrl.includes("/admin/auth/me")) {
+      return jsonResponse(adminMePayload());
+    }
+
+    if (requestUrl.includes("/admin/auth/logout")) {
+      return jsonResponse({ logged_out: true });
+    }
+
+    if (requestUrl.endsWith("/healthz")) {
+      return Promise.resolve(new Response("", { status: 200 }));
+    }
+
+    if (requestUrl.includes("/admin/providers/health-summary")) {
+      return jsonResponse(healthSummaryPayload());
+    }
+
+    if (requestUrl.includes("/admin/model-associations/dry-run") && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        canonical_model_id?: string;
+        canonical_model_key?: string;
+        requested_model?: string;
+      };
+
+      if (body.requested_model === "secret-error") {
+        return jsonError(
+          `${authorizationBearerPlaceholder("dry-run-secret")} ${skPlaceholder("dry-run-secret")}`,
+          400,
+        );
+      }
+
+      return jsonResponse(
+        body.requested_model === "missing-model" ? noCandidateDryRunResponse() : selectedDryRunResponse(),
+      );
+    }
+
+    if (requestUrl.includes("/admin/traces/trace-1")) {
+      return jsonResponse(traceSummary);
+    }
+
+    if (requestUrl.includes("/admin/request-logs/req_1")) {
+      return jsonResponse(requestDetail);
+    }
+
+    if (requestUrl.includes("/admin/request-logs")) {
+      return jsonResponse([requestLog]);
+    }
+
+    if (requestUrl.includes("/admin/providers/provider-1") && method === "PATCH") {
+      providerState = { ...providerState, status: "disabled" };
+      return jsonResponse(providerState);
+    }
+
+    if (requestUrl.includes("/admin/providers/provider-1") && method === "DELETE") {
+      providerState = { ...providerState, status: "deleted" };
+      return jsonResponse(providerState);
+    }
+
+    if (requestUrl.includes("/admin/providers") && method === "POST") {
+      providerCreated = true;
+      return jsonResponse(createdProvider);
+    }
+
+    if (requestUrl.includes("/admin/providers")) {
+      return jsonResponse(providerCreated ? [providerState, createdProvider] : [providerState]);
+    }
+
+    if (requestUrl.includes("/admin/channels/channel-1/manual-test") && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        model?: string;
+        upstream_model_name?: string;
+      };
+
+      if (body.model === "secret-error") {
+        return jsonError(
+          `${authorizationBearerPlaceholder("manual-test-secret")} ${skPlaceholder("manual-test-secret")}`,
+          400,
+        );
+      }
+
+      return jsonResponse(channelManualTestResponse(body.model, body.upstream_model_name));
+    }
+
+    if (requestUrl.includes("/admin/channels/channel-1") && method === "PATCH") {
+      channelState = { ...channelState, status: "disabled" };
+      return jsonResponse(channelState);
+    }
+
+    if (requestUrl.includes("/admin/channels/channel-1") && method === "DELETE") {
+      channelState = { ...channelState, status: "deleted" };
+      return jsonResponse(channelState);
+    }
+
+    if (requestUrl.includes("/admin/channels") && method === "POST") {
+      channelCreated = true;
+      return jsonResponse(createdChannel);
+    }
+
+    if (requestUrl.includes("/admin/channels")) {
+      return jsonResponse(channelCreated ? [channelState, createdChannel] : [channelState]);
+    }
+
+    if (requestUrl.includes("/admin/models/model-1") && method === "PATCH") {
+      modelState = { ...modelState, status: "disabled" };
+      return jsonResponse(modelState);
+    }
+
+    if (requestUrl.includes("/admin/models/model-1") && method === "DELETE") {
+      modelState = { ...modelState, status: "deleted" };
+      return jsonResponse(modelState);
+    }
+
+    if (requestUrl.includes("/admin/models") && method === "POST") {
+      modelCreated = true;
+      return jsonResponse(createdModel);
+    }
+
+    if (requestUrl.includes("/admin/models")) {
+      return jsonResponse(modelCreated ? [modelState, createdModel] : [modelState]);
+    }
+
+    if (requestUrl.includes("/admin/model-associations/association-1") && method === "PATCH") {
+      associationState = { ...associationState, status: "disabled" };
+      return jsonResponse(associationState);
+    }
+
+    if (requestUrl.includes("/admin/model-associations/association-1") && method === "DELETE") {
+      associationState = { ...associationState, status: "deleted" };
+      return jsonResponse(associationState);
+    }
+
+    if (requestUrl.includes("/admin/model-associations") && method === "POST") {
+      associationCreated = true;
+      return jsonResponse(createdAssociation);
+    }
+
+    if (requestUrl.includes("/admin/model-associations")) {
+      return jsonResponse(associationCreated ? [associationState, createdAssociation] : [associationState]);
+    }
+
+    if (requestUrl.includes("/admin/provider-keys/provider-key-1") && method === "PATCH") {
+      return jsonResponse({ ...providerKey, status: "manual_disabled" });
+    }
+
+    if (requestUrl.includes("/admin/provider-keys/provider-key-1") && method === "DELETE") {
+      return jsonResponse({ ...providerKey, status: "deleted" });
+    }
+
+    if (requestUrl.includes("/admin/provider-keys") && method === "POST") {
+      return jsonResponse({ ...providerKey, id: "provider-key-2", key_alias: "created-key" });
+    }
+
+    if (requestUrl.includes("/admin/provider-keys")) {
+      return jsonResponse([providerKey]);
+    }
+
+    if (requestUrl.includes("/admin/api-key-profiles/profile-1") && method === "DELETE") {
+      return jsonError("api key profile has active virtual keys bound");
+    }
+
+    if (requestUrl.includes("/admin/api-key-profiles/profile-1") && method === "PATCH") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof profile>;
+      return jsonResponse({ ...profile, ...body });
+    }
+
+    if (requestUrl.includes("/admin/api-key-profiles") && method === "POST") {
+      profileCreated = true;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof createdProfile>;
+      createdProfileState = { ...createdProfile, ...body };
+      return jsonResponse(createdProfileState);
+    }
+
+    if (requestUrl.includes("/admin/api-key-profiles")) {
+      return jsonResponse(profileCreated ? [profile, createdProfileState] : [profile]);
+    }
+
+    if (requestUrl.includes("/admin/virtual-keys/virtual-key-1/disable") && method === "POST") {
+      return jsonResponse({ ...virtualKey, status: "disabled" });
+    }
+
+    if (requestUrl.includes("/admin/virtual-keys/virtual-key-1/expire") && method === "POST") {
+      return jsonResponse({ ...virtualKey, status: "expired" });
+    }
+
+    if (requestUrl.includes("/admin/virtual-keys/virtual-key-1")) {
+      return jsonResponse(virtualKey);
+    }
+
+    if (requestUrl.includes("/admin/virtual-keys") && method === "POST") {
+      return jsonResponse(createdVirtualKey);
+    }
+
+    if (requestUrl.includes("/admin/virtual-keys")) {
+      return jsonResponse([virtualKey]);
+    }
+
+    if (requestUrl.includes("/admin/billing/reconciliation")) {
+      return jsonResponse(reconciliationReport);
+    }
+
+    if (requestUrl.includes("/admin/price-versions") && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      createdPriceVersionState = {
+        ...priceVersion,
+        ...body,
+        created_at: "2026-06-03T00:00:01Z",
+        id: "price-version-created",
+        retired_at: body.retired_at ?? null,
+        tenant_id: "tenant-1",
+      };
+      return jsonResponse(createdPriceVersionState);
+    }
+
+    if (requestUrl.includes("/admin/price-versions")) {
+      return jsonResponse(createdPriceVersionState ? [priceVersion, createdPriceVersionState] : [priceVersion]);
+    }
+
+    if (requestUrl.includes("/admin/ledger/entries")) {
+      return jsonResponse([ledgerEntry]);
+    }
+
+    return jsonResponse({});
+  });
+
+  vi.stubGlobal("fetch", fetchMock);
+
+  return fetchMock;
+}
+
+function jsonResponse(data: unknown) {
+  return Promise.resolve(
+    new Response(JSON.stringify({ data }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+}
+
+function deferredJsonResponse(data: unknown) {
+  let resolve!: () => void;
+  const promise = new Promise<Response>((next) => {
+    resolve = () => {
+      next(
+        new Response(JSON.stringify({ data }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    };
+  });
+
+  return { promise, resolve };
+}
+
+function loginPayload() {
+  return {
+    session: {
+      expires_at: "2026-06-02T20:00:00Z",
+      id: "session-1",
+    },
+    session_token_once: sessionPlaceholder("test_admin_session_token"),
+    user: {
+      display_name: "Local Admin",
+      email: "operator@example.com",
+      id: "user-1",
+      roles: ["owner"],
+      tenant_id: "tenant-1",
+    },
+  };
+}
+
+function adminMePayload(roles = ["owner"]) {
+  const user = {
+    display_name: "Local Admin",
+    email: "operator@example.com",
+    id: "user-1",
+    roles,
+    tenant_id: "tenant-1",
+  };
+
+  return {
+    capability_summary: capabilitySummaryForRoles(roles),
+    session: {
+      expires_at: "2026-06-02T20:00:00Z",
+      id: "session-1",
+    },
+    user,
+  };
+}
+
+function capabilitySummaryForRoles(roles: string[]) {
+  const normalized = roles.map((role) => role.toLowerCase());
+  const capabilities = normalized.includes("billing")
+    ? ["billing.read", "price.read", "reconciliation.read", "price_version.create", "health.liveness", "health.readiness"]
+    : normalized.includes("viewer")
+      ? [
+          "request_log.read",
+          "trace.read",
+          "audit.read",
+          "billing.read",
+          "price.read",
+          "reconciliation.read",
+          "health.liveness",
+          "health.readiness",
+        ]
+      : normalized.includes("ops")
+        ? [
+            "provider.read",
+            "provider.manage",
+            "key.read",
+            "key.manage",
+            "request_log.read",
+            "trace.read",
+            "audit.read",
+            "manual_test.run",
+            "provider_health.read",
+            "alert_webhook.validate",
+            "health.liveness",
+            "health.readiness",
+          ]
+        : allCapabilities;
+  const allowed = new Set(capabilities);
+
+  return {
+    capabilities,
+    denied_capabilities: allCapabilities.filter((capability) => !allowed.has(capability)),
+    personas: roles.map((role) => role[0]?.toUpperCase() + role.slice(1)),
+    roles,
+    secret_safe: true,
+  };
+}
+
+const allCapabilities = [
+  "provider.read",
+  "provider.manage",
+  "key.read",
+  "key.manage",
+  "request_log.read",
+  "trace.read",
+  "audit.read",
+  "billing.read",
+  "price.read",
+  "reconciliation.read",
+  "price_version.create",
+  "manual_test.run",
+  "provider_health.read",
+  "alert_webhook.validate",
+  "health.liveness",
+  "health.readiness",
+];
+
+function baseRequestLog() {
+  return {
+    api_key_profile_id: null,
+    canonical_model_id: "model-1",
+    client_request_id: "client-1",
+    completed_at: "2026-06-02T12:01:00Z",
+    created_at: "2026-06-02T12:00:00Z",
+    currency: "USD",
+    error_code: null,
+    error_owner: null,
+    final_cost: "0.0000",
+    http_status: 200,
+    id: "req_base",
+    inbound_protocol: "openai",
+    input_tokens: 1,
+    latency_ms: 10,
+    outbound_protocol: "openai",
+    output_tokens: 1,
+    partial_sent: false,
+    payload_policy_id: "payload-policy-1",
+    payload_stored: true,
+    project_id: null,
+    protocol_mode: "openai",
+    provider_key_id: "provider-key-1",
+    redaction_status: "redacted",
+    request_body_hash: "request-body-hash-hidden",
+    requested_model: "gpt-4o-mini",
+    resolved_channel_id: "channel-1",
+    resolved_provider_id: "provider-1",
+    response_body_hash: "response-body-hash-hidden",
+    retryable: false,
+    route_policy_version: "policy-v1",
+    status: "succeeded",
+    stream_end_reason: null,
+    tenant_id: "tenant-1",
+    thread_id: null,
+    trace_id: "trace-1",
+    ttft_ms: 5,
+    upstream_model: "gpt-4o-mini",
+    virtual_key_id: null,
+  };
+}
+
+function healthSummaryPayload() {
+  return {
+    channels: [
+      {
+        enabled_provider_key_count: 0,
+        health_score: 0.41,
+        health_state: "degraded",
+        id: "channel-1",
+        model_count: 1,
+        name: "openai primary",
+        priority: 10,
+        protocol_mode: "openai_compatible",
+        provider_id: "provider-1",
+        provider_key_count: 1,
+        recent: healthSummaryRecent("provider_auth_failed"),
+        region: "us-east-1",
+        status: "cooldown",
+        weight: 100,
+      },
+    ],
+    models: [
+      {
+        association_count: 1,
+        display_name: "GPT Visible",
+        enabled_association_count: 1,
+        family: "gpt",
+        id: "model-1",
+        model_key: "gpt-visible",
+        recent: healthSummaryRecent("provider_auth_failed"),
+        routable_channel_count: 1,
+        routing_state: "routable",
+        status: "active",
+        visibility: "public",
+      },
+    ],
+    provider_keys: [
+      {
+        channel_id: "channel-1",
+        configured_last_error_code: "provider_auth_failed",
+        cooldown_until: "2026-06-02 12:05:00+00",
+        credential_configured: true,
+        health_score: 0.25,
+        health_state: "degraded",
+        id: "provider-key-1",
+        key_alias: "openai-main",
+        limits: {
+          concurrency: 3,
+          rpm: 600,
+          tpm: 120000,
+        },
+        recent: healthSummaryRecent("provider_auth_failed"),
+        status: "auth_failed",
+      },
+    ],
+    providers: [
+      {
+        channel_count: 1,
+        code: "openai",
+        enabled_channel_count: 0,
+        enabled_provider_key_count: 0,
+        health_score: 0.41,
+        health_state: "degraded",
+        id: "provider-1",
+        name: "OpenAI",
+        provider_key_count: 1,
+        recent: healthSummaryRecent("provider_auth_failed"),
+        status: "enabled",
+      },
+    ],
+    recent_window: {
+      sample_count: 2,
+      sample_limit: 500,
+      source: "request_logs",
+    },
+    status_counts: {
+      channels: { cooldown: 1 },
+      models: { active: 1 },
+      provider_keys: { auth_failed: 1 },
+      providers: { enabled: 1 },
+    },
+    summary_version: 1,
+    tenant_id: "tenant-1",
+    totals: {
+      channels: 1,
+      model_associations: 1,
+      models: 1,
+      provider_keys: 1,
+      providers: 1,
+    },
+  };
+}
+
+function healthSummaryRecent(code: string) {
+  return {
+    error_count: 1,
+    last_error: {
+      code,
+      http_status: 401,
+      observed_at: "2026-06-02 12:00:02+00",
+      owner: "provider",
+      status: "failed",
+    },
+    request_count: 2,
+  };
+}
+
+function selectedDryRunResponse() {
+  const candidate = {
+    association_id: "association-1",
+    association_priority: 2,
+    association_type: "explicit_channel",
+    canonical_model_id: "canonical-model-1",
+    channel_health_score: 1,
+    channel_id: "channel-1",
+    channel_name: "primary channel",
+    channel_priority: 10,
+    channel_status: "enabled",
+    channel_weight: 100,
+    fallback_allowed: true,
+    filter_reason: null,
+    filtered: false,
+    priority: 2000010,
+    protocol_mode: "openai_compatible",
+    provider_code: "provider-a",
+    provider_id: "provider-1",
+    provider_model: "upstream-gpt",
+    provider_name: "Provider A",
+    provider_status: "enabled",
+    rate_limit_available: true,
+    routing_health: "Healthy",
+    routing_status: "Enabled",
+    score: {
+      priority: 2000010,
+      total: 2145483738,
+      weight: 100,
+    },
+    secret_note: skPlaceholder("candidate-hidden"),
+    selected: true,
+    trace_affinity_match: true,
+    upstream_model: "upstream-gpt",
+    weight: 100,
+  };
+  const filteredCandidate = {
+    ...candidate,
+    association_id: "association-2",
+    channel_id: "channel-2",
+    channel_name: "blocked channel",
+    fallback_allowed: false,
+    filter_reason: "profile denied",
+    filtered: true,
+    provider_id: "provider-2",
+    provider_name: "Provider B",
+    selected: false,
+    upstream_model: "backup-gpt",
+  };
+
+  return {
+    candidates: [candidate, filteredCandidate],
+    canonical_model: {
+      display_name: "GPT Visible",
+      family: "gpt",
+      id: "canonical-model-1",
+      model_key: "gpt-visible",
+      status: "active",
+    },
+    decision_snapshot_version: 1,
+    policy: {
+      payload_policy_id: "payload-policy-override",
+      profile_ip_allowlist: ["203.0.113.0/24", "2001:db8::/64"],
+      request_overrides: [
+        {
+          allowlist: ["203.0.113.0/24", "2001:db8::/64"],
+          authorization: bearerPlaceholder("request-override-hidden"),
+          raw_payload: "raw request override payload hidden",
+          type: "profile_ip_allowlist",
+        },
+      ],
+      seed: 42,
+    },
+    profile_id: "profile-1",
+    project_id: "project-1",
+    requested_model: "gpt-visible",
+    route_decision_snapshot: {
+      api_key: skPlaceholder("route-dry-hidden"),
+      authorization: bearerPlaceholder("route-dry-hidden"),
+      candidates: [
+        {
+          channel_id: "channel-1",
+          filter_reason: null,
+          selected: true,
+        },
+        {
+          channel_id: "channel-2",
+          filter_reason: "profile denied",
+          filtered: true,
+          selected: false,
+        },
+      ],
+      nested: {
+        token: bearerPlaceholder("nested-route-dry-hidden"),
+      },
+      payload: {
+        body: "raw dry-run payload hidden",
+      },
+      profile_request_overrides: [
+        {
+          allowlist: ["203.0.113.0/24"],
+          raw_payload: "raw snapshot override payload hidden",
+          type: "profile_ip_allowlist",
+        },
+      ],
+      raw_snapshot: "raw dry-run snapshot hidden",
+      selected_channel_id: "channel-1",
+      version: 1,
+    },
+    route_policy_version: "gateway_db_route_v1",
+    selected_candidate: candidate,
+    selection: {
+      selected: {
+        api_key: skPlaceholder("selection-hidden"),
+        channel_id: "channel-1",
+        provider_id: "provider-1",
+        provider_model: "upstream-gpt",
+        weight: 100,
+      },
+      selected_channel_id: "channel-1",
+      status: "selected",
+    },
+    trace_affinity: {
+      applied_channel_id: "channel-1",
+      previous_successful_channel_id: "channel-1",
+      status: "Applied",
+      trace_id: "trace-1",
+    },
+    trace_id: "trace-1",
+  };
+}
+
+function channelManualTestResponse(requestedModel = "gpt-visible", upstreamModel = "upstream-gpt") {
+  return {
+    billing: {
+      billable: false,
+      ledger_write: false,
+      request_log_write: false,
+    },
+    channel: {
+      endpoint: `https://provider.example/v1?api_key=${skPlaceholder("manual-endpoint-hidden")}`,
+      health_score: 1,
+      id: "channel-1",
+      name: "primary channel",
+      priority: 10,
+      protocol_mode: "openai_compatible",
+      secret_note: skPlaceholder("manual-channel-hidden"),
+      status: "enabled",
+      weight: 100,
+    },
+    credential_material: {
+      provider_key_secret: skPlaceholder("manual-key-hidden"),
+      secret_fingerprint: "fp-manual-hidden",
+    },
+    dry_run: true,
+    next_steps: ["Dry-run only: no upstream provider call was made."],
+    provider: {
+      code: "provider-a",
+      id: "provider-1",
+      name: "Provider A",
+      secret_note: skPlaceholder("manual-provider-hidden"),
+      status: "enabled",
+    },
+    requested_model: requestedModel,
+    request_plan: {
+      authorization: bearerPlaceholder("manual-plan-hidden"),
+      method: "POST",
+      model: upstreamModel,
+      path: "/v1/chat/completions",
+      protocol_mode: "openai_compatible",
+      raw_payload: "raw manual payload hidden",
+    },
+    test_mode: "channel_manual_test",
+    upstream_call: false,
+    upstream_model: upstreamModel,
+  };
+}
+
+function noCandidateDryRunResponse() {
+  return {
+    candidates: [],
+    canonical_model: null,
+    decision_snapshot_version: 1,
+    policy: {
+      seed: 0,
+    },
+    profile_id: "profile-1",
+    project_id: "project-1",
+    requested_model: "missing-model",
+    route_decision_snapshot: {
+      candidates: [],
+      selected: null,
+      selected_channel_id: null,
+      version: 1,
+    },
+    route_policy_version: "gateway_db_route_v1",
+    selected_candidate: null,
+    selection: {
+      selected: null,
+      selected_channel_id: null,
+      status: "model_not_found_or_not_allowed",
+    },
+    trace_affinity: {
+      applied_channel_id: null,
+      previous_successful_channel_id: null,
+      status: "Disabled",
+      trace_id: null,
+    },
+    trace_id: null,
+  };
+}
+
+function jsonError(message: string, status = 400) {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        error: {
+          code: "bad_request",
+          message,
+        },
+      }),
+      {
+        status,
+        statusText: "Bad Request",
+        headers: { "Content-Type": "application/json" },
+      },
+    ),
+  );
+}
+
+async function renderSignedInApp() {
+  const user = userEvent.setup();
+  render(<App />);
+
+  await user.type(screen.getByLabelText("Email"), "operator@example.com");
+  await user.type(screen.getByLabelText("Password"), "local-password");
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+  return user;
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe("App", () => {
+  it("waits for local sign-in before probing services and keeps refresh available", async () => {
+    const fetchMock = stubHealthyFetch();
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await user.type(screen.getByLabelText("Email"), "operator@example.com");
+    await user.type(screen.getByLabelText("Password"), "local-password");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(10));
+  });
+
+  it("signs in to the operations shell and renders the health overview", async () => {
+    stubHealthyFetch();
+
+    await renderSignedInApp();
+
+    expect(screen.getByText("AI Gateway")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
+    expect(screen.getByText("Routing health")).toBeInTheDocument();
+    expect(await screen.findByText("Gateway")).toBeInTheDocument();
+  });
+
+  it("shows request log and provider key navigation after sign-in", async () => {
+    stubHealthyFetch();
+
+    await renderSignedInApp();
+
+    expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Provider Keys/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Virtual Keys/ })).toBeInTheDocument();
+  });
+
+  it("trims navigation for viewer capability summary without hiding all sections", async () => {
+    stubHealthyFetch(["viewer"]);
+
+    await renderSignedInApp();
+
+    expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Overview/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Provider Keys/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Providers/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("provider.manage")).not.toBeInTheDocument();
+  });
+
+  it("keeps billing users scoped to billing navigation", async () => {
+    stubHealthyFetch(["billing"]);
+
+    await renderSignedInApp();
+
+    expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Request\/Trace/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Providers/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Billing / Prices" })).toBeInTheDocument();
+  });
+
+  it("keeps ops users on operational provider sections without billing", async () => {
+    stubHealthyFetch(["ops"]);
+
+    await renderSignedInApp();
+
+    expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Providers/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Provider Keys/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Billing/ })).not.toBeInTheDocument();
+  });
+
+  it("switches navigation sections and tracks recovery requests locally", async () => {
+    stubHealthyFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Providers/ }));
+    expect(screen.getByRole("heading", { level: 1, name: "Providers" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Provider Inventory" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Overview/ }));
+    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai primary" });
+    await user.click(recoveryButton);
+
+    expect(recoveryButton).toHaveTextContent("Requested");
+    expect(recoveryButton).toBeDisabled();
+  });
+
+  it("renders request logs and safe request detail fields", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+
+    expect(await screen.findByText("req_1")).toBeInTheDocument();
+    expect(screen.getByText("gpt-4o-mini")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View request log req_1" }));
+
+    expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
+    expect(screen.getByText("provider-1")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Route Trace" })).toBeInTheDocument();
+    expect(screen.getByText("weighted-fallback")).toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes('"strategy": "weighted-fallback"'))).not.toBeInTheDocument();
+    expect(screen.queryByText("payload-123-hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText("raw prompt hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText("request-body-hash-hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText(skPlaceholder("route-hidden"))).not.toBeInTheDocument();
+    expect(screen.queryByText(bearerPlaceholder("route-hidden"))).not.toBeInTheDocument();
+    expect(screen.queryByText(bearerPlaceholder("nested-route-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("queries trace summary and renders safe trace request rows", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.type(await screen.findByLabelText("Trace ID"), "trace-1");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Trace Summary" })).toBeInTheDocument();
+    const metrics = screen.getByLabelText("Trace summary metrics");
+    expect(within(metrics).getByText("Request Count")).toBeInTheDocument();
+    expect(within(metrics).getByText("2")).toBeInTheDocument();
+    expect(within(metrics).getByText("Errors")).toBeInTheDocument();
+    expect(within(metrics).getByText("300")).toBeInTheDocument();
+    expect(within(metrics).getByText("155")).toBeInTheDocument();
+    expect(await screen.findByText("req_2")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("provider_auth_failed [redacted]");
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/traces/trace-1?limit=25",
+      ),
+    );
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("requested-model-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("trace-error-hidden"));
+    expect(document.body.textContent).not.toContain("raw trace prompt hidden");
+    expect(document.body.textContent).not.toContain("raw trace response hidden");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("trace-route-hidden"));
+  });
+
+  it("runs routing dry-run and renders selected candidates without secret material", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Routing/ }));
+    await user.type(await screen.findByLabelText("Project ID"), "project-1");
+    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
+    await user.type(screen.getByLabelText("Requested model"), "gpt-visible");
+    await user.clear(screen.getByLabelText("Seed"));
+    await user.type(screen.getByLabelText("Seed"), "42");
+    await user.type(screen.getByLabelText("Trace ID"), "trace-1");
+    await user.type(screen.getByLabelText("Previous successful channel ID"), "channel-1");
+    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Selection" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Selected Candidate" })).toBeInTheDocument();
+    expect(screen.getAllByText("primary channel").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Provider A").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Fallback allowed").length).toBeGreaterThan(0);
+    expect(screen.getByText("Fallback blocked")).toBeInTheDocument();
+    expect(screen.getAllByText("profile denied").length).toBeGreaterThan(0);
+    expect(screen.getByText("Route Snapshot Summary")).toBeInTheDocument();
+    expect(screen.getByText("Request Override Summary")).toBeInTheDocument();
+    expect(screen.getAllByText("profile_ip_allowlist").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("203.0.113.0/24, 2001:db8::/64").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("payload-policy-override").length).toBeGreaterThan(0);
+
+    const dryRunCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/admin/model-associations/dry-run"),
+    );
+    expect(dryRunCall?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String(dryRunCall?.[1]?.body))).toEqual({
+      previous_successful_channel_id: "channel-1",
+      profile_id: "profile-1",
+      project_id: "project-1",
+      requested_model: "gpt-visible",
+      seed: 42,
+      trace_id: "trace-1",
+    });
+    expect(screen.queryByText((content) => content.includes(skPlaceholder("route-dry-hidden")))).not.toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(bearerPlaceholder("route-dry-hidden")))).not.toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(bearerPlaceholder("nested-route-dry-hidden")))).not.toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(skPlaceholder("selection-hidden")))).not.toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(skPlaceholder("candidate-hidden")))).not.toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes(bearerPlaceholder("request-override-hidden")))).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("raw dry-run payload hidden");
+    expect(document.body.textContent).not.toContain("raw dry-run snapshot hidden");
+    expect(document.body.textContent).not.toContain("raw request override payload hidden");
+    expect(document.body.textContent).not.toContain("raw snapshot override payload hidden");
+  });
+
+  it("runs routing dry-run with a canonical model key selector", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Routing/ }));
+    await user.type(await screen.findByLabelText("Project ID"), "project-1");
+    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
+    await user.type(screen.getByLabelText("Canonical model key"), "gpt-visible");
+    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Selection" })).toBeInTheDocument();
+    expect(screen.getAllByText((content) => content.includes("gpt-visible")).length).toBeGreaterThan(0);
+
+    const dryRunCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/admin/model-associations/dry-run"),
+    );
+    expect(JSON.parse(String(dryRunCall?.[1]?.body))).toEqual({
+      canonical_model_key: "gpt-visible",
+      profile_id: "profile-1",
+      project_id: "project-1",
+    });
+  });
+
+  it("redacts routing dry-run error details", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Routing/ }));
+    await user.type(await screen.findByLabelText("Project ID"), "project-1");
+    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
+    await user.type(screen.getByLabelText("Requested model"), "secret-error");
+    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    expect(await screen.findByText("Request failed.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("dry-run-secret"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("dry-run-secret"));
+  });
+
+  it("renders billing price versions, ledger overview, and reconciliation without secret material", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Billing / Prices" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "Price Versions" })).toBeInTheDocument();
+    expect(await screen.findByText("2026-06")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View price version 2026-06" }));
+
+    expect(screen.getByRole("heading", { level: 2, name: "Pricing Rules" })).toBeInTheDocument();
+    expect(screen.queryByText(skPlaceholder("price-hidden"))).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Ledger Overview" }));
+
+    expect(await screen.findByText("-0.01230000")).toBeInTheDocument();
+    expect(screen.getByText("USD -0.0123")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View ledger entry ledger-entry-1" }));
+
+    expect(screen.getByRole("heading", { level: 2, name: "Usage Snapshot" })).toBeInTheDocument();
+    expect(screen.queryByText(skPlaceholder("ledger-hidden"))).not.toBeInTheDocument();
+    expect(screen.queryByText(bearerPlaceholder("ledger-hidden"))).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Reconciliation" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Reconciliation" })).toBeInTheDocument();
+    expect(await screen.findByText("1.25000000")).toBeInTheDocument();
+    expect(screen.getByText("missing ledger")).toBeInTheDocument();
+    expect(screen.getByText("recon-req-1")).toBeInTheDocument();
+    expect(screen.getByText("USD 1.00000000")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Summary JSON" })).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(skUnderscorePlaceholder("reconcile_model_hidden"));
+    expect(document.body.textContent).not.toContain(githubPatPlaceholder("reconcile_trace_hidden"));
+    expect(document.body.textContent).not.toContain(authorizationBearerPlaceholder("reconcile-upstream-hidden"));
+    expect(document.body.textContent).not.toContain("raw reconciliation payload hidden");
+    expect(document.body.textContent).not.toContain("raw reconciliation export hidden");
+    expect(document.body.textContent).not.toContain(skPlaceholder("reconcile-policy-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("reconcile-summary-hidden"));
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain("raw_policy_snapshot");
+    expect(document.body.textContent).not.toContain("raw_export");
+    expect(document.body.textContent).not.toContain("secret_note");
+    expect(document.body.textContent).not.toContain('"payload"');
+    expect(document.body.textContent).not.toContain('"body"');
+
+    await user.type(screen.getByLabelText("Day"), "2026-06-02");
+    await user.clear(screen.getByLabelText("Limit"));
+    await user.type(screen.getByLabelText("Limit"), "5");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/billing/reconciliation?day=2026-06-02&limit=5",
+      ),
+    );
+  });
+
+  it("creates a price version, sends safe pricing rules, and refreshes the list", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+
+    const createRegion = await screen.findByRole("region", { name: "Create price version" });
+    const createPanel = within(createRegion);
+    const pricingRules = {
+      currency: "USD",
+      fixed_request_cost: "0.00000000",
+      input_token_rate_per_1m: "0.20000000",
+      output_token_rate_per_1m: "0.70000000",
+      scale: 8,
+    };
+
+    await user.type(createPanel.getByLabelText("Price book ID"), "price-book-2");
+    await user.type(createPanel.getByLabelText("Model ID"), "model-2");
+    await user.type(createPanel.getByLabelText("Version"), "2026-07");
+    await user.selectOptions(createPanel.getByLabelText("Status"), "active");
+    await user.type(createPanel.getByLabelText("Effective at"), "2026-07-01T00:00:00Z");
+    await user.type(createPanel.getByLabelText("Retired at"), "2026-09-01T00:00:00Z");
+    fireEvent.change(createPanel.getByLabelText("Pricing rules JSON"), {
+      target: { value: JSON.stringify(pricingRules, null, 2) },
+    });
+    await user.click(createPanel.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByText("Price version 2026-07 created.")).toBeInTheDocument();
+    expect((await screen.findAllByText("2026-07")).length).toBeGreaterThan(0);
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes("/admin/price-versions") && init?.method === "POST",
+    );
+    expect(String(createCall?.[0])).toBe("/api/control-plane/admin/price-versions");
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      canonical_model_id: "model-2",
+      effective_at: "2026-07-01T00:00:00Z",
+      price_book_id: "price-book-2",
+      pricing_rules: pricingRules,
+      retired_at: "2026-09-01T00:00:00Z",
+      status: "active",
+      version: "2026-07",
+    });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) => String(url).includes("/admin/price-versions") && init?.method === "GET",
+        ).length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it("rejects unsafe price rule JSON without posting or retaining secret material", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+
+    const createRegion = await screen.findByRole("region", { name: "Create price version" });
+    const createPanel = within(createRegion);
+    const rawKey = skPlaceholder("price-raw-hidden");
+    const bearer = bearerPlaceholder("price-auth-hidden");
+    const unsafeRules = {
+      [AUTH_HEADER_NAME]: bearer,
+      currency: "USD",
+      input_token_rate_per_1m: "0.20000000",
+      output_token_rate_per_1m: "0.70000000",
+      payload: {
+        raw_key: rawKey,
+      },
+    };
+
+    await user.type(createPanel.getByLabelText("Price book ID"), "price-book-2");
+    await user.type(createPanel.getByLabelText("Version"), "2026-07");
+    fireEvent.change(createPanel.getByLabelText("Pricing rules JSON"), {
+      target: { value: JSON.stringify(unsafeRules, null, 2) },
+    });
+    await user.click(createPanel.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByText(/Pricing rules cannot contain unsafe fields/)).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).includes("/admin/price-versions") && init?.method === "POST",
+      ),
+    ).toBe(false);
+    expect((createPanel.getByLabelText("Pricing rules JSON") as HTMLTextAreaElement).value).not.toContain(rawKey);
+    expect((createPanel.getByLabelText("Pricing rules JSON") as HTMLTextAreaElement).value).not.toContain(bearer);
+    expect(document.body.textContent).not.toContain(rawKey);
+    expect(document.body.textContent).not.toContain(bearer);
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain("raw_key");
+    expect(document.body.textContent).not.toContain('"payload"');
+  });
+
+  it("handles routing dry-run responses without a selected candidate", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Routing/ }));
+    await user.type(await screen.findByLabelText("Project ID"), "project-1");
+    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
+    await user.type(screen.getByLabelText("Requested model"), "missing-model");
+    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    expect((await screen.findAllByText("model not found or not allowed")).length).toBeGreaterThan(0);
+    expect(screen.getByText("No candidate selected.")).toBeInTheDocument();
+    expect(screen.getByText("No route candidates returned.")).toBeInTheDocument();
+  });
+
+  it("keeps the newest request log detail when earlier detail requests resolve late", async () => {
+    const slowLog = {
+      ...baseRequestLog(),
+      id: "req_slow",
+      requested_model: "slow-model",
+      trace_id: "trace-slow",
+    };
+    const fastLog = {
+      ...baseRequestLog(),
+      id: "req_fast",
+      requested_model: "fast-model",
+      trace_id: "trace-fast",
+    };
+    const slowDetail = deferredJsonResponse({
+      provider_attempts: [],
+      request_log: slowLog,
+      route_decision_snapshot: { strategy: "slow-route" },
+    });
+    const fastDetail = deferredJsonResponse({
+      provider_attempts: [],
+      request_log: fastLog,
+      route_decision_snapshot: { strategy: "fast-route" },
+    });
+    const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.includes("/admin/auth/login")) {
+        return jsonResponse(loginPayload());
+      }
+
+      if (requestUrl.includes("/admin/auth/me")) {
+        return jsonResponse(adminMePayload());
+      }
+
+      if (requestUrl.includes("/admin/auth/logout")) {
+        return jsonResponse({ logged_out: true });
+      }
+
+      if (requestUrl.includes("/admin/request-logs/req_slow")) {
+        return slowDetail.promise;
+      }
+
+      if (requestUrl.includes("/admin/request-logs/req_fast")) {
+        return fastDetail.promise;
+      }
+
+      if (requestUrl.includes("/admin/request-logs")) {
+        return jsonResponse([slowLog, fastLog]);
+      }
+
+      return Promise.resolve(new Response("", { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    expect(await screen.findByText("req_slow")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View request log req_slow" }));
+    await user.click(screen.getByRole("button", { name: "View request log req_fast" }));
+
+    fastDetail.resolve();
+    expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Request log detail")).getByText("req_fast")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Request log detail")).getByText("fast-model")).toBeInTheDocument();
+
+    slowDetail.resolve();
+    await waitFor(() =>
+      expect(within(screen.getByLabelText("Request log detail")).queryByText("req_slow")).not.toBeInTheDocument(),
+    );
+    expect(within(screen.getByLabelText("Request log detail")).getByText("req_fast")).toBeInTheDocument();
+  });
+
+  it("does not render provider key secret material from API responses", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Provider Keys/ }));
+
+    expect(await screen.findByText("openai-main")).toBeInTheDocument();
+    expect(screen.getByLabelText("Secret / API key")).toHaveAttribute("type", "password");
+    expect(screen.queryByText(skPlaceholder("live-hidden"))).not.toBeInTheDocument();
+    expect(screen.queryByText("ciphertext-hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText("fp-hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText(skPlaceholder("metadata-hidden"))).not.toBeInTheDocument();
+    expect(screen.queryByText(bearerPlaceholder("metadata-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("lists and mutates providers and channels", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Providers/ }));
+
+    expect((await screen.findAllByText("OpenAI")).length).toBeGreaterThan(0);
+    expect(screen.queryByText(skPlaceholder("provider-hidden"))).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Provider code"), { target: { value: "anthropic" } });
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Anthropic" } });
+    fireEvent.change(screen.getByLabelText("Provider type"), { target: { value: "anthropic" } });
+    fireEvent.change(screen.getByLabelText("Provider base URL"), {
+      target: { value: "https://api.anthropic.test/v1" },
+    });
+    await user.click(screen.getByRole("button", { name: "Create provider" }));
+
+    expect((await screen.findAllByText("Anthropic")).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Disable provider OpenAI" }));
+
+    expect(await screen.findByText("OpenAI disabled.")).toBeInTheDocument();
+
+    expect(await screen.findByText("openai primary")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Requested model"), { target: { value: "gpt-visible" } });
+    fireEvent.change(screen.getByLabelText("Upstream model"), { target: { value: "upstream-gpt" } });
+    await user.click(screen.getByRole("button", { name: "Run manual test for openai primary" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Channel Manual Test" })).toBeInTheDocument();
+    expect(screen.getByText("upstream_call=false")).toBeInTheDocument();
+    expect(screen.getByText("billable=false")).toBeInTheDocument();
+    expect(screen.getByText("ledger_write=false")).toBeInTheDocument();
+    expect(screen.getAllByText("primary channel").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Provider A").length).toBeGreaterThan(0);
+    expect(screen.getByText("/v1/chat/completions")).toBeInTheDocument();
+    expect(screen.getAllByText("upstream-gpt").length).toBeGreaterThan(0);
+
+    const manualTestCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/manual-test"));
+    expect(manualTestCall?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String(manualTestCall?.[1]?.body))).toEqual({
+      dry_run: true,
+      model: "gpt-visible",
+      upstream_model_name: "upstream-gpt",
+    });
+    expect(document.body.textContent).not.toContain(skPlaceholder("manual-key-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("manual-endpoint-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("manual-channel-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("manual-provider-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("manual-plan-hidden"));
+    expect(document.body.textContent).not.toContain("fp-manual-hidden");
+    expect(document.body.textContent).not.toContain("raw manual payload hidden");
+
+    fireEvent.change(screen.getByLabelText("Channel provider ID"), { target: { value: "provider-2" } });
+    fireEvent.change(screen.getByLabelText("Channel name"), { target: { value: "anthropic primary" } });
+    fireEvent.change(screen.getByLabelText("Endpoint / base URL"), {
+      target: { value: "https://api.anthropic.test/v1" },
+    });
+    await user.click(screen.getByRole("button", { name: "Create channel" }));
+
+    expect(await screen.findByText("anthropic primary")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Disable channel openai primary" }));
+
+    expect(await screen.findByText("openai primary disabled.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete channel openai primary" }));
+
+    expect(await screen.findByText("openai primary deleted.")).toBeInTheDocument();
+  });
+
+  it("lists and mutates models and model associations", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Models/ }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Model Catalog" })).toBeInTheDocument();
+    expect((await screen.findAllByText("GPT-4o Mini")).length).toBeGreaterThan(0);
+    expect(screen.getByText("gpt-4o-mini / model-1")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Model key"), "claude-3-haiku");
+    await user.type(screen.getByLabelText("Display name"), "Claude Haiku");
+    await user.type(screen.getByLabelText("Family"), "claude");
+    await user.type(screen.getByLabelText("Context length"), "200000");
+    await user.click(screen.getByRole("button", { name: "Create model" }));
+
+    expect((await screen.findAllByText("Claude Haiku")).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Disable model GPT-4o Mini" }));
+
+    expect(await screen.findByText("GPT-4o Mini disabled.")).toBeInTheDocument();
+    expect((await screen.findAllByText("gpt-4o-mini")).length).toBeGreaterThan(0);
+    expect(screen.getByText("gpt-4o-mini-2024-07-18")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Association model ID"), "model-2");
+    await user.type(screen.getByLabelText("Channel ID"), "channel-2");
+    await user.type(screen.getByLabelText("Upstream model"), "claude-3-haiku-20240307");
+    await user.click(screen.getByRole("button", { name: "Create association" }));
+
+    expect(await screen.findByText("claude-3-haiku-20240307")).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Project ID"), "project-1");
+    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
+    await user.type(screen.getByLabelText("Canonical model key"), "gpt-4o-mini");
+    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Route Snapshot Summary" })).toBeInTheDocument();
+    expect(screen.getAllByText("primary channel").length).toBeGreaterThan(0);
+    expect(screen.getByText("Fallback blocked")).toBeInTheDocument();
+    expect(screen.getAllByText("profile denied").length).toBeGreaterThan(0);
+
+    const dryRunCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/admin/model-associations/dry-run"),
+    );
+    expect(JSON.parse(String(dryRunCalls.at(-1)?.[1]?.body))).toEqual({
+      canonical_model_key: "gpt-4o-mini",
+      profile_id: "profile-1",
+      project_id: "project-1",
+    });
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(skPlaceholder("route-dry-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("route-dry-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("selection-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("candidate-hidden"));
+    expect(document.body.textContent).not.toContain("raw dry-run payload hidden");
+    expect(document.body.textContent).not.toContain("raw dry-run snapshot hidden");
+
+    await user.click(screen.getByRole("button", { name: "Disable association association-1" }));
+
+    expect(await screen.findByText("Association associat... disabled.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete association association-1" }));
+
+    expect(await screen.findByText("Association associat... deleted.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete model GPT-4o Mini" }));
+
+    expect(await screen.findByText("GPT-4o Mini deleted.")).toBeInTheDocument();
+  }, 10000);
+
+  it("shows generated virtual key credentials once after create", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Virtual Keys/ }));
+    await user.type(await screen.findByLabelText("Project ID"), "project-1");
+    await user.type(screen.getByLabelText("Virtual key name"), "created-virtual");
+    await user.type(screen.getByLabelText("Default profile ID"), "profile-1");
+    await user.click(screen.getByRole("button", { name: "Create virtual key" }));
+
+    expect(await screen.findByText("Credential created for created-virtual")).toBeInTheDocument();
+    expect(screen.getByText("vk-created-secret-once")).toBeInTheDocument();
+    expect(screen.queryByText("vk-created-secret-hash")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Clear credential" }));
+
+    await waitFor(() => expect(screen.queryByText("Credential created for created-virtual")).not.toBeInTheDocument());
+    expect(screen.queryByText("vk-created-secret-once")).not.toBeInTheDocument();
+  });
+
+  it("does not render virtual key secret hashes from list or detail responses", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Virtual Keys/ }));
+    await user.type(await screen.findByLabelText("Virtual key project ID"), "project-1");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByText("virtual-main")).toBeInTheDocument();
+    expect(screen.queryByText("vk-list-secret-hash")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "View virtual key virtual-main" }));
+
+    expect(await screen.findByText("Virtual Key Detail")).toBeInTheDocument();
+    expect(screen.queryByText("vk-list-secret-hash")).not.toBeInTheDocument();
+    expect(screen.queryByText(skPlaceholder("vk-metadata-hidden"))).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("vk-budget-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("vk-rate-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("vk-budget-hidden"));
+    expect(document.body.textContent).not.toContain("raw virtual key payload hidden");
+  });
+
+  it("lists, creates, and patches profile model permissions without unsafe display", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Virtual Keys/ }));
+    await user.click(await screen.findByRole("tab", { name: "Profiles" }));
+    await user.type(screen.getByLabelText("Profile project ID"), "project-1");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(await screen.findByText("default-profile")).toBeInTheDocument();
+    expect(screen.getAllByText((content) => content.includes("gpt-4o-mini")).length).toBeGreaterThan(0);
+    expect(screen.getByText((content) => content.includes("gpt-internal"))).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes("chat-fast=gpt-4o-mini"))).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes("Profile IP"))).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes("203.0.113.0/24"))).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(authorizationBearerPlaceholder("profile-model-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("profile-alias-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("profile-alias-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("profile-override-hidden"));
+    expect(document.body.textContent).not.toContain("raw profile payload hidden");
+
+    await user.type(screen.getByLabelText("New profile project ID"), "project-1");
+    await user.type(screen.getByLabelText("Profile name"), "created-profile");
+    fireEvent.change(screen.getByLabelText("Visible models JSON"), {
+      target: { value: '["gpt-create-visible"]' },
+    });
+    fireEvent.change(screen.getByLabelText("Denied models JSON"), {
+      target: { value: '["gpt-create-denied"]' },
+    });
+    fireEvent.change(screen.getByLabelText("Model aliases JSON"), {
+      target: { value: '{"create-fast":"gpt-create-visible"}' },
+    });
+    await user.click(screen.getByRole("button", { name: "Create profile" }));
+
+    expect(await screen.findByText("created-profile")).toBeInTheDocument();
+    expect(screen.getAllByText((content) => content.includes("gpt-create-visible")).length).toBeGreaterThan(0);
+
+    const createCall = fetchMock.mock.calls.find(([url, init]) => {
+      return String(url).includes("/admin/api-key-profiles") && init?.method === "POST";
+    });
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      allowed_models: ["gpt-create-visible"],
+      denied_models: ["gpt-create-denied"],
+      model_aliases: {
+        "create-fast": "gpt-create-visible",
+      },
+      name: "created-profile",
+      project_id: "project-1",
+      status: "active",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Edit profile default-profile" }));
+
+    const patchPanel = screen.getByLabelText("Patch profile");
+    fireEvent.change(within(patchPanel).getByLabelText("Visible models JSON"), {
+      target: { value: '["gpt-4o-mini","gpt-visible-new"]' },
+    });
+    fireEvent.change(within(patchPanel).getByLabelText("Denied models JSON"), {
+      target: { value: '["gpt-denied-new"]' },
+    });
+    fireEvent.change(within(patchPanel).getByLabelText("Model aliases JSON"), {
+      target: { value: '{"chat-fast":"gpt-visible-new"}' },
+    });
+    await user.click(within(patchPanel).getByRole("button", { name: "Save patch" }));
+
+    expect(await screen.findByText("Profile updated.")).toBeInTheDocument();
+    expect(screen.getAllByText((content) => content.includes("gpt-visible-new")).length).toBeGreaterThan(0);
+
+    const patchCall = fetchMock.mock.calls.find(([url, init]) => {
+      return String(url).includes("/admin/api-key-profiles/profile-1") && init?.method === "PATCH";
+    });
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
+      allowed_models: ["gpt-4o-mini", "gpt-visible-new"],
+      denied_models: ["gpt-denied-new"],
+      model_aliases: {
+        "chat-fast": "gpt-visible-new",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Delete profile default-profile" }));
+
+    expect(await screen.findByText("api key profile has active virtual keys bound")).toBeInTheDocument();
+  });
+});

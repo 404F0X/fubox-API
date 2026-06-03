@@ -1,0 +1,23 @@
+{
+  "scenario": "429",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=429",
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=429",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "429"
+      }
+    },
+    "endpoint": "/__scenario/429/v1/chat/completions",
+    "body": {
+      "mock_scenario": "429"
+    }
+  },
+  "expected_status": 429,
+  "headers": {
+    "Retry-After": "1"
+  },
+  "notes": "Rate-limit path for retry-before-first-byte and cooldown tests."
+}

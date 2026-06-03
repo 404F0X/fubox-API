@@ -1,0 +1,33 @@
+{
+  "name": "openai_models_list_valid",
+  "request": {
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "GET",
+    "path": "/v1/models",
+    "stream": false,
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "object": "list",
+      "data": [
+        {
+          "id": "mock-gpt",
+          "object": "model",
+          "created": 1710000000,
+          "owned_by": "fixture-provider"
+        },
+        {
+          "id": "mock-embedding",
+          "object": "model",
+          "created": 1710000001,
+          "owned_by": "fixture-provider"
+        }
+      ]
+    }
+  },
+  "expected_usage": null
+}

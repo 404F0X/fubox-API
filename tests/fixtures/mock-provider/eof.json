@@ -1,0 +1,20 @@
+{
+  "scenario": "eof",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=eof",
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=eof",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "eof"
+      }
+    },
+    "endpoint": "/__scenario/eof/v1/chat/completions",
+    "body": {
+      "mock_scenario": "eof"
+    }
+  },
+  "expected_status": "connection_closed",
+  "notes": "Unexpected upstream EOF before terminal event."
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": "importer.postgresql-sql-executor-contract-fixture.v1",
+  "input_fixture": "tests/fixtures/importers/apply_plan_canonical_only.sample.json",
+  "expected": {
+    "preflight_status": "pass",
+    "apply_force_executor_status": "prepared_sql_plan",
+    "dry_run_executor_status": "dry_run_sql_plan",
+    "database_writes": false,
+    "live_database_connection": false,
+    "supported_target_kinds": [
+      "canonical_model"
+    ],
+    "required_statement_phases": [
+      "capture_before_image",
+      "apply_upsert"
+    ],
+    "required_sql_fragments": [
+      "for update",
+      "on conflict (tenant_id, model_key) do update"
+    ],
+    "refusal_contract_schema": "importer.apply-refusal-contract.v1",
+    "operation_bundle_schema": "importer.apply-operation-bundle.v1",
+    "rollback_entry_schema": "importer.rollback-snapshot-entry.v1",
+    "source_binding_preflight": "pass",
+    "rollback_contract": {
+      "capture_before_apply": true,
+      "includes_operation_id": true,
+      "includes_idempotency_key": true,
+      "no_secret_material": true
+    }
+  }
+}

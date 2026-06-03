@@ -1,0 +1,76 @@
+{
+  "scenario_set": "openai_chat_completions_streaming",
+  "endpoint": "/v1/chat/completions",
+  "method": "POST",
+  "request_body": {
+    "model": "mock-gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "streaming fixture probe"
+      }
+    ],
+    "stream": true
+  },
+  "selector_modes": {
+    "query": "/v1/chat/completions?scenario={scenario}",
+    "header": {
+      "path": "/v1/chat/completions",
+      "header": "X-Mock-Scenario"
+    },
+    "endpoint": "/__scenario/{scenario}/v1/chat/completions",
+    "body_field": "mock_scenario"
+  },
+  "scenarios": [
+    {
+      "scenario": "200",
+      "path": "/v1/chat/completions",
+      "expected_status": 200,
+      "expected_content_type": "text/event-stream",
+      "expected_contains": ["chat.completion.chunk", "data: [DONE]"],
+      "sample": "chat_stream_valid_done.sse"
+    },
+    {
+      "scenario": "invalid_json_chunk",
+      "aliases": ["invalid_sse"],
+      "expected_status": 200,
+      "expected_content_type": "text/event-stream",
+      "expected_contains": ["data: {not-json}", "data: [DONE]"],
+      "sample": "chat_stream_invalid_json_chunk.sse"
+    },
+    {
+      "scenario": "large_chunk",
+      "expected_status": 200,
+      "expected_content_type": "text/event-stream",
+      "min_response_bytes": 71680,
+      "expected_contains": ["chat.completion.chunk", "data: [DONE]"]
+    },
+    {
+      "scenario": "missing_done",
+      "expected_status": 200,
+      "expected_content_type": "text/event-stream",
+      "expected_contains": ["chat.completion.chunk", "\"finish_reason\":\"stop\""],
+      "expected_absent": ["data: [DONE]"],
+      "sample": "chat_stream_missing_done.sse"
+    },
+    {
+      "scenario": "timeout",
+      "expected_transport": "first_byte_timeout",
+      "notes": "No response bytes for 120 seconds; callers should set a short test timeout."
+    },
+    {
+      "scenario": "eof",
+      "expected_transport": "connection_closed_before_headers"
+    },
+    {
+      "scenario": "stream_timeout",
+      "expected_transport": "partial_stream_timeout",
+      "notes": "Headers and one valid chunk are sent, then the stream remains open without [DONE]."
+    },
+    {
+      "scenario": "stream_eof",
+      "expected_transport": "connection_closed_mid_stream",
+      "notes": "Headers and one valid chunk are sent, then the connection is closed before [DONE]."
+    }
+  ]
+}

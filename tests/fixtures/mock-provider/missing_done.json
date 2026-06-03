@@ -1,0 +1,26 @@
+{
+  "scenario": "missing_done",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=missing_done",
+  "body": {
+    "stream": true
+  },
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=missing_done",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "missing_done"
+      }
+    },
+    "endpoint": "/__scenario/missing_done/v1/chat/completions",
+    "body": {
+      "mock_scenario": "missing_done"
+    }
+  },
+  "expected_status": 200,
+  "expected_content_type": "text/event-stream",
+  "expected_contains": ["chat.completion.chunk", "\"finish_reason\":\"stop\""],
+  "expected_absent": ["data: [DONE]"],
+  "notes": "Valid OpenAI-compatible chunks followed by clean EOF without the terminal [DONE] event."
+}

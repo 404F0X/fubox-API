@@ -1,0 +1,24 @@
+{
+  "name": "mcp_provider_jsonrpc_error",
+  "response": {
+    "status": 200,
+    "body": {
+      "jsonrpc": "2.0",
+      "id": "tool-call-error-1",
+      "error": {
+        "code": -32602,
+        "message": "Fixture tool arguments were invalid."
+      }
+    }
+  },
+  "expected_error_mapping": {
+    "http_status": 502,
+    "error_type": "provider_error",
+    "code": "provider_jsonrpc_error",
+    "message": "upstream MCP server returned JSON-RPC error",
+    "owner": "provider",
+    "stage": "provider_call",
+    "retryable": true,
+    "signal": null
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "gemini_invalid_request_missing_contents",
+  "request": {
+    "model": "gemini-1.5-flash"
+  },
+  "expected_error_mapping": {
+    "http_status": 400,
+    "error_type": "invalid_request_error",
+    "code": "invalid_request",
+    "param": "contents",
+    "owner": "client",
+    "stage": "request_validate",
+    "retryable": false
+  }
+}

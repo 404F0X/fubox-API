@@ -1,0 +1,20 @@
+{
+  "scenario": "timeout",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=timeout",
+  "selectors": {
+    "query": "/v1/chat/completions?scenario=timeout",
+    "header": {
+      "path": "/v1/chat/completions",
+      "headers": {
+        "X-Mock-Scenario": "timeout"
+      }
+    },
+    "endpoint": "/__scenario/timeout/v1/chat/completions",
+    "body": {
+      "mock_scenario": "timeout"
+    }
+  },
+  "expected_status": "timeout",
+  "notes": "Slow first byte scenario; test harness should enforce timeout."
+}

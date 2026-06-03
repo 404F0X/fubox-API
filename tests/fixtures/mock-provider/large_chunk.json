@@ -1,0 +1,13 @@
+{
+  "scenario": "large_chunk",
+  "method": "POST",
+  "path": "/v1/chat/completions?scenario=large_chunk",
+  "body": {
+    "stream": true
+  },
+  "expected_status": 200,
+  "expected_content_type": "text/event-stream",
+  "min_chunk_bytes": 71680,
+  "expected_terminal_event": "data: [DONE]",
+  "notes": "SSE event larger than 64KB for stream parser conformance."
+}

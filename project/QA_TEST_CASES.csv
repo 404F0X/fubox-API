@@ -1,0 +1,11 @@
+Case ID,Category,Scenario,Steps,Expected,Priority
+QA-001,Protocol,OpenAI chat non-stream,OpenAI SDK 调用 /v1/chat/completions,200 且返回兼容格式,P0
+QA-002,Protocol,OpenAI chat stream,stream=true,收到增量和 [DONE],P0
+QA-003,Routing,主渠道 500 fallback,mock 主渠道返回 500,备份渠道成功，trace 记录 fallback,P0
+QA-004,Routing,429 cooldown,mock 返回 429 Retry-After,key 进入 cooldown，期间不选择,P0
+QA-005,Streaming,首 chunk 前 timeout,mock 延迟首字节超时,fallback 成功,P0
+QA-006,Streaming,partial 后 EOF,mock 输出 chunk 后断开,不 fallback，partial_sent=true,P0
+QA-007,Billing,余额不足,设置 budget=0 调用,不调用上游，返回 billing_insufficient_balance,P0
+QA-008,Billing,重复 settle,重放 settle 事件,不重复扣费,P0
+QA-009,Security,payload policy metadata_only,发送敏感 prompt,DB/object store 不保存完整 prompt,P0
+QA-010,Migration,New API dry-run,导入样例配置,生成映射报告，无数据落库,P0

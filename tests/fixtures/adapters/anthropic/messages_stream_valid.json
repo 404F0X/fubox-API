@@ -1,0 +1,70 @@
+{
+  "name": "anthropic_messages_stream_valid",
+  "request": {
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 64,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Stream a short answer."
+          }
+        ]
+      }
+    ],
+    "system": "Answer briefly.",
+    "stream": true,
+    "temperature": 0.2
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "stream": true,
+    "body": {
+      "model": "claude-3-5-sonnet-20241022",
+      "max_tokens": 64,
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Stream a short answer."
+            }
+          ]
+        }
+      ],
+      "system": "Answer briefly.",
+      "stream": true,
+      "temperature": 0.2
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "msg_stream_fixture_ok",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-3-5-sonnet-20241022",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "usage": {
+        "input_tokens": 11,
+        "output_tokens": 2
+      }
+    }
+  },
+  "expected_usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 2,
+    "total_tokens": 13
+  }
+}

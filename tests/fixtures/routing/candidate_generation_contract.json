@@ -1,0 +1,366 @@
+{
+  "scenario": "routing_candidate_generation_contract",
+  "crate": "ai-gateway-routing",
+  "function": "generate_route_candidates",
+  "scenarios": [
+    {
+      "name": "profile_model_allowed_filters_tags_provider_and_runtime_state",
+      "input": {
+        "requested_model": "gpt-contract",
+        "canonical_model": {
+          "id": "model-gpt-contract",
+          "model_key": "gpt-contract",
+          "status": "Active",
+          "visibility": "Public"
+        },
+        "associations": [
+          {
+            "id": "assoc-global-no-fallback",
+            "canonical_model_id": "model-gpt-contract",
+            "target": "Global",
+            "upstream_model_name": null,
+            "priority": 3,
+            "fallback_allowed": false,
+            "status": "Enabled"
+          }
+        ],
+        "channels": [
+          {
+            "id": "channel-primary",
+            "provider_id": "provider-allowed-a",
+            "tags": ["fast"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 10,
+            "weight": 100,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          {
+            "id": "channel-denied-tag",
+            "provider_id": "provider-allowed-b",
+            "tags": ["fast", "blocked"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 20,
+            "weight": 90,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          {
+            "id": "channel-missing-tag",
+            "provider_id": "provider-allowed-c",
+            "tags": ["slow"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 30,
+            "weight": 80,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          {
+            "id": "channel-provider-denied",
+            "provider_id": "provider-denied",
+            "tags": ["fast"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 40,
+            "weight": 70,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          {
+            "id": "channel-rate-limited",
+            "provider_id": "provider-allowed-d",
+            "tags": ["fast"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 50,
+            "weight": 60,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": false
+          },
+          {
+            "id": "channel-disabled",
+            "provider_id": "provider-allowed-e",
+            "tags": ["fast"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 60,
+            "weight": 50,
+            "status": "Disabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          {
+            "id": "channel-zero-weight",
+            "provider_id": "provider-allowed-f",
+            "tags": ["fast"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 70,
+            "weight": 0,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          }
+        ],
+        "profile": {
+          "visible_model_visibilities": ["Public"],
+          "allowed_models": ["gpt-contract"],
+          "denied_models": ["gpt-withheld"],
+          "allowed_channel_tags": ["fast"],
+          "denied_channel_tags": ["blocked"],
+          "blocked_provider_ids": ["provider-denied"]
+        }
+      },
+      "expected_candidates": [
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 10,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-primary",
+            "provider_id": "provider-allowed-a",
+            "provider_model": "gpt-contract",
+            "priority": 3000010,
+            "weight": 100,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": null
+        },
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 20,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-denied-tag",
+            "provider_id": "provider-allowed-b",
+            "provider_model": "gpt-contract",
+            "priority": 3000020,
+            "weight": 90,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": "ProfileChannelTagDenied"
+        },
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 30,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-missing-tag",
+            "provider_id": "provider-allowed-c",
+            "provider_model": "gpt-contract",
+            "priority": 3000030,
+            "weight": 80,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": "ProfileChannelTagDenied"
+        },
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 40,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-provider-denied",
+            "provider_id": "provider-denied",
+            "provider_model": "gpt-contract",
+            "priority": 3000040,
+            "weight": 70,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": "ProfileProviderDenied"
+        },
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 50,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-rate-limited",
+            "provider_id": "provider-allowed-d",
+            "provider_model": "gpt-contract",
+            "priority": 3000050,
+            "weight": 60,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": false
+          },
+          "filter_reason": "RateLimitExceeded"
+        },
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 60,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-disabled",
+            "provider_id": "provider-allowed-e",
+            "provider_model": "gpt-contract",
+            "priority": 3000060,
+            "weight": 50,
+            "status": "Disabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": "Disabled"
+        },
+        {
+          "association_id": "assoc-global-no-fallback",
+          "association_type": "Global",
+          "association_priority": 3,
+          "channel_priority": 70,
+          "fallback_allowed": false,
+          "candidate": {
+            "channel_id": "channel-zero-weight",
+            "provider_id": "provider-allowed-f",
+            "provider_model": "gpt-contract",
+            "priority": 3000070,
+            "weight": 0,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": "ZeroWeight"
+        }
+      ],
+      "expected_selectable_channel_ids": ["channel-primary"]
+    },
+    {
+      "name": "profile_model_denylist_filters_matching_model",
+      "input": {
+        "requested_model": "gpt-denied",
+        "canonical_model": {
+          "id": "model-gpt-denied",
+          "model_key": "gpt-denied",
+          "status": "Active",
+          "visibility": "Public"
+        },
+        "associations": [
+          {
+            "id": "assoc-global",
+            "canonical_model_id": "model-gpt-denied",
+            "target": "Global",
+            "upstream_model_name": null,
+            "priority": 1,
+            "fallback_allowed": true,
+            "status": "Enabled"
+          }
+        ],
+        "channels": [
+          {
+            "id": "channel-model-denied",
+            "provider_id": "provider-allowed-a",
+            "tags": ["fast"],
+            "model_mapping_policy": {
+              "explicit_mappings": [],
+              "trim_prefixes": [],
+              "case_policy": "Preserve"
+            },
+            "priority": 5,
+            "weight": 100,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          }
+        ],
+        "profile": {
+          "visible_model_visibilities": ["Public"],
+          "allowed_models": ["gpt-denied"],
+          "denied_models": ["gpt-denied"],
+          "allowed_channel_tags": ["fast"],
+          "denied_channel_tags": [],
+          "blocked_provider_ids": []
+        }
+      },
+      "expected_candidates": [
+        {
+          "association_id": "assoc-global",
+          "association_type": "Global",
+          "association_priority": 1,
+          "channel_priority": 5,
+          "fallback_allowed": true,
+          "candidate": {
+            "channel_id": "channel-model-denied",
+            "provider_id": "provider-allowed-a",
+            "provider_model": "gpt-denied",
+            "priority": 1000005,
+            "weight": 100,
+            "status": "Enabled",
+            "health": "Healthy",
+            "rate_limit_available": true
+          },
+          "filter_reason": "ProfileModelDenied"
+        }
+      ],
+      "expected_selectable_channel_ids": []
+    }
+  ],
+  "response_contract": {
+    "candidate_required_fields": [
+      "association_id",
+      "association_type",
+      "association_priority",
+      "channel_priority",
+      "fallback_allowed",
+      "candidate.channel_id",
+      "candidate.provider_id",
+      "candidate.provider_model",
+      "candidate.priority",
+      "candidate.weight",
+      "candidate.status",
+      "candidate.health",
+      "candidate.rate_limit_available",
+      "filter_reason"
+    ],
+    "credential_material_omitted": true
+  },
+  "notes": [
+    "Pure function contract.",
+    "No storage handle or upstream runtime input is part of this fixture."
+  ]
+}

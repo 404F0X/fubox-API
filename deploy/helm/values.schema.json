@@ -1,0 +1,580 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "type": "object",
+  "required": [
+    "global",
+    "database",
+    "redis",
+    "application",
+    "ingress",
+    "services"
+  ],
+  "properties": {
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "global": {
+      "type": "object",
+      "properties": {
+        "imageRegistry": {
+          "type": "string"
+        },
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "commonLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "commonEnv": {
+          "$ref": "#/definitions/frontendSafeEnv"
+        },
+        "automountServiceAccountToken": {
+          "type": "boolean"
+        },
+        "podSecurityContext": {
+          "$ref": "#/definitions/podSecurityContext"
+        },
+        "securityContext": {
+          "$ref": "#/definitions/securityContext"
+        },
+        "config": {
+          "$ref": "#/definitions/runtimeConfig"
+        }
+      },
+      "additionalProperties": true
+    },
+    "database": {
+      "$ref": "#/definitions/secretOwner"
+    },
+    "redis": {
+      "$ref": "#/definitions/secretOwner"
+    },
+    "application": {
+      "$ref": "#/definitions/secretOwner"
+    },
+    "ingress": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "hosts"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "hosts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "host",
+              "paths"
+            ],
+            "properties": {
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "paths": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "path",
+                    "service"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "pattern": "^/"
+                    },
+                    "pathType": {
+                      "type": "string",
+                      "enum": [
+                        "ImplementationSpecific",
+                        "Exact",
+                        "Prefix"
+                      ]
+                    },
+                    "service": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+      },
+      "properties": {
+        "admin-ui": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/service"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "applicationSecretRef": {
+                  "enum": [
+                    false
+                  ]
+                },
+                "databaseSecretRef": {
+                  "enum": [
+                    false
+                  ]
+                },
+                "redisSecretRef": {
+                  "enum": [
+                    false
+                  ]
+                },
+                "env": {
+                  "$ref": "#/definitions/frontendSafeEnv"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/service"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "kubernetesName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "frontendSafeEnv": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/env"
+        },
+        {
+          "propertyNames": {
+            "not": {
+              "anyOf": [
+                {
+                  "pattern": "^(VITE_|REACT_APP_|NEXT_PUBLIC_)"
+                },
+                {
+                  "pattern": "(^|_)(SECRET|TOKEN|PASSWORD|CREDENTIAL|API_KEY|PRIVATE_KEY|KEY)($|_)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "secretOwner": {
+      "type": "object",
+      "required": [
+        "secretRef"
+      ],
+      "properties": {
+        "secretRef": {
+          "$ref": "#/definitions/secretRef"
+        }
+      },
+      "additionalProperties": false
+    },
+    "secretRef": {
+      "type": "object",
+      "required": [
+        "name",
+        "optional"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/kubernetesName"
+        },
+        "optional": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "repository",
+        "tag",
+        "pullPolicy"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "servicePort": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        {
+          "type": "string",
+          "minLength": 1
+        }
+      ]
+    },
+    "serviceSpec": {
+      "type": "object",
+      "required": [
+        "type",
+        "port",
+        "targetPort"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer",
+            "ExternalName"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "targetPort": {
+          "$ref": "#/definitions/servicePort"
+        }
+      },
+      "additionalProperties": true
+    },
+    "resourceSet": {
+      "type": "object",
+      "required": [
+        "cpu",
+        "memory"
+      ],
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "minLength": 1
+        },
+        "memory": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "resources": {
+      "type": "object",
+      "required": [
+        "requests",
+        "limits"
+      ],
+      "properties": {
+        "requests": {
+          "$ref": "#/definitions/resourceSet"
+        },
+        "limits": {
+          "$ref": "#/definitions/resourceSet"
+        }
+      },
+      "additionalProperties": true
+    },
+    "probe": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "path"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "probes": {
+      "type": "object",
+      "required": [
+        "liveness",
+        "readiness"
+      ],
+      "properties": {
+        "liveness": {
+          "$ref": "#/definitions/probe"
+        },
+        "readiness": {
+          "$ref": "#/definitions/probe"
+        }
+      },
+      "additionalProperties": false
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "properties": {
+        "seccompProfile": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "RuntimeDefault",
+                "Localhost",
+                "Unconfined"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "securityContext": {
+      "type": "object",
+      "properties": {
+        "allowPrivilegeEscalation": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "drop": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "readOnlyRootFilesystem": {
+          "type": "boolean"
+        },
+        "runAsNonRoot": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "runtimeConfig": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "name",
+        "fileName",
+        "mountPath",
+        "content"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "$ref": "#/definitions/kubernetesName"
+        },
+        "fileName": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "mountPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "service": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "replicas",
+        "image",
+        "containerPort",
+        "service",
+        "applicationSecretRef",
+        "databaseSecretRef",
+        "redisSecretRef",
+        "configMapRef",
+        "env",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "$ref": "#/definitions/image"
+        },
+        "containerPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "service": {
+          "$ref": "#/definitions/serviceSpec"
+        },
+        "applicationSecretRef": {
+          "type": "boolean"
+        },
+        "databaseSecretRef": {
+          "type": "boolean"
+        },
+        "redisSecretRef": {
+          "type": "boolean"
+        },
+        "configMapRef": {
+          "type": "boolean"
+        },
+        "env": {
+          "$ref": "#/definitions/env"
+        },
+        "extraEnvFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "probes": {
+          "$ref": "#/definitions/probes"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podSecurityContext": {
+          "$ref": "#/definitions/podSecurityContext"
+        },
+        "securityContext": {
+          "$ref": "#/definitions/securityContext"
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

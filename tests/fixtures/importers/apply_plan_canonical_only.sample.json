@@ -1,0 +1,76 @@
+{
+  "importer": "internal-mapping-report-dryrun",
+  "dry_run": true,
+  "generated_at": "2026-06-03T00:00:00Z",
+  "input_files": [
+    "tests/fixtures/importers/apply_plan_canonical_only.sample.json"
+  ],
+  "source_reports": [
+    {
+      "input_file": "tests/fixtures/importers/apply_plan_canonical_only.sample.json",
+      "importer": "fixture-internal-mapping-report",
+      "dry_run": true,
+      "counts": {
+        "providers": 0,
+        "channels": 0,
+        "provider_keys": 0,
+        "models": 1,
+        "associations": 0,
+        "warnings": 0,
+        "unsupported_fields": 0
+      }
+    }
+  ],
+  "counts": {
+    "input_reports": 1,
+    "source_providers": 0,
+    "source_channels": 0,
+    "source_provider_keys": 0,
+    "source_models": 1,
+    "source_associations": 0,
+    "canonical_models": 1,
+    "model_associations": 0,
+    "channel_mappings": 0,
+    "channel_mapping_entries": 0,
+    "conflicts": 0,
+    "manual_review_items": 0
+  },
+  "canonical_models": [
+    {
+      "model_key": "fixture-gpt-4o",
+      "display_name": "Fixture GPT-4o",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "tool"
+      ],
+      "capability_flags": {
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": false,
+        "supports_audio": false,
+        "supports_reasoning": false
+      },
+      "context_length": 128000,
+      "max_output_tokens": 4096,
+      "default_price_book_id": null,
+      "visibility": "internal",
+      "status": "active",
+      "source_aliases": [],
+      "source_reports": [
+        "apply_plan_canonical_only.sample.json:fixture-internal-mapping-report"
+      ],
+      "source_reasons": [
+        "fixture_canonical_only"
+      ],
+      "planned_action": "upsert"
+    }
+  ],
+  "model_associations": [],
+  "channel_mappings": [],
+  "conflicts": [],
+  "manual_review_items": [],
+  "next_steps": [
+    "Use this fixture to verify the first PostgreSQL SQL-plan executor slice."
+  ]
+}

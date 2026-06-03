@@ -1,0 +1,112 @@
+{
+  "contract": "otel_exporter_config_noop_v1",
+  "sdk_pipeline_enabled": false,
+  "network_requests": "never",
+  "exporters": [
+    {
+      "name": "disabled",
+      "env": {
+        "AI_GATEWAY_OTEL_EXPORTER": "disabled",
+        "AI_GATEWAY_OTEL_ENDPOINT": "https://collector.example.com:4318/v1/traces",
+        "OTEL_SERVICE_NAME": "Gateway Prod"
+      },
+      "expected": {
+        "exporter": "disabled",
+        "enabled": false,
+        "service_name": "Gateway-Prod",
+        "endpoint": null,
+        "sdk_pipeline_enabled": false
+      }
+    },
+    {
+      "name": "stdout",
+      "env": {
+        "OTEL_TRACES_EXPORTER": "console",
+        "OTEL_SERVICE_NAME": "gateway stdout"
+      },
+      "expected": {
+        "exporter": "stdout",
+        "enabled": true,
+        "service_name": "gateway-stdout",
+        "endpoint": null,
+        "sdk_pipeline_enabled": false
+      }
+    },
+    {
+      "name": "otlp",
+      "env": {
+        "AI_GATEWAY_OTEL_EXPORTER": "otlp",
+        "AI_GATEWAY_OTEL_ENDPOINT": "https://collector.example.com:4318/v1/traces",
+        "OTEL_SERVICE_NAME": "gateway",
+        "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=prod,api.token=sk-live-secret,tenant.id=public-tenant",
+        "AI_GATEWAY_OTEL_RESOURCE_ATTRIBUTES": "service.version=2026.06.03"
+      },
+      "expected": {
+        "exporter": "otlp",
+        "enabled": true,
+        "service_name": "gateway",
+        "endpoint": "https://collector.example.com:4318/v1/traces",
+        "sdk_pipeline_enabled": false,
+        "resource_attributes": {
+          "api.token": "[REDACTED]",
+          "deployment.environment": "prod",
+          "service.name": "gateway",
+          "service.version": "2026.06.03",
+          "tenant.id": "public-tenant"
+        }
+      }
+    }
+  ],
+  "errors": [
+    {
+      "name": "secret_userinfo_endpoint",
+      "env": {
+        "AI_GATEWAY_OTEL_EXPORTER": "otlp",
+        "AI_GATEWAY_OTEL_ENDPOINT": "https://alice:plain-password@collector.example.com:4318/v1/traces"
+      },
+      "expected_error_contains": [
+        "[REDACTED]",
+        "collector.example.com",
+        "must not contain user information"
+      ],
+      "expected_error_excludes": [
+        "alice",
+        "plain-password"
+      ]
+    },
+    {
+      "name": "query_secret_endpoint",
+      "env": {
+        "AI_GATEWAY_OTEL_EXPORTER": "otlp",
+        "AI_GATEWAY_OTEL_ENDPOINT": "https://collector.example.com:4318/v1/traces?api_key=sk-live-secret"
+      },
+      "expected_error_contains": [
+        "https://collector.example.com:4318/v1/traces",
+        "must not contain query strings or fragments"
+      ],
+      "expected_error_excludes": [
+        "api_key",
+        "sk-live-secret"
+      ]
+    },
+    {
+      "name": "secret_like_exporter",
+      "env": {
+        "AI_GATEWAY_OTEL_EXPORTER": "sk-live-secret"
+      },
+      "expected_error_contains": [
+        "[REDACTED]",
+        "expected disabled, stdout, or otlp"
+      ],
+      "expected_error_excludes": [
+        "sk-live-secret"
+      ]
+    }
+  ],
+  "boundary": [
+    "Parsing supports disabled, stdout, and otlp endpoint shapes.",
+    "Endpoint validation accepts only http/https URLs without userinfo, query strings, fragments, whitespace, or invalid ports.",
+    "Resource attributes are sanitized before init and secret-like values are redacted.",
+    "init_otel_exporter is a no-op handle today: it does not install an OpenTelemetry SDK provider, emit stdout records, build an OTLP pipeline, or send network requests."
+  ]
+}

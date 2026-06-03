@@ -1,0 +1,9 @@
+{
+  "scenario": "models",
+  "method": "GET",
+  "path": "/v1/models",
+  "expected_status": 200,
+  "expected_object": "list",
+  "expected_model": "mock-gpt-4o-mini",
+  "notes": "OpenAI-compatible model list for adapter discovery and smoke verification."
+}

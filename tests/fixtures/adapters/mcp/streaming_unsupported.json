@@ -1,0 +1,24 @@
+{
+  "name": "mcp_streaming_unsupported",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "stream-1",
+    "method": "tools/list",
+    "params": {
+      "_meta": {
+        "gateway_stream": true
+      }
+    }
+  },
+  "expected_error_mapping": {
+    "http_status": 501,
+    "error_type": "invalid_request_error",
+    "code": "mcp_streaming_unsupported",
+    "message": "MCP streaming is reserved for a future adapter contract",
+    "param": "params._meta.gateway_stream",
+    "owner": "gateway",
+    "stage": "request_validate",
+    "retryable": false,
+    "signal": null
+  }
+}

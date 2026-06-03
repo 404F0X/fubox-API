@@ -1,0 +1,253 @@
+{
+  "importer": "newapi-openai-compatible-dryrun",
+  "dry_run": true,
+  "generated_at": "2026-06-02T00:00:00Z",
+  "input_files": [
+    "examples/importer_samples/new_api_openai_compatible.sample.json"
+  ],
+  "counts": {
+    "providers": 2,
+    "channels": 2,
+    "provider_keys": 3,
+    "models": 3,
+    "associations": 7,
+    "warnings": 1,
+    "unsupported_fields": 1
+  },
+  "providers": [
+    {
+      "source_id": "new-api:provider:openai",
+      "code": "openai",
+      "display_name": "OpenAI compatible",
+      "kind": "openai-compatible",
+      "base_url": "https://api.openai.example/v1",
+      "default_protocol": "openai_compatible",
+      "input_file": "new_api_openai_compatible.sample.json"
+    },
+    {
+      "source_id": "new-api:provider:azure-openai",
+      "code": "azure-openai",
+      "display_name": "Azure OpenAI compatible",
+      "kind": "openai-compatible",
+      "base_url": "https://example-resource.openai.azure.com/openai/deployments",
+      "default_protocol": "openai_compatible",
+      "input_file": "new_api_openai_compatible.sample.json"
+    }
+  ],
+  "channels": [
+    {
+      "source_id": "new-api:channel:101",
+      "provider_code": "openai",
+      "name": "openai-primary",
+      "endpoint": "https://api.openai.example/v1",
+      "protocol_mode": "openai_compatible",
+      "weight": 100,
+      "priority": 10,
+      "tags": [
+        "default",
+        "paid"
+      ],
+      "status": "enabled",
+      "model_mappings": [
+        {
+          "client_model": "gpt-4o",
+          "upstream_model": "gpt-4o-2024-08-06"
+        },
+        {
+          "client_model": "gpt-4o-mini",
+          "upstream_model": "gpt-4o-mini"
+        }
+      ]
+    },
+    {
+      "source_id": "new-api:channel:102",
+      "provider_code": "azure-openai",
+      "name": "azure-eastus",
+      "endpoint": "https://example-resource.openai.azure.com/openai/deployments",
+      "protocol_mode": "openai_compatible",
+      "weight": 50,
+      "priority": 20,
+      "tags": [
+        "paid",
+        "enterprise"
+      ],
+      "status": "enabled",
+      "model_mappings": [
+        {
+          "client_model": "gpt-4o-mini",
+          "upstream_model": "gpt-4o-mini-eastus"
+        },
+        {
+          "client_model": "text-embedding-3-small",
+          "upstream_model": "embedding-small-eastus"
+        }
+      ]
+    }
+  ],
+  "provider_keys": [
+    {
+      "channel_source_id": "new-api:channel:101",
+      "alias": "openai-prod-main",
+      "has_secret": true
+    },
+    {
+      "channel_source_id": "new-api:channel:102",
+      "alias": "azure-eastus-primary",
+      "has_secret": true
+    },
+    {
+      "channel_source_id": "new-api:channel:102",
+      "alias": "azure-eastus-secondary-placeholder",
+      "has_secret": true
+    }
+  ],
+  "models": [
+    {
+      "model_key": "gpt-4o",
+      "display_name": "GPT-4o",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "vision",
+        "tool"
+      ],
+      "status": "active",
+      "source_aliases": [
+        "chatgpt-4o-latest"
+      ]
+    },
+    {
+      "model_key": "gpt-4o-mini",
+      "display_name": "GPT-4o mini",
+      "family": "gpt-4o",
+      "capabilities": [
+        "text",
+        "tool"
+      ],
+      "status": "active",
+      "source_aliases": [
+        "gpt-4o-mini-latest"
+      ]
+    },
+    {
+      "model_key": "text-embedding-3-small",
+      "display_name": "Text embedding 3 small",
+      "family": "embedding",
+      "capabilities": [
+        "embedding"
+      ],
+      "status": "active",
+      "source_aliases": []
+    }
+  ],
+  "associations": [
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "gpt-4o",
+      "channel_source_id": "new-api:channel:101",
+      "upstream_model_name": "gpt-4o-2024-08-06",
+      "priority": 10,
+      "weight": 100,
+      "enabled": true,
+      "conditions": {
+        "tags": [
+          "default",
+          "paid"
+        ]
+      }
+    },
+    {
+      "canonical_model_key": "gpt-4o-mini",
+      "requested_model": "gpt-4o-mini",
+      "channel_source_id": "new-api:channel:101",
+      "upstream_model_name": "gpt-4o-mini",
+      "priority": 10,
+      "weight": 100,
+      "enabled": true,
+      "conditions": {
+        "tags": [
+          "default",
+          "paid"
+        ]
+      }
+    },
+    {
+      "canonical_model_key": "gpt-4o-mini",
+      "requested_model": "gpt-4o-mini",
+      "channel_source_id": "new-api:channel:102",
+      "upstream_model_name": "gpt-4o-mini-eastus",
+      "priority": 20,
+      "weight": 50,
+      "enabled": true,
+      "conditions": {
+        "tags": [
+          "paid",
+          "enterprise"
+        ]
+      }
+    },
+    {
+      "canonical_model_key": "text-embedding-3-small",
+      "requested_model": "text-embedding-3-small",
+      "channel_source_id": "new-api:channel:102",
+      "upstream_model_name": "embedding-small-eastus",
+      "priority": 20,
+      "weight": 50,
+      "enabled": true,
+      "conditions": {
+        "tags": [
+          "paid",
+          "enterprise"
+        ]
+      }
+    },
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "chatgpt-4o-latest",
+      "channel_source_id": "new-api:channel:101",
+      "upstream_model_name": "gpt-4o-2024-08-06",
+      "priority": 5,
+      "weight": 100,
+      "enabled": true,
+      "conditions": {}
+    },
+    {
+      "canonical_model_key": "gpt-4o-mini",
+      "requested_model": "chatgpt-4o-latest",
+      "channel_source_id": "new-api:channel:102",
+      "upstream_model_name": "gpt-4o-mini-eastus",
+      "priority": 30,
+      "weight": 50,
+      "enabled": true,
+      "conditions": {
+        "tags": [
+          "enterprise"
+        ]
+      }
+    },
+    {
+      "canonical_model_key": "gpt-4o",
+      "requested_model": "legacy-gpt-4o",
+      "channel_source_id": "new-api:channel:999",
+      "upstream_model_name": "gpt-4o-legacy",
+      "priority": 40,
+      "weight": 10,
+      "enabled": true,
+      "conditions": {}
+    }
+  ],
+  "warnings": [
+    "Pricing data is not present in this dry-run report."
+  ],
+  "unsupported_fields": [
+    {
+      "input_file": "new_api_openai_compatible.sample.json",
+      "path": "$.channels[1]",
+      "field": "legacy_quota_strategy"
+    }
+  ],
+  "next_steps": [
+    "Review warnings and duplicate names before implementing apply.",
+    "Apply/write-to-database is intentionally not implemented in this prototype."
+  ]
+}

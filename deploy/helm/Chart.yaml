@@ -1,0 +1,6 @@
+apiVersion: v2
+name: fubox-api
+description: Minimal Helm chart for Fubox API gateway, control plane, admin UI, and mock provider.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

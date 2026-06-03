@@ -1,0 +1,34 @@
+{
+  "scenario": "gateway_routing_smoke",
+  "base_path": "/v1",
+  "baseline_checks": [
+    {
+      "name": "models_list",
+      "request": "GET /v1/models",
+      "expected": "HTTP 200 with object=list and data[].id containing mock-gpt-4o-mini"
+    },
+    {
+      "name": "chat_request_and_attempt_logging",
+      "request": "POST /v1/chat/completions",
+      "expected": "HTTP 200 chat.completion plus request_logs/provider_attempts rows located by request_body_hash"
+    }
+  ],
+  "strict_routing_checks": [
+    {
+      "name": "resolved_ids",
+      "expected": [
+        "request_logs.canonical_model_id is populated",
+        "request_logs.resolved_provider_id is populated",
+        "request_logs.resolved_channel_id is populated",
+        "provider_attempts.provider_id is populated",
+        "provider_attempts.channel_id is populated"
+      ]
+    },
+    {
+      "name": "missing_route",
+      "request": "POST /v1/chat/completions with an unknown model",
+      "expected": "HTTP 404 with route/model not_found error semantics before provider forwarding"
+    }
+  ],
+  "notes": "scripts/verify_gateway_routing_smoke.ps1 reports strict_routing_checks as PENDING by default when routing is not wired. Run with -StrictGatewayRouting after full routing is implemented."
+}

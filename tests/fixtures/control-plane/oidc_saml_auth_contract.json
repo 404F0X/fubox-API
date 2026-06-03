@@ -1,0 +1,127 @@
+{
+  "scenario": "control_plane_oidc_saml_auth_contract",
+  "source": "apps/control-plane/src/auth.rs",
+  "openapi": "examples/openapi_admin_skeleton.yaml",
+  "default_deny": true,
+  "secret_safe": true,
+  "output_must_not_echo": [
+    "provider authorization code",
+    "id token value",
+    "access token value",
+    "refresh token value",
+    "SAMLResponse value",
+    "assertion value",
+    "claim values",
+    "metadata XML body",
+    "Authorization header"
+  ],
+  "oidc": {
+    "mapping": {
+      "role_claim_names": ["roles", "realm_access.roles"],
+      "group_claim_names": ["groups"],
+      "allowed_issuers": ["https://issuer.example.com"],
+      "allowed_audiences": ["ai-gateway-admin"],
+      "allowed_email_domains": ["example.com"],
+      "role_value_mapping": {
+        "control-plane-admin": "admin",
+        "control-plane-ops": "ops"
+      },
+      "group_value_mapping": {
+        "ai-gateway-viewers": "viewer",
+        "ai-gateway-billing": "billing"
+      }
+    },
+    "accepted_server_verified_claims": {
+      "source": "server_verified_oidc_id_token",
+      "issuer": "https://issuer.example.com",
+      "audiences": ["ai-gateway-admin"],
+      "email": "admin@example.com",
+      "role_claim_values": ["control-plane-ops"],
+      "group_claim_values": ["ai-gateway-viewers"],
+      "expected_accepted": true,
+      "expected_mapped_roles": ["ops", "viewer"]
+    },
+    "direct_client_submission": {
+      "source": "client_submitted_callback",
+      "contains_direct_claim_fields": ["roles", "groups", "id_token", "access_token"],
+      "expected_accepted": false,
+      "expected_denied_reason": "client_submitted_claims_not_accepted"
+    },
+    "trust_checks": {
+      "requires_server_verified_claims": true,
+      "issuer_allowlist_configured": true,
+      "audience_allowlist_configured": true,
+      "email_domain_allowlist_configured": true,
+      "direct_client_claims_allowed": false,
+      "token_exchange_implemented": false,
+      "jwks_id_token_validation_implemented": false,
+      "session_creation_implemented": false
+    },
+    "remaining_gaps": [
+      "server_side_state_nonce_persistence",
+      "authorization_code_exchange",
+      "id_token_jwks_signature_validation",
+      "user_identity_binding_lookup",
+      "session_creation_after_verified_claims"
+    ]
+  },
+  "saml": {
+    "mapping": {
+      "role_claim_names": ["Role", "memberOf"],
+      "group_claim_names": ["groups", "memberOf"],
+      "allowed_issuers": ["https://idp.example.com/saml"],
+      "allowed_audiences": ["ai-gateway-admin-saml"],
+      "allowed_email_domains": ["example.com"],
+      "role_value_mapping": {
+        "saml-admin": "admin",
+        "saml-ops": "ops"
+      },
+      "group_value_mapping": {
+        "finance-team": "billing",
+        "read-only-team": "viewer"
+      }
+    },
+    "accepted_server_verified_claims": {
+      "source": "server_verified_saml_assertion",
+      "issuer": "https://idp.example.com/saml",
+      "audiences": ["ai-gateway-admin-saml"],
+      "email": "billing-admin@example.com",
+      "role_claim_values": ["saml-admin"],
+      "group_claim_values": ["finance-team"],
+      "expected_accepted": true,
+      "expected_mapped_roles": ["admin", "billing"]
+    },
+    "metadata_url": {
+      "input": "https://idp.example.com/metadata",
+      "expected_source": "url",
+      "expected_origin": "https://idp.example.com",
+      "network_fetch_implemented": false,
+      "xml_signature_validation_implemented": false
+    },
+    "metadata_xml": {
+      "input": "<md:EntityDescriptor entityID=\"https://idp.example.com/saml\"><md:IDPSSODescriptor><md:KeyDescriptor><ds:X509Certificate>MIID-public-cert-placeholder</ds:X509Certificate></md:KeyDescriptor><md:SingleSignOnService Binding=\"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect\" Location=\"https://idp.example.com/sso\"/></md:IDPSSODescriptor></md:EntityDescriptor>",
+      "expected_source": "xml",
+      "entity_descriptor_present": true,
+      "idp_sso_descriptor_present": true,
+      "single_sign_on_service_count": 1,
+      "x509_certificate_count": 1,
+      "xml_body_returned": false
+    },
+    "trust_checks": {
+      "requires_server_verified_claims": true,
+      "issuer_allowlist_configured": true,
+      "audience_allowlist_configured": true,
+      "email_domain_allowlist_configured": true,
+      "direct_client_claims_allowed": false,
+      "xml_signature_validation_implemented": false,
+      "session_creation_implemented": false
+    },
+    "remaining_gaps": [
+      "saml_xml_signature_validation",
+      "saml_assertion_decryption_if_needed",
+      "saml_response_binding_validation",
+      "user_identity_binding_lookup",
+      "session_creation_after_verified_assertion"
+    ]
+  }
+}

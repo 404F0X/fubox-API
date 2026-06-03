@@ -1,0 +1,94 @@
+{
+  "name": "gemini_generate_content_non_stream_valid",
+  "request": {
+    "model": "gemini-1.5-flash",
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Say hello."
+          }
+        ]
+      }
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Answer briefly."
+        }
+      ]
+    },
+    "generationConfig": {
+      "temperature": 0.2
+    },
+    "labels": {
+      "trace": "fixture"
+    },
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1beta/models/gemini-1.5-flash:generateContent",
+    "stream": false,
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Say hello."
+            }
+          ]
+        }
+      ],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Answer briefly."
+          }
+        ]
+      },
+      "generationConfig": {
+        "temperature": 0.2
+      },
+      "labels": {
+        "trace": "fixture"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Hello."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 12,
+        "candidatesTokenCount": 3,
+        "totalTokenCount": 15
+      },
+      "modelVersion": "gemini-1.5-flash"
+    }
+  },
+  "expected_finish_reason_mapping": {
+    "finishReason": "STOP",
+    "finish_reason": "stop"
+  },
+  "expected_usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15
+  }
+}

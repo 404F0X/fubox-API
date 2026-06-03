@@ -1,0 +1,27 @@
+{
+  "name": "anthropic_provider_5xx",
+  "response": {
+    "status": 529,
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "overloaded_error",
+        "message": "Provider overloaded."
+      }
+    }
+  },
+  "expected_error_mapping": {
+    "http_status": 529,
+    "error_type": "provider_error",
+    "code": "provider_5xx",
+    "message": "upstream provider returned HTTP 529",
+    "owner": "provider",
+    "stage": "provider_call",
+    "retryable": true,
+    "signal": {
+      "status_code": 529,
+      "transport": null,
+      "retry_after_ms": null
+    }
+  }
+}

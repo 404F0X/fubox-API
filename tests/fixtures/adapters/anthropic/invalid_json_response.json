@@ -1,0 +1,16 @@
+{
+  "name": "anthropic_invalid_json_response",
+  "response": {
+    "status": 200,
+    "body": "not-json"
+  },
+  "expected_error_mapping": {
+    "http_status": 502,
+    "error_type": "provider_error",
+    "code": "provider_invalid_json",
+    "owner": "parser",
+    "stage": "response_transform",
+    "retryable": true,
+    "signal": null
+  }
+}

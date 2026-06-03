@@ -1,0 +1,409 @@
+{
+  "contract": "billing_ledger_exact_cache_v1",
+  "cases": [
+    {
+      "name": "cache_hit_discounted_input_tokens_settle_apply",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000101",
+        "cache_status": "hit",
+        "cache_key_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cache_entry_id": "00000000-0000-0000-0000-000000000201",
+        "input_tokens": 1000,
+        "output_tokens": 0,
+        "cache_read_tokens": 1000,
+        "cache_write_tokens": 0,
+        "read_policy": "discounted_input_tokens",
+        "write_policy": "disabled"
+      },
+      "existing_entries": [],
+      "expect": {
+        "cache_operation_key_shape": "exact_cache:read:{request_id}:{cache_key_hash}",
+        "ledger_key_shape": "settle:{request_id}",
+        "costs": {
+          "input_cost": "0.00000000",
+          "output_cost": "0.00000000",
+          "cache_read_cost": "0.00005000",
+          "cache_write_cost": "0.00000000",
+          "fixed_request_cost": "0.00000000",
+          "total_cost": "0.00005000"
+        },
+        "ledger": {
+          "outcome": "apply",
+          "key_shape": "settle:{request_id}",
+          "entries": [
+            {
+              "entry_type": "settle",
+              "amount": "-0.00005000",
+              "currency": "USD",
+              "status": "confirmed",
+              "metadata": {
+                "operation": "settle",
+                "request_id": "00000000-0000-0000-0000-000000000101",
+                "exact_cache": {
+                  "status": "hit",
+                  "cache_key_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "cache_entry_id": "00000000-0000-0000-0000-000000000201",
+                  "read_policy": "discounted_input_tokens",
+                  "write_policy": "disabled",
+                  "usage_summary": {
+                    "input_tokens": 1000,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 1000,
+                    "cache_write_tokens": 0
+                  }
+                }
+              }
+            }
+          ],
+          "status_updates": []
+        }
+      }
+    },
+    {
+      "name": "cache_hit_discounted_replay_is_idempotent",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000101",
+        "cache_status": "hit",
+        "cache_key_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cache_entry_id": "00000000-0000-0000-0000-000000000201",
+        "input_tokens": 1000,
+        "output_tokens": 0,
+        "cache_read_tokens": 1000,
+        "cache_write_tokens": 0,
+        "read_policy": "discounted_input_tokens",
+        "write_policy": "disabled"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000301",
+          "request_id": "00000000-0000-0000-0000-000000000101",
+          "entry_type": "settle",
+          "amount": "-0.00005000",
+          "currency": "USD",
+          "status": "confirmed",
+          "key_shape": "settle:{request_id}"
+        }
+      ],
+      "expect": {
+        "cache_operation_key_shape": "exact_cache:read:{request_id}:{cache_key_hash}",
+        "ledger_key_shape": "settle:{request_id}",
+        "costs": {
+          "input_cost": "0.00000000",
+          "output_cost": "0.00000000",
+          "cache_read_cost": "0.00005000",
+          "cache_write_cost": "0.00000000",
+          "fixed_request_cost": "0.00000000",
+          "total_cost": "0.00005000"
+        },
+        "ledger": {
+          "outcome": "idempotent",
+          "existing_entry_id": "00000000-0000-0000-0000-000000000301",
+          "key_shape": "settle:{request_id}",
+          "entries": [],
+          "status_updates": []
+        }
+      }
+    },
+    {
+      "name": "cache_hit_read_disabled_is_free",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000103",
+        "cache_status": "hit",
+        "cache_key_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "cache_entry_id": "00000000-0000-0000-0000-000000000203",
+        "input_tokens": 777,
+        "output_tokens": 0,
+        "cache_read_tokens": 777,
+        "cache_write_tokens": 0,
+        "read_policy": "disabled",
+        "write_policy": "disabled"
+      },
+      "existing_entries": [],
+      "expect": {
+        "cache_operation_key_shape": "exact_cache:read:{request_id}:{cache_key_hash}",
+        "costs": {
+          "input_cost": "0.00000000",
+          "output_cost": "0.00000000",
+          "cache_read_cost": "0.00000000",
+          "cache_write_cost": "0.00000000",
+          "fixed_request_cost": "0.00000000",
+          "total_cost": "0.00000000"
+        }
+      }
+    },
+    {
+      "name": "cache_hit_fixed_read_cost",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000106",
+        "cache_status": "hit",
+        "cache_key_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "cache_entry_id": "00000000-0000-0000-0000-000000000206",
+        "input_tokens": 900,
+        "output_tokens": 0,
+        "cache_read_tokens": 900,
+        "cache_write_tokens": 0,
+        "read_policy": "fixed_cost",
+        "write_policy": "disabled"
+      },
+      "existing_entries": [],
+      "expect": {
+        "cache_operation_key_shape": "exact_cache:read:{request_id}:{cache_key_hash}",
+        "ledger_key_shape": "settle:{request_id}",
+        "costs": {
+          "input_cost": "0.00000000",
+          "output_cost": "0.00000000",
+          "cache_read_cost": "0.00100000",
+          "cache_write_cost": "0.00000000",
+          "fixed_request_cost": "0.00000000",
+          "total_cost": "0.00100000"
+        },
+        "ledger": {
+          "outcome": "apply",
+          "key_shape": "settle:{request_id}",
+          "entries": [
+            {
+              "entry_type": "settle",
+              "amount": "-0.00100000",
+              "currency": "USD",
+              "status": "confirmed",
+              "metadata": {
+                "operation": "settle",
+                "request_id": "00000000-0000-0000-0000-000000000106",
+                "exact_cache": {
+                  "status": "hit",
+                  "cache_key_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                  "cache_entry_id": "00000000-0000-0000-0000-000000000206",
+                  "read_policy": "fixed_cost",
+                  "write_policy": "disabled",
+                  "usage_summary": {
+                    "input_tokens": 900,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 900,
+                    "cache_write_tokens": 0
+                  }
+                }
+              }
+            }
+          ],
+          "status_updates": []
+        }
+      }
+    },
+    {
+      "name": "cache_miss_standard_usage_and_cache_write_token_rate",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000102",
+        "cache_status": "miss",
+        "cache_key_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "input_tokens": 2000,
+        "output_tokens": 500,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 2500,
+        "read_policy": "disabled",
+        "write_policy": "token_rate"
+      },
+      "existing_entries": [],
+      "expect": {
+        "cache_operation_key_shape": "exact_cache:write:{request_id}:{cache_key_hash}",
+        "ledger_key_shape": "settle:{request_id}",
+        "costs": {
+          "input_cost": "0.00200000",
+          "output_cost": "0.00100000",
+          "cache_read_cost": "0.00000000",
+          "cache_write_cost": "0.00005000",
+          "fixed_request_cost": "0.00010000",
+          "total_cost": "0.00315000"
+        },
+        "ledger": {
+          "outcome": "apply",
+          "key_shape": "settle:{request_id}",
+          "entries": [
+            {
+              "entry_type": "settle",
+              "amount": "-0.00315000",
+              "currency": "USD",
+              "status": "confirmed",
+              "metadata": {
+                "operation": "settle",
+                "request_id": "00000000-0000-0000-0000-000000000102",
+                "exact_cache": {
+                  "status": "miss",
+                  "cache_key_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "read_policy": "disabled",
+                  "write_policy": "token_rate",
+                  "usage_summary": {
+                    "input_tokens": 2000,
+                    "output_tokens": 500,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 2500
+                  }
+                }
+              }
+            }
+          ],
+          "status_updates": []
+        }
+      }
+    },
+    {
+      "name": "cache_miss_fixed_write_cost",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000104",
+        "cache_status": "miss",
+        "cache_key_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "read_policy": "disabled",
+        "write_policy": "fixed_cost"
+      },
+      "existing_entries": [],
+      "expect": {
+        "cache_operation_key_shape": "exact_cache:write:{request_id}:{cache_key_hash}",
+        "ledger_key_shape": "settle:{request_id}",
+        "costs": {
+          "input_cost": "0.00000000",
+          "output_cost": "0.00000000",
+          "cache_read_cost": "0.00000000",
+          "cache_write_cost": "0.00030000",
+          "fixed_request_cost": "0.00010000",
+          "total_cost": "0.00040000"
+        },
+        "ledger": {
+          "outcome": "apply",
+          "key_shape": "settle:{request_id}",
+          "entries": [
+            {
+              "entry_type": "settle",
+              "amount": "-0.00040000",
+              "currency": "USD",
+              "status": "confirmed",
+              "metadata": {
+                "operation": "settle",
+                "request_id": "00000000-0000-0000-0000-000000000104",
+                "exact_cache": {
+                  "status": "miss",
+                  "cache_key_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                  "read_policy": "disabled",
+                  "write_policy": "fixed_cost",
+                  "usage_summary": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0
+                  }
+                }
+              }
+            }
+          ],
+          "status_updates": []
+        }
+      }
+    },
+    {
+      "name": "cache_hit_after_non_idempotent_settle_is_rejected",
+      "pricing": {
+        "currency": "USD",
+        "scale": 8,
+        "input_token_rate_per_million": "1.00000000",
+        "output_token_rate_per_million": "2.00000000",
+        "cache_read_token_rate_per_million": "0.05000000",
+        "cache_write_token_rate_per_million": "0.02000000",
+        "fixed_cache_read_cost": "0.00100000",
+        "fixed_cache_write_cost": "0.00030000",
+        "fixed_request_cost": "0.00010000"
+      },
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000101",
+        "cache_status": "hit",
+        "cache_key_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cache_entry_id": "00000000-0000-0000-0000-000000000201",
+        "input_tokens": 1000,
+        "output_tokens": 0,
+        "cache_read_tokens": 1000,
+        "cache_write_tokens": 0,
+        "read_policy": "discounted_input_tokens",
+        "write_policy": "disabled"
+      },
+      "existing_entries": [
+        {
+          "id": "00000000-0000-0000-0000-000000000302",
+          "request_id": "00000000-0000-0000-0000-000000000101",
+          "entry_type": "settle",
+          "amount": "-0.00005000",
+          "currency": "USD",
+          "status": "confirmed",
+          "key_shape": "legacy_settle"
+        }
+      ],
+      "expect_error": "request_already_settled"
+    }
+  ]
+}
