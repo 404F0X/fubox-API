@@ -11,6 +11,8 @@ import { Eye, RefreshCw, Search } from "./icons";
 type FilterState = {
   action: string;
   actor: string;
+  createdFrom: string;
+  createdTo: string;
   limit: string;
   resource: string;
 };
@@ -18,6 +20,8 @@ type FilterState = {
 const defaultFilters: FilterState = {
   action: "",
   actor: "",
+  createdFrom: "",
+  createdTo: "",
   limit: "25",
   resource: "",
 };
@@ -114,6 +118,30 @@ export function AuditLogsPage() {
                 setFilters((current) => ({ ...current, actor: value }));
               }}
               placeholder="actor user id"
+            />
+          </label>
+
+          <label className="field">
+            Created From
+            <input
+              value={filters.createdFrom}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setFilters((current) => ({ ...current, createdFrom: value }));
+              }}
+              placeholder="2026-06-03T00:00:00Z"
+            />
+          </label>
+
+          <label className="field">
+            Created To
+            <input
+              value={filters.createdTo}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setFilters((current) => ({ ...current, createdTo: value }));
+              }}
+              placeholder="2026-06-03T23:59:59Z"
             />
           </label>
 
@@ -282,6 +310,8 @@ function toListFilters(filters: FilterState): AuditLogListFilters {
   return {
     action: filters.action.trim() || undefined,
     actor_user_id: filters.actor.trim() || undefined,
+    created_from: filters.createdFrom.trim() || undefined,
+    created_to: filters.createdTo.trim() || undefined,
     limit: Number.isFinite(limit) ? limit : undefined,
     resource_type: filters.resource.trim() || undefined,
   };

@@ -41,7 +41,8 @@ pub use rate_limit::{
 pub use selection::{
     CandidateFilterReason, ChannelHealth, ChannelStatus, EvaluatedCandidate,
     ROUTE_DECISION_SNAPSHOT_VERSION, RouteCandidate, RouteCandidateScore, RouteDecision,
-    RouteDecisionSnapshot, RouteDecisionSnapshotCandidate, RouteRequest, RouteSelectionContext,
-    SelectedRoute, SelectionPolicy, TraceAffinity, TraceAffinityDecision, TraceAffinityStatus,
-    evaluate_candidates, select_route, select_route_from_evaluated, select_route_with_context,
+    RouteDecisionSnapshot, RouteDecisionSnapshotCandidate, RouteDecisionSnapshotSummary,
+    RouteRequest, RouteSelectionContext, SelectedRoute, SelectionPolicy, TraceAffinity,
+    TraceAffinityDecision, TraceAffinityStatus, evaluate_candidates, select_route,
+    select_route_from_evaluated, select_route_with_context,
 };

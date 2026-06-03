@@ -1,15 +1,18 @@
 {
   "todo": "E1-004",
-  "scope": "control-plane provider_key and price_version admin writes plus read-only audit log query API",
+  "scope": "control-plane provider, provider_key and price_version admin writes plus read-only audit log query API",
   "transaction_contract": {
     "business_and_audit_share_transaction": true,
     "paths": [
+      "POST /admin/providers",
+      "PATCH /admin/providers/{id}",
+      "DELETE /admin/providers/{id}",
       "POST /admin/provider-keys",
       "PATCH /admin/provider-keys/{id}",
       "DELETE /admin/provider-keys/{id}",
       "POST /admin/price-versions"
     ],
-    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider_key or price_version write"
+    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, provider_key or price_version write"
   },
   "metadata_contract": {
     "raw_request_body_omitted": true,
@@ -54,6 +57,38 @@
     ]
   },
   "examples": {
+    "provider_update_success_audit": {
+      "action": "provider.update",
+      "resource_type": "provider",
+      "before_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000201",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "code": "provider-a",
+        "name": "Provider A",
+        "status": "enabled",
+        "metadata_keys": [
+          "base_url",
+          "owner"
+        ]
+      },
+      "after_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000201",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "code": "provider-a",
+        "name": "Provider A",
+        "status": "disabled",
+        "metadata_keys": [
+          "base_url",
+          "owner"
+        ]
+      },
+      "metadata": {
+        "transactional_audit": true,
+        "actor_session_id": "00000000-0000-0000-0000-000000000701",
+        "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+        "source": "control_plane_admin"
+      }
+    },
     "provider_key_update_success_audit": {
       "action": "provider_key.update",
       "resource_type": "provider_key",

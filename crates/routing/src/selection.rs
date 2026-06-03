@@ -308,6 +308,20 @@ pub struct RouteDecisionSnapshot {
     pub candidates: Vec<RouteDecisionSnapshotCandidate>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteDecisionSnapshotSummary {
+    pub version: u16,
+    pub requested_model: String,
+    pub canonical_model: Option<String>,
+    pub selected_channel_id: Option<String>,
+    pub selected_provider_model: Option<String>,
+    pub candidate_count: usize,
+    pub filtered_count: usize,
+    pub filter_reasons: Vec<CandidateFilterReason>,
+    pub selected_score_total: Option<i64>,
+    pub trace_affinity_status: TraceAffinityStatus,
+}
+
 impl RouteDecisionSnapshot {
     pub fn from_decision(decision: &RouteDecision) -> Self {
         let selected_channel_id = decision.selected_channel_id.as_deref();
@@ -356,6 +370,40 @@ impl RouteDecisionSnapshot {
             selected_channel_id: decision.selected_channel_id.clone(),
             selected: decision.selected.clone(),
             candidates,
+        }
+    }
+
+    pub fn summary(&self) -> RouteDecisionSnapshotSummary {
+        let filter_reasons = self
+            .candidates
+            .iter()
+            .filter_map(|candidate| candidate.filter_reason)
+            .collect::<Vec<_>>();
+        let selected_score_total = self
+            .candidates
+            .iter()
+            .find(|candidate| candidate.selected)
+            .and_then(|candidate| candidate.score)
+            .map(|score| score.total);
+
+        RouteDecisionSnapshotSummary {
+            version: self.version,
+            requested_model: self.requested_model.clone(),
+            canonical_model: self.canonical_model.clone(),
+            selected_channel_id: self.selected_channel_id.clone(),
+            selected_provider_model: self
+                .selected
+                .as_ref()
+                .map(|selected| selected.provider_model.clone()),
+            candidate_count: self.candidates.len(),
+            filtered_count: self
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.filtered)
+                .count(),
+            filter_reasons,
+            selected_score_total,
+            trace_affinity_status: self.trace_affinity.status,
         }
     }
 }
@@ -621,7 +669,6 @@ fn score_candidate(candidate: &RouteCandidate, trace_affinity_match: bool) -> Ro
 mod tests {
     use super::*;
     use serde::Deserialize;
-    use serde_json::{Value, json};
 
     fn candidate(id: &str, priority: i32, weight: u32) -> RouteCandidate {
         RouteCandidate::new(id, "provider", "model", priority, weight)
@@ -638,7 +685,7 @@ mod tests {
         function: String,
         input: SnapshotContractInput,
         expected_snapshot: RouteDecisionSnapshot,
-        expected_snapshot_summary: Value,
+        expected_snapshot_summary: RouteDecisionSnapshotSummary,
     }
 
     #[derive(Debug, Deserialize)]
@@ -1108,10 +1155,7 @@ mod tests {
         let snapshot = decision.snapshot();
 
         assert_eq!(snapshot, fixture.expected_snapshot);
-        assert_eq!(
-            route_decision_snapshot_summary_value(&snapshot),
-            fixture.expected_snapshot_summary
-        );
+        assert_eq!(snapshot.summary(), fixture.expected_snapshot_summary);
     }
 
     #[test]
@@ -1130,34 +1174,9 @@ mod tests {
         let snapshot_json =
             serde_json::to_string(&decision.snapshot()).expect("snapshot should serialize");
         assert_no_routing_sensitive_material(&snapshot_json);
-    }
-
-    fn route_decision_snapshot_summary_value(snapshot: &RouteDecisionSnapshot) -> Value {
-        let filter_reasons = snapshot
-            .candidates
-            .iter()
-            .filter_map(|candidate| candidate.filter_reason)
-            .map(|reason| json!(reason))
-            .collect::<Vec<_>>();
-        let selected_score_total = snapshot
-            .candidates
-            .iter()
-            .find(|candidate| candidate.selected)
-            .and_then(|candidate| candidate.score)
-            .map(|score| score.total);
-
-        json!({
-            "version": snapshot.version,
-            "requested_model": &snapshot.requested_model,
-            "canonical_model": &snapshot.canonical_model,
-            "selected_channel_id": &snapshot.selected_channel_id,
-            "selected_provider_model": snapshot.selected.as_ref().map(|selected| selected.provider_model.clone()),
-            "candidate_count": snapshot.candidates.len(),
-            "filtered_count": snapshot.candidates.iter().filter(|candidate| candidate.filtered).count(),
-            "filter_reasons": filter_reasons,
-            "selected_score_total": selected_score_total,
-            "trace_affinity_status": snapshot.trace_affinity.status,
-        })
+        let summary_json = serde_json::to_string(&decision.snapshot().summary())
+            .expect("snapshot summary should serialize");
+        assert_no_routing_sensitive_material(&summary_json);
     }
 
     fn assert_no_routing_sensitive_material(value: &str) {

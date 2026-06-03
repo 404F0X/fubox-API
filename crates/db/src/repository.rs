@@ -851,6 +851,45 @@ impl DbRepository {
         provider_from_row(row).map_err(DbError::Query)
     }
 
+    pub async fn upsert_provider_with_audit<F>(
+        &self,
+        new_provider: NewProvider,
+        build_audit: F,
+    ) -> Result<Provider, DbError>
+    where
+        F: FnOnce(&Provider) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let row = sqlx::query(
+            r#"
+            insert into providers (tenant_id, code, name, status, metadata)
+            values ($1, $2, $3, $4, $5)
+            on conflict (tenant_id, code) do update
+            set name = excluded.name,
+                status = excluded.status,
+                metadata = excluded.metadata,
+                updated_at = now(),
+                deleted_at = null
+            returning id, tenant_id, code, name, status, metadata
+            "#,
+        )
+        .bind(new_provider.tenant_id)
+        .bind(new_provider.code)
+        .bind(new_provider.name)
+        .bind(new_provider.status)
+        .bind(new_provider.metadata)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let provider = provider_from_row(row).map_err(DbError::Query)?;
+        let audit = build_audit(&provider);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(provider)
+    }
+
     pub async fn get_provider(
         &self,
         tenant_id: Uuid,
@@ -924,6 +963,66 @@ impl DbRepository {
             .map_err(DbError::Query)
     }
 
+    pub async fn update_provider_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        provider_id: Uuid,
+        update: UpdateProvider,
+        build_audit: F,
+    ) -> Result<Option<Provider>, DbError>
+    where
+        F: FnOnce(&Provider, &Provider) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select id, tenant_id, code, name, status, metadata
+            from providers
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(provider_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = provider_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update providers
+            set code = $3,
+                name = $4,
+                status = $5,
+                metadata = $6,
+                updated_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning id, tenant_id, code, name, status, metadata
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(provider_id)
+        .bind(update.code)
+        .bind(update.name)
+        .bind(update.status)
+        .bind(update.metadata)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = provider_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
+    }
+
     pub async fn update_provider_status(
         &self,
         tenant_id: Uuid,
@@ -972,6 +1071,57 @@ impl DbRepository {
         row.map(provider_from_row)
             .transpose()
             .map_err(DbError::Query)
+    }
+
+    pub async fn soft_delete_provider_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        provider_id: Uuid,
+        build_audit: F,
+    ) -> Result<Option<Provider>, DbError>
+    where
+        F: FnOnce(&Provider, &Provider) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select id, tenant_id, code, name, status, metadata
+            from providers
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(provider_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = provider_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update providers
+            set status = 'deleted', updated_at = now(), deleted_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning id, tenant_id, code, name, status, metadata
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(provider_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = provider_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
     }
 
     pub async fn upsert_channel(&self, new_channel: NewChannel) -> Result<Channel, DbError> {

@@ -465,6 +465,8 @@ export type RequestTraceSummary = {
 export type AuditLogListFilters = {
   action?: string;
   actor_user_id?: string;
+  created_from?: string;
+  created_to?: string;
   limit?: number;
   resource_type?: string;
 };

@@ -296,6 +296,8 @@ describe("api client", () => {
     await listAuditLogs({
       action: "provider_key.update",
       actor_user_id: "actor-1",
+      created_from: "2026-06-03T00:00:00Z",
+      created_to: "2026-06-03T23:59:59Z",
       limit: 25,
       resource_type: "provider_key",
     });
@@ -315,7 +317,7 @@ describe("api client", () => {
       "/api/control-plane/admin/request-logs?limit=10&model=gpt-4o-mini&status=succeeded",
       "/api/control-plane/admin/request-logs/request-1",
       "/api/control-plane/admin/traces/trace-1?limit=20",
-      "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=actor-1&limit=25&resource_type=provider_key",
+      "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=actor-1&created_from=2026-06-03T00%3A00%3A00Z&created_to=2026-06-03T23%3A59%3A59Z&limit=25&resource_type=provider_key",
       "/api/control-plane/admin/provider-keys",
       "/api/control-plane/admin/provider-keys",
       "/api/control-plane/admin/provider-keys/provider-key-1",

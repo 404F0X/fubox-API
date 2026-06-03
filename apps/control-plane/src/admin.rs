@@ -624,24 +624,29 @@ async fn create_provider(
     )?;
     let repository = repo(&state);
     let provider = repository
-        .upsert_provider(NewProvider {
-            tenant_id: DEFAULT_TENANT_ID,
-            code: non_empty(request.code, "code")?,
-            name: non_empty(request.name, "name")?,
-            status: normalize_provider_status(request.status.as_deref()),
-            metadata,
-        })
+        .upsert_provider_with_audit(
+            NewProvider {
+                tenant_id: DEFAULT_TENANT_ID,
+                code: non_empty(request.code, "code")?,
+                name: non_empty(request.name, "name")?,
+                status: normalize_provider_status(request.status.as_deref()),
+                metadata,
+            },
+            |after| {
+                new_admin_audit_log(
+                    &session,
+                    "provider.create",
+                    None,
+                    after,
+                    json!({
+                        "upsert_semantics": true,
+                        "transactional_audit": true
+                    }),
+                    None,
+                )
+            },
+        )
         .await?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "provider.create",
-        None,
-        &provider,
-        json!({ "upsert_semantics": true }),
-    )
-    .await?;
 
     Ok((StatusCode::CREATED, Json(json!({ "data": provider }))).into_response())
 }
@@ -706,14 +711,13 @@ async fn patch_provider(
         .get_provider(DEFAULT_TENANT_ID, id)
         .await?
         .ok_or_else(|| AdminError::not_found("provider"))?;
-    let before = current.clone();
     let metadata = merge_provider_metadata(
         request.metadata.unwrap_or(current.metadata),
         request.provider_type,
         request.base_url,
     )?;
     let provider = repository
-        .update_provider(
+        .update_provider_with_audit(
             DEFAULT_TENANT_ID,
             id,
             UpdateProvider {
@@ -725,19 +729,19 @@ async fn patch_provider(
                     .unwrap_or(current.status),
                 metadata,
             },
+            |before, after| {
+                new_admin_audit_log(
+                    &session,
+                    "provider.update",
+                    Some(before),
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            },
         )
         .await?
         .ok_or_else(|| AdminError::not_found("provider"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "provider.update",
-        Some(&before),
-        &provider,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": provider })).into_response())
 }
@@ -748,24 +752,19 @@ async fn delete_provider(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let before = repository
-        .get_provider(DEFAULT_TENANT_ID, id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("provider"))?;
     let provider = repository
-        .soft_delete_provider(DEFAULT_TENANT_ID, id)
+        .soft_delete_provider_with_audit(DEFAULT_TENANT_ID, id, |before, after| {
+            new_admin_audit_log(
+                &session,
+                "provider.delete",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("provider"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "provider.delete",
-        Some(&before),
-        &provider,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": provider })).into_response())
 }
@@ -3104,6 +3103,22 @@ fn object_keys(value: &Value) -> Value {
     json!(keys)
 }
 
+fn audit_safe_object_keys(value: &Value) -> Value {
+    let mut keys = value
+        .as_object()
+        .map(|object| {
+            object
+                .keys()
+                .filter(|key| !is_sensitive_audit_key(key))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    keys.sort();
+
+    json!(keys)
+}
+
 fn array_len(value: &Value) -> usize {
     value.as_array().map(Vec::len).unwrap_or(0)
 }
@@ -3126,7 +3141,7 @@ impl AuditResource for Provider {
             "code": self.code,
             "name": self.name,
             "status": self.status,
-            "metadata_keys": object_keys(&self.metadata),
+            "metadata_keys": audit_safe_object_keys(&self.metadata),
         })
     }
 }
@@ -5374,6 +5389,21 @@ mod tests {
         }
     }
 
+    fn provider_fixture() -> Provider {
+        Provider {
+            id: Uuid::from_u128(201),
+            tenant_id: DEFAULT_TENANT_ID,
+            code: "provider-a".to_string(),
+            name: "Provider A".to_string(),
+            status: "enabled".to_string(),
+            metadata: json!({
+                "owner": "ops",
+                "secret_hint": "sk-live-provider-never-audit",
+                "base_url": "https://provider.example/v1"
+            }),
+        }
+    }
+
     fn virtual_key_fixture() -> VirtualKey {
         VirtualKey {
             id: Uuid::from_u128(10),
@@ -6771,6 +6801,118 @@ mod tests {
     }
 
     #[test]
+    fn provider_success_audit_shape_is_transactional_and_secret_safe() {
+        let before = provider_fixture();
+        let mut after = before.clone();
+        after.status = "disabled".to_string();
+        after.metadata = json!({
+            "owner": "ops",
+            "secret_hint": "sk-live-provider-never-audit",
+            "authorization": "Bearer never-audit"
+        });
+
+        let audit = new_admin_audit_log_from_parts(
+            Uuid::from_u128(701),
+            DEFAULT_TENANT_ID,
+            "provider.update",
+            Some(&before),
+            &after,
+            json!({
+                "transactional_audit": true,
+                "request_body": "raw body never audit",
+                "cookie": "sid=never-audit"
+            }),
+            None,
+        );
+        let serialized = serde_json::to_string(&audit).expect("audit should serialize");
+
+        assert_eq!(audit.action, "provider.update");
+        assert_eq!(audit.resource_type, "provider");
+        assert_eq!(audit.resource_id, Some(after.id));
+        assert_eq!(audit.resource_tenant_id, Some(DEFAULT_TENANT_ID));
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["status"],
+            json!("disabled")
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["metadata_keys"],
+            json!(["base_url", "owner"])
+        );
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["metadata_keys"],
+            json!(["owner"])
+        );
+        assert_eq!(audit.metadata["transactional_audit"], json!(true));
+        assert_eq!(audit.metadata["request_body"], json!("[REDACTED]"));
+        assert_eq!(audit.metadata["cookie"], json!("[REDACTED]"));
+        assert!(!serialized.contains("sk-live-provider-never-audit"));
+        assert!(!serialized.contains("secret_hint"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("Bearer never-audit"));
+        assert!(!serialized.contains("raw body never audit"));
+        assert!(!serialized.contains("sid=never-audit"));
+    }
+
+    #[test]
+    fn provider_missing_business_result_does_not_build_success_audit() {
+        fn build_success_audit_for_optional_provider(
+            provider: Option<&Provider>,
+        ) -> Option<NewAuditLog> {
+            provider.map(|after| {
+                new_admin_audit_log_from_parts(
+                    Uuid::from_u128(701),
+                    DEFAULT_TENANT_ID,
+                    "provider.update",
+                    None,
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            })
+        }
+
+        let missing = build_success_audit_for_optional_provider(None);
+        let present_provider = provider_fixture();
+        let present = build_success_audit_for_optional_provider(Some(&present_provider));
+
+        assert!(missing.is_none());
+        assert_eq!(
+            present.expect("audit should build").action,
+            "provider.update"
+        );
+    }
+
+    #[test]
+    fn provider_admin_writes_use_transactional_success_audit_helpers() {
+        let source = include_str!("admin.rs");
+        let create_section = source
+            .split("async fn create_provider")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn get_provider").next())
+            .expect("create_provider section should be present");
+        let patch_section = source
+            .split("async fn patch_provider")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn delete_provider").next())
+            .expect("patch_provider section should be present");
+        let delete_section = source
+            .split("async fn delete_provider")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn create_channel").next())
+            .expect("delete_provider section should be present");
+
+        assert!(create_section.contains(".upsert_provider_with_audit("));
+        assert!(patch_section.contains(".update_provider_with_audit("));
+        assert!(delete_section.contains(".soft_delete_provider_with_audit("));
+        assert!(create_section.contains("\"transactional_audit\": true"));
+        assert!(patch_section.contains("\"transactional_audit\": true"));
+        assert!(delete_section.contains("\"transactional_audit\": true"));
+        assert!(!create_section.contains("record_admin_audit("));
+        assert!(!patch_section.contains("record_admin_audit("));
+        assert!(!delete_section.contains("record_admin_audit("));
+    }
+
+    #[test]
     fn audit_log_contract_fixture_captures_transaction_and_safe_metadata() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/audit_log_contract.json"
@@ -6799,11 +6941,20 @@ mod tests {
         let paths = fixture["transaction_contract"]["paths"]
             .as_array()
             .expect("transaction paths should be an array");
-        assert!(
-            paths
-                .iter()
-                .any(|path| path.as_str() == Some("POST /admin/price-versions")),
-            "audit fixture should include price version create"
+        for expected in [
+            "POST /admin/providers",
+            "PATCH /admin/providers/{id}",
+            "DELETE /admin/providers/{id}",
+            "POST /admin/price-versions",
+        ] {
+            assert!(
+                paths.iter().any(|path| path.as_str() == Some(expected)),
+                "audit fixture should include transactional path {expected}"
+            );
+        }
+        assert_eq!(
+            fixture["examples"]["provider_update_success_audit"]["metadata"]["transactional_audit"],
+            json!(true)
         );
         assert_eq!(
             fixture["query_contract"]["path"],

@@ -1,0 +1,85 @@
+{
+  "scenario": "gateway_prompt_protection_runtime_contract_v1",
+  "endpoint": {
+    "name": "chat_completions",
+    "path": "POST /v1/chat/completions",
+    "streaming_supported": true,
+    "runtime_entry": "apps/gateway/src/main.rs::chat_completions"
+  },
+  "runtime_policy": {
+    "env": "AI_GATEWAY_PROMPT_PROTECTION",
+    "default": "enforce",
+    "modes": ["enforce", "audit", "disabled"],
+    "rule_matching": "bounded_no_per_request_regex"
+  },
+  "request_flow": [
+    "authenticate_virtual_key",
+    "parse_chat_completion_request",
+    "compute_request_body_hash",
+    "prompt_protection_preflight",
+    "resolve_canonical_model",
+    "select_route_candidates",
+    "create_request_started",
+    "pre_authorize_before_provider_attempt",
+    "create_provider_attempt_started",
+    "open_provider_key_for_route",
+    "upstream_call"
+  ],
+  "rejected_contract": {
+    "http_status": 400,
+    "openai_error": {
+      "code": "prompt_protection_rejected",
+      "gateway_stage": "request_preflight"
+    },
+    "request_logs": {
+      "created": true,
+      "final_status": "rejected",
+      "request_body_hash_required": true,
+      "payload_log_storage_mode": "hash_only",
+      "payload_preview_stored": false,
+      "payload_body_stored": false,
+      "route_snapshot_prompt_protection_fields": [
+        "schema",
+        "mode",
+        "action",
+        "detected_action",
+        "reason",
+        "hit_count",
+        "scopes",
+        "hit_kinds"
+      ]
+    },
+    "provider_attempts": {
+      "created": false
+    },
+    "upstream_call": {
+      "provider_key_opened": false,
+      "http_request_sent": false
+    }
+  },
+  "audit_contract": {
+    "mode": "audit",
+    "rejects": false,
+    "audit_before_provider_attempt": true,
+    "logged_fields": [
+      "request_body_hash",
+      "prompt_protection_action",
+      "prompt_protection_reason",
+      "prompt_protection_hit_count"
+    ],
+    "forbidden_logged_fields": [
+      "raw_payload",
+      "authorization",
+      "provider_key_secret",
+      "message_content",
+      "request_body"
+    ]
+  },
+  "forbidden_markers": [
+    "Ignore previous instructions",
+    "sk-live-secret",
+    "Authorization: Bearer",
+    "provider-secret-value"
+  ],
+  "notes": "Gateway chat prompt protection runs for non-stream and stream=true requests after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
+}

@@ -1626,13 +1626,15 @@ describe("App", () => {
     await user.type(screen.getByLabelText("Action"), "provider_key.update");
     await user.type(screen.getByLabelText("Resource"), "provider_key");
     await user.type(screen.getByLabelText("Actor ID"), "00000000-0000-0000-0000-000000000070");
+    await user.type(screen.getByLabelText("Created From"), "2026-06-03T00:00:00Z");
+    await user.type(screen.getByLabelText("Created To"), "2026-06-03T23:59:59Z");
     await user.clear(screen.getByLabelText("Limit"));
     await user.type(screen.getByLabelText("Limit"), "5");
     await user.click(screen.getByRole("button", { name: "Search" }));
 
     await waitFor(() =>
       expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
-        "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=00000000-0000-0000-0000-000000000070&limit=5&resource_type=provider_key",
+        "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=00000000-0000-0000-0000-000000000070&created_from=2026-06-03T00%3A00%3A00Z&created_to=2026-06-03T23%3A59%3A59Z&limit=5&resource_type=provider_key",
       ),
     );
   });

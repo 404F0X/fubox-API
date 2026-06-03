@@ -33,6 +33,15 @@ pub enum RatingError {
     ScaleMismatch { left: u32, right: u32 },
     #[error("rating arithmetic overflow")]
     ArithmeticOverflow,
+    #[error("invalid usage json: {0}")]
+    InvalidUsageJson(String),
+    #[error("usage field `{field}` must be an unsigned integer")]
+    InvalidUsageField { field: &'static str },
+    #[error("usage category `{category}` exceeds `{total}`")]
+    UsageCategoryExceedsTotal {
+        category: &'static str,
+        total: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -286,6 +295,114 @@ where
     rate_usage(&pricing, usage)
 }
 
+pub fn rate_runtime_usage_from_json(
+    pricing_json: &str,
+    runtime_usage_json: &str,
+) -> Result<Option<RatingResult>, RatingError> {
+    let Some(usage) = extract_runtime_token_usage_from_json_str(runtime_usage_json)? else {
+        return Ok(None);
+    };
+
+    rate_usage_from_json(pricing_json, usage).map(Some)
+}
+
+pub fn extract_runtime_token_usage_from_json_str(
+    runtime_usage_json: &str,
+) -> Result<Option<ExtendedTokenUsage>, RatingError> {
+    let value: Value = serde_json::from_str(runtime_usage_json)
+        .map_err(|error| RatingError::InvalidUsageJson(error.to_string()))?;
+
+    extract_runtime_token_usage_from_value(&value)
+}
+
+pub fn extract_runtime_token_usage_from_value(
+    value: &Value,
+) -> Result<Option<ExtendedTokenUsage>, RatingError> {
+    let Some(usage) = runtime_usage_object(value) else {
+        return Ok(None);
+    };
+
+    let Some(input_total) = first_present_usage_u64(
+        usage,
+        &[
+            ("prompt_tokens", &["prompt_tokens"]),
+            ("input_tokens", &["input_tokens"]),
+            ("promptTokenCount", &["promptTokenCount"]),
+        ],
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let output_total = match first_present_usage_u64(
+        usage,
+        &[
+            ("completion_tokens", &["completion_tokens"]),
+            ("output_tokens", &["output_tokens"]),
+            ("candidatesTokenCount", &["candidatesTokenCount"]),
+        ],
+    )? {
+        Some(output_total) => Some(output_total),
+        None => derive_output_tokens_from_total(usage, input_total).transpose()?,
+    };
+
+    let Some(output_total) = output_total else {
+        return Ok(None);
+    };
+
+    let cache_tokens = first_present_usage_u64(
+        usage,
+        &[
+            (
+                "prompt_tokens_details.cached_tokens",
+                &["prompt_tokens_details", "cached_tokens"],
+            ),
+            (
+                "input_tokens_details.cached_tokens",
+                &["input_tokens_details", "cached_tokens"],
+            ),
+            ("cached_tokens", &["cached_tokens"]),
+            ("cachedContentTokenCount", &["cachedContentTokenCount"]),
+            ("cache_read_input_tokens", &["cache_read_input_tokens"]),
+        ],
+    )?;
+    let reasoning_tokens = first_present_usage_u64(
+        usage,
+        &[
+            (
+                "completion_tokens_details.reasoning_tokens",
+                &["completion_tokens_details", "reasoning_tokens"],
+            ),
+            (
+                "output_tokens_details.reasoning_tokens",
+                &["output_tokens_details", "reasoning_tokens"],
+            ),
+            ("reasoning_tokens", &["reasoning_tokens"]),
+            ("thoughtsTokenCount", &["thoughtsTokenCount"]),
+            ("thinking_tokens", &["thinking_tokens"]),
+        ],
+    )?;
+
+    let input_tokens =
+        subtract_category(input_total, cache_tokens, "cache_tokens", "input_tokens")?;
+    let output_tokens = subtract_category(
+        output_total,
+        reasoning_tokens,
+        "reasoning_tokens",
+        "output_tokens",
+    )?;
+
+    let mut usage = ExtendedTokenUsage::new(input_tokens, output_tokens);
+    if let Some(cache_tokens) = cache_tokens {
+        usage = usage.with_cache_tokens(cache_tokens);
+    }
+    if let Some(reasoning_tokens) = reasoning_tokens {
+        usage = usage.with_reasoning_tokens(reasoning_tokens);
+    }
+
+    Ok(Some(usage))
+}
+
 pub fn rate_usage<U>(pricing: &PricingRules, usage: U) -> Result<RatingResult, RatingError>
 where
     U: Into<ExtendedTokenUsage>,
@@ -359,6 +476,115 @@ fn div_round_half_up(numerator: i128, denominator: i128) -> Result<i128, RatingE
             .ok_or(RatingError::ArithmeticOverflow)
     } else {
         Ok(quotient)
+    }
+}
+
+fn runtime_usage_object(value: &Value) -> Option<&Value> {
+    value
+        .get("usage")
+        .filter(|usage| usage.is_object())
+        .or_else(|| value.get("usageMetadata").filter(|usage| usage.is_object()))
+        .or_else(|| runtime_usage_fields_present(value).then_some(value))
+}
+
+fn runtime_usage_fields_present(value: &Value) -> bool {
+    value.is_object()
+        && [
+            "prompt_tokens",
+            "input_tokens",
+            "promptTokenCount",
+            "completion_tokens",
+            "output_tokens",
+            "candidatesTokenCount",
+            "total_tokens",
+            "totalTokenCount",
+        ]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+}
+
+fn first_present_usage_u64(
+    value: &Value,
+    candidates: &[(&'static str, &'static [&'static str])],
+) -> Result<Option<u64>, RatingError> {
+    for (field, path) in candidates {
+        if let Some(tokens) = usage_u64_at_path(value, path, field)? {
+            return Ok(Some(tokens));
+        }
+    }
+
+    Ok(None)
+}
+
+fn usage_u64_at_path(
+    value: &Value,
+    path: &[&str],
+    field: &'static str,
+) -> Result<Option<u64>, RatingError> {
+    let Some(value) = value_at_path(value, path) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    value
+        .as_u64()
+        .map(Some)
+        .ok_or(RatingError::InvalidUsageField { field })
+}
+
+fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+
+    Some(current)
+}
+
+fn derive_output_tokens_from_total(
+    usage: &Value,
+    input_total: u64,
+) -> Option<Result<u64, RatingError>> {
+    let total_tokens = match first_present_usage_u64(
+        usage,
+        &[
+            ("total_tokens", &["total_tokens"]),
+            ("totalTokenCount", &["totalTokenCount"]),
+        ],
+    ) {
+        Ok(Some(total_tokens)) => total_tokens,
+        Ok(None) => return None,
+        Err(error) => return Some(Err(error)),
+    };
+
+    Some(
+        total_tokens
+            .checked_sub(input_total)
+            .ok_or(RatingError::UsageCategoryExceedsTotal {
+                category: "input_tokens",
+                total: "total_tokens",
+            }),
+    )
+}
+
+fn subtract_category(
+    total: u64,
+    category_value: Option<u64>,
+    category: &'static str,
+    total_field: &'static str,
+) -> Result<u64, RatingError> {
+    match category_value {
+        Some(category_value) => {
+            total
+                .checked_sub(category_value)
+                .ok_or(RatingError::UsageCategoryExceedsTotal {
+                    category,
+                    total: total_field,
+                })
+        }
+        None => Ok(total),
     }
 }
 

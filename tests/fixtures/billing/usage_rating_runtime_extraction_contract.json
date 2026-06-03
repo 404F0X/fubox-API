@@ -1,0 +1,199 @@
+{
+  "contract": "billing_ledger_usage_rating_runtime_extraction_v1",
+  "pricing": {
+    "currency": "USD",
+    "scale": 8,
+    "input_token_rate_per_1m": "1.00000000",
+    "output_token_rate_per_1m": "2.00000000",
+    "cache_token_rate_per_1m": "0.25000000",
+    "reasoning_token_rate_per_1m": "4.00000000",
+    "fixed_request_cost": "0.12500000"
+  },
+  "secret_safe_forbidden_terms": [
+    "fixture-raw-payload-marker",
+    "fixture-header-marker",
+    "fixture-provider-credential-marker",
+    "provider-secret-marker",
+    "Authorization",
+    "Bearer",
+    "api_key",
+    "provider_key",
+    "raw_key",
+    "secret",
+    "payload",
+    "idempotency_key"
+  ],
+  "cases": [
+    {
+      "name": "openai_chat_usage_details_split_cache_reasoning",
+      "runtime_usage": {
+        "usage": {
+          "prompt_tokens": 1000000,
+          "completion_tokens": 500000,
+          "total_tokens": 1500000,
+          "prompt_tokens_details": {
+            "cached_tokens": 250000
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 100000
+          }
+        },
+        "payload": {
+          "body": "fixture-raw-payload-marker"
+        },
+        "headers": {
+          "Authorization": "Bearer fixture-header-marker"
+        }
+      },
+      "expect_usage": {
+        "input_tokens": 750000,
+        "output_tokens": 400000,
+        "cache_tokens": 250000,
+        "reasoning_tokens": 100000
+      },
+      "expect_rating": {
+        "input_cost": "0.75000000",
+        "output_cost": "0.80000000",
+        "cache_cost": "0.06250000",
+        "reasoning_cost": "0.40000000",
+        "fixed_request_cost": "0.12500000",
+        "total_cost": "2.13750000",
+        "currency": "USD"
+      }
+    },
+    {
+      "name": "openai_responses_usage_details_split_cache_reasoning",
+      "runtime_usage": {
+        "usage": {
+          "input_tokens": 2000000,
+          "output_tokens": 1000000,
+          "total_tokens": 3000000,
+          "input_tokens_details": {
+            "cached_tokens": 500000
+          },
+          "output_tokens_details": {
+            "reasoning_tokens": 250000
+          }
+        }
+      },
+      "expect_usage": {
+        "input_tokens": 1500000,
+        "output_tokens": 750000,
+        "cache_tokens": 500000,
+        "reasoning_tokens": 250000
+      },
+      "expect_rating": {
+        "input_cost": "1.50000000",
+        "output_cost": "1.50000000",
+        "cache_cost": "0.12500000",
+        "reasoning_cost": "1.00000000",
+        "fixed_request_cost": "0.12500000",
+        "total_cost": "4.25000000",
+        "currency": "USD"
+      }
+    },
+    {
+      "name": "gemini_usage_metadata_total_fallback_splits_cached_and_thought_tokens",
+      "runtime_usage": {
+        "usageMetadata": {
+          "promptTokenCount": 1000000,
+          "totalTokenCount": 1800000,
+          "cachedContentTokenCount": 100000,
+          "thoughtsTokenCount": 200000
+        }
+      },
+      "expect_usage": {
+        "input_tokens": 900000,
+        "output_tokens": 600000,
+        "cache_tokens": 100000,
+        "reasoning_tokens": 200000
+      },
+      "expect_rating": {
+        "input_cost": "0.90000000",
+        "output_cost": "1.20000000",
+        "cache_cost": "0.02500000",
+        "reasoning_cost": "0.80000000",
+        "fixed_request_cost": "0.12500000",
+        "total_cost": "3.05000000",
+        "currency": "USD"
+      }
+    },
+    {
+      "name": "anthropic_usage_splits_cache_read_and_thinking_tokens",
+      "runtime_usage": {
+        "usage": {
+          "input_tokens": 700000,
+          "output_tokens": 300000,
+          "cache_read_input_tokens": 200000,
+          "thinking_tokens": 50000
+        }
+      },
+      "expect_usage": {
+        "input_tokens": 500000,
+        "output_tokens": 250000,
+        "cache_tokens": 200000,
+        "reasoning_tokens": 50000
+      },
+      "expect_rating": {
+        "input_cost": "0.50000000",
+        "output_cost": "0.50000000",
+        "cache_cost": "0.05000000",
+        "reasoning_cost": "0.20000000",
+        "fixed_request_cost": "0.12500000",
+        "total_cost": "1.37500000",
+        "currency": "USD"
+      }
+    },
+    {
+      "name": "nested_payload_usage_is_ignored",
+      "runtime_usage": {
+        "payload": {
+          "usage": {
+            "prompt_tokens": 1000000,
+            "completion_tokens": 1000000
+          },
+          "body": "fixture-provider-credential-marker"
+        },
+        "headers": {
+          "X-Api-Key": "fixture-header-marker"
+        }
+      },
+      "expect_usage": null,
+      "expect_rating": null
+    },
+    {
+      "name": "partial_usage_returns_none",
+      "runtime_usage": {
+        "usage": {
+          "prompt_tokens": 1000000
+        }
+      },
+      "expect_usage": null,
+      "expect_rating": null
+    },
+    {
+      "name": "invalid_usage_number_rejected_without_secret_echo",
+      "runtime_usage": {
+        "usage": {
+          "prompt_tokens": "provider-secret-marker",
+          "completion_tokens": 10
+        },
+        "provider_key_value": "fixture-provider-credential-marker"
+      },
+      "expect_error": "invalid_usage_field"
+    },
+    {
+      "name": "cache_tokens_exceed_input_total_rejected",
+      "runtime_usage": {
+        "usage": {
+          "prompt_tokens": 10,
+          "completion_tokens": 20,
+          "prompt_tokens_details": {
+            "cached_tokens": 11
+          }
+        }
+      },
+      "expect_error": "usage_category_exceeds_total"
+    }
+  ]
+}

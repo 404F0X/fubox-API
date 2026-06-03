@@ -26,7 +26,9 @@ pub use pre_authorize::{
 };
 pub use rating::{
     DEFAULT_CURRENCY, DEFAULT_MONEY_SCALE, ExtendedTokenUsage, FixedDecimal, PricingRules,
-    RatingError, RatingResult, TOKENS_PER_MILLION, TokenUsage, rate_usage, rate_usage_from_json,
+    RatingError, RatingResult, TOKENS_PER_MILLION, TokenUsage,
+    extract_runtime_token_usage_from_json_str, extract_runtime_token_usage_from_value,
+    rate_runtime_usage_from_json, rate_usage, rate_usage_from_json,
 };
 pub use reconciliation::{
     BillingReconciliationCurrencyTotal, BillingReconciliationDiscrepancy,

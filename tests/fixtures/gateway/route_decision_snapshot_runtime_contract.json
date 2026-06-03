@@ -1,0 +1,37 @@
+{
+  "scenario": "gateway_route_decision_snapshot_runtime_contract",
+  "crate": "apps/gateway",
+  "function": "route_decision_snapshot_value",
+  "request_detail_summary_contract": {
+    "location": "route_decision_snapshot.summary",
+    "root_snapshot_fields_preserved": true,
+    "fields": [
+      "version",
+      "requested_model",
+      "canonical_model",
+      "selected_channel_id",
+      "selected_provider_model",
+      "candidate_count",
+      "filtered_count",
+      "filter_reasons",
+      "selected_score_total",
+      "trace_affinity_status"
+    ],
+    "expected_candidate_count": 3,
+    "expected_filtered_count": 2,
+    "expected_filter_reasons": [
+      "ZeroWeight",
+      "CoolingDown"
+    ],
+    "expected_trace_affinity_status": "Disabled"
+  },
+  "safety_contract": {
+    "stores_request_or_response_body": false,
+    "stores_authorization_material": false,
+    "adds_metrics_labels": false
+  },
+  "notes": [
+    "Gateway stores this summary next to the full route decision snapshot so request detail readers can render stable fields without parsing every candidate.",
+    "The full candidate list remains present at the snapshot root for detailed inspection."
+  ]
+}

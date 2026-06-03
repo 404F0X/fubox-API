@@ -54,7 +54,7 @@
 
 - [~] **E1-004 实现 Audit Log**  
   优先级：P0  
-  验收：key、provider、price、route、billing 修改均写 audit。当前 Control Plane admin provider/channel/provider_key/api_key_profile/virtual_key/model/model_association 写操作已写入 `audit_logs`，并记录 before/after snapshot 与 session 元数据；audit metadata/snapshot 已接入敏感信息 sanitizer，避免 secret、Authorization、Cookie、payload/body、raw headers、raw UA/client IP 等原文落审计。provider_key create/update/delete、price_version create 与 virtual_key create/disable/expire 已进入事务化闭环：业务写入与 success audit 使用同一 DB transaction，缺失业务行不会构造 success audit，audit insert 失败会回滚对应写入；相关 audit metadata 已记录 `user_agent_sha256`、`client_ip_sha256`、IP 来源/类型/范围等安全摘要。Control Plane 已新增只读 `GET /admin/audit-logs` 查询契约/API，支持 tenant、actor、action/resource、时间范围与 limit 过滤，归 `AuditRead`，响应再次 secret-safe 清洗。provider/channel/profile/model/model_association 等其他写路径事务化、更多 billing 写操作覆盖和 audit UI 验收尚未完成。
+  验收：key、provider、price、route、billing 修改均写 audit。当前 Control Plane admin provider/channel/provider_key/api_key_profile/virtual_key/model/model_association 写操作已写入 `audit_logs`，并记录 before/after snapshot 与 session 元数据；audit metadata/snapshot 已接入敏感信息 sanitizer，避免 secret、Authorization、Cookie、payload/body、raw headers、raw UA/client IP 等原文落审计。provider create/update/delete、provider_key create/update/delete、price_version create 与 virtual_key create/disable/expire 已进入事务化闭环：业务写入与 success audit 使用同一 DB transaction，缺失业务行不会构造 success audit，audit insert 失败会回滚对应写入；相关 audit metadata 已记录 `user_agent_sha256`、`client_ip_sha256`、IP 来源/类型/范围等安全摘要。Control Plane 已新增只读 `GET /admin/audit-logs` 查询契约/API，支持 tenant、actor、action/resource、时间范围与 limit 过滤，归 `AuditRead`，响应再次 secret-safe 清洗。channel/profile/model/model_association 等其他写路径事务化、更多 billing 写操作覆盖和 audit UI 验收尚未完成。
 
 - [~] **E1-005 OIDC 基础登录草案**  
   优先级：P1  
@@ -258,7 +258,7 @@
 
 - [~] **E8-006 实现 route decision snapshot**  
   优先级：P0  
-  验收：Request detail 可显示候选、分数、过滤原因。当前 routing core 已有 `RouteDecisionSnapshot`、候选 score/filter/selected 和 trace affinity 决策；已新增 `select_route_from_evaluated` 纯函数入口，routing fixture 已锁定 selected candidate、snapshot summary、score/filter/selected 标记和凭据/请求体安全输出；Control Plane dry-run 第一切片可返回 route candidates、selection 和 snapshot；Gateway DB 候选集、request detail API/UI 接入和真实 provider key 可用性/rate-limit 评估待完成。
+  验收：Request detail 可显示候选、分数、过滤原因。当前 routing core 已有 `RouteDecisionSnapshot`、候选 score/filter/selected 和 trace affinity 决策；已新增 `select_route_from_evaluated` 纯函数入口，routing fixture 已锁定 selected candidate、snapshot summary、score/filter/selected 标记和凭据/请求体安全输出；Gateway 运行态 `route_decision_snapshot` 已在保留 root 快照字段的基础上写入 `summary`，稳定暴露 version、requested/canonical model、selected channel/provider model、candidate/filter count、filter reasons、selected score 和 trace affinity status，供 request detail 直接展示，并由 gateway fixture/单测校验不携带 Authorization、secret、request/response body 或 raw payload；Control Plane dry-run 第一切片可返回 route candidates、selection 和 snapshot；request detail API/UI 更完整展示、真实 provider key 可用性/rate-limit 评估待完成。
 
 - [~] **E8-007 实现 trace affinity**  
   优先级：P0  
@@ -286,7 +286,7 @@
 
 - [~] **E9-005 实现 usage rating engine**  
   优先级：P0  
-  验收：input/output/cache/reasoning token 可计价。当前非流式 chat rating 已写入 request `final_cost` 并供 settle ledger metadata 使用；stream request-log rating 已接入 completed+usage 完整路径；billing-ledger 纯函数已支持 cache/reasoning token rate 计价，runtime usage 提取/调用点未接入。
+  验收：input/output/cache/reasoning token 可计价。当前非流式 chat rating 已写入 request `final_cost` 并供 settle ledger metadata 使用；stream request-log rating 已接入 completed+usage 完整路径；billing-ledger 纯函数已支持 cache/reasoning token rate 计价；本轮新增 runtime usage extraction contract/API，可从 OpenAI/Responses、Anthropic、Gemini usage JSON 中提取并拆分 cache/reasoning token，按分类 token 计价时避免 input/cache 与 output/reasoning 双算，fixture 覆盖 secret-safe 错误与 payload/header/provider marker 不回显。Gateway/streaming 调用点、request log cache/reasoning 字段持久化和真实 DB integration 仍未接入。
 
 - [~] **E9-006 实现 daily reconciliation job**  
   优先级：P0  
@@ -398,7 +398,7 @@
 
 - [~] **E13-005 Prompt Protection**  
   优先级：P1  
-  验收：regex mask/reject、scope、命中日志。当前 `ai-gateway-observability` 已新增 prompt protection 纯函数切片，支持 text/json/payload 输入，输出 action、scoped hits、safe_text/safe_json；覆盖 secret-like token、Bearer、password/API key/sensitive fields mask，以及明显 prompt-injection phrase reject，并保留 `model_key`、`cache_key`、`public_key_id` 等公开标识。Gateway 非流式 `/v1/chat/completions` 已接入 runtime preflight，默认 `AI_GATEWAY_PROMPT_PROTECTION=enforce`，支持 `audit`/`disabled`，命中后在 canonical routing、pre_authorize、provider_attempt 和 provider key 解密前返回 OpenAI-compatible `prompt_protection_rejected`，request log 只写 hash 与 action/mode/reason/hit_count/scopes/hit_kinds 安全摘要。Streaming runtime、审计查询/UI 和可配置规则仍待完成。
+  验收：regex mask/reject、scope、命中日志。当前 `ai-gateway-observability` 已新增 prompt protection 纯函数切片，支持 text/json/payload 输入，输出 action、scoped hits、safe_text/safe_json；覆盖 secret-like token、Bearer、password/API key/sensitive fields mask，以及明显 prompt-injection phrase reject，并保留 `model_key`、`cache_key`、`public_key_id` 等公开标识；hit summary 已做 bounded cap，避免恶意 payload 放大日志/去重成本。Gateway `/v1/chat/completions` 非流式与 stream=true 已接入 runtime preflight，默认 `AI_GATEWAY_PROMPT_PROTECTION=enforce`，支持 `audit`/`disabled`；enforce 命中后在 canonical routing、request_started、pre_authorize、provider_attempt、provider key 解密和上游调用前返回 OpenAI-compatible `prompt_protection_rejected`，request log 使用 hash-only payload metadata，并只写 action/mode/reason/hit_count/scopes/hit_kinds 安全摘要；audit 命中在 provider_attempt 前仅记录 request hash/action/reason/hit_count 后继续，不落 raw payload/secret。`tests/fixtures/gateway/prompt_protection_runtime_contract.json` 已锁定该 runtime 合约。审计查询/UI 和可配置规则仍待完成。
 
 ---
 
