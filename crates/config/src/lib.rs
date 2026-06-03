@@ -1,14 +1,17 @@
 use std::{
     env, fs,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
 };
 
+use reqwest::Url;
 use serde::Deserialize;
 use thiserror::Error;
 
 pub const CONFIG_ENV: &str = "AI_GATEWAY_CONFIG";
 pub const DEFAULT_CONFIG_PATH: &str = "examples/config.example.yaml";
+pub const APP_ENV_ENV: &str = "AI_GATEWAY_ENV";
+pub const ALLOW_UNSAFE_PROVIDER_ENDPOINTS_ENV: &str = "AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -102,7 +105,15 @@ pub struct BillingConfig {
 
 impl AppConfig {
     pub fn load_from_env() -> Result<Self, ConfigError> {
-        let path = env::var(CONFIG_ENV).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+        let path = match env::var(CONFIG_ENV) {
+            Ok(path) => path,
+            Err(_) if is_production_env() => {
+                return Err(ConfigError::Invalid(format!(
+                    "{CONFIG_ENV} must be set when {APP_ENV_ENV}=production"
+                )));
+            }
+            Err(_) => DEFAULT_CONFIG_PATH.to_string(),
+        };
         Self::load_from_path(path)
     }
 
@@ -175,6 +186,137 @@ pub fn ip_allowlist_contains(entries: &[String], client_ip: IpAddr) -> bool {
     entries
         .iter()
         .any(|entry| parse_ip_allowlist_entry(entry).is_some_and(|entry| entry.matches(client_ip)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderEndpointPolicy {
+    pub allow_unsafe_local_endpoints: bool,
+}
+
+impl ProviderEndpointPolicy {
+    pub fn from_env() -> Self {
+        Self {
+            allow_unsafe_local_endpoints: env_truthy(ALLOW_UNSAFE_PROVIDER_ENDPOINTS_ENV),
+        }
+    }
+
+    pub const fn strict() -> Self {
+        Self {
+            allow_unsafe_local_endpoints: false,
+        }
+    }
+
+    pub const fn allow_unsafe_for_dev() -> Self {
+        Self {
+            allow_unsafe_local_endpoints: true,
+        }
+    }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ProviderEndpointValidationError {
+    #[error("endpoint URL is invalid")]
+    InvalidUrl,
+    #[error("endpoint must use http or https")]
+    UnsupportedScheme,
+    #[error("endpoint must use https unless unsafe provider endpoints are explicitly allowed")]
+    InsecureScheme,
+    #[error("endpoint must not include username or password")]
+    UserInfo,
+    #[error("endpoint host is required")]
+    MissingHost,
+    #[error("endpoint host is not allowed")]
+    ForbiddenHost,
+    #[error("endpoint must not include query string or fragment")]
+    QueryOrFragment,
+}
+
+pub fn validate_provider_endpoint(
+    endpoint: &str,
+    policy: ProviderEndpointPolicy,
+) -> Result<String, ProviderEndpointValidationError> {
+    let trimmed = endpoint.trim().trim_end_matches('/');
+    let url = Url::parse(trimmed).map_err(|_| ProviderEndpointValidationError::InvalidUrl)?;
+
+    match url.scheme() {
+        "http" | "https" => {}
+        _ => return Err(ProviderEndpointValidationError::UnsupportedScheme),
+    }
+
+    if url.scheme() != "https" && !policy.allow_unsafe_local_endpoints {
+        return Err(ProviderEndpointValidationError::InsecureScheme);
+    }
+
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ProviderEndpointValidationError::UserInfo);
+    }
+
+    let host = url
+        .host_str()
+        .ok_or(ProviderEndpointValidationError::MissingHost)?;
+    if !policy.allow_unsafe_local_endpoints && forbidden_provider_host(host) {
+        return Err(ProviderEndpointValidationError::ForbiddenHost);
+    }
+
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(ProviderEndpointValidationError::QueryOrFragment);
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn is_production_env() -> bool {
+    env::var(APP_ENV_ENV)
+        .map(|value| value.trim().eq_ignore_ascii_case("production"))
+        .unwrap_or(false)
+}
+
+fn env_truthy(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn forbidden_provider_host(host: &str) -> bool {
+    let normalized = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if normalized == "localhost" || normalized.ends_with(".localhost") {
+        return true;
+    }
+
+    normalized
+        .parse::<IpAddr>()
+        .map(forbidden_provider_ip)
+        .unwrap_or(false)
+}
+
+fn forbidden_provider_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip == Ipv4Addr::BROADCAST
+                || ip.octets() == [169, 254, 169, 254]
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_unique_local()
+                || is_ipv6_unicast_link_local(ip)
+        }
+    }
+}
+
+fn is_ipv6_unicast_link_local(ip: Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
 fn require_not_empty(name: &str, value: &str) -> Result<(), ConfigError> {
@@ -415,5 +557,66 @@ mod tests {
             &entries,
             IpAddr::V6(Ipv6Addr::LOCALHOST)
         ));
+    }
+
+    #[test]
+    fn provider_endpoint_policy_rejects_insecure_or_local_endpoints_by_default() {
+        let policy = ProviderEndpointPolicy::strict();
+
+        assert_eq!(
+            validate_provider_endpoint("http://api.example.test", policy).unwrap_err(),
+            ProviderEndpointValidationError::InsecureScheme
+        );
+        assert_eq!(
+            validate_provider_endpoint("https://localhost:18080", policy).unwrap_err(),
+            ProviderEndpointValidationError::ForbiddenHost
+        );
+        assert_eq!(
+            validate_provider_endpoint("https://127.0.0.1:18080", policy).unwrap_err(),
+            ProviderEndpointValidationError::ForbiddenHost
+        );
+        assert_eq!(
+            validate_provider_endpoint("https://169.254.169.254/latest", policy).unwrap_err(),
+            ProviderEndpointValidationError::ForbiddenHost
+        );
+    }
+
+    #[test]
+    fn provider_endpoint_policy_rejects_credential_or_query_material() {
+        let policy = ProviderEndpointPolicy::strict();
+
+        assert_eq!(
+            validate_provider_endpoint("https://user:pass@api.example.test", policy).unwrap_err(),
+            ProviderEndpointValidationError::UserInfo
+        );
+        assert_eq!(
+            validate_provider_endpoint("https://api.example.test?token=abc", policy).unwrap_err(),
+            ProviderEndpointValidationError::QueryOrFragment
+        );
+        assert_eq!(
+            validate_provider_endpoint("https://api.example.test#fragment", policy).unwrap_err(),
+            ProviderEndpointValidationError::QueryOrFragment
+        );
+    }
+
+    #[test]
+    fn provider_endpoint_policy_allows_https_public_endpoints() {
+        let endpoint = validate_provider_endpoint(
+            " https://api.example.test/v1/ ",
+            ProviderEndpointPolicy::strict(),
+        )
+        .unwrap();
+
+        assert_eq!(endpoint, "https://api.example.test/v1");
+    }
+
+    #[test]
+    fn provider_endpoint_policy_can_allow_local_dev_endpoints() {
+        let policy = ProviderEndpointPolicy::allow_unsafe_for_dev();
+
+        assert_eq!(
+            validate_provider_endpoint("http://127.0.0.1:18080/v1", policy).unwrap(),
+            "http://127.0.0.1:18080/v1"
+        );
     }
 }

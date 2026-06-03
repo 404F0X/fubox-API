@@ -27,7 +27,10 @@ use ai_gateway_billing_ledger::{
     PreAuthorizeEstimate, PreAuthorizeRejectReason, PricingRules, TokenUsage, pre_authorize,
     rate_usage_from_json,
 };
-use ai_gateway_config::{AppConfig, ip_allowlist_contains};
+use ai_gateway_config::{
+    AppConfig, ProviderEndpointPolicy, ProviderEndpointValidationError, ip_allowlist_contains,
+    validate_provider_endpoint,
+};
 use ai_gateway_observability::{
     PayloadPolicyDecision, PayloadStorageMode, PromptProtectionAction, PromptProtectionHit,
     PromptProtectionHitKind, PromptProtectionResult, apply_payload_policy, init_tracing,
@@ -43,8 +46,11 @@ use ai_gateway_routing::{
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{ConnectInfo, Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header::AUTHORIZATION, header::CONTENT_TYPE},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, State},
+    http::{
+        HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header::AUTHORIZATION,
+        header::CONTENT_TYPE,
+    },
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -61,18 +67,19 @@ use errors::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
-const DEFAULT_UPSTREAM_BASE_URL: &str = "http://127.0.0.1:18080";
-const NATIVE_UPSTREAM_TIMEOUT_SECONDS: u64 = 30;
 const GATEWAY_ROUTE_POLICY_VERSION: &str = "gateway_db_route_v1";
 const ROUTE_PRIORITY_ASSOCIATION_MULTIPLIER: i32 = 1_000_000;
 const AI_PROFILE_HEADER: &str = "x-ai-profile";
 const AI_PROFILE_HEADER_MAX_LEN: usize = 128;
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 const X_REAL_IP_HEADER: &str = "x-real-ip";
-const MAX_PROVIDER_ATTEMPTS: usize = 3;
 const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64";
+const GATEWAY_CORS_ALLOWED_ORIGINS_ENV: &str = "AI_GATEWAY_CORS_ALLOWED_ORIGINS";
 const PROMPT_PROTECTION_POLICY_ENV: &str = "AI_GATEWAY_PROMPT_PROTECTION";
 const PROMPT_PROTECTION_POLICY_VERSION: &str = "gateway_prompt_protection_v1";
 const PAYLOAD_POLICY_RUNTIME_SCHEMA: &str = "gateway_payload_policy_v1";
@@ -197,21 +204,26 @@ struct SealedProviderKeyPayload {
 #[derive(Debug, Clone)]
 struct GatewayState {
     app: AppState,
-    openai: OpenAiCompatibleClient,
     native_http: reqwest::Client,
+    upstream_timeout: Duration,
+    stream_idle_timeout: Duration,
+    max_provider_attempts: usize,
     repository: Option<GatewayRepository>,
 }
 
 impl GatewayState {
-    fn new(
-        app: AppState,
-        openai: OpenAiCompatibleClient,
-        repository: Option<GatewayRepository>,
-    ) -> Self {
+    fn new(app: AppState, repository: Option<GatewayRepository>) -> Self {
+        let upstream_timeout = Duration::from_secs(app.config().routing.default_timeout_seconds);
+        let stream_idle_timeout =
+            Duration::from_secs(app.config().routing.stream_idle_timeout_seconds);
+        let max_provider_attempts = configured_max_provider_attempts(app.config());
         Self {
             app,
-            openai,
-            native_http: native_http_client().expect("native passthrough HTTP client should build"),
+            native_http: native_http_client(upstream_timeout)
+                .expect("native passthrough HTTP client should build"),
+            upstream_timeout,
+            stream_idle_timeout,
+            max_provider_attempts,
             repository,
         }
     }
@@ -233,9 +245,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listen =
         std::env::var("AI_GATEWAY_LISTEN").unwrap_or_else(|_| config.server.listen.clone());
     let addr: SocketAddr = normalize_listen_addr(&listen).parse()?;
-    let upstream_base_url = std::env::var("AI_GATEWAY_UPSTREAM_BASE_URL")
-        .unwrap_or_else(|_| DEFAULT_UPSTREAM_BASE_URL.to_string());
-    let openai = OpenAiCompatibleClient::new(upstream_base_url)?;
+    let max_request_body_bytes = usize::try_from(config.server.max_request_body_bytes)
+        .map_err(|_| "server.max_request_body_bytes exceeds platform usize")?;
     let repository = match connect_gateway_repository(&config).await {
         Ok(repository) => Some(repository),
         Err(error) => {
@@ -245,7 +256,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let state = Arc::new(GatewayState::new(
         AppState::new("gateway", config),
-        openai,
         repository,
     ));
 
@@ -263,7 +273,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .route("/v1/models", get(models))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer(gateway_cors_layer())
+        .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -295,12 +306,41 @@ async fn readyz(State(state): State<Arc<GatewayState>>) -> (StatusCode, Json<Val
         Json(serde_json::json!({
             "service": state.app.service_name(),
             "status": readiness_status,
-            "database_driver": state.app.config().database.driver,
             "database_gateway_store": database_gateway_store,
-            "redis": state.app.config().redis.addr,
-            "upstream_base_url": state.openai.base_url(),
         })),
     )
+}
+
+fn gateway_cors_layer() -> CorsLayer {
+    let mut layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            CONTENT_TYPE,
+            AUTHORIZATION,
+            HeaderName::from_static(AI_PROFILE_HEADER),
+        ]);
+
+    let allowed_origins = gateway_cors_allowed_origins();
+    if !allowed_origins.is_empty() {
+        layer = layer.allow_origin(AllowOrigin::list(allowed_origins));
+    }
+
+    layer
+}
+
+fn gateway_cors_allowed_origins() -> Vec<HeaderValue> {
+    env::var(GATEWAY_CORS_ALLOWED_ORIGINS_ENV)
+        .ok()
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .filter_map(|origin| HeaderValue::from_str(origin).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 async fn metrics(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
@@ -464,7 +504,11 @@ async fn chat_completions(
         route_candidates.iter().map(routing_candidate_from_route),
     );
     let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
-    let attempt_routes = chat_attempt_routes(&route_candidates, &route_decision);
+    let attempt_routes = chat_attempt_routes(
+        &route_candidates,
+        &route_decision,
+        state.max_provider_attempts,
+    );
     let selected_route = match attempt_routes.first() {
         Some(route) => route,
         None => {
@@ -498,7 +542,7 @@ async fn chat_completions(
         Err(error) => return gateway_error_response_with_metrics(started_at, error),
     };
 
-    // Per request and bounded by MAX_PROVIDER_ATTEMPTS through attempt_routes.
+    // Per request and bounded by routing.default_max_attempts through attempt_routes.
     let mut upstream_clients = OpenAiClientCache::with_capacity(attempt_routes.len());
 
     if request.is_streaming() {
@@ -510,6 +554,8 @@ async fn chat_completions(
             request: &request,
             attempt_routes: &attempt_routes,
             upstream_clients: &mut upstream_clients,
+            upstream_timeout: state.upstream_timeout,
+            stream_idle_timeout: state.stream_idle_timeout,
             route_snapshot,
         })
         .await;
@@ -551,7 +597,11 @@ async fn chat_completions(
         };
 
         let provider_started_at = Instant::now();
-        let upstream_client = match cached_openai_client(&mut upstream_clients, &route.endpoint) {
+        let upstream_client = match cached_openai_client(
+            &mut upstream_clients,
+            &route.endpoint,
+            state.upstream_timeout,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -857,7 +907,11 @@ async fn responses(
         route_candidates.iter().map(routing_candidate_from_route),
     );
     let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
-    let attempt_routes = chat_attempt_routes(&route_candidates, &route_decision);
+    let attempt_routes = chat_attempt_routes(
+        &route_candidates,
+        &route_decision,
+        state.max_provider_attempts,
+    );
     let selected_route = match attempt_routes.first() {
         Some(route) => route,
         None => {
@@ -909,6 +963,8 @@ async fn responses(
             request: &request,
             attempt_routes: &attempt_routes,
             upstream_clients: &mut upstream_clients,
+            upstream_timeout: state.upstream_timeout,
+            stream_idle_timeout: state.stream_idle_timeout,
             route_snapshot,
         })
         .await;
@@ -951,7 +1007,11 @@ async fn responses(
         };
 
         let provider_started_at = Instant::now();
-        let upstream_client = match cached_openai_client(&mut upstream_clients, &route.endpoint) {
+        let upstream_client = match cached_openai_client(
+            &mut upstream_clients,
+            &route.endpoint,
+            state.upstream_timeout,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -1276,7 +1336,11 @@ async fn embeddings(
         route_candidates.iter().map(routing_candidate_from_route),
     );
     let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
-    let attempt_routes = chat_attempt_routes(&route_candidates, &route_decision);
+    let attempt_routes = chat_attempt_routes(
+        &route_candidates,
+        &route_decision,
+        state.max_provider_attempts,
+    );
     let selected_route = match attempt_routes.first() {
         Some(route) => route,
         None => {
@@ -1355,7 +1419,11 @@ async fn embeddings(
         };
 
         let provider_started_at = Instant::now();
-        let upstream_client = match cached_openai_client(&mut upstream_clients, &route.endpoint) {
+        let upstream_client = match cached_openai_client(
+            &mut upstream_clients,
+            &route.endpoint,
+            state.upstream_timeout,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -1682,7 +1750,11 @@ async fn anthropic_messages(
         route_candidates.iter().map(routing_candidate_from_route),
     );
     let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
-    let attempt_routes = chat_attempt_routes(&route_candidates, &route_decision);
+    let attempt_routes = chat_attempt_routes(
+        &route_candidates,
+        &route_decision,
+        state.max_provider_attempts,
+    );
     let selected_route = match attempt_routes.first() {
         Some(route) => route,
         None => {
@@ -1733,6 +1805,7 @@ async fn anthropic_messages(
                 request: &request,
                 attempt_routes: &attempt_routes,
                 native_http: &state.native_http,
+                stream_idle_timeout: state.stream_idle_timeout,
                 route_snapshot,
             },
         )
@@ -2156,7 +2229,11 @@ async fn gemini_generate_content_native_passthrough(
         route_candidates.iter().map(routing_candidate_from_route),
     );
     let route_snapshot = native_route_decision_snapshot_value(&route_decision.snapshot());
-    let attempt_routes = chat_attempt_routes(&route_candidates, &route_decision);
+    let attempt_routes = chat_attempt_routes(
+        &route_candidates,
+        &route_decision,
+        state.max_provider_attempts,
+    );
     let selected_route = match attempt_routes.first() {
         Some(route) => route,
         None => {
@@ -2210,6 +2287,7 @@ async fn gemini_generate_content_native_passthrough(
                 parsed_body,
                 attempt_routes: &attempt_routes,
                 native_http: &state.native_http,
+                stream_idle_timeout: state.stream_idle_timeout,
                 route_snapshot,
                 inbound_content_type,
             },
@@ -2653,9 +2731,10 @@ fn models_response(models: Vec<VisibleModel>, auth: &AuthContext) -> Response {
         .into_response()
 }
 
-fn native_http_client() -> Result<reqwest::Client, OpenAiAdapterError> {
+fn native_http_client(timeout: Duration) -> Result<reqwest::Client, OpenAiAdapterError> {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(NATIVE_UPSTREAM_TIMEOUT_SECONDS))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| OpenAiAdapterError::HttpClient(error.to_string()))
 }
@@ -2909,13 +2988,8 @@ pub(crate) fn native_upstream_url(
     endpoint: &str,
     upstream_path: &str,
 ) -> Result<reqwest::Url, OpenAiAdapterError> {
-    let endpoint = endpoint.trim().trim_end_matches('/');
-    if endpoint.is_empty() {
-        return Err(OpenAiAdapterError::InvalidUpstreamBaseUrl(
-            endpoint.to_string(),
-        ));
-    }
-
+    let endpoint = validate_provider_endpoint(endpoint, ProviderEndpointPolicy::from_env())
+        .map_err(openai_provider_endpoint_error)?;
     reqwest::Url::parse(&format!("{endpoint}{upstream_path}"))
         .map_err(|error| OpenAiAdapterError::InvalidUpstreamBaseUrl(error.to_string()))
 }
@@ -3660,16 +3734,18 @@ fn selected_chat_route<'a>(
 fn chat_attempt_routes(
     routes: &[ResolvedChatRoute],
     decision: &RouteDecision,
+    max_attempts: usize,
 ) -> Vec<ResolvedChatRoute> {
     let Some(selected) = selected_chat_route(routes, decision) else {
         return Vec::new();
     };
 
-    let mut attempts = Vec::with_capacity(MAX_PROVIDER_ATTEMPTS.min(routes.len()));
+    let max_attempts = max_attempts.max(1);
+    let mut attempts = Vec::with_capacity(max_attempts.min(routes.len()));
     attempts.push(selected.clone());
 
     for evaluated in &decision.candidates {
-        if attempts.len() >= MAX_PROVIDER_ATTEMPTS {
+        if attempts.len() >= max_attempts {
             break;
         }
         if !evaluated.is_selectable() {
@@ -3701,10 +3777,23 @@ fn chat_attempt_routes(
 fn cached_openai_client(
     clients: &mut OpenAiClientCache,
     endpoint: &str,
+    timeout: Duration,
 ) -> Result<OpenAiCompatibleClient, OpenAiAdapterError> {
-    cached_openai_client_with_builder(clients, endpoint, |endpoint| {
-        OpenAiCompatibleClient::new(endpoint.to_string())
+    let endpoint = validate_provider_endpoint(endpoint, ProviderEndpointPolicy::from_env())
+        .map_err(openai_provider_endpoint_error)?;
+    cached_openai_client_with_builder(clients, &endpoint, |endpoint| {
+        OpenAiCompatibleClient::new_with_timeout(endpoint.to_string(), timeout)
     })
+}
+
+fn configured_max_provider_attempts(config: &AppConfig) -> usize {
+    usize::try_from(config.routing.default_max_attempts)
+        .unwrap_or(usize::MAX)
+        .max(1)
+}
+
+fn openai_provider_endpoint_error(error: ProviderEndpointValidationError) -> OpenAiAdapterError {
+    OpenAiAdapterError::InvalidUpstreamBaseUrl(format!("provider endpoint rejected: {error}"))
 }
 
 fn cached_openai_client_with_builder(
@@ -5668,6 +5757,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gateway_router_contract_uses_pre_extractor_body_limit_and_restricted_cors() {
+        let source = include_str!("main.rs");
+
+        assert!(source.contains("DefaultBodyLimit::max(max_request_body_bytes)"));
+        assert!(source.contains("gateway_cors_layer()"));
+        assert!(!source.contains(concat!("CorsLayer", "::permissive()")));
+    }
+
     fn test_route(
         channel_id: uuid::Uuid,
         channel_status: &str,
@@ -5721,12 +5819,9 @@ mod tests {
         let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/config.example.yaml");
         let config = AppConfig::load_from_path(config_path).expect("example config should load");
-        let openai = OpenAiCompatibleClient::new("http://127.0.0.1:18080")
-            .expect("test openai client should build");
 
         Arc::new(GatewayState::new(
             AppState::new("gateway", config),
-            openai,
             repository,
         ))
     }
@@ -5738,6 +5833,9 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(payload["status"], "not_ready");
         assert_eq!(payload["database_gateway_store"], "unavailable");
+        assert!(payload.get("database_driver").is_none());
+        assert!(payload.get("redis").is_none());
+        assert!(payload.get("upstream_base_url").is_none());
     }
 
     #[tokio::test]
@@ -5756,6 +5854,9 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(payload["status"], "not_ready");
         assert_eq!(payload["database_gateway_store"], "unavailable");
+        assert!(payload.get("database_driver").is_none());
+        assert!(payload.get("redis").is_none());
+        assert!(payload.get("upstream_base_url").is_none());
     }
 
     #[test]
@@ -6929,7 +7030,7 @@ mod tests {
             ),
             routes.iter().map(routing_candidate_from_route),
         );
-        let attempts = chat_attempt_routes(&routes, &decision);
+        let attempts = chat_attempt_routes(&routes, &decision, 3);
         let attempt_channel_ids = attempts
             .iter()
             .map(|route| route.channel_id)
@@ -6942,6 +7043,41 @@ mod tests {
                 first_fallback_channel_id,
                 second_fallback_channel_id
             ]
+        );
+    }
+
+    #[test]
+    fn chat_attempt_routes_respects_configured_attempt_limit() {
+        let selected_channel_id = uuid::Uuid::from_u128(2);
+        let first_fallback_channel_id = uuid::Uuid::from_u128(1);
+        let second_fallback_channel_id = uuid::Uuid::from_u128(4);
+        let routes = vec![
+            test_route(first_fallback_channel_id, "enabled", 0, 0, 9, 1.0),
+            test_route(selected_channel_id, "enabled", 0, 0, 1, 1.0),
+            test_route(second_fallback_channel_id, "enabled", 0, 1, 100, 1.0),
+        ];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+
+        let decision = select_route(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000009ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+        );
+        let attempts = chat_attempt_routes(&routes, &decision, 2);
+        let attempt_channel_ids = attempts
+            .iter()
+            .map(|route| route.channel_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            attempt_channel_ids,
+            vec![selected_channel_id, first_fallback_channel_id]
         );
     }
 
@@ -6984,7 +7120,7 @@ mod tests {
             ),
             routes.iter().map(routing_candidate_from_route),
         );
-        let attempts = chat_attempt_routes(&routes, &decision);
+        let attempts = chat_attempt_routes(&routes, &decision, 3);
         let attempt_channel_ids = attempts
             .iter()
             .map(|route| route.channel_id)

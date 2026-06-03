@@ -1630,8 +1630,8 @@ components:
           example: ok
     ReadyResponse:
       type: object
-      additionalProperties: true
-      required: [service, status, database_driver, redis]
+      additionalProperties: false
+      required: [service, status, database]
       properties:
         service:
           type: string
@@ -1639,13 +1639,9 @@ components:
         status:
           type: string
           enum: [ready, not_ready]
-        database_driver:
+        database:
           type: string
-          example: postgres
-        database_error:
-          type: string
-        redis:
-          type: string
+          enum: [connected, unavailable]
     LoginRequest:
       type: object
       additionalProperties: false

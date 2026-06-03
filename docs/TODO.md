@@ -29,7 +29,7 @@
 - [x] **E0-004 定义全局配置 schema**  
   优先级：P0  
   内容：env、DB config、Redis、timeouts、limits、log policy。  
-  验收：非法配置启动失败并给出明确错误。
+  验收：非法配置启动失败并给出明确错误。当前 `AI_GATEWAY_ENV=production` 时必须显式设置 `AI_GATEWAY_CONFIG`，避免生产误读相对路径示例配置；routing timeout/attempt/body limit 均已有配置校验。
 
 - [x] **E0-005 建立 provider mock framework**  
   优先级：P0  
@@ -54,7 +54,7 @@
 
 - [~] **E1-004 实现 Audit Log**  
   优先级：P0  
-  验收：key、provider、price、route、billing 修改均写 audit。当前 Control Plane admin provider/channel/provider_key/api_key_profile/virtual_key/model/model_association 写操作已写入 `audit_logs`，并记录 before/after snapshot 与 session 元数据；audit metadata/snapshot 已接入敏感信息 sanitizer，避免 secret、Authorization、Cookie、payload/body、raw headers、raw UA/client IP 等原文落审计。provider_key create/update/delete 与 price_version create 已进入事务化最小闭环：业务写入与 success audit 使用同一 DB transaction，缺失业务行不会构造 success audit，audit insert 失败会回滚对应 provider_key/price_version 写入；相关 audit metadata 已记录 `user_agent_sha256`、`client_ip_sha256`、IP 来源/类型/范围等安全摘要。Control Plane 已新增只读 `GET /admin/audit-logs` 查询契约/API，支持 tenant、actor、action/resource、时间范围与 limit 过滤，归 `AuditRead`，响应再次 secret-safe 清洗。provider/virtual_key 等其他写路径事务化、更多 billing 写操作覆盖和 audit UI 验收尚未完成。
+  验收：key、provider、price、route、billing 修改均写 audit。当前 Control Plane admin provider/channel/provider_key/api_key_profile/virtual_key/model/model_association 写操作已写入 `audit_logs`，并记录 before/after snapshot 与 session 元数据；audit metadata/snapshot 已接入敏感信息 sanitizer，避免 secret、Authorization、Cookie、payload/body、raw headers、raw UA/client IP 等原文落审计。provider_key create/update/delete、price_version create 与 virtual_key create/disable/expire 已进入事务化闭环：业务写入与 success audit 使用同一 DB transaction，缺失业务行不会构造 success audit，audit insert 失败会回滚对应写入；相关 audit metadata 已记录 `user_agent_sha256`、`client_ip_sha256`、IP 来源/类型/范围等安全摘要。Control Plane 已新增只读 `GET /admin/audit-logs` 查询契约/API，支持 tenant、actor、action/resource、时间范围与 limit 过滤，归 `AuditRead`，响应再次 secret-safe 清洗。provider/channel/profile/model/model_association 等其他写路径事务化、更多 billing 写操作覆盖和 audit UI 验收尚未完成。
 
 - [~] **E1-005 OIDC 基础登录草案**  
   优先级：P1  
@@ -91,7 +91,7 @@
 
 - [x] **E3-001 实现 Provider/Channel CRUD**  
   优先级：P0  
-  验收：支持 endpoint、protocol_mode、tags、priority、weight、timeout。当前 Control Plane 已支持 provider/channel create/list/get/patch/delete，`verify_control_plane_crud_smoke.ps1 -IncludeFullCrud -StrictFullCrud` 已通过。
+  验收：支持 endpoint、protocol_mode、tags、priority、weight、timeout。当前 Control Plane 已支持 provider/channel create/list/get/patch/delete，`verify_control_plane_crud_smoke.ps1 -IncludeFullCrud -StrictFullCrud` 已通过；provider/channel endpoint 已新增统一安全校验，默认要求 HTTPS 并拒绝 userinfo、query/fragment、localhost、private/link-local/multicast/unspecified IP 和 metadata IP，Gateway 出站前也会复核；本地 Compose/Helm mock-provider 场景需显式 `AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS=true`。
 
 - [~] **E3-002 实现 Provider Key 加密存储**  
   优先级：P0  
@@ -146,7 +146,7 @@
 
 - [x] **E5-001 实现 Gateway HTTP server**  
   优先级：P0  
-  验收：`/healthz`、`/readyz`、`/metrics` 可用，Compose smoke 已覆盖。
+  验收：`/healthz`、`/readyz`、`/metrics` 可用，Compose smoke 已覆盖；Gateway 请求体大小限制已前置到 Axum `DefaultBodyLimit`，不再在 `Bytes` extractor 后才检查；Gateway CORS 已从 permissive 改为 `AI_GATEWAY_CORS_ALLOWED_ORIGINS` allowlist；Gateway/Control Plane `readyz` 已收窄为可用性摘要，不暴露 database driver、Redis 地址、upstream URL 或数据库错误原文。
 
 - [x] **E5-002 实现 OpenAI Chat Completions 非流式**  
   优先级：P0  
@@ -154,7 +154,7 @@
 
 - [~] **E5-003 实现 OpenAI Chat Completions 流式**  
   优先级：P0  
-  验收：stream chunk 和 `[DONE]` 正确。当前 Gateway `stream=true` 已路由到 `streaming::chat_completions_streaming`，通过 OpenAI-compatible adapter 透传上游 SSE 并返回 `text/event-stream`，SDK smoke 已支持 `-IncludeStreaming`，`verify_compose_smoke.ps1` 已改为探测 SSE stream；client cancel/backpressure 第一切片已用 pull-based forwarding、bounded chunk/SSE buffer、downstream body drop=`client_cancel` 和 no-late-fallback contract 覆盖，stream usage/rating 已有 completed confirmed 写入；完整 streaming acceptance matrix、live cancel/backpressure smoke 和 usage 估算/estimated 仍未完成。
+  验收：stream chunk 和 `[DONE]` 正确。当前 Gateway `stream=true` 已路由到 `streaming::chat_completions_streaming`，通过 OpenAI-compatible adapter 透传上游 SSE 并返回 `text/event-stream`，SDK smoke 已支持 `-IncludeStreaming`，`verify_compose_smoke.ps1` 已改为探测 SSE stream；client cancel/backpressure 第一切片已用 pull-based forwarding、bounded chunk/SSE buffer、downstream body drop=`client_cancel` 和 no-late-fallback contract 覆盖，stream usage/rating 已有 completed confirmed 写入；`routing.stream_idle_timeout_seconds` 已接入 stream forwarding，idle timeout 会记录为 `stream_end_reason=timeout` 且不做 late fallback；完整 streaming acceptance matrix、live cancel/backpressure smoke 和 usage 估算/estimated 仍未完成。
 
 - [~] **E5-004 实现 OpenAI Responses 基础**  
   优先级：P0  
@@ -254,7 +254,7 @@
 
 - [~] **E8-005 实现 retry/fallback engine**  
   优先级：P0  
-  验收：500/429/timeout/EOF 按矩阵处理。当前非流式 chat 已对 provider 429/5xx/timeout/EOF/transport 和首字节前错误 fallback 到下一 route candidate，最多 3 次；非流式 UpstreamRead/body-read 失败已禁止 fallback，避免上游已返回 headers/部分响应后的重复调用/计费；streaming 已支持 pre-response fallback，首个响应输出后不 late fallback；最终成功 route 会回写 `request_logs`，`provider_attempts` 已记录 `fallback_reason` 和 metadata。Gateway `ResolvedChatRoute` 已读取 `model_associations.fallback_allowed`；attempt list 只在追加失败后的 fallback 目标时过滤 `fallback_allowed=false`，初始 selected route 即使 `fallback_allowed=false` 仍可作为首选；streaming 复用同一 `attempt_routes`，因此同步继承限制；测试已覆盖 `chat_attempt_routes_excludes_fallback_disallowed_candidates_but_keeps_selected`。`scripts/verify_gateway_retry_fallback_smoke.ps1` 已支持 `-StrictGatewayFallback` 和 `-PreflightOnly`，fixture/dev seed 已新增 429/5xx/timeout/EOF strict live models/routes/provider keys；strict fallback models 已改为 `internal`，默认 profile 不再暴露 strict models，strict preflight 已校验 `public`/`internal` 可见性；retry/fallback smoke 已校验 `request_logs.upstream_model` 与最终 provider attempt 一致，`connection_closed` direct mock-provider 检查已拒绝 DNS/refused 类失败混入。Darwin/Mendel review 项已在主线程修复；Darwin 已在子 Agent 环境跑通 strict live smoke，主线程本机无 Docker，仅复跑 dry-run。同 channel retry、backoff、健康分/cooldown 写回和完整验收矩阵尚未完成。
+  验收：500/429/timeout/EOF 按矩阵处理。当前非流式 chat 已对 provider 429/5xx/timeout/EOF/transport 和首字节前错误 fallback 到下一 route candidate，attempt 上限已由 `routing.default_max_attempts` 控制；OpenAI-compatible 与 native passthrough 上游 timeout 已由 `routing.default_timeout_seconds` 控制，HTTP client 已关闭 redirect；非流式 UpstreamRead/body-read 失败已禁止 fallback，避免上游已返回 headers/部分响应后的重复调用/计费；streaming 已支持 pre-response fallback，首个响应输出后不 late fallback；最终成功 route 会回写 `request_logs`，`provider_attempts` 已记录 `fallback_reason` 和 metadata。Gateway `ResolvedChatRoute` 已读取 `model_associations.fallback_allowed`；attempt list 只在追加失败后的 fallback 目标时过滤 `fallback_allowed=false`，初始 selected route 即使 `fallback_allowed=false` 仍可作为首选；streaming 复用同一 `attempt_routes`，因此同步继承限制；测试已覆盖 `chat_attempt_routes_excludes_fallback_disallowed_candidates_but_keeps_selected` 与配置化 attempt cap。`scripts/verify_gateway_retry_fallback_smoke.ps1` 已支持 `-StrictGatewayFallback` 和 `-PreflightOnly`，fixture/dev seed 已新增 429/5xx/timeout/EOF strict live models/routes/provider keys；strict fallback models 已改为 `internal`，默认 profile 不再暴露 strict models，strict preflight 已校验 `public`/`internal` 可见性；retry/fallback smoke 已校验 `request_logs.upstream_model` 与最终 provider attempt 一致，`connection_closed` direct mock-provider 检查已拒绝 DNS/refused 类失败混入。Darwin/Mendel review 项已在主线程修复；Darwin 已在子 Agent 环境跑通 strict live smoke，主线程本机无 Docker，仅复跑 dry-run。同 channel retry、backoff、健康分/cooldown 写回和完整验收矩阵尚未完成。
 
 - [~] **E8-006 实现 route decision snapshot**  
   优先级：P0  
@@ -382,7 +382,7 @@
 
 - [~] **E13-001 Secret masking middleware**  
   优先级：P0  
-  验收：日志不出现 Authorization/API key/Cookie。当前 `ai-gateway-observability` 统一 sanitizer 已被 Gateway 错误路径接入，database error log、adapter error body 和 OpenAI-compatible error body 会脱敏 Authorization/API key/Cookie/token/password/secret，同时保留 `model_key`/`cache_key`/`public_key_id` 等非敏感标识；完整 HTTP middleware 层与更多入口接入仍待完成。
+  验收：日志不出现 Authorization/API key/Cookie。当前 `ai-gateway-observability` 统一 sanitizer 已被 Gateway 错误路径接入，database error log、adapter error body 和 OpenAI-compatible error body 会脱敏 Authorization/API key/Cookie/token/password/secret，同时保留 `model_key`/`cache_key`/`public_key_id` 等非敏感标识；本轮审查修复已补 Gateway body limit 前置、CORS allowlist、provider endpoint SSRF guard、HTTP redirect 禁用、`readyz` 脱敏和生产配置路径显式化；完整 HTTP middleware 层与更多入口接入仍待完成。
 
 - [~] **E13-002 Provider key encryption**  
   优先级：P0  

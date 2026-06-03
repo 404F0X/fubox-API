@@ -75,7 +75,7 @@ services:
     env:
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_LISTEN: 0.0.0.0:8080
-      AI_GATEWAY_UPSTREAM_BASE_URL: 'http://{{ include "fubox.componentName" (dict "root" . "name" "mock-provider") }}:18080'
+      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
     resources:
       requests:
         cpu: 100m
@@ -118,6 +118,7 @@ services:
     env:
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_CONTROL_LISTEN: 0.0.0.0:8081
+      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
     resources:
       requests:
         cpu: 100m

@@ -204,6 +204,33 @@ impl DbRepository {
         &self,
         virtual_key: NewVirtualKey,
     ) -> Result<VirtualKey, DbError> {
+        self.create_virtual_key_with_default_profile_internal(
+            virtual_key,
+            None::<fn(&VirtualKey) -> NewAuditLog>,
+        )
+        .await
+    }
+
+    pub async fn create_virtual_key_with_default_profile_and_audit<F>(
+        &self,
+        virtual_key: NewVirtualKey,
+        audit_builder: F,
+    ) -> Result<VirtualKey, DbError>
+    where
+        F: FnOnce(&VirtualKey) -> NewAuditLog,
+    {
+        self.create_virtual_key_with_default_profile_internal(virtual_key, Some(audit_builder))
+            .await
+    }
+
+    async fn create_virtual_key_with_default_profile_internal<F>(
+        &self,
+        virtual_key: NewVirtualKey,
+        audit_builder: Option<F>,
+    ) -> Result<VirtualKey, DbError>
+    where
+        F: FnOnce(&VirtualKey) -> NewAuditLog,
+    {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
         let row = sqlx::query(
             r#"
@@ -249,9 +276,14 @@ impl DbRepository {
         .await
         .map_err(DbError::Query)?;
 
+        let virtual_key = virtual_key_from_row(row).map_err(DbError::Query)?;
+        if let Some(audit_builder) = audit_builder {
+            Self::insert_audit_log_in_tx(&mut tx, audit_builder(&virtual_key)).await?;
+        }
+
         tx.commit().await.map_err(DbError::Query)?;
 
-        virtual_key_from_row(row).map_err(DbError::Query)
+        Ok(virtual_key)
     }
 
     pub async fn list_virtual_keys(
@@ -311,6 +343,64 @@ impl DbRepository {
         row.map(virtual_key_from_row)
             .transpose()
             .map_err(DbError::Query)
+    }
+
+    pub async fn update_virtual_key_status_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        virtual_key_id: Uuid,
+        status: &str,
+        audit_builder: F,
+    ) -> Result<Option<VirtualKey>, DbError>
+    where
+        F: FnOnce(&VirtualKey, &VirtualKey) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, project_id, name, key_prefix, secret_hash, status,
+              default_profile_id, ip_allowlist, rate_limit_policy, budget_policy, metadata
+            from virtual_keys
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(virtual_key_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = virtual_key_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update virtual_keys
+            set status = $3,
+                updated_at = now(),
+                deleted_at = case when $3 = 'deleted' then now() else deleted_at end
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, project_id, name, key_prefix, secret_hash, status,
+              default_profile_id, ip_allowlist, rate_limit_policy, budget_policy, metadata
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(virtual_key_id)
+        .bind(status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = virtual_key_from_row(after_row).map_err(DbError::Query)?;
+        Self::insert_audit_log_in_tx(&mut tx, audit_builder(&before, &after)).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
     }
 
     pub async fn api_key_profile_has_active_virtual_keys(

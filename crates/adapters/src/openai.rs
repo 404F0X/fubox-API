@@ -471,13 +471,24 @@ impl OpenAiModelsRequest {
 
 impl OpenAiCompatibleClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self, OpenAiAdapterError> {
+        Self::new_with_timeout(
+            base_url,
+            Duration::from_secs(DEFAULT_UPSTREAM_TIMEOUT_SECONDS),
+        )
+    }
+
+    pub fn new_with_timeout(
+        base_url: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, OpenAiAdapterError> {
         let base_url = base_url.into().trim().trim_end_matches('/').to_string();
         if base_url.is_empty() || reqwest::Url::parse(&base_url).is_err() {
             return Err(OpenAiAdapterError::InvalidUpstreamBaseUrl(base_url));
         }
 
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(DEFAULT_UPSTREAM_TIMEOUT_SECONDS))
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| OpenAiAdapterError::HttpClient(error.to_string()))?;
 

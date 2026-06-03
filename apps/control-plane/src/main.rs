@@ -203,18 +203,15 @@ async fn readyz(State(state): State<Arc<ControlPlaneState>>) -> impl IntoRespons
             Json(serde_json::json!({
                 "service": state.app().service_name(),
                 "status": "ready",
-                "database_driver": state.app().config().database.driver,
-                "redis": state.app().config().redis.addr,
+                "database": "connected",
             })),
         ),
-        Err(error) => (
+        Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
                 "service": state.app().service_name(),
                 "status": "not_ready",
-                "database_driver": state.app().config().database.driver,
-                "database_error": error.to_string(),
-                "redis": state.app().config().redis.addr,
+                "database": "unavailable",
             })),
         ),
     }

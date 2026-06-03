@@ -10,6 +10,9 @@ use ai_gateway_auth::{
     fingerprint_provider_key, generate_virtual_key, login_rate_limit_fingerprint,
     seal_provider_key,
 };
+use ai_gateway_config::{
+    ProviderEndpointPolicy, ProviderEndpointValidationError, validate_provider_endpoint,
+};
 use ai_gateway_db::{
     ApiKeyProfile, AuditLog, BillingReconciliationReportFilter, CanonicalModel, Channel, DbError,
     DbRepository, LedgerEntry, LedgerEntryListFilter, ModelAssociation, NewApiKeyProfile,
@@ -786,7 +789,7 @@ async fn create_channel(
             tenant_id: DEFAULT_TENANT_ID,
             provider_id: request.provider_id,
             name: non_empty(request.name, "name")?,
-            endpoint: non_empty(endpoint, "endpoint")?,
+            endpoint: validate_admin_provider_endpoint(endpoint)?,
             protocol_mode: normalize_protocol_mode(&protocol_mode),
             status: normalize_enabled_status(request.status.as_deref()),
             region: request.region,
@@ -850,6 +853,7 @@ async fn patch_channel(
         .endpoint
         .or(request.base_url)
         .unwrap_or(current.endpoint);
+    let endpoint = validate_admin_provider_endpoint(endpoint)?;
     let protocol_mode = request
         .protocol_mode
         .or(request.protocol)
@@ -1298,19 +1302,22 @@ async fn create_virtual_key(
 
     let generated = generate_virtual_key();
     let secret = generated.secret.clone();
+    let new_virtual_key = build_new_virtual_key(request, generated)?;
     let virtual_key = repository
-        .create_virtual_key_with_default_profile(build_new_virtual_key(request, generated)?)
+        .create_virtual_key_with_default_profile_and_audit(new_virtual_key, |after| {
+            new_admin_audit_log(
+                &session,
+                "virtual_key.create",
+                None,
+                after,
+                json!({
+                    "secret_once_returned": true,
+                    "transactional_audit": true,
+                }),
+                None,
+            )
+        })
         .await?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "virtual_key.create",
-        None,
-        &virtual_key,
-        json!({ "secret_once_returned": true }),
-    )
-    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -1356,24 +1363,19 @@ async fn disable_virtual_key(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let before = repository
-        .get_virtual_key(DEFAULT_TENANT_ID, id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("virtual key"))?;
     let virtual_key = repository
-        .update_virtual_key_status(DEFAULT_TENANT_ID, id, "disabled")
+        .update_virtual_key_status_with_audit(DEFAULT_TENANT_ID, id, "disabled", |before, after| {
+            new_admin_audit_log(
+                &session,
+                "virtual_key.disable",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("virtual key"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "virtual_key.disable",
-        Some(&before),
-        &virtual_key,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": virtual_key_response(virtual_key, None) })).into_response())
 }
@@ -1384,24 +1386,19 @@ async fn expire_virtual_key(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let before = repository
-        .get_virtual_key(DEFAULT_TENANT_ID, id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("virtual key"))?;
     let virtual_key = repository
-        .update_virtual_key_status(DEFAULT_TENANT_ID, id, "expired")
+        .update_virtual_key_status_with_audit(DEFAULT_TENANT_ID, id, "expired", |before, after| {
+            new_admin_audit_log(
+                &session,
+                "virtual_key.expire",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("virtual key"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "virtual_key.expire",
-        Some(&before),
-        &virtual_key,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": virtual_key_response(virtual_key, None) })).into_response())
 }
@@ -3754,6 +3751,16 @@ fn non_empty(value: String, field: &'static str) -> Result<String, AdminError> {
         )));
     }
     Ok(value)
+}
+
+fn validate_admin_provider_endpoint(endpoint: String) -> Result<String, AdminError> {
+    let endpoint = non_empty(endpoint, "endpoint")?;
+    validate_provider_endpoint(&endpoint, ProviderEndpointPolicy::from_env())
+        .map_err(provider_endpoint_admin_error)
+}
+
+fn provider_endpoint_admin_error(error: ProviderEndpointValidationError) -> AdminError {
+    AdminError::bad_request(format!("endpoint is not allowed: {error}"))
 }
 
 fn request_log_limit(limit: Option<i64>) -> Result<i64, AdminError> {

@@ -139,6 +139,7 @@ dependencies = [
 name = "ai-gateway-config"
 version = "0.1.0-alpha"
 dependencies = [
+ "reqwest",
  "serde",
  "serde_yaml",
  "thiserror",

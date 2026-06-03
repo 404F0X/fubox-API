@@ -4,7 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use ai_gateway_adapters::{
@@ -66,6 +66,8 @@ pub(crate) struct StreamingChatContext<'a> {
     pub(crate) request: &'a ChatCompletionRequest,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) upstream_clients: &'a mut OpenAiClientCache,
+    pub(crate) upstream_timeout: Duration,
+    pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
 }
 
@@ -77,6 +79,8 @@ pub(crate) struct StreamingResponsesContext<'a> {
     pub(crate) request: &'a OpenAiResponseRequest,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) upstream_clients: &'a mut OpenAiClientCache,
+    pub(crate) upstream_timeout: Duration,
+    pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
 }
 
@@ -88,6 +92,7 @@ pub(crate) struct StreamingAnthropicMessagesContext<'a> {
     pub(crate) request: &'a AnthropicMessagesRequest,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) native_http: &'a reqwest::Client,
+    pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
 }
 
@@ -100,6 +105,7 @@ pub(crate) struct StreamingGeminiGenerateContentContext<'a> {
     pub(crate) parsed_body: NativeParsedJsonBody,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) native_http: &'a reqwest::Client,
+    pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
     pub(crate) inbound_content_type: Option<String>,
 }
@@ -113,6 +119,8 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         request,
         attempt_routes,
         upstream_clients,
+        upstream_timeout,
+        stream_idle_timeout,
         route_snapshot,
     } = context;
 
@@ -155,31 +163,32 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         };
 
         let provider_started_at = Instant::now();
-        let upstream_client = match cached_openai_client(upstream_clients, &route.endpoint) {
-            Ok(client) => client,
-            Err(error) => {
-                let summary = summarize_adapter_error(&error);
-                finish_provider_attempt_with_adapter_error(
-                    repository,
-                    auth,
-                    route,
-                    attempt_id,
-                    provider_started_at,
-                    &error,
-                    summary.clone(),
-                )
-                .await;
-                finish_request_with_error(
-                    repository,
-                    auth,
-                    request_id,
-                    request_started_at,
-                    summary,
-                )
-                .await;
-                return adapter_error_response(error);
-            }
-        };
+        let upstream_client =
+            match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout) {
+                Ok(client) => client,
+                Err(error) => {
+                    let summary = summarize_adapter_error(&error);
+                    finish_provider_attempt_with_adapter_error(
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                    )
+                    .await;
+                    finish_request_with_error(
+                        repository,
+                        auth,
+                        request_id,
+                        request_started_at,
+                        summary,
+                    )
+                    .await;
+                    return adapter_error_response(error);
+                }
+            };
         let upstream_request = request_for_upstream(request, &route.upstream_model);
 
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
@@ -252,6 +261,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         metrics_endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                         request_started_at,
                         provider_started_at,
+                        stream_idle_timeout,
                     },
                 );
             }
@@ -320,6 +330,8 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         request,
         attempt_routes,
         upstream_clients,
+        upstream_timeout,
+        stream_idle_timeout,
         route_snapshot,
     } = context;
 
@@ -362,31 +374,32 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         };
 
         let provider_started_at = Instant::now();
-        let upstream_client = match cached_openai_client(upstream_clients, &route.endpoint) {
-            Ok(client) => client,
-            Err(error) => {
-                let summary = summarize_adapter_error(&error);
-                finish_provider_attempt_with_adapter_error(
-                    repository,
-                    auth,
-                    route,
-                    attempt_id,
-                    provider_started_at,
-                    &error,
-                    summary.clone(),
-                )
-                .await;
-                finish_request_with_error(
-                    repository,
-                    auth,
-                    request_id,
-                    request_started_at,
-                    summary,
-                )
-                .await;
-                return adapter_error_response(error);
-            }
-        };
+        let upstream_client =
+            match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout) {
+                Ok(client) => client,
+                Err(error) => {
+                    let summary = summarize_adapter_error(&error);
+                    finish_provider_attempt_with_adapter_error(
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                    )
+                    .await;
+                    finish_request_with_error(
+                        repository,
+                        auth,
+                        request_id,
+                        request_started_at,
+                        summary,
+                    )
+                    .await;
+                    return adapter_error_response(error);
+                }
+            };
         let upstream_request = responses_request_for_upstream(request, &route.upstream_model);
 
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
@@ -459,6 +472,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                         metrics_endpoint: crate::METRICS_ENDPOINT_RESPONSES,
                         request_started_at,
                         provider_started_at,
+                        stream_idle_timeout,
                     },
                 );
             }
@@ -529,6 +543,7 @@ pub(crate) async fn anthropic_messages_streaming(
         request,
         attempt_routes,
         native_http,
+        stream_idle_timeout,
         route_snapshot,
     } = context;
 
@@ -672,6 +687,7 @@ pub(crate) async fn anthropic_messages_streaming(
                         metrics_endpoint: crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                         request_started_at,
                         provider_started_at,
+                        stream_idle_timeout,
                     },
                 );
             }
@@ -746,6 +762,7 @@ pub(crate) async fn gemini_generate_content_streaming(
         parsed_body,
         attempt_routes,
         native_http,
+        stream_idle_timeout,
         route_snapshot,
         inbound_content_type,
     } = context;
@@ -924,6 +941,7 @@ pub(crate) async fn gemini_generate_content_streaming(
                         metrics_endpoint: crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                         request_started_at,
                         provider_started_at,
+                        stream_idle_timeout,
                     },
                 );
             }
@@ -1000,6 +1018,7 @@ struct StreamLogContext {
     metrics_endpoint: &'static str,
     request_started_at: Instant,
     provider_started_at: Instant,
+    stream_idle_timeout: Duration,
 }
 
 fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -> Response {
@@ -1014,8 +1033,13 @@ fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -
     let body = Body::from_stream(stream::unfold(Some(state), |state| async move {
         let mut state = state?;
 
-        match state.upstream.next_chunk().await {
-            Ok(Some(chunk)) => match state.observe_chunk(&chunk) {
+        match tokio::time::timeout(
+            state.context.stream_idle_timeout,
+            state.upstream.next_chunk(),
+        )
+        .await
+        {
+            Ok(Ok(Some(chunk))) => match state.observe_chunk(&chunk) {
                 Ok(()) => Some((Ok(Bytes::from(chunk)), Some(state))),
                 Err(error) => {
                     let contract =
@@ -1030,7 +1054,7 @@ fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -
                     Some((Err(stream_io_error(contract.end_reason)), None))
                 }
             },
-            Err(error) => {
+            Ok(Err(error)) => {
                 let contract =
                     stream_forward_failure_contract(StreamForwardFailureKind::UpstreamReadError);
                 debug_assert!(!contract.allow_late_fallback);
@@ -1044,7 +1068,7 @@ fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -
                 state.finish(contract.end_reason).await;
                 Some((Err(stream_io_error(contract.end_reason)), None))
             }
-            Ok(None) => {
+            Ok(Ok(None)) => {
                 let end_reason = match state.observe_eof() {
                     Ok(end_reason) => end_reason,
                     Err(error) => {
@@ -1058,6 +1082,16 @@ fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -
                 };
                 state.finish(end_reason).await;
                 None
+            }
+            Err(_) => {
+                let contract = stream_forward_failure_contract(StreamForwardFailureKind::Timeout);
+                debug_assert!(!contract.allow_late_fallback);
+                tracing::warn!(
+                    partial_sent = state.partial_sent(),
+                    "upstream stream idle timeout after response started; not attempting fallback"
+                );
+                state.finish(contract.end_reason).await;
+                Some((Err(stream_io_error(contract.end_reason)), None))
             }
         }
     }));
@@ -1332,7 +1366,8 @@ async fn send_anthropic_messages_stream_request(
     upstream_request: &AdapterUpstreamRequest,
     provider_key: &str,
 ) -> Result<GatewayUpstreamStream, AnthropicAdapterError> {
-    let url = anthropic_upstream_url(&route.endpoint, &upstream_request.path)?;
+    let url = crate::native_upstream_url(&route.endpoint, &upstream_request.path)
+        .map_err(|error| AnthropicAdapterError::RequestSerialize(error.to_string()))?;
     let response = http
         .post(url)
         .header(
@@ -1448,21 +1483,6 @@ async fn send_gemini_generate_content_stream_request(
     }))
 }
 
-fn anthropic_upstream_url(
-    endpoint: &str,
-    upstream_path: &str,
-) -> Result<reqwest::Url, AnthropicAdapterError> {
-    let endpoint = endpoint.trim().trim_end_matches('/');
-    if endpoint.is_empty() {
-        return Err(AnthropicAdapterError::RequestSerialize(
-            "upstream endpoint must be a non-empty URL".to_string(),
-        ));
-    }
-
-    reqwest::Url::parse(&format!("{endpoint}{upstream_path}"))
-        .map_err(|error| AnthropicAdapterError::RequestSerialize(error.to_string()))
-}
-
 fn anthropic_provider_key_header(
     provider_key: &str,
 ) -> Result<reqwest::header::HeaderValue, AnthropicAdapterError> {
@@ -1539,6 +1559,7 @@ enum StreamForwardFailureKind {
     UpstreamReadError,
     DecodeError,
     ChunkTooLarge,
+    Timeout,
 }
 
 impl From<&StreamChunkError> for StreamForwardFailureKind {
@@ -1557,6 +1578,7 @@ const fn stream_forward_failure_contract(failure: StreamForwardFailureKind) -> S
         StreamForwardFailureKind::DecodeError | StreamForwardFailureKind::ChunkTooLarge => {
             StreamEndReason::ParserError
         }
+        StreamForwardFailureKind::Timeout => StreamEndReason::Timeout,
     };
 
     StreamEndContract {
