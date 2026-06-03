@@ -1169,18 +1169,17 @@ async fn create_api_key_profile(
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
     let profile = repository
-        .create_api_key_profile(build_new_api_key_profile(request)?)
+        .create_api_key_profile_with_audit(build_new_api_key_profile(request)?, |after| {
+            new_admin_audit_log(
+                &session,
+                "api_key_profile.create",
+                None,
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "api_key_profile.create",
-        None,
-        &profile,
-        json!({}),
-    )
-    .await?;
 
     Ok((StatusCode::CREATED, Json(json!({ "data": profile }))).into_response())
 }
@@ -1220,25 +1219,24 @@ async fn patch_api_key_profile(
         .get_api_key_profile(DEFAULT_TENANT_ID, id)
         .await?
         .ok_or_else(|| AdminError::not_found("api key profile"))?;
-    let before = current.clone();
     let profile = repository
-        .update_api_key_profile(
+        .update_api_key_profile_with_audit(
             DEFAULT_TENANT_ID,
             id,
             build_update_api_key_profile(current, request)?,
+            |before, after| {
+                new_admin_audit_log(
+                    &session,
+                    "api_key_profile.update",
+                    Some(before),
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            },
         )
         .await?
         .ok_or_else(|| AdminError::not_found("api key profile"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "api_key_profile.update",
-        Some(&before),
-        &profile,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": profile })).into_response())
 }
@@ -1249,7 +1247,7 @@ async fn delete_api_key_profile(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let current = repository
+    repository
         .get_api_key_profile(DEFAULT_TENANT_ID, id)
         .await?
         .ok_or_else(|| AdminError::not_found("api key profile"))?;
@@ -1258,19 +1256,18 @@ async fn delete_api_key_profile(
         .await?;
     ensure_profile_can_be_deleted(has_active_virtual_keys)?;
     let profile = repository
-        .soft_delete_api_key_profile(DEFAULT_TENANT_ID, id)
+        .soft_delete_api_key_profile_with_audit(DEFAULT_TENANT_ID, id, |before, after| {
+            new_admin_audit_log(
+                &session,
+                "api_key_profile.delete",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("api key profile"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "api_key_profile.delete",
-        Some(&current),
-        &profile,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": profile })).into_response())
 }
@@ -3220,24 +3217,24 @@ impl AuditResource for ApiKeyProfile {
     }
 
     fn audit_summary(&self) -> Value {
-        json!({
+        sanitize_audit_value(json!({
             "id": self.id,
             "tenant_id": self.tenant_id,
             "project_id": self.project_id,
             "name": self.name,
             "inbound_protocol": self.inbound_protocol,
             "default_protocol_mode": self.default_protocol_mode,
-            "model_aliases_keys": object_keys(&self.model_aliases),
+            "model_aliases_keys": audit_safe_object_keys(&self.model_aliases),
             "allowed_models_count": array_len(&self.allowed_models),
             "denied_models_count": array_len(&self.denied_models),
             "allowed_channel_tags_count": array_len(&self.allowed_channel_tags),
             "blocked_provider_ids_count": array_len(&self.blocked_provider_ids),
-            "trace_header_rules_keys": object_keys(&self.trace_header_rules),
+            "trace_header_rules_keys": audit_safe_object_keys(&self.trace_header_rules),
             "ip_allowlist_count": array_len(&self.ip_allowlist),
             "request_overrides_count": array_len(&self.request_overrides),
-            "payload_policy_id": self.payload_policy_id,
+            "payload_policy_configured": self.payload_policy_id.is_some(),
             "status": self.status,
-        })
+        }))
     }
 }
 
@@ -5436,6 +5433,37 @@ mod tests {
         }
     }
 
+    fn api_key_profile_fixture() -> ApiKeyProfile {
+        ApiKeyProfile {
+            id: Uuid::from_u128(401),
+            tenant_id: DEFAULT_TENANT_ID,
+            project_id: Uuid::from_u128(11),
+            name: "ops profile".to_string(),
+            inbound_protocol: "openai".to_string(),
+            default_protocol_mode: "openai_compatible".to_string(),
+            model_aliases: json!({
+                "gpt-visible": "upstream-gpt",
+                "authorization": "Bearer never-audit"
+            }),
+            allowed_models: json!(["gpt-visible", "gpt-safe"]),
+            denied_models: json!(["gpt-denied"]),
+            allowed_channel_tags: json!(["primary"]),
+            blocked_provider_ids: json!([Uuid::from_u128(201).to_string()]),
+            trace_header_rules: json!({
+                "traceparent": { "forward": true },
+                "raw_headers": { "Authorization": "Bearer never-audit" }
+            }),
+            ip_allowlist: json!(["203.0.113.42", "2001:db8::1"]),
+            request_overrides: json!([
+                { "headers": { "Authorization": "Bearer never-audit" } },
+                { "body": "raw body never audit" },
+                { "payload": { "prompt": "raw payload never audit" } }
+            ]),
+            payload_policy_id: Some(Uuid::from_u128(77)),
+            status: "active".to_string(),
+        }
+    }
+
     fn virtual_key_fixture() -> VirtualKey {
         VirtualKey {
             id: Uuid::from_u128(10),
@@ -7058,6 +7086,119 @@ mod tests {
     }
 
     #[test]
+    fn api_key_profile_success_audit_shape_is_transactional_and_secret_safe() {
+        let before = api_key_profile_fixture();
+        let mut after = before.clone();
+        after.name = "Bearer never-audit".to_string();
+        after.status = "inactive".to_string();
+
+        let audit = new_admin_audit_log_from_parts(
+            Uuid::from_u128(701),
+            DEFAULT_TENANT_ID,
+            "api_key_profile.update",
+            Some(&before),
+            &after,
+            json!({ "transactional_audit": true }),
+            None,
+        );
+        let serialized = serde_json::to_string(&audit).expect("audit should serialize");
+
+        assert_eq!(audit.action, "api_key_profile.update");
+        assert_eq!(audit.resource_type, "api_key_profile");
+        assert_eq!(audit.resource_id, Some(after.id));
+        assert_eq!(audit.resource_tenant_id, Some(DEFAULT_TENANT_ID));
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["name"],
+            json!("[REDACTED]")
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["model_aliases_keys"],
+            json!(["gpt-visible"])
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["trace_header_rules_keys"],
+            json!(["traceparent"])
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["ip_allowlist_count"],
+            json!(2)
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["request_overrides_count"],
+            json!(3)
+        );
+        assert_eq!(audit.metadata["transactional_audit"], json!(true));
+        assert!(!serialized.contains("Bearer never-audit"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("raw_headers"));
+        assert!(!serialized.contains("203.0.113.42"));
+        assert!(!serialized.contains("2001:db8::1"));
+        assert!(!serialized.contains("raw body never audit"));
+        assert!(!serialized.contains("raw payload never audit"));
+        assert!(!serialized.contains("sk-live"));
+        assert!(!serialized.contains("current_window_state"));
+    }
+
+    #[test]
+    fn api_key_profile_missing_business_result_does_not_build_success_audit() {
+        fn build_success_audit_for_optional_profile(
+            profile: Option<&ApiKeyProfile>,
+        ) -> Option<NewAuditLog> {
+            profile.map(|after| {
+                new_admin_audit_log_from_parts(
+                    Uuid::from_u128(701),
+                    DEFAULT_TENANT_ID,
+                    "api_key_profile.update",
+                    None,
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            })
+        }
+
+        let missing = build_success_audit_for_optional_profile(None);
+        let present_profile = api_key_profile_fixture();
+        let present = build_success_audit_for_optional_profile(Some(&present_profile));
+
+        assert!(missing.is_none());
+        assert_eq!(
+            present.expect("audit should build").action,
+            "api_key_profile.update"
+        );
+    }
+
+    #[test]
+    fn api_key_profile_admin_writes_use_transactional_success_audit_helpers() {
+        let source = include_str!("admin.rs");
+        let create_section = source
+            .split("async fn create_api_key_profile")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn get_api_key_profile").next())
+            .expect("create_api_key_profile section should be present");
+        let patch_section = source
+            .split("async fn patch_api_key_profile")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn delete_api_key_profile").next())
+            .expect("patch_api_key_profile section should be present");
+        let delete_section = source
+            .split("async fn delete_api_key_profile")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn create_virtual_key").next())
+            .expect("delete_api_key_profile section should be present");
+
+        assert!(create_section.contains(".create_api_key_profile_with_audit("));
+        assert!(patch_section.contains(".update_api_key_profile_with_audit("));
+        assert!(delete_section.contains(".soft_delete_api_key_profile_with_audit("));
+        assert!(create_section.contains("\"transactional_audit\": true"));
+        assert!(patch_section.contains("\"transactional_audit\": true"));
+        assert!(delete_section.contains("\"transactional_audit\": true"));
+        assert!(!create_section.contains("record_admin_audit("));
+        assert!(!patch_section.contains("record_admin_audit("));
+        assert!(!delete_section.contains("record_admin_audit("));
+    }
+
+    #[test]
     fn audit_log_contract_fixture_captures_transaction_and_safe_metadata() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/audit_log_contract.json"
@@ -7093,6 +7234,9 @@ mod tests {
             "POST /admin/channels",
             "PATCH /admin/channels/{id}",
             "DELETE /admin/channels/{id}",
+            "POST /admin/api-key-profiles",
+            "PATCH /admin/api-key-profiles/{id}",
+            "DELETE /admin/api-key-profiles/{id}",
             "POST /admin/price-versions",
         ] {
             assert!(
@@ -7106,6 +7250,10 @@ mod tests {
         );
         assert_eq!(
             fixture["examples"]["channel_update_success_audit"]["metadata"]["transactional_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["api_key_profile_update_success_audit"]["metadata"]["transactional_audit"],
             json!(true)
         );
         for snapshot in ["before_snapshot", "after_snapshot"] {
@@ -7159,6 +7307,7 @@ mod tests {
             "Bearer",
             "Cookie",
             "Authorization",
+            "authorization",
             "sk-",
             "encrypted_secret",
             "raw body never audit",
@@ -7166,6 +7315,8 @@ mod tests {
             "internal-provider.example",
             "https://",
             "fingerprint-never",
+            "203.0.113.42",
+            "2001:db8",
         ] {
             assert!(
                 !serialized.contains(forbidden),

@@ -3,6 +3,7 @@ mod ledger;
 mod pre_authorize;
 mod rating;
 mod reconciliation;
+mod writer_contract;
 
 pub use exact_cache::{
     ExactCacheBillingError, ExactCacheBillingPlan, ExactCacheBillingRequest, ExactCacheDecision,
@@ -34,4 +35,12 @@ pub use reconciliation::{
     BillingReconciliationCurrencyTotal, BillingReconciliationDiscrepancy,
     BillingReconciliationInputRow, BillingReconciliationReport, BillingReconciliationSummary,
     ReconciliationError, ReconciliationIssue, reconcile_billing_usage_ledger,
+};
+pub use writer_contract::{
+    CONSISTENT_LEDGER_WRITER_SCHEMA, ConsistentBudgetCheck, ConsistentBudgetDimension,
+    ConsistentBudgetSnapshot, ConsistentCreditGrantSnapshot, ConsistentLedgerScope,
+    ConsistentLedgerWriteRequest, ConsistentLedgerWriterError, ConsistentLedgerWriterPlan,
+    ConsistentLedgerWriterState, ConsistentPostgresWriterContract, ConsistentWalletCheck,
+    ConsistentWalletSnapshot, ConsistentWriterLockPlan, ConsistentWriterLockStep,
+    ConsistentWriterStateMachine, plan_consistent_ledger_write,
 };

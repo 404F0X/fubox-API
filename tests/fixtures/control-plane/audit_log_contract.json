@@ -1,6 +1,6 @@
 {
   "todo": "E1-004",
-  "scope": "control-plane provider, channel, provider_key and price_version admin writes plus read-only audit log query API",
+  "scope": "control-plane provider, channel, api_key_profile, provider_key and price_version admin writes plus read-only audit log query API",
   "transaction_contract": {
     "business_and_audit_share_transaction": true,
     "paths": [
@@ -10,12 +10,15 @@
       "POST /admin/channels",
       "PATCH /admin/channels/{id}",
       "DELETE /admin/channels/{id}",
+      "POST /admin/api-key-profiles",
+      "PATCH /admin/api-key-profiles/{id}",
+      "DELETE /admin/api-key-profiles/{id}",
       "POST /admin/provider-keys",
       "PATCH /admin/provider-keys/{id}",
       "DELETE /admin/provider-keys/{id}",
       "POST /admin/price-versions"
     ],
-    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, provider_key or price_version write"
+    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, api_key_profile, provider_key or price_version write"
   },
   "metadata_contract": {
     "raw_request_body_omitted": true,
@@ -141,6 +144,60 @@
           "interval_seconds"
         ],
         "health_score": 0.9
+      },
+      "metadata": {
+        "transactional_audit": true,
+        "actor_session_id": "00000000-0000-0000-0000-000000000701",
+        "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+        "source": "control_plane_admin"
+      }
+    },
+    "api_key_profile_update_success_audit": {
+      "action": "api_key_profile.update",
+      "resource_type": "api_key_profile",
+      "before_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000401",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "project_id": "00000000-0000-0000-0000-000000000011",
+        "name": "ops profile",
+        "inbound_protocol": "openai",
+        "default_protocol_mode": "openai_compatible",
+        "model_aliases_keys": [
+          "gpt-visible"
+        ],
+        "allowed_models_count": 2,
+        "denied_models_count": 1,
+        "allowed_channel_tags_count": 1,
+        "blocked_provider_ids_count": 1,
+        "trace_header_rules_keys": [
+          "traceparent"
+        ],
+        "ip_allowlist_count": 2,
+        "request_overrides_count": 3,
+        "payload_policy_configured": true,
+        "status": "active"
+      },
+      "after_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000401",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "project_id": "00000000-0000-0000-0000-000000000011",
+        "name": "ops profile",
+        "inbound_protocol": "openai",
+        "default_protocol_mode": "openai_compatible",
+        "model_aliases_keys": [
+          "gpt-visible"
+        ],
+        "allowed_models_count": 2,
+        "denied_models_count": 1,
+        "allowed_channel_tags_count": 1,
+        "blocked_provider_ids_count": 1,
+        "trace_header_rules_keys": [
+          "traceparent"
+        ],
+        "ip_allowlist_count": 2,
+        "request_overrides_count": 3,
+        "payload_policy_configured": true,
+        "status": "inactive"
       },
       "metadata": {
         "transactional_audit": true,

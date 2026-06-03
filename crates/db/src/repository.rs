@@ -515,6 +515,58 @@ impl DbRepository {
         api_key_profile_from_row(row).map_err(DbError::Query)
     }
 
+    pub async fn create_api_key_profile_with_audit<F>(
+        &self,
+        profile: NewApiKeyProfile,
+        build_audit: F,
+    ) -> Result<ApiKeyProfile, DbError>
+    where
+        F: FnOnce(&ApiKeyProfile) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let row = sqlx::query(
+            r#"
+            insert into api_key_profiles (
+              tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
+              model_aliases, allowed_models, denied_models, allowed_channel_tags,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
+              payload_policy_id, status
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            returning
+              id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
+              model_aliases, allowed_models, denied_models, allowed_channel_tags,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
+              payload_policy_id, status
+            "#,
+        )
+        .bind(profile.tenant_id)
+        .bind(profile.project_id)
+        .bind(profile.name)
+        .bind(profile.inbound_protocol)
+        .bind(profile.default_protocol_mode)
+        .bind(profile.model_aliases)
+        .bind(profile.allowed_models)
+        .bind(profile.denied_models)
+        .bind(profile.allowed_channel_tags)
+        .bind(profile.blocked_provider_ids)
+        .bind(profile.trace_header_rules)
+        .bind(profile.ip_allowlist)
+        .bind(profile.request_overrides)
+        .bind(profile.payload_policy_id)
+        .bind(profile.status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let profile = api_key_profile_from_row(row).map_err(DbError::Query)?;
+        let audit = build_audit(&profile);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(profile)
+    }
+
     pub async fn list_api_key_profiles(
         &self,
         tenant_id: Uuid,
@@ -598,6 +650,92 @@ impl DbRepository {
             .map_err(DbError::Query)
     }
 
+    pub async fn update_api_key_profile_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        profile_id: Uuid,
+        update: UpdateApiKeyProfile,
+        build_audit: F,
+    ) -> Result<Option<ApiKeyProfile>, DbError>
+    where
+        F: FnOnce(&ApiKeyProfile, &ApiKeyProfile) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
+              model_aliases, allowed_models, denied_models, allowed_channel_tags,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
+              payload_policy_id, status
+            from api_key_profiles
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(profile_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = api_key_profile_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update api_key_profiles
+            set name = $3,
+                inbound_protocol = $4,
+                default_protocol_mode = $5,
+                model_aliases = $6,
+                allowed_models = $7,
+                denied_models = $8,
+                allowed_channel_tags = $9,
+                blocked_provider_ids = $10,
+                trace_header_rules = $11,
+                ip_allowlist = $12,
+                request_overrides = $13,
+                payload_policy_id = $14,
+                status = $15,
+                updated_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
+              model_aliases, allowed_models, denied_models, allowed_channel_tags,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
+              payload_policy_id, status
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(profile_id)
+        .bind(update.name)
+        .bind(update.inbound_protocol)
+        .bind(update.default_protocol_mode)
+        .bind(update.model_aliases)
+        .bind(update.allowed_models)
+        .bind(update.denied_models)
+        .bind(update.allowed_channel_tags)
+        .bind(update.blocked_provider_ids)
+        .bind(update.trace_header_rules)
+        .bind(update.ip_allowlist)
+        .bind(update.request_overrides)
+        .bind(update.payload_policy_id)
+        .bind(update.status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = api_key_profile_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
+    }
+
     pub async fn update_api_key_profile_status(
         &self,
         tenant_id: Uuid,
@@ -654,6 +792,65 @@ impl DbRepository {
         row.map(api_key_profile_from_row)
             .transpose()
             .map_err(DbError::Query)
+    }
+
+    pub async fn soft_delete_api_key_profile_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        profile_id: Uuid,
+        build_audit: F,
+    ) -> Result<Option<ApiKeyProfile>, DbError>
+    where
+        F: FnOnce(&ApiKeyProfile, &ApiKeyProfile) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
+              model_aliases, allowed_models, denied_models, allowed_channel_tags,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
+              payload_policy_id, status
+            from api_key_profiles
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(profile_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = api_key_profile_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update api_key_profiles
+            set status = 'deleted', updated_at = now(), deleted_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, project_id, name, inbound_protocol, default_protocol_mode,
+              model_aliases, allowed_models, denied_models, allowed_channel_tags,
+              blocked_provider_ids, trace_header_rules, ip_allowlist, request_overrides,
+              payload_policy_id, status
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(profile_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = api_key_profile_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
     }
 
     pub async fn get_default_profile_for_virtual_key(

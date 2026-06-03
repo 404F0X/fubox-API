@@ -1,0 +1,408 @@
+{
+  "contract": "billing_ledger_consistent_writer_plan_v1",
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "api_key",
+    "secret",
+    "raw_key",
+    "raw_wallet",
+    "database_url",
+    "payload",
+    "body"
+  ],
+  "scope": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "project_id": "00000000-0000-0000-0000-000000000002",
+    "virtual_key_id": "00000000-0000-0000-0000-000000000003"
+  },
+  "lock_contract": {
+    "transaction": "read_committed_single_transaction_with_explicit_for_update_locks",
+    "lock_order": ["wallets", "credit_grants", "budgets", "ledger_entries"],
+    "bounded_ledger_reads": ["tenant_id", "request_id", "related_ledger_entry_id", "idempotency_key"],
+    "for_update_required": true,
+    "unbounded_scan_allowed": false
+  },
+  "cases": [
+    {
+      "name": "reserve_sufficient_wallet_grants_and_budgets",
+      "operation": "reserve",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "amount": "3.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [
+          {
+            "grant_id": "00000000-0000-0000-0000-000000000101",
+            "currency": "USD",
+            "remaining_amount": "10.00000000",
+            "active": true
+          }
+        ],
+        "budgets": [
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000201",
+            "dimension": "tenant",
+            "currency": "USD",
+            "remaining_amount": "10.00000000",
+            "active": true
+          },
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000202",
+            "dimension": "project",
+            "currency": "USD",
+            "remaining_amount": "5.00000000",
+            "active": true
+          },
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000203",
+            "dimension": "virtual_key",
+            "currency": "USD",
+            "remaining_amount": "4.00000000",
+            "active": true
+          }
+        ],
+        "ledger_entries": []
+      },
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011",
+        "available_before_write": "10.00000000",
+        "required_debit": "3.00000000",
+        "refund_credit": "0.00000000",
+        "available_after_write": "7.00000000",
+        "ledger_entry_count": 1,
+        "status_update_count": 0,
+        "budget_after": [
+          ["tenant", "7.00000000", true],
+          ["project", "2.00000000", true],
+          ["virtual_key", "1.00000000", true]
+        ]
+      }
+    },
+    {
+      "name": "reserve_insufficient_wallet_rejected",
+      "operation": "reserve",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000012",
+        "amount": "3.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [
+          {
+            "grant_id": "00000000-0000-0000-0000-000000000102",
+            "currency": "USD",
+            "remaining_amount": "2.00000000",
+            "active": true
+          }
+        ],
+        "budgets": [
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000201",
+            "dimension": "tenant",
+            "currency": "USD",
+            "remaining_amount": "10.00000000",
+            "active": true
+          }
+        ],
+        "ledger_entries": []
+      },
+      "expect_error": "insufficient_wallet_balance"
+    },
+    {
+      "name": "reserve_replay_is_idempotent_even_when_current_balance_is_low",
+      "operation": "reserve",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000011",
+        "amount": "3.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [],
+        "budgets": [
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000201",
+            "dimension": "tenant",
+            "currency": "USD",
+            "remaining_amount": "0.00000000",
+            "active": true
+          }
+        ],
+        "ledger_entries": [
+          {
+            "id": "00000000-0000-0000-0000-000000000021",
+            "request_id": "00000000-0000-0000-0000-000000000011",
+            "entry_type": "reserve",
+            "amount": "-3.00000000",
+            "currency": "USD",
+            "status": "pending",
+            "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "idempotent",
+        "idempotency_key": "reserve:00000000-0000-0000-0000-000000000011",
+        "available_before_write": "-3.00000000",
+        "required_debit": "0.00000000",
+        "refund_credit": "0.00000000",
+        "available_after_write": "-3.00000000",
+        "ledger_entry_count": 0,
+        "status_update_count": 0,
+        "budget_after": [["tenant", "0.00000000", true]]
+      }
+    },
+    {
+      "name": "settle_with_pending_reserve_checks_only_incremental_debit",
+      "operation": "settle",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000013",
+        "final_cost": "3.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [
+          {
+            "grant_id": "00000000-0000-0000-0000-000000000103",
+            "currency": "USD",
+            "remaining_amount": "5.00000000",
+            "active": true
+          }
+        ],
+        "budgets": [
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000201",
+            "dimension": "tenant",
+            "currency": "USD",
+            "remaining_amount": "5.00000000",
+            "active": true
+          },
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000202",
+            "dimension": "project",
+            "currency": "USD",
+            "remaining_amount": "2.00000000",
+            "active": true
+          },
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000203",
+            "dimension": "virtual_key",
+            "currency": "USD",
+            "remaining_amount": "1.50000000",
+            "active": true
+          }
+        ],
+        "ledger_entries": [
+          {
+            "id": "00000000-0000-0000-0000-000000000023",
+            "request_id": "00000000-0000-0000-0000-000000000013",
+            "entry_type": "reserve",
+            "amount": "-2.00000000",
+            "currency": "USD",
+            "status": "pending",
+            "idempotency_key": "reserve:00000000-0000-0000-0000-000000000013"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "settle:00000000-0000-0000-0000-000000000013",
+        "available_before_write": "3.00000000",
+        "required_debit": "1.00000000",
+        "refund_credit": "0.00000000",
+        "available_after_write": "2.00000000",
+        "ledger_entry_count": 1,
+        "status_update_count": 1,
+        "budget_after": [
+          ["tenant", "4.00000000", true],
+          ["project", "1.00000000", true],
+          ["virtual_key", "0.50000000", true]
+        ]
+      }
+    },
+    {
+      "name": "non_idempotent_duplicate_settle_rejected",
+      "operation": "settle",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000014",
+        "final_cost": "3.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "10.00000000"
+        },
+        "credit_grants": [],
+        "budgets": [],
+        "ledger_entries": [
+          {
+            "id": "00000000-0000-0000-0000-000000000034",
+            "request_id": "00000000-0000-0000-0000-000000000014",
+            "entry_type": "settle",
+            "amount": "-3.00000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "idempotency_key": "legacy-settle-key"
+          }
+        ]
+      },
+      "expect_error": "request_already_settled"
+    },
+    {
+      "name": "partial_refund_confirmed_credit_apply",
+      "operation": "refund_partial",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000031",
+        "refund_operation_id": "00000000-0000-0000-0000-000000000051",
+        "amount": "1.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [],
+        "budgets": [],
+        "ledger_entries": [
+          {
+            "id": "00000000-0000-0000-0000-000000000031",
+            "request_id": "00000000-0000-0000-0000-000000000011",
+            "entry_type": "settle",
+            "amount": "-3.00000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "idempotency_key": "settle:00000000-0000-0000-0000-000000000011"
+          }
+        ]
+      },
+      "expect": {
+        "outcome": "apply",
+        "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000031:00000000-0000-0000-0000-000000000051",
+        "available_before_write": "-3.00000000",
+        "required_debit": "0.00000000",
+        "refund_credit": "1.00000000",
+        "available_after_write": "-2.00000000",
+        "ledger_entry_count": 1,
+        "status_update_count": 0,
+        "budget_after": []
+      }
+    },
+    {
+      "name": "partial_refund_over_remaining_amount_rejected",
+      "operation": "refund_partial",
+      "request": {
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000035",
+        "refund_operation_id": "00000000-0000-0000-0000-000000000052",
+        "amount": "0.50000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [],
+        "budgets": [],
+        "ledger_entries": [
+          {
+            "id": "00000000-0000-0000-0000-000000000035",
+            "request_id": "00000000-0000-0000-0000-000000000015",
+            "entry_type": "settle",
+            "amount": "-1.00000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "idempotency_key": "settle:00000000-0000-0000-0000-000000000015"
+          },
+          {
+            "id": "00000000-0000-0000-0000-000000000045",
+            "request_id": "00000000-0000-0000-0000-000000000015",
+            "related_ledger_entry_id": "00000000-0000-0000-0000-000000000035",
+            "entry_type": "refund",
+            "amount": "0.75000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "idempotency_key": "refund_partial:00000000-0000-0000-0000-000000000035:00000000-0000-0000-0000-000000000055"
+          }
+        ]
+      },
+      "expect_error": "partial_refund_consumes_remaining"
+    },
+    {
+      "name": "reserve_rejected_by_virtual_key_budget_limit",
+      "operation": "reserve",
+      "request": {
+        "request_id": "00000000-0000-0000-0000-000000000016",
+        "amount": "3.00000000",
+        "currency": "USD"
+      },
+      "state": {
+        "wallet": {
+          "wallet_id": "00000000-0000-0000-0000-000000000010",
+          "currency": "USD",
+          "available_balance": "0.00000000"
+        },
+        "credit_grants": [
+          {
+            "grant_id": "00000000-0000-0000-0000-000000000106",
+            "currency": "USD",
+            "remaining_amount": "10.00000000",
+            "active": true
+          }
+        ],
+        "budgets": [
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000201",
+            "dimension": "tenant",
+            "currency": "USD",
+            "remaining_amount": "10.00000000",
+            "active": true
+          },
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000202",
+            "dimension": "project",
+            "currency": "USD",
+            "remaining_amount": "10.00000000",
+            "active": true
+          },
+          {
+            "budget_id": "00000000-0000-0000-0000-000000000203",
+            "dimension": "virtual_key",
+            "currency": "USD",
+            "remaining_amount": "2.50000000",
+            "active": true
+          }
+        ],
+        "ledger_entries": []
+      },
+      "expect_error": "insufficient_budget"
+    }
+  ]
+}

@@ -26,12 +26,14 @@
     "expected_trace_affinity_status": "Disabled"
   },
   "safety_contract": {
+    "stores_trace_id_material": false,
     "stores_request_or_response_body": false,
     "stores_authorization_material": false,
     "adds_metrics_labels": false
   },
   "notes": [
     "Gateway stores this summary next to the full route decision snapshot so request detail readers can render stable fields without parsing every candidate.",
-    "The full candidate list remains present at the snapshot root for detailed inspection."
+    "The full candidate list remains present at the snapshot root for detailed inspection.",
+    "Gateway stores accepted trace ids in request_logs.trace_id and omits raw trace id material from route_decision_snapshot."
   ]
 }

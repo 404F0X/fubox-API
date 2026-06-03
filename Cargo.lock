@@ -162,6 +162,7 @@ dependencies = [
 name = "ai-gateway-observability"
 version = "0.1.0-alpha"
 dependencies = [
+ "regex",
  "serde_json",
  "sha2",
  "tracing",

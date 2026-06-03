@@ -11,8 +11,6 @@ import { HealthDashboard } from "./components/HealthDashboard";
 import { Activity, Database, Key, Network, ScrollText, ShieldCheck } from "./components/icons";
 import { type AdminSession, LoginPanel } from "./components/LoginPanel";
 import { Navigation, type NavItem } from "./components/Navigation";
-import { ProviderKeysPage } from "./components/ProviderKeysPage";
-import { ProvidersPage } from "./components/ProvidersPage";
 
 type AppView =
   | "overview"
@@ -46,6 +44,10 @@ type AdminCapability =
 const BillingPage = lazy(() => import("./components/BillingPage"));
 const AuditLogsPage = lazy(() => import("./components/AuditLogsPage"));
 const ModelsPage = lazy(() => import("./components/ModelsPage"));
+const ProviderKeysPage = lazy(() =>
+  import("./components/ProviderKeysPage").then((module) => ({ default: module.ProviderKeysPage })),
+);
+const ProvidersPage = lazy(() => import("./components/ProvidersPage").then((module) => ({ default: module.ProvidersPage })));
 const RequestLogsPage = lazy(() =>
   import("./components/RequestLogsPage").then((module) => ({ default: module.RequestLogsPage })),
 );
@@ -257,12 +259,28 @@ export function App() {
             <BillingPage />
           </Suspense>
         ) : selectedView === "providerKeys" ? (
-          <ProviderKeysPage />
+          <Suspense
+            fallback={
+              <section className="admin-panel">
+                <p className="muted-copy">Loading provider keys.</p>
+              </section>
+            }
+          >
+            <ProviderKeysPage />
+          </Suspense>
         ) : selectedView === "providers" ? (
-          <ProvidersPage
-            canManageProviders={capabilityAccess.has("provider.manage")}
-            canRunManualTest={capabilityAccess.has("manual_test.run")}
-          />
+          <Suspense
+            fallback={
+              <section className="admin-panel">
+                <p className="muted-copy">Loading providers.</p>
+              </section>
+            }
+          >
+            <ProvidersPage
+              canManageProviders={capabilityAccess.has("provider.manage")}
+              canRunManualTest={capabilityAccess.has("manual_test.run")}
+            />
+          </Suspense>
         ) : selectedView === "models" ? (
           <Suspense
             fallback={

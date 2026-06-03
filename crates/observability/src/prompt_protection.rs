@@ -1,3 +1,4 @@
+use regex::{Regex, RegexBuilder};
 use serde_json::{Map, Value};
 
 use crate::{REDACTED_SECRET, redact_secrets};
@@ -25,6 +26,7 @@ pub const MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES: usize = 256;
 pub const MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES: usize = 128;
 const MAX_CONFIGURED_RULE_SCAN_BYTES: usize = 64 * 1024;
 const MAX_CONFIGURED_RULE_MATCHES_PER_VALUE: usize = 16;
+const MAX_CONFIGURED_REGEX_SIZE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptProtectionAction {
@@ -61,6 +63,7 @@ pub struct PromptProtectionResult {
 pub enum PromptProtectionConfiguredPatternKind {
     Literal,
     Contains,
+    Regex,
 }
 
 impl PromptProtectionConfiguredPatternKind {
@@ -68,6 +71,7 @@ impl PromptProtectionConfiguredPatternKind {
         match self {
             Self::Literal => "literal",
             Self::Contains => "contains",
+            Self::Regex => "regex",
         }
     }
 }
@@ -89,7 +93,7 @@ impl PromptProtectionConfiguredScope {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PromptProtectionConfiguredRule {
     pub name: String,
     pub action: PromptProtectionAction,
@@ -97,9 +101,10 @@ pub struct PromptProtectionConfiguredRule {
     pub pattern_kind: PromptProtectionConfiguredPatternKind,
     pub pattern: String,
     pub case_sensitive: bool,
+    compiled_regex: Option<Regex>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PromptProtectionRuleSet {
     pub rules: Vec<PromptProtectionConfiguredRule>,
 }
@@ -267,6 +272,10 @@ pub fn prompt_protection_rule_set_summary(rule_set: &PromptProtectionRuleSet) ->
                         MAX_CONFIGURED_RULE_MATCHES_PER_VALUE,
                     )),
                 ),
+                (
+                    "max_regex_size_bytes",
+                    Value::Number(serde_json::Number::from(MAX_CONFIGURED_REGEX_SIZE_BYTES)),
+                ),
             ]),
         ),
         (
@@ -303,7 +312,7 @@ fn parse_configured_rule(
             .unwrap_or(&Value::String("any".to_string())),
         &field("scope"),
     )?;
-    let (pattern_kind, pattern, case_sensitive) = parse_rule_pattern(
+    let (pattern_kind, pattern, case_sensitive, compiled_regex) = parse_rule_pattern(
         object
             .get("pattern")
             .ok_or_else(|| rule_set_error("missing_pattern", Some(&field("pattern"))))?,
@@ -317,6 +326,7 @@ fn parse_configured_rule(
         pattern_kind,
         pattern,
         case_sensitive,
+        compiled_regex,
     })
 }
 
@@ -405,7 +415,15 @@ fn parse_rule_scope(
 fn parse_rule_pattern(
     value: &Value,
     field: &str,
-) -> Result<(PromptProtectionConfiguredPatternKind, String, bool), PromptProtectionRuleSetError> {
+) -> Result<
+    (
+        PromptProtectionConfiguredPatternKind,
+        String,
+        bool,
+        Option<Regex>,
+    ),
+    PromptProtectionRuleSetError,
+> {
     match value {
         Value::String(pattern) => validate_pattern_value(
             PromptProtectionConfiguredPatternKind::Contains,
@@ -424,12 +442,7 @@ fn parse_rule_pattern(
             let pattern_kind = match pattern_type.as_str() {
                 "literal" | "exact" => PromptProtectionConfiguredPatternKind::Literal,
                 "contains" | "substring" => PromptProtectionConfiguredPatternKind::Contains,
-                "regex" | "regex_like" | "regexp" => {
-                    return Err(rule_set_error(
-                        "unsupported_pattern_type",
-                        Some(&format!("{field}.type")),
-                    ));
-                }
+                "regex" | "regex_like" | "regexp" => PromptProtectionConfiguredPatternKind::Regex,
                 _ => {
                     return Err(rule_set_error(
                         "invalid_pattern_type",
@@ -468,7 +481,15 @@ fn validate_pattern_value(
     pattern: &str,
     case_sensitive: bool,
     field: &str,
-) -> Result<(PromptProtectionConfiguredPatternKind, String, bool), PromptProtectionRuleSetError> {
+) -> Result<
+    (
+        PromptProtectionConfiguredPatternKind,
+        String,
+        bool,
+        Option<Regex>,
+    ),
+    PromptProtectionRuleSetError,
+> {
     let pattern = pattern.trim();
 
     if pattern.is_empty() {
@@ -484,7 +505,36 @@ fn validate_pattern_value(
         return Err(rule_set_error("secret_like_pattern_value", Some(field)));
     }
 
-    Ok((pattern_kind, pattern.to_string(), case_sensitive))
+    let compiled_regex = if pattern_kind == PromptProtectionConfiguredPatternKind::Regex {
+        Some(compile_configured_regex(pattern, case_sensitive, field)?)
+    } else {
+        None
+    };
+
+    Ok((
+        pattern_kind,
+        pattern.to_string(),
+        case_sensitive,
+        compiled_regex,
+    ))
+}
+
+fn compile_configured_regex(
+    pattern: &str,
+    case_sensitive: bool,
+    field: &str,
+) -> Result<Regex, PromptProtectionRuleSetError> {
+    let regex = RegexBuilder::new(pattern)
+        .case_insensitive(!case_sensitive)
+        .size_limit(MAX_CONFIGURED_REGEX_SIZE_BYTES)
+        .build()
+        .map_err(|_| rule_set_error("invalid_regex", Some(field)))?;
+
+    if regex.is_match("") {
+        return Err(rule_set_error("regex_matches_empty", Some(field)));
+    }
+
+    Ok(regex)
 }
 
 fn configured_rule_summary(rule: &PromptProtectionConfiguredRule) -> Value {
@@ -723,6 +773,7 @@ fn configured_rule_match_ranges(
     match rule.pattern_kind {
         PromptProtectionConfiguredPatternKind::Literal => literal_match_ranges(input, rule),
         PromptProtectionConfiguredPatternKind::Contains => contains_match_ranges(input, rule),
+        PromptProtectionConfiguredPatternKind::Regex => regex_match_ranges(input, rule),
     }
 }
 
@@ -760,6 +811,21 @@ fn contains_match_ranges(
     }
 
     ranges
+}
+
+fn regex_match_ranges(input: &str, rule: &PromptProtectionConfiguredRule) -> Vec<(usize, usize)> {
+    let Some(regex) = rule.compiled_regex.as_ref() else {
+        return Vec::new();
+    };
+    let scan_end = bounded_scan_end(input, MAX_CONFIGURED_RULE_SCAN_BYTES);
+    let haystack = &input[..scan_end];
+
+    regex
+        .find_iter(haystack)
+        .take(MAX_CONFIGURED_RULE_MATCHES_PER_VALUE)
+        .map(|matched| (matched.start(), matched.end()))
+        .filter(|(start, end)| start < end)
+        .collect()
 }
 
 fn collect_substring_ranges(haystack: &str, pattern: &str, ranges: &mut Vec<(usize, usize)>) {
@@ -1296,12 +1362,12 @@ mod tests {
         let result_summary = configured_prompt_protection_result_summary(&result);
         let safe_json = result.safe_json.as_ref().expect("safe json");
 
-        assert_eq!(rule_set.rules.len(), 3);
+        assert_eq!(rule_set.rules.len(), 5);
         assert_eq!(
             rule_set_summary["schema"],
             PROMPT_PROTECTION_RULE_SET_SCHEMA
         );
-        assert_eq!(rule_set_summary["rule_count"], 3);
+        assert_eq!(rule_set_summary["rule_count"], rule_set.rules.len());
         assert_eq!(
             rule_set_summary["limits"]["max_rules"],
             MAX_PROMPT_PROTECTION_CONFIGURED_RULES
@@ -1333,8 +1399,12 @@ mod tests {
         );
         assert_eq!(safe_json["metadata"]["ticket"], REDACTED_SECRET);
         assert_eq!(result_summary["action"], "reject");
-        assert_eq!(result_summary["hit_count"], 3);
+        assert_eq!(
+            result_summary["hit_count"],
+            fixture["expected_result"]["hit_count"]
+        );
         assert_eq!(result_summary["raw_pattern_values_omitted"], true);
+        assert_eq!(result_summary["pattern_types"]["regex"], 2);
 
         let serialized_safe_outputs = format!("{rule_set_summary}{result_summary}");
         for marker in fixture["forbidden_serialized_markers"]
@@ -1398,21 +1468,35 @@ mod tests {
     fn configurable_rules_reject_invalid_config_without_echoing_secret_material() {
         let fixture = configurable_rule_fixture();
         let contract = &fixture["invalid_config_contract"];
-        let unsupported_regex = parse_prompt_protection_rule_set(&json!({
+        let invalid_regex = parse_prompt_protection_rule_set(&json!({
             "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
             "rules": [{
                 "name": "reject_regex",
                 "action": "reject",
                 "scope": "messages",
-                "pattern": { "type": "regex", "value": "ignore previous instructions" }
+                "pattern": { "type": "regex", "value": "(" }
             }]
         }))
-        .expect_err("regex is not enabled in this crate slice");
+        .expect_err("invalid regex should be rejected at config parse");
         assert_eq!(
-            unsupported_regex.code,
-            contract["unsupported_regex_pattern_code"]
-                .as_str()
-                .expect("code")
+            invalid_regex.code,
+            contract["invalid_regex_code"].as_str().expect("code")
+        );
+        assert!(!invalid_regex.to_string().contains('('));
+
+        let empty_regex = parse_prompt_protection_rule_set(&json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "rules": [{
+                "name": "empty_regex",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": { "type": "regex_like", "value": ".*" }
+            }]
+        }))
+        .expect_err("regex matching empty strings should be rejected");
+        assert_eq!(
+            empty_regex.code,
+            contract["regex_matches_empty_code"].as_str().expect("code")
         );
 
         let secret_name = parse_prompt_protection_rule_set(&json!({
@@ -1529,7 +1613,7 @@ mod tests {
                 "name": "mask_public_id_marker",
                 "action": "mask",
                 "scope": "any",
-                "pattern": { "type": "contains", "value": "pk_live" }
+                "pattern": { "type": "regex", "value": "pk_live" }
             }]
         }))
         .expect("rule set");

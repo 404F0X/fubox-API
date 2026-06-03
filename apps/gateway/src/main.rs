@@ -41,7 +41,7 @@ use ai_gateway_observability::{
 use ai_gateway_routing::{
     ChannelHealth, ChannelStatus, HealthImpact, ProviderErrorClassification, ProviderErrorSignal,
     ProviderTransportErrorKind, RouteCandidate, RouteDecision, RouteDecisionSnapshot, RouteRequest,
-    classify_provider_error, select_route,
+    RouteSelectionContext, classify_provider_error, select_route_with_context,
 };
 use axum::{
     Json, Router,
@@ -58,7 +58,8 @@ use db::{
     AuthContext, GatewayRepository, LedgerSettleEntry, PreAuthorizeReadModel,
     ProviderAttemptFinalUpdate, ProviderKeyRuntimeStatusUpdate, RequestFinalUpdate,
     RequestPayloadLog, RequestRouteLog, ResolvedCanonicalModel, ResolvedChatRoute,
-    ResolvedPriceVersion, VisibleModel, connect_gateway_repository,
+    ResolvedPriceVersion, TraceAffinityPreviousSuccessRoute, VisibleModel,
+    connect_gateway_repository,
 };
 use errors::{
     ErrorLogSummary, GatewayApiError, adapter_error_response, anthropic_adapter_error_response,
@@ -76,6 +77,10 @@ const GATEWAY_ROUTE_POLICY_VERSION: &str = "gateway_db_route_v1";
 const ROUTE_PRIORITY_ASSOCIATION_MULTIPLIER: i32 = 1_000_000;
 const AI_PROFILE_HEADER: &str = "x-ai-profile";
 const AI_PROFILE_HEADER_MAX_LEN: usize = 128;
+const AI_TRACE_ID_HEADER: &str = "x-ai-trace-id";
+const AI_TRACE_ID_MAX_LEN: usize = 256;
+const TRACE_AFFINITY_LOOKBACK_SECONDS: i64 = 3_600;
+const GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA: &str = "gateway_trace_affinity_runtime_v1";
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 const X_REAL_IP_HEADER: &str = "x-real-ip";
 const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64";
@@ -185,6 +190,27 @@ struct RuntimePayloadDecision {
     metadata: Value,
     payload_stored: bool,
     redaction_status: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayRequestTrace {
+    trace_id: Option<String>,
+    status: &'static str,
+    trace_id_len: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayTraceAffinityRuntime {
+    trace_id_status: &'static str,
+    trace_id_len: Option<usize>,
+    lookup_status: &'static str,
+    previous_success: Option<TraceAffinityPreviousSuccessRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GatewayRouteDecision {
+    decision: RouteDecision,
+    trace_affinity: GatewayTraceAffinityRuntime,
 }
 
 #[derive(Clone)]
@@ -318,6 +344,7 @@ fn gateway_cors_layer() -> CorsLayer {
             CONTENT_TYPE,
             AUTHORIZATION,
             HeaderName::from_static(AI_PROFILE_HEADER),
+            HeaderName::from_static(AI_TRACE_ID_HEADER),
         ]);
 
     let allowed_origins = gateway_cors_allowed_origins();
@@ -387,6 +414,7 @@ async fn chat_completions(
     };
     let payload_policy =
         resolved_payload_policy(&auth, &state.app.config().security.default_payload_policy);
+    let request_trace = gateway_request_trace_from_headers(&headers);
 
     if body.len() as u64 > state.app.config().server.max_request_body_bytes {
         let error = GatewayApiError::request_body_too_large(
@@ -402,7 +430,8 @@ async fn chat_completions(
                 &auth,
                 None,
                 "request_body_too_large",
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
         )
@@ -425,7 +454,8 @@ async fn chat_completions(
                     &auth,
                     requested_model.as_deref(),
                     "request_parse_or_validate_failed",
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 summarize_adapter_error(&error),
             )
@@ -460,7 +490,8 @@ async fn chat_completions(
                 &auth,
                 requested_model_for_log,
                 rejection.metadata,
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
         )
@@ -484,7 +515,8 @@ async fn chat_completions(
                 RequestRouteLog::unresolved(route_snapshot_for_model_not_found(
                     &auth,
                     &request.model,
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -501,14 +533,23 @@ async fn chat_completions(
         Ok(route_candidates) => route_candidates,
         Err(error) => return gateway_error_response_with_metrics(started_at, error),
     };
-    let route_decision = select_route(
-        route_request_for_selection(&request.model, &canonical_model, &request_body_hash),
-        route_candidates.iter().map(routing_candidate_from_route),
+    let route_decision = route_decision_with_gateway_trace_affinity(
+        repository,
+        &auth,
+        &request_trace,
+        &request.model,
+        &canonical_model,
+        &request_body_hash,
+        &route_candidates,
+    )
+    .await;
+    let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+        &route_decision.decision.snapshot(),
+        &route_decision.trace_affinity,
     );
-    let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
-        &route_decision,
+        &route_decision.decision,
         state.max_provider_attempts,
     );
     let selected_route = match attempt_routes.first() {
@@ -521,7 +562,8 @@ async fn chat_completions(
                 Some(&request.model),
                 Some(&request_body_hash),
                 request_payload_log(&payload_policy, &body),
-                RequestRouteLog::for_canonical(&canonical_model, route_snapshot),
+                RequestRouteLog::for_canonical(&canonical_model, route_snapshot)
+                    .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -536,7 +578,8 @@ async fn chat_completions(
             Some(&request.model),
             Some(&request_body_hash),
             request_payload_log(&payload_policy, &body),
-            RequestRouteLog::for_route(selected_route, route_snapshot.clone()),
+            RequestRouteLog::for_route(selected_route, route_snapshot.clone())
+                .with_trace_id(request_trace.trace_id.as_deref()),
         )
         .await
     {
@@ -816,6 +859,7 @@ async fn responses(
     };
     let payload_policy =
         resolved_payload_policy(&auth, &state.app.config().security.default_payload_policy);
+    let request_trace = gateway_request_trace_from_headers(&headers);
 
     if body.len() as u64 > state.app.config().server.max_request_body_bytes {
         let error = GatewayApiError::request_body_too_large(
@@ -832,7 +876,8 @@ async fn responses(
                 &auth,
                 None,
                 "request_body_too_large",
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
         )
@@ -856,7 +901,8 @@ async fn responses(
                     &auth,
                     requested_model.as_deref(),
                     "request_parse_or_validate_failed",
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 summarize_adapter_error(&error),
             )
@@ -883,7 +929,8 @@ async fn responses(
                 RequestRouteLog::unresolved(route_snapshot_for_model_not_found(
                     &auth,
                     &request.model,
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -912,14 +959,23 @@ async fn responses(
             );
         }
     };
-    let route_decision = select_route(
-        route_request_for_selection(&request.model, &canonical_model, &request_body_hash),
-        route_candidates.iter().map(routing_candidate_from_route),
+    let route_decision = route_decision_with_gateway_trace_affinity(
+        repository,
+        &auth,
+        &request_trace,
+        &request.model,
+        &canonical_model,
+        &request_body_hash,
+        &route_candidates,
+    )
+    .await;
+    let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+        &route_decision.decision.snapshot(),
+        &route_decision.trace_affinity,
     );
-    let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
-        &route_decision,
+        &route_decision.decision,
         state.max_provider_attempts,
     );
     let selected_route = match attempt_routes.first() {
@@ -933,7 +989,8 @@ async fn responses(
                 Some(&request.model),
                 Some(&request_body_hash),
                 request_payload_log(&payload_policy, &body),
-                RequestRouteLog::for_canonical(&canonical_model, route_snapshot),
+                RequestRouteLog::for_canonical(&canonical_model, route_snapshot)
+                    .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -948,7 +1005,8 @@ async fn responses(
             Some(&request.model),
             Some(&request_body_hash),
             request_payload_log(&payload_policy, &body),
-            RequestRouteLog::for_route(selected_route, route_snapshot.clone()),
+            RequestRouteLog::for_route(selected_route, route_snapshot.clone())
+                .with_trace_id(request_trace.trace_id.as_deref()),
         )
         .await
     {
@@ -1253,6 +1311,7 @@ async fn embeddings(
     };
     let payload_policy =
         resolved_payload_policy(&auth, &state.app.config().security.default_payload_policy);
+    let request_trace = gateway_request_trace_from_headers(&headers);
 
     if body.len() as u64 > state.app.config().server.max_request_body_bytes {
         let error = GatewayApiError::request_body_too_large(
@@ -1269,7 +1328,8 @@ async fn embeddings(
                 &auth,
                 None,
                 "request_body_too_large",
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
         )
@@ -1293,7 +1353,8 @@ async fn embeddings(
                     &auth,
                     requested_model.as_deref(),
                     "request_parse_or_validate_failed",
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 summarize_adapter_error(&error),
             )
@@ -1320,7 +1381,8 @@ async fn embeddings(
                 RequestRouteLog::unresolved(route_snapshot_for_model_not_found(
                     &auth,
                     &request.model,
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -1349,14 +1411,23 @@ async fn embeddings(
             );
         }
     };
-    let route_decision = select_route(
-        route_request_for_selection(&request.model, &canonical_model, &request_body_hash),
-        route_candidates.iter().map(routing_candidate_from_route),
+    let route_decision = route_decision_with_gateway_trace_affinity(
+        repository,
+        &auth,
+        &request_trace,
+        &request.model,
+        &canonical_model,
+        &request_body_hash,
+        &route_candidates,
+    )
+    .await;
+    let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+        &route_decision.decision.snapshot(),
+        &route_decision.trace_affinity,
     );
-    let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
-        &route_decision,
+        &route_decision.decision,
         state.max_provider_attempts,
     );
     let selected_route = match attempt_routes.first() {
@@ -1370,7 +1441,8 @@ async fn embeddings(
                 Some(&request.model),
                 Some(&request_body_hash),
                 request_payload_log(&payload_policy, &body),
-                RequestRouteLog::for_canonical(&canonical_model, route_snapshot),
+                RequestRouteLog::for_canonical(&canonical_model, route_snapshot)
+                    .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -1385,7 +1457,8 @@ async fn embeddings(
             Some(&request.model),
             Some(&request_body_hash),
             request_payload_log(&payload_policy, &body),
-            RequestRouteLog::for_route(selected_route, route_snapshot.clone()),
+            RequestRouteLog::for_route(selected_route, route_snapshot.clone())
+                .with_trace_id(request_trace.trace_id.as_deref()),
         )
         .await
     {
@@ -1674,6 +1747,7 @@ async fn anthropic_messages(
     };
     let payload_policy =
         resolved_payload_policy(&auth, &state.app.config().security.default_payload_policy);
+    let request_trace = gateway_request_trace_from_headers(&headers);
 
     if body.len() as u64 > state.app.config().server.max_request_body_bytes {
         let error = GatewayApiError::request_body_too_large(
@@ -1690,7 +1764,8 @@ async fn anthropic_messages(
                 &auth,
                 None,
                 "request_body_too_large",
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
         )
@@ -1715,7 +1790,8 @@ async fn anthropic_messages(
                     &auth,
                     requested_model.as_deref(),
                     "request_parse_or_validate_failed",
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 summarize_anthropic_adapter_error(&error),
             )
@@ -1742,7 +1818,8 @@ async fn anthropic_messages(
                 RequestRouteLog::unresolved(route_snapshot_for_model_not_found(
                     &auth,
                     &request.model,
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -1771,14 +1848,23 @@ async fn anthropic_messages(
             );
         }
     };
-    let route_decision = select_route(
-        route_request_for_selection(&request.model, &canonical_model, &request_body_hash),
-        route_candidates.iter().map(routing_candidate_from_route),
+    let route_decision = route_decision_with_gateway_trace_affinity(
+        repository,
+        &auth,
+        &request_trace,
+        &request.model,
+        &canonical_model,
+        &request_body_hash,
+        &route_candidates,
+    )
+    .await;
+    let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+        &route_decision.decision.snapshot(),
+        &route_decision.trace_affinity,
     );
-    let route_snapshot = route_decision_snapshot_value(&route_decision.snapshot());
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
-        &route_decision,
+        &route_decision.decision,
         state.max_provider_attempts,
     );
     let selected_route = match attempt_routes.first() {
@@ -1792,7 +1878,8 @@ async fn anthropic_messages(
                 Some(&request.model),
                 Some(&request_body_hash),
                 request_payload_log(&payload_policy, &body),
-                RequestRouteLog::for_canonical(&canonical_model, route_snapshot),
+                RequestRouteLog::for_canonical(&canonical_model, route_snapshot)
+                    .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -1807,7 +1894,8 @@ async fn anthropic_messages(
             Some(&request.model),
             Some(&request_body_hash),
             request_payload_log(&payload_policy, &body),
-            RequestRouteLog::for_route(selected_route, route_snapshot.clone()),
+            RequestRouteLog::for_route(selected_route, route_snapshot.clone())
+                .with_trace_id(request_trace.trace_id.as_deref()),
         )
         .await
     {
@@ -2135,6 +2223,7 @@ async fn gemini_generate_content_native_passthrough(
     };
     let payload_policy =
         resolved_payload_policy(&auth, &state.app.config().security.default_payload_policy);
+    let request_trace = gateway_request_trace_from_headers(&headers);
 
     let native_path = match parse_gemini_native_path(&native_path) {
         Ok(native_path) => native_path,
@@ -2146,7 +2235,8 @@ async fn gemini_generate_content_native_passthrough(
                 None,
                 None,
                 omitted_request_payload_log(&payload_policy, body.len(), "native_path_invalid"),
-                RequestRouteLog::unresolved(route_snapshot_for_rejection(&auth, None, error.code)),
+                RequestRouteLog::unresolved(route_snapshot_for_rejection(&auth, None, error.code))
+                    .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -2170,7 +2260,8 @@ async fn gemini_generate_content_native_passthrough(
                 &auth,
                 Some(&native_path.requested_model),
                 "request_body_too_large",
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
         )
@@ -2194,7 +2285,8 @@ async fn gemini_generate_content_native_passthrough(
                     &auth,
                     Some(&native_path.requested_model),
                     "native_request_parse_or_validate_failed",
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 summarize_adapter_error(&error),
             )
@@ -2217,7 +2309,8 @@ async fn gemini_generate_content_native_passthrough(
                 &auth,
                 Some(&native_path.requested_model),
                 "native_request_parse_or_validate_failed",
-            )),
+            ))
+            .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             summarize_adapter_error(&error),
         )
@@ -2247,7 +2340,8 @@ async fn gemini_generate_content_native_passthrough(
                 RequestRouteLog::unresolved(route_snapshot_for_model_not_found(
                     &auth,
                     &native_path.requested_model,
-                )),
+                ))
+                .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -2276,18 +2370,23 @@ async fn gemini_generate_content_native_passthrough(
             );
         }
     };
-    let route_decision = select_route(
-        route_request_for_selection(
-            &native_path.requested_model,
-            &canonical_model,
-            &request_body_hash,
-        ),
-        route_candidates.iter().map(routing_candidate_from_route),
+    let route_decision = route_decision_with_gateway_trace_affinity(
+        repository,
+        &auth,
+        &request_trace,
+        &native_path.requested_model,
+        &canonical_model,
+        &request_body_hash,
+        &route_candidates,
+    )
+    .await;
+    let route_snapshot = native_route_decision_snapshot_value_with_gateway_trace_affinity(
+        &route_decision.decision.snapshot(),
+        &route_decision.trace_affinity,
     );
-    let route_snapshot = native_route_decision_snapshot_value(&route_decision.snapshot());
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
-        &route_decision,
+        &route_decision.decision,
         state.max_provider_attempts,
     );
     let selected_route = match attempt_routes.first() {
@@ -2301,7 +2400,8 @@ async fn gemini_generate_content_native_passthrough(
                 Some(&native_path.requested_model),
                 Some(&request_body_hash),
                 request_payload_log(&payload_policy, &body),
-                RequestRouteLog::for_canonical(&canonical_model, route_snapshot),
+                RequestRouteLog::for_canonical(&canonical_model, route_snapshot)
+                    .with_trace_id(request_trace.trace_id.as_deref()),
                 started_at,
                 error.log_summary(),
             )
@@ -2316,7 +2416,8 @@ async fn gemini_generate_content_native_passthrough(
             Some(&native_path.requested_model),
             Some(&request_body_hash),
             request_payload_log(&payload_policy, &body),
-            RequestRouteLog::for_route(selected_route, route_snapshot.clone()),
+            RequestRouteLog::for_route(selected_route, route_snapshot.clone())
+                .with_trace_id(request_trace.trace_id.as_deref()),
         )
         .await
     {
@@ -3346,6 +3447,7 @@ fn redact_provider_key_from_value(value: Value, provider_key: &str) -> Value {
 impl<'a> RequestRouteLog<'a> {
     fn unresolved(route_decision_snapshot: Value) -> Self {
         Self {
+            trace_id: None,
             canonical_model_id: None,
             upstream_model: None,
             resolved_provider_id: None,
@@ -3361,6 +3463,7 @@ impl<'a> RequestRouteLog<'a> {
         route_decision_snapshot: Value,
     ) -> RequestRouteLog<'static> {
         RequestRouteLog {
+            trace_id: None,
             canonical_model_id: Some(model.id),
             upstream_model: None,
             resolved_provider_id: None,
@@ -3373,6 +3476,7 @@ impl<'a> RequestRouteLog<'a> {
 
     fn for_route(route: &'a ResolvedChatRoute, route_decision_snapshot: Value) -> Self {
         Self {
+            trace_id: None,
             canonical_model_id: Some(route.canonical_model_id),
             upstream_model: Some(route.upstream_model.as_str()),
             resolved_provider_id: Some(route.provider_id),
@@ -3381,6 +3485,14 @@ impl<'a> RequestRouteLog<'a> {
             route_policy_version: Some(GATEWAY_ROUTE_POLICY_VERSION),
             route_decision_snapshot,
         }
+    }
+
+    fn with_trace_id(mut self, trace_id: Option<&str>) -> Self {
+        self.trace_id = trace_id
+            .map(str::trim)
+            .filter(|trace_id| !trace_id.is_empty())
+            .map(str::to_string);
+        self
     }
 }
 
@@ -3767,6 +3879,124 @@ fn prompt_protection_scope_label(scope: &str) -> &'static str {
     }
 }
 
+fn gateway_request_trace_from_headers(headers: &HeaderMap) -> GatewayRequestTrace {
+    let Some(value) = headers.get(AI_TRACE_ID_HEADER) else {
+        return GatewayRequestTrace {
+            trace_id: None,
+            status: "missing",
+            trace_id_len: None,
+        };
+    };
+
+    let Ok(value) = value.to_str() else {
+        return GatewayRequestTrace {
+            trace_id: None,
+            status: "invalid_header",
+            trace_id_len: None,
+        };
+    };
+
+    let trace_id = value.trim();
+    if trace_id.is_empty() {
+        return GatewayRequestTrace {
+            trace_id: None,
+            status: "blank",
+            trace_id_len: Some(0),
+        };
+    }
+
+    let trace_id_len = trace_id.len();
+    if trace_id_len > AI_TRACE_ID_MAX_LEN {
+        return GatewayRequestTrace {
+            trace_id: None,
+            status: "too_long",
+            trace_id_len: Some(trace_id_len),
+        };
+    }
+
+    if redact_secrets(trace_id) != trace_id {
+        return GatewayRequestTrace {
+            trace_id: None,
+            status: "unsafe",
+            trace_id_len: Some(trace_id_len),
+        };
+    }
+
+    GatewayRequestTrace {
+        trace_id: Some(trace_id.to_string()),
+        status: "accepted",
+        trace_id_len: Some(trace_id_len),
+    }
+}
+
+impl GatewayTraceAffinityRuntime {
+    fn from_request_trace(request_trace: &GatewayRequestTrace) -> Self {
+        Self {
+            trace_id_status: request_trace.status,
+            trace_id_len: request_trace.trace_id_len,
+            lookup_status: if request_trace.trace_id.is_some() {
+                "pending"
+            } else {
+                "skipped"
+            },
+            previous_success: None,
+        }
+    }
+
+    fn with_lookup_status(mut self, lookup_status: &'static str) -> Self {
+        self.lookup_status = lookup_status;
+        self
+    }
+
+    fn with_hit(mut self, previous_success: TraceAffinityPreviousSuccessRoute) -> Self {
+        self.lookup_status = "hit";
+        self.previous_success = Some(previous_success);
+        self
+    }
+
+    fn metadata(&self) -> Value {
+        let previous_success = self.previous_success.as_ref().map(|previous| {
+            json!({
+                "channel_id": previous.channel_id,
+                "provider_id": previous.provider_id,
+                "canonical_model_id": previous.canonical_model_id,
+                "upstream_model": previous.upstream_model.as_deref().map(redact_secrets),
+            })
+        });
+
+        json!({
+            "schema": GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA,
+            "trace_id_status": self.trace_id_status,
+            "trace_id_len": self.trace_id_len,
+            "trace_id_material_in_output": false,
+            "lookup": {
+                "attempted": self.trace_id_status == "accepted",
+                "status": self.lookup_status,
+                "lookback_seconds": TRACE_AFFINITY_LOOKBACK_SECONDS,
+                "bounded_limit": 1,
+            },
+            "previous_success": previous_success,
+        })
+    }
+}
+
+fn route_selection_context_for_gateway_trace_affinity(
+    request_trace: &GatewayRequestTrace,
+    previous_success: Option<&TraceAffinityPreviousSuccessRoute>,
+) -> RouteSelectionContext {
+    let mut context = request_trace
+        .trace_id
+        .as_deref()
+        .map(RouteSelectionContext::for_trace)
+        .unwrap_or_default();
+
+    if let Some(previous_success) = previous_success {
+        context = context.with_trace_affinity_channel(previous_success.channel_id.to_string());
+    }
+
+    context
+}
+
 fn route_request_for_selection(
     requested_model: &str,
     model: &ResolvedCanonicalModel,
@@ -3774,6 +4004,62 @@ fn route_request_for_selection(
 ) -> RouteRequest {
     RouteRequest::new(requested_model, routing_seed_from_hash(request_body_hash))
         .with_canonical_model(model.model_key.clone())
+}
+
+async fn route_decision_with_gateway_trace_affinity(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    request_trace: &GatewayRequestTrace,
+    requested_model: &str,
+    model: &ResolvedCanonicalModel,
+    request_body_hash: &str,
+    route_candidates: &[ResolvedChatRoute],
+) -> GatewayRouteDecision {
+    let mut trace_affinity = GatewayTraceAffinityRuntime::from_request_trace(request_trace);
+    let mut previous_success = None;
+
+    if let Some(trace_id) = request_trace.trace_id.as_deref() {
+        match repository
+            .find_trace_affinity_previous_success(
+                auth,
+                trace_id,
+                model,
+                TRACE_AFFINITY_LOOKBACK_SECONDS,
+            )
+            .await
+        {
+            Ok(Some(route)) => {
+                trace_affinity = trace_affinity.with_hit(route.clone());
+                previous_success = Some(route);
+            }
+            Ok(None) => {
+                trace_affinity = trace_affinity.with_lookup_status("miss");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    message = %error.message,
+                    trace_id_len = request_trace.trace_id_len.unwrap_or_default(),
+                    "trace affinity previous-success lookup failed; continuing without affinity"
+                );
+                trace_affinity = trace_affinity.with_lookup_status("error");
+            }
+        }
+    }
+
+    let context = route_selection_context_for_gateway_trace_affinity(
+        request_trace,
+        previous_success.as_ref(),
+    );
+    let decision = select_route_with_context(
+        route_request_for_selection(requested_model, model, request_body_hash),
+        route_candidates.iter().map(routing_candidate_from_route),
+        context,
+    );
+
+    GatewayRouteDecision {
+        decision,
+        trace_affinity,
+    }
 }
 
 fn routing_seed_from_hash(request_body_hash: &str) -> u64 {
@@ -4001,11 +4287,27 @@ fn chat_route_matches_candidate(route: &ResolvedChatRoute, candidate: &RouteCand
 fn route_decision_snapshot_value(snapshot: &RouteDecisionSnapshot) -> Value {
     let mut value = serde_json::to_value(snapshot).unwrap_or_else(|_| json!({}));
     if let Some(object) = value.as_object_mut() {
+        object.remove("trace_id");
+        if let Some(trace_affinity) = object
+            .get_mut("trace_affinity")
+            .and_then(Value::as_object_mut)
+        {
+            trace_affinity.remove("trace_id");
+        }
         object.insert(
             "summary".to_string(),
             serde_json::to_value(snapshot.summary()).unwrap_or_else(|_| json!({})),
         );
     }
+    value
+}
+
+fn route_decision_snapshot_value_with_gateway_trace_affinity(
+    snapshot: &RouteDecisionSnapshot,
+    trace_affinity: &GatewayTraceAffinityRuntime,
+) -> Value {
+    let mut value = route_decision_snapshot_value(snapshot);
+    append_gateway_trace_affinity_metadata(&mut value, trace_affinity);
     value
 }
 
@@ -4016,6 +4318,27 @@ fn native_route_decision_snapshot_value(snapshot: &RouteDecisionSnapshot) -> Val
         object.insert("native_protocol".to_string(), json!("gemini"));
     }
     value
+}
+
+fn native_route_decision_snapshot_value_with_gateway_trace_affinity(
+    snapshot: &RouteDecisionSnapshot,
+    trace_affinity: &GatewayTraceAffinityRuntime,
+) -> Value {
+    let mut value = native_route_decision_snapshot_value(snapshot);
+    append_gateway_trace_affinity_metadata(&mut value, trace_affinity);
+    value
+}
+
+fn append_gateway_trace_affinity_metadata(
+    value: &mut Value,
+    trace_affinity: &GatewayTraceAffinityRuntime,
+) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "gateway_trace_affinity".to_string(),
+            trace_affinity.metadata(),
+        );
+    }
 }
 
 fn route_snapshot_with_final_attempt(
@@ -5547,7 +5870,7 @@ fn elapsed_ms(started_at: Instant) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use ai_gateway_routing::CandidateFilterReason;
+    use ai_gateway_routing::{CandidateFilterReason, TraceAffinityStatus, select_route};
 
     use super::*;
 
@@ -6099,6 +6422,15 @@ mod tests {
             channel_priority,
             channel_weight,
             channel_health_score,
+        }
+    }
+
+    fn test_previous_success(channel_id: uuid::Uuid) -> TraceAffinityPreviousSuccessRoute {
+        TraceAffinityPreviousSuccessRoute {
+            channel_id,
+            provider_id: uuid::Uuid::from_u128(20),
+            canonical_model_id: Some(uuid::Uuid::from_u128(10)),
+            upstream_model: Some("mock-upstream".to_string()),
         }
     }
 
@@ -8415,6 +8747,353 @@ mod tests {
         assert_eq!(rating.final_cost, "2.10000000");
         assert_eq!(rating.currency, "USD");
         assert_eq!(rating.price_version_id, price_version_id);
+    }
+
+    #[test]
+    fn trace_affinity_gateway_runtime_prefers_previous_success_channel() {
+        let default_channel_id = uuid::Uuid::from_u128(1);
+        let previous_channel_id = uuid::Uuid::from_u128(2);
+        let routes = [
+            test_route(default_channel_id, "enabled", 0, 0, 100, 1.0),
+            test_route(previous_channel_id, "enabled", 0, 50, 1, 1.0),
+        ];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+        let request_trace = GatewayRequestTrace {
+            trace_id: Some("trace-contract-hit".to_string()),
+            status: "accepted",
+            trace_id_len: Some("trace-contract-hit".len()),
+        };
+        let previous_success = test_previous_success(previous_channel_id);
+
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            route_selection_context_for_gateway_trace_affinity(
+                &request_trace,
+                Some(&previous_success),
+            ),
+        );
+
+        let expected_channel_id = previous_channel_id.to_string();
+        assert_eq!(
+            decision.selected_channel_id.as_deref(),
+            Some(expected_channel_id.as_str())
+        );
+        assert_eq!(decision.trace_affinity.status, TraceAffinityStatus::Applied);
+
+        let runtime = GatewayTraceAffinityRuntime::from_request_trace(&request_trace)
+            .with_hit(previous_success);
+        let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &decision.snapshot(),
+            &runtime,
+        );
+
+        assert_eq!(snapshot["summary"]["trace_affinity_status"], "Applied");
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["schema"],
+            GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["status"],
+            "hit"
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["attempted"],
+            true
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["previous_success"]["channel_id"].as_str(),
+            Some(expected_channel_id.as_str())
+        );
+        assert!(snapshot["gateway_trace_affinity"].get("trace_id").is_none());
+    }
+
+    #[test]
+    fn trace_affinity_gateway_runtime_falls_back_when_previous_channel_unavailable() {
+        let fallback_channel_id = uuid::Uuid::from_u128(1);
+        let previous_channel_id = uuid::Uuid::from_u128(2);
+        let routes = [
+            test_route(fallback_channel_id, "enabled", 0, 0, 100, 1.0),
+            test_route(previous_channel_id, "disabled", 0, 50, 1, 1.0),
+        ];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+        let request_trace = GatewayRequestTrace {
+            trace_id: Some("trace-contract-filtered".to_string()),
+            status: "accepted",
+            trace_id_len: Some("trace-contract-filtered".len()),
+        };
+        let previous_success = test_previous_success(previous_channel_id);
+
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            route_selection_context_for_gateway_trace_affinity(
+                &request_trace,
+                Some(&previous_success),
+            ),
+        );
+
+        let expected_fallback_channel_id = fallback_channel_id.to_string();
+        assert_eq!(
+            decision.selected_channel_id.as_deref(),
+            Some(expected_fallback_channel_id.as_str())
+        );
+        assert_eq!(
+            decision.trace_affinity.status,
+            TraceAffinityStatus::PreviousChannelFiltered
+        );
+
+        let runtime = GatewayTraceAffinityRuntime::from_request_trace(&request_trace)
+            .with_hit(previous_success);
+        let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &decision.snapshot(),
+            &runtime,
+        );
+
+        assert_eq!(
+            snapshot["summary"]["trace_affinity_status"],
+            "PreviousChannelFiltered"
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["status"],
+            "hit"
+        );
+    }
+
+    #[test]
+    fn trace_affinity_gateway_runtime_skips_missing_trace_and_tolerates_lookup_failure() {
+        let selected_channel_id = uuid::Uuid::from_u128(1);
+        let routes = [test_route(selected_channel_id, "enabled", 0, 0, 100, 1.0)];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+        let missing_trace = GatewayRequestTrace {
+            trace_id: None,
+            status: "missing",
+            trace_id_len: None,
+        };
+
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            route_selection_context_for_gateway_trace_affinity(&missing_trace, None),
+        );
+        let runtime = GatewayTraceAffinityRuntime::from_request_trace(&missing_trace);
+        let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &decision.snapshot(),
+            &runtime,
+        );
+
+        let expected_channel_id = selected_channel_id.to_string();
+        assert_eq!(
+            decision.selected_channel_id.as_deref(),
+            Some(expected_channel_id.as_str())
+        );
+        assert_eq!(
+            decision.trace_affinity.status,
+            TraceAffinityStatus::Disabled
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["status"],
+            "skipped"
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["attempted"],
+            false
+        );
+
+        let lookup_error_trace = GatewayRequestTrace {
+            trace_id: Some("trace-contract-error".to_string()),
+            status: "accepted",
+            trace_id_len: Some("trace-contract-error".len()),
+        };
+        let lookup_error_runtime =
+            GatewayTraceAffinityRuntime::from_request_trace(&lookup_error_trace)
+                .with_lookup_status("error");
+        let lookup_error_decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            route_selection_context_for_gateway_trace_affinity(&lookup_error_trace, None),
+        );
+        let lookup_error_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &lookup_error_decision.snapshot(),
+            &lookup_error_runtime,
+        );
+
+        assert_eq!(
+            lookup_error_decision.selected_channel_id.as_deref(),
+            Some(expected_channel_id.as_str())
+        );
+        assert_eq!(
+            lookup_error_decision.trace_affinity.status,
+            TraceAffinityStatus::Disabled
+        );
+        assert_eq!(
+            lookup_error_snapshot["gateway_trace_affinity"]["lookup"]["status"],
+            "error"
+        );
+        assert_eq!(
+            lookup_error_snapshot["gateway_trace_affinity"]["lookup"]["attempted"],
+            true
+        );
+        assert!(lookup_error_snapshot["gateway_trace_affinity"]["previous_success"].is_null());
+    }
+
+    #[test]
+    fn trace_affinity_gateway_runtime_snapshot_is_secret_safe() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/trace_affinity_runtime_contract.json"
+        ))
+        .expect("gateway trace affinity runtime fixture should be valid json");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static(AI_TRACE_ID_HEADER),
+            HeaderValue::from_static("trace Bearer sk-live-secret"),
+        );
+        let unsafe_trace = gateway_request_trace_from_headers(&headers);
+
+        assert_eq!(
+            fixture["scenario"],
+            "gateway_trace_affinity_runtime_contract_v1"
+        );
+        assert_eq!(fixture["header"], AI_TRACE_ID_HEADER);
+        assert_eq!(
+            fixture["runtime_schema"],
+            GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA
+        );
+        assert_eq!(
+            Some(unsafe_trace.status),
+            fixture["expected"]["unsafe_trace_status"].as_str()
+        );
+        assert!(unsafe_trace.trace_id.is_none());
+
+        let channel_id = uuid::Uuid::from_u128(1);
+        let routes = [test_route(channel_id, "enabled", 0, 0, 100, 1.0)];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+        let accepted_trace = GatewayRequestTrace {
+            trace_id: Some("trace-contract-safe".to_string()),
+            status: "accepted",
+            trace_id_len: Some("trace-contract-safe".len()),
+        };
+        let mut previous_success = test_previous_success(channel_id);
+        previous_success.upstream_model = Some("sk-live-secret-model".to_string());
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            route_selection_context_for_gateway_trace_affinity(
+                &accepted_trace,
+                Some(&previous_success),
+            ),
+        );
+        let runtime = GatewayTraceAffinityRuntime::from_request_trace(&accepted_trace)
+            .with_hit(previous_success);
+        let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &decision.snapshot(),
+            &runtime,
+        );
+
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["previous_success"]["upstream_model"],
+            "[REDACTED]"
+        );
+        assert!(snapshot.get("trace_id").is_none());
+        assert!(snapshot["trace_affinity"].get("trace_id").is_none());
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["bounded_limit"],
+            fixture["lookup_contract"]["bounded_limit"]
+        );
+        assert_eq!(
+            snapshot["gateway_trace_affinity"]["lookup"]["lookback_seconds"],
+            fixture["lookup_contract"]["lookback_seconds"]
+        );
+        let snapshot_text = snapshot.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden snapshot markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !snapshot_text.contains(marker),
+                "trace affinity snapshot leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_affinity_gateway_runtime_contract_orders_lookup_before_selection() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/trace_affinity_runtime_contract.json"
+        ))
+        .expect("gateway trace affinity runtime fixture should be valid json");
+        let main_source = include_str!("main.rs");
+        let chat_section = source_section(
+            main_source,
+            "async fn chat_completions(",
+            "async fn responses(",
+        );
+        let runtime_section = source_section(
+            main_source,
+            "async fn route_decision_with_gateway_trace_affinity(",
+            "fn routing_seed_from_hash(",
+        );
+
+        assert_eq!(
+            fixture["lookup_contract"]["only_when_trace_id_present"],
+            true
+        );
+        assert_eq!(fixture["lookup_contract"]["best_effort"], true);
+        assert_eq!(fixture["lookup_contract"]["success_status_only"], true);
+        assert_marker_before(
+            chat_section,
+            "gateway_request_trace_from_headers(&headers)",
+            "route_decision_with_gateway_trace_affinity(",
+            "chat_trace_affinity",
+        );
+        assert_marker_before(
+            runtime_section,
+            "if let Some(trace_id) = request_trace.trace_id.as_deref()",
+            ".find_trace_affinity_previous_success(",
+            "trace_affinity_runtime_lookup_guard",
+        );
+        assert_marker_before(
+            runtime_section,
+            ".find_trace_affinity_previous_success(",
+            "select_route_with_context(",
+            "trace_affinity_runtime_lookup_before_selection",
+        );
+        assert!(runtime_section.contains("TRACE_AFFINITY_LOOKBACK_SECONDS"));
+        assert!(runtime_section.contains("with_lookup_status(\"error\")"));
     }
 
     #[test]

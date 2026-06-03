@@ -65,6 +65,14 @@ pub struct ResolvedChatRoute {
     pub channel_health_score: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceAffinityPreviousSuccessRoute {
+    pub channel_id: Uuid,
+    pub provider_id: Uuid,
+    pub canonical_model_id: Option<Uuid>,
+    pub upstream_model: Option<String>,
+}
+
 const MODEL_MAPPING_EXPLICIT_MAPPINGS_KEY: &str = "explicit_mappings";
 const MODEL_MAPPING_LEGACY_MAPPINGS_KEY: &str = "mappings";
 const MODEL_MAPPING_TRIM_PREFIXES_KEY: &str = "trim_prefixes";
@@ -217,6 +225,7 @@ fn merge_payload_metadata(mut route_decision_snapshot: Value, payload_metadata: 
 
 #[derive(Debug, Clone)]
 pub struct RequestRouteLog<'a> {
+    pub trace_id: Option<String>,
     pub canonical_model_id: Option<Uuid>,
     pub upstream_model: Option<&'a str>,
     pub resolved_provider_id: Option<Uuid>,
@@ -988,6 +997,52 @@ impl GatewayRepository {
             .collect())
     }
 
+    pub async fn find_trace_affinity_previous_success(
+        &self,
+        auth: &AuthContext,
+        trace_id: &str,
+        model: &ResolvedCanonicalModel,
+        lookback_seconds: i64,
+    ) -> Result<Option<TraceAffinityPreviousSuccessRoute>, GatewayApiError> {
+        let row = sqlx::query(
+            r#"
+            select
+              resolved_channel_id as channel_id,
+              resolved_provider_id as provider_id,
+              canonical_model_id,
+              upstream_model
+            from request_logs
+            where tenant_id = $1
+              and project_id = $2
+              and trace_id = $3
+              and created_at >= now() - (($4::double precision) * interval '1 second')
+              and canonical_model_id = $5
+              and status = 'succeeded'
+              and resolved_channel_id is not null
+              and resolved_provider_id is not null
+            order by created_at desc, id desc
+            limit 1
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.project_id)
+        .bind(trace_id)
+        .bind(lookback_seconds)
+        .bind(model.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("trace_affinity_previous_success", error)
+        })?;
+
+        Ok(row.map(|row| TraceAffinityPreviousSuccessRoute {
+            channel_id: row.get("channel_id"),
+            provider_id: row.get("provider_id"),
+            canonical_model_id: row.get("canonical_model_id"),
+            upstream_model: row.get("upstream_model"),
+        }))
+    }
+
     pub async fn create_request_started(
         &self,
         auth: &AuthContext,
@@ -1003,6 +1058,7 @@ impl GatewayRepository {
               project_id,
               virtual_key_id,
               api_key_profile_id,
+              trace_id,
               inbound_protocol,
               outbound_protocol,
               protocol_mode,
@@ -1021,8 +1077,8 @@ impl GatewayRepository {
               route_decision_snapshot
             )
             values (
-              $1, $2, $3, $4, 'openai', 'openai', 'openai_compatible',
-              $5, $6, $7, $8, $9, $10, $11, 'started', $12, $13, $14, $15, $16
+              $1, $2, $3, $4, $5, 'openai', 'openai', 'openai_compatible',
+              $6, $7, $8, $9, $10, $11, $12, 'started', $13, $14, $15, $16, $17
             )
             returning id
             "#,
@@ -1031,6 +1087,7 @@ impl GatewayRepository {
         .bind(auth.project_id)
         .bind(auth.virtual_key_id)
         .bind(auth.api_key_profile_id)
+        .bind(route.trace_id.as_deref())
         .bind(requested_model)
         .bind(route.canonical_model_id)
         .bind(route.upstream_model)
@@ -1796,6 +1853,7 @@ mod tests {
         );
         let route = test_resolved_route(upstream_model);
         let request_log = RequestRouteLog {
+            trace_id: None,
             canonical_model_id: Some(route.canonical_model_id),
             upstream_model: Some(route.upstream_model.as_str()),
             resolved_provider_id: Some(route.provider_id),

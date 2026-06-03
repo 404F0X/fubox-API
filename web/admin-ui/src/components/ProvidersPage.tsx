@@ -9,6 +9,7 @@ import {
   deleteChannel,
   deleteProvider,
   dryRunChannelManualTest,
+  type JsonObject,
   type JsonValue,
   listChannels,
   listProviders,
@@ -17,20 +18,37 @@ import {
   type Provider,
   type ProviderStatus,
 } from "../api/client";
-import { StateChip, errorMessage, fieldValue, formatStatus, isJsonRecord, safeFieldValue, shortId } from "./adminUtils";
+import {
+  StateChip,
+  containsSensitiveMetadata,
+  errorMessage,
+  fieldValue,
+  formatStatus,
+  isJsonRecord,
+  jsonSize,
+  safeFieldValue,
+  sanitizeDisplayJson,
+  shortId,
+} from "./adminUtils";
 import { Plus, RefreshCw, Search, ShieldOff, Trash2 } from "./icons";
 
 type ProviderForm = {
   baseUrl: string;
   code: string;
+  metadata: string;
   name: string;
   providerType: string;
 };
 
 type ChannelForm = {
   endpoint: string;
+  modelMappings: string;
   name: string;
+  probePolicy: string;
   providerId: string;
+  requestOverrides: string;
+  tags: string;
+  timeoutPolicy: string;
 };
 
 type ChannelManualTestForm = {
@@ -38,20 +56,52 @@ type ChannelManualTestForm = {
   upstreamModel: string;
 };
 
+type ProviderJsonPatchForm = {
+  metadata: string;
+  providerId: string;
+};
+
+type ChannelJsonPatchForm = {
+  channelId: string;
+  modelMappings: string;
+  probePolicy: string;
+  requestOverrides: string;
+  tags: string;
+  timeoutPolicy: string;
+};
+
 const defaultProviderForm: ProviderForm = {
   baseUrl: "",
   code: "",
+  metadata: "{}",
   name: "",
   providerType: "",
 };
 const defaultChannelForm: ChannelForm = {
   endpoint: "",
+  modelMappings: "{}",
   name: "",
+  probePolicy: "{}",
   providerId: "",
+  requestOverrides: "[]",
+  tags: "[]",
+  timeoutPolicy: "{}",
 };
 const defaultChannelManualTestForm: ChannelManualTestForm = {
   requestedModel: "",
   upstreamModel: "",
+};
+const defaultProviderJsonPatchForm: ProviderJsonPatchForm = {
+  metadata: "",
+  providerId: "",
+};
+const defaultChannelJsonPatchForm: ChannelJsonPatchForm = {
+  channelId: "",
+  modelMappings: "",
+  probePolicy: "",
+  requestOverrides: "",
+  tags: "",
+  timeoutPolicy: "",
 };
 
 type ProvidersPageProps = {
@@ -72,6 +122,9 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
     channelId: string;
     result: ChannelManualTestResponse;
   } | null>(null);
+  const [channelJsonPatchForm, setChannelJsonPatchForm] = useState<ChannelJsonPatchForm>(defaultChannelJsonPatchForm);
+  const [providerJsonPatchForm, setProviderJsonPatchForm] =
+    useState<ProviderJsonPatchForm>(defaultProviderJsonPatchForm);
   const [providerForm, setProviderForm] = useState<ProviderForm>(defaultProviderForm);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [success, setSuccess] = useState<string | null>(null);
@@ -115,15 +168,26 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
     }));
   }
 
+  function updateProviderJsonPatch(field: keyof ProviderJsonPatchForm, value: string) {
+    setProviderJsonPatchForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateChannelJsonPatch(field: keyof ChannelJsonPatchForm, value: string) {
+    setChannelJsonPatchForm((current) => ({ ...current, [field]: value }));
+  }
+
   async function handleCreateProvider(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setSuccess(null);
 
     try {
+      const metadata = parseAdvancedJsonObject(providerForm.metadata, "Provider metadata JSON");
+
       await createProvider({
         base_url: optionalString(providerForm.baseUrl),
         code: providerForm.code.trim(),
+        metadata,
         name: providerForm.name.trim(),
         provider_type: optionalString(providerForm.providerType),
       });
@@ -131,6 +195,9 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
       setSuccess("Provider created.");
       await loadInventory();
     } catch (requestError) {
+      if (isUnsafeJsonValidationError(requestError)) {
+        setProviderForm((current) => ({ ...current, metadata: "{}" }));
+      }
       setError(errorMessage(requestError));
     }
   }
@@ -159,15 +226,141 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
     const providerId = channelForm.providerId.trim();
 
     try {
+      const modelMappings = parseAdvancedJsonObject(channelForm.modelMappings, "Channel model mappings JSON");
+      const tags = parseAdvancedJsonArray(channelForm.tags, "Channel tags JSON");
+      const requestOverrides = parseAdvancedJsonArray(
+        channelForm.requestOverrides,
+        "Channel request overrides JSON",
+      );
+      const probePolicy = parseAdvancedJsonObject(channelForm.probePolicy, "Channel probe policy JSON");
+      const timeoutPolicy = parseAdvancedJsonObject(channelForm.timeoutPolicy, "Channel timeout policy JSON");
+
       await createChannel({
         endpoint: channelForm.endpoint.trim(),
+        model_mappings: modelMappings,
         name: channelForm.name.trim(),
+        probe_policy: probePolicy,
         provider_id: providerId,
+        request_overrides: requestOverrides,
+        tags,
+        timeout_policy: timeoutPolicy,
       });
       setChannelForm({ ...defaultChannelForm, providerId });
       setSuccess("Channel created.");
       await loadInventory();
     } catch (requestError) {
+      if (isUnsafeJsonValidationError(requestError)) {
+        setChannelForm((current) => ({
+          ...current,
+          modelMappings: "{}",
+          probePolicy: "{}",
+          requestOverrides: "[]",
+          tags: "[]",
+          timeoutPolicy: "{}",
+        }));
+      }
+      setError(errorMessage(requestError));
+    }
+  }
+
+  async function handlePatchProviderJson(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    const providerId = providerJsonPatchForm.providerId.trim();
+
+    if (!providerId) {
+      setError("Provider ID is required.");
+      return;
+    }
+
+    if (!providerJsonPatchForm.metadata.trim()) {
+      setError("Provider metadata JSON is required.");
+      return;
+    }
+
+    try {
+      const metadata = parseAdvancedJsonObject(providerJsonPatchForm.metadata, "Provider patch metadata JSON");
+      const updated = await patchProvider(providerId, { metadata });
+      setProviders((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setSuccess(`${updated.name} JSON policy saved.`);
+    } catch (requestError) {
+      if (isUnsafeJsonValidationError(requestError)) {
+        setProviderJsonPatchForm((current) => ({ ...current, metadata: "" }));
+      }
+      setError(errorMessage(requestError));
+    }
+  }
+
+  async function handlePatchChannelJson(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setSuccess(null);
+
+    const channelId = channelJsonPatchForm.channelId.trim();
+
+    if (!channelId) {
+      setError("Channel ID is required.");
+      return;
+    }
+
+    try {
+      const request: {
+        model_mappings?: JsonObject;
+        probe_policy?: JsonObject;
+        request_overrides?: JsonValue[];
+        tags?: JsonValue[];
+        timeout_policy?: JsonObject;
+      } = {};
+
+      if (channelJsonPatchForm.modelMappings.trim()) {
+        request.model_mappings = parseAdvancedJsonObject(
+          channelJsonPatchForm.modelMappings,
+          "Patch model mappings JSON",
+        );
+      }
+      if (channelJsonPatchForm.tags.trim()) {
+        request.tags = parseAdvancedJsonArray(channelJsonPatchForm.tags, "Patch tags JSON");
+      }
+      if (channelJsonPatchForm.requestOverrides.trim()) {
+        request.request_overrides = parseAdvancedJsonArray(
+          channelJsonPatchForm.requestOverrides,
+          "Patch request overrides JSON",
+        );
+      }
+      if (channelJsonPatchForm.probePolicy.trim()) {
+        request.probe_policy = parseAdvancedJsonObject(
+          channelJsonPatchForm.probePolicy,
+          "Patch probe policy JSON",
+        );
+      }
+      if (channelJsonPatchForm.timeoutPolicy.trim()) {
+        request.timeout_policy = parseAdvancedJsonObject(
+          channelJsonPatchForm.timeoutPolicy,
+          "Patch timeout policy JSON",
+        );
+      }
+
+      if (Object.keys(request).length === 0) {
+        setError("At least one channel JSON field is required.");
+        return;
+      }
+
+      const updated = await patchChannel(channelId, request);
+      setChannels((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      setSuccess(`${updated.name} JSON policy saved.`);
+    } catch (requestError) {
+      if (isUnsafeJsonValidationError(requestError)) {
+        setChannelJsonPatchForm((current) => ({
+          ...current,
+          modelMappings: "",
+          probePolicy: "",
+          requestOverrides: "",
+          tags: "",
+          timeoutPolicy: "",
+        }));
+      }
       setError(errorMessage(requestError));
     }
   }
@@ -285,6 +478,14 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
                     type="url"
                   />
                 </label>
+                <label className="field field--wide">
+                  Provider metadata JSON
+                  <textarea
+                    value={providerForm.metadata}
+                    onChange={(event) => updateProvider("metadata", event.currentTarget.value)}
+                    spellCheck={false}
+                  />
+                </label>
               </div>
 
               <button className="primary-button primary-button--inline" type="submit">
@@ -350,6 +551,46 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
                     type="url"
                   />
                 </label>
+                <label className="field field--wide">
+                  Channel model mappings JSON
+                  <textarea
+                    value={channelForm.modelMappings}
+                    onChange={(event) => updateChannel("modelMappings", event.currentTarget.value)}
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
+                  Channel tags JSON
+                  <textarea
+                    value={channelForm.tags}
+                    onChange={(event) => updateChannel("tags", event.currentTarget.value)}
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
+                  Channel request overrides JSON
+                  <textarea
+                    value={channelForm.requestOverrides}
+                    onChange={(event) => updateChannel("requestOverrides", event.currentTarget.value)}
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
+                  Channel probe policy JSON
+                  <textarea
+                    value={channelForm.probePolicy}
+                    onChange={(event) => updateChannel("probePolicy", event.currentTarget.value)}
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
+                  Channel timeout policy JSON
+                  <textarea
+                    value={channelForm.timeoutPolicy}
+                    onChange={(event) => updateChannel("timeoutPolicy", event.currentTarget.value)}
+                    spellCheck={false}
+                  />
+                </label>
               </div>
 
               <button className="primary-button primary-button--inline" type="submit">
@@ -358,6 +599,19 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
               </button>
             </form>
           </section>
+      ) : null}
+
+      {canManageProviders ? (
+        <AdvancedJsonPolicyPanel
+          channelForm={channelJsonPatchForm}
+          channels={channels}
+          providerForm={providerJsonPatchForm}
+          providers={providers}
+          onChannelChange={updateChannelJsonPatch}
+          onChannelSubmit={handlePatchChannelJson}
+          onProviderChange={updateProviderJsonPatch}
+          onProviderSubmit={handlePatchProviderJson}
+        />
       ) : null}
 
       <ChannelTable
@@ -375,6 +629,142 @@ export function ProvidersPage({ canManageProviders, canRunManualTest }: Provider
       />
       {manualResult ? <ChannelManualTestResult result={manualResult.result} /> : null}
     </div>
+  );
+}
+
+function AdvancedJsonPolicyPanel({
+  channelForm,
+  channels,
+  providerForm,
+  providers,
+  onChannelChange,
+  onChannelSubmit,
+  onProviderChange,
+  onProviderSubmit,
+}: {
+  channelForm: ChannelJsonPatchForm;
+  channels: Channel[];
+  providerForm: ProviderJsonPatchForm;
+  providers: Provider[];
+  onChannelChange: (field: keyof ChannelJsonPatchForm, value: string) => void;
+  onChannelSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onProviderChange: (field: keyof ProviderJsonPatchForm, value: string) => void;
+  onProviderSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+}) {
+  return (
+    <section className="admin-panel" aria-label="Advanced JSON policies">
+      <div className="section-heading">
+        <div>
+          <h2>Advanced JSON Policies</h2>
+        </div>
+      </div>
+
+      <div className="advanced-json-grid">
+        <form className="advanced-json-form" onSubmit={(event) => void onProviderSubmit(event)}>
+          <h3>Provider</h3>
+          <label className="field">
+            Provider patch ID
+            <input
+              list="provider-json-patch-options"
+              value={providerForm.providerId}
+              onChange={(event) => onProviderChange("providerId", event.currentTarget.value)}
+              placeholder="provider uuid"
+              required
+            />
+          </label>
+          <datalist id="provider-json-patch-options">
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
+            ))}
+          </datalist>
+          <label className="field">
+            Provider patch metadata JSON
+            <textarea
+              value={providerForm.metadata}
+              onChange={(event) => onProviderChange("metadata", event.currentTarget.value)}
+              placeholder='{"owner":"platform"}'
+              spellCheck={false}
+            />
+          </label>
+          <button className="primary-button primary-button--inline" type="submit">
+            Save provider JSON
+          </button>
+        </form>
+
+        <form className="advanced-json-form" onSubmit={(event) => void onChannelSubmit(event)}>
+          <h3>Channel</h3>
+          <label className="field">
+            Channel patch ID
+            <input
+              list="channel-json-patch-options"
+              value={channelForm.channelId}
+              onChange={(event) => onChannelChange("channelId", event.currentTarget.value)}
+              placeholder="channel uuid"
+              required
+            />
+          </label>
+          <datalist id="channel-json-patch-options">
+            {channels.map((channel) => (
+              <option key={channel.id} value={channel.id}>
+                {channel.name}
+              </option>
+            ))}
+          </datalist>
+          <div className="advanced-json-form-grid">
+            <label className="field">
+              Patch model mappings JSON
+              <textarea
+                value={channelForm.modelMappings}
+                onChange={(event) => onChannelChange("modelMappings", event.currentTarget.value)}
+                placeholder='{"gpt-4o-mini":"gpt-4o-mini"}'
+                spellCheck={false}
+              />
+            </label>
+            <label className="field">
+              Patch tags JSON
+              <textarea
+                value={channelForm.tags}
+                onChange={(event) => onChannelChange("tags", event.currentTarget.value)}
+                placeholder='["primary"]'
+                spellCheck={false}
+              />
+            </label>
+            <label className="field">
+              Patch request overrides JSON
+              <textarea
+                value={channelForm.requestOverrides}
+                onChange={(event) => onChannelChange("requestOverrides", event.currentTarget.value)}
+                placeholder="[]"
+                spellCheck={false}
+              />
+            </label>
+            <label className="field">
+              Patch probe policy JSON
+              <textarea
+                value={channelForm.probePolicy}
+                onChange={(event) => onChannelChange("probePolicy", event.currentTarget.value)}
+                placeholder='{"path":"/health"}'
+                spellCheck={false}
+              />
+            </label>
+            <label className="field">
+              Patch timeout policy JSON
+              <textarea
+                value={channelForm.timeoutPolicy}
+                onChange={(event) => onChannelChange("timeoutPolicy", event.currentTarget.value)}
+                placeholder='{"connect_ms":2000}'
+                spellCheck={false}
+              />
+            </label>
+          </div>
+          <button className="primary-button primary-button--inline" type="submit">
+            Save channel JSON
+          </button>
+        </form>
+      </div>
+    </section>
   );
 }
 
@@ -402,6 +792,7 @@ function ProviderTable({
               <th>Provider</th>
               <th>Status</th>
               <th>Type / Base URL</th>
+              <th>Metadata</th>
               <th>Channels</th>
               <th>Actions</th>
             </tr>
@@ -409,7 +800,7 @@ function ProviderTable({
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={5}>Loading providers.</td>
+                <td colSpan={6}>Loading providers.</td>
               </tr>
             ) : providers.length > 0 ? (
               providers.map((provider) => (
@@ -425,7 +816,10 @@ function ProviderTable({
                   </td>
                   <td>
                     <strong>{fieldValue(providerMetadata(provider, "provider_type"))}</strong>
-                    <span>{fieldValue(providerMetadata(provider, "base_url"))}</span>
+                    <span>{safeEndpoint(providerMetadata(provider, "base_url"))}</span>
+                  </td>
+                  <td>
+                    <JsonSummary value={provider.metadata} />
                   </td>
                   <td>
                     <strong>{channels.filter((channel) => channel.provider_id === provider.id).length}</strong>
@@ -464,7 +858,7 @@ function ProviderTable({
               ))
             ) : (
               <tr>
-                <td colSpan={5}>No providers returned.</td>
+                <td colSpan={6}>No providers returned.</td>
               </tr>
             )}
           </tbody>
@@ -509,6 +903,7 @@ function ChannelTable({
               <th>Status</th>
               <th>Provider</th>
               <th>Endpoint</th>
+              <th>Advanced JSON</th>
               <th>Manual Test</th>
               <th>Actions</th>
             </tr>
@@ -516,7 +911,7 @@ function ChannelTable({
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6}>Loading channels.</td>
+                <td colSpan={7}>Loading channels.</td>
               </tr>
             ) : channels.length > 0 ? (
               channels.map((channel) => {
@@ -541,7 +936,16 @@ function ChannelTable({
                     </td>
                     <td>
                       <strong>{fieldValue(channel.region)}</strong>
-                      <span>{channel.endpoint}</span>
+                      <span>{safeEndpoint(channel.endpoint)}</span>
+                    </td>
+                    <td>
+                      <div className="json-summary-stack">
+                        <JsonSummary label="Mappings" value={channel.model_mappings} />
+                        <JsonSummary label="Tags" value={channel.tags} />
+                        <JsonSummary label="Overrides" value={channel.request_overrides} />
+                        <JsonSummary label="Probe" value={channel.probe_policy} />
+                        <JsonSummary label="Timeout" value={channel.timeout_policy} />
+                      </div>
                     </td>
                     <td>
                       {canRunManualTest ? (
@@ -625,7 +1029,7 @@ function ChannelTable({
               })
             ) : (
               <tr>
-                <td colSpan={6}>No channels returned.</td>
+                <td colSpan={7}>No channels returned.</td>
               </tr>
             )}
           </tbody>
@@ -669,7 +1073,7 @@ function ChannelManualTestResult({ result }: { result: ChannelManualTestResponse
             ["ID", safeShortId(result.channel.id)],
             ["Status", result.channel.status],
             ["Protocol", result.channel.protocol_mode],
-            ["Endpoint", result.channel.endpoint],
+            ["Endpoint", safeEndpoint(result.channel.endpoint)],
             ["Priority / weight", `${result.channel.priority} / ${result.channel.weight}`],
             ["Health score", result.channel.health_score],
           ]}
@@ -716,10 +1120,119 @@ function DetailFields({ items }: { items: Array<[string, unknown]> }) {
   );
 }
 
+function JsonSummary({ label, value }: { label?: string; value: JsonValue }) {
+  const safeValue = sanitizeDisplayJson(value);
+  const fieldCount = jsonSize(safeValue);
+  const keys = jsonSummaryKeys(safeValue);
+
+  return (
+    <span className="json-summary">
+      <strong>
+        {label ? `${label} ` : ""}
+        {fieldCount} {fieldCount === "1" ? "field" : "fields"}
+      </strong>
+      <span>{keys}</span>
+    </span>
+  );
+}
+
 function optionalString(value: string): string | undefined {
   const trimmed = value.trim();
 
   return trimmed ? trimmed : undefined;
+}
+
+function parseAdvancedJsonObject(value: string, label: string): JsonObject {
+  const parsed = parseAdvancedJson(value || "{}", label);
+
+  if (!isJsonRecord(parsed)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+
+  return parsed;
+}
+
+function parseAdvancedJsonArray(value: string, label: string): JsonValue[] {
+  const parsed = parseAdvancedJson(value || "[]", label);
+
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON array.`);
+  }
+
+  return parsed;
+}
+
+function parseAdvancedJson(value: string, label: string): JsonValue {
+  let parsed: JsonValue;
+
+  try {
+    parsed = JSON.parse(value) as JsonValue;
+  } catch {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+
+  if (containsUnsafeAdvancedJson(parsed)) {
+    throw new Error(`${label} contains unsafe fields.`);
+  }
+
+  return parsed;
+}
+
+function isUnsafeJsonValidationError(error: unknown): boolean {
+  return error instanceof Error && error.message.endsWith("contains unsafe fields.");
+}
+
+function containsUnsafeAdvancedJson(value: JsonValue): boolean {
+  if (containsSensitiveMetadata(value)) {
+    return true;
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(containsUnsafeAdvancedJson);
+  }
+
+  if (isJsonRecord(value)) {
+    return Object.entries(value).some(([key, child]) => isUnsafeAdvancedJsonKey(key) || containsUnsafeAdvancedJson(child));
+  }
+
+  return false;
+}
+
+function isUnsafeAdvancedJsonKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+  return (
+    normalized.includes("authorization") ||
+    normalized.includes("apikey") ||
+    normalized.includes("body") ||
+    normalized.includes("cookie") ||
+    normalized.includes("credential") ||
+    normalized.includes("encryptedsecret") ||
+    normalized.includes("fingerprint") ||
+    normalized.includes("keyhash") ||
+    normalized.includes("password") ||
+    normalized.includes("payload") ||
+    normalized.includes("raw") ||
+    normalized.includes("secret") ||
+    normalized.includes("token")
+  );
+}
+
+function jsonSummaryKeys(value: JsonValue): string {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? `${value.length} items` : "-";
+  }
+
+  if (!isJsonRecord(value)) {
+    return value === null ? "-" : safeFieldValue(value);
+  }
+
+  const keys = Object.keys(value)
+    .map(safeFieldValue)
+    .filter((key) => key !== "-")
+    .slice(0, 4);
+
+  return keys.length > 0 ? keys.join(", ") : "-";
 }
 
 function providerMetadata(provider: Provider, key: "base_url" | "provider_type"): string | undefined {
@@ -740,6 +1253,26 @@ function providerMetadata(provider: Provider, key: "base_url" | "provider_type")
 
 function providerName(providerId: string, providers: Provider[]): string {
   return providers.find((provider) => provider.id === providerId)?.name ?? "Unknown provider";
+}
+
+function safeEndpoint(value: string | null | undefined): string {
+  const safeValue = safeFieldValue(value);
+
+  if (safeValue === "-") {
+    return safeValue;
+  }
+
+  try {
+    const url = new URL(safeValue);
+
+    if (url.username || url.password || url.search || url.hash) {
+      return "[redacted]";
+    }
+  } catch {
+    return safeValue;
+  }
+
+  return safeValue;
 }
 
 function modelMappingOptions(channel: Channel): { requested: string[]; upstream: string[] } {

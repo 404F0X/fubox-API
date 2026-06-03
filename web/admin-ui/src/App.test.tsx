@@ -654,7 +654,8 @@ function stubAdminFetch() {
     }
 
     if (requestUrl.includes("/admin/providers/provider-1") && method === "PATCH") {
-      providerState = { ...providerState, status: "disabled" };
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof providerState>;
+      providerState = { ...providerState, ...body };
       return jsonResponse(providerState);
     }
 
@@ -689,7 +690,8 @@ function stubAdminFetch() {
     }
 
     if (requestUrl.includes("/admin/channels/channel-1") && method === "PATCH") {
-      channelState = { ...channelState, status: "disabled" };
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof channelState>;
+      channelState = { ...channelState, ...body };
       return jsonResponse(channelState);
     }
 
@@ -1501,7 +1503,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: /Providers/ }));
     expect(screen.getByRole("heading", { level: 1, name: "Providers" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Provider Inventory" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "Provider Inventory" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Overview/ }));
     const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
@@ -2022,6 +2024,7 @@ describe("App", () => {
 
     expect((await screen.findAllByText("OpenAI")).length).toBeGreaterThan(0);
     expect(screen.queryByText(skPlaceholder("provider-hidden"))).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("secret_note");
 
     fireEvent.change(screen.getByLabelText("Provider code"), { target: { value: "anthropic" } });
     fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Anthropic" } });
@@ -2029,15 +2032,51 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Provider base URL"), {
       target: { value: "https://api.anthropic.test/v1" },
     });
+    fireEvent.change(screen.getByLabelText("Provider metadata JSON"), {
+      target: { value: '{"owner":"research","tier":"backup"}' },
+    });
     await user.click(screen.getByRole("button", { name: "Create provider" }));
 
     expect((await screen.findAllByText("Anthropic")).length).toBeGreaterThan(0);
+    const createProviderCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).endsWith("/admin/providers") && init?.method === "POST",
+    );
+    expect(JSON.parse(String(createProviderCall?.[1]?.body))).toMatchObject({
+      base_url: "https://api.anthropic.test/v1",
+      code: "anthropic",
+      metadata: {
+        owner: "research",
+        tier: "backup",
+      },
+      name: "Anthropic",
+      provider_type: "anthropic",
+    });
+
+    fireEvent.change(screen.getByLabelText("Provider patch ID"), { target: { value: "provider-1" } });
+    fireEvent.change(screen.getByLabelText("Provider patch metadata JSON"), {
+      target: { value: '{"owner":"platform-2","region":"us"}' },
+    });
+    await user.click(screen.getByRole("button", { name: "Save provider JSON" }));
+
+    expect(await screen.findByText("OpenAI JSON policy saved.")).toBeInTheDocument();
+    const providerPatchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/admin/providers/provider-1") &&
+        init?.method === "PATCH" &&
+        String(init.body).includes("platform-2"),
+    );
+    expect(JSON.parse(String(providerPatchCall?.[1]?.body))).toEqual({
+      metadata: {
+        owner: "platform-2",
+        region: "us",
+      },
+    });
 
     await user.click(screen.getByRole("button", { name: "Disable provider OpenAI" }));
 
     expect(await screen.findByText("OpenAI disabled.")).toBeInTheDocument();
 
-    expect(await screen.findByText("openai primary")).toBeInTheDocument();
+    expect((await screen.findAllByText("openai primary")).length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByLabelText("Requested model"), { target: { value: "gpt-visible" } });
     fireEvent.change(screen.getByLabelText("Upstream model"), { target: { value: "upstream-gpt" } });
@@ -2072,9 +2111,94 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Endpoint / base URL"), {
       target: { value: "https://api.anthropic.test/v1" },
     });
+    fireEvent.change(screen.getByLabelText("Channel model mappings JSON"), {
+      target: { value: '{"claude-3-haiku":"claude-3-haiku-20240307"}' },
+    });
+    fireEvent.change(screen.getByLabelText("Channel tags JSON"), {
+      target: { value: '["backup","anthropic"]' },
+    });
+    fireEvent.change(screen.getByLabelText("Channel request overrides JSON"), {
+      target: { value: '[{"type":"header","name":"x-ai-profile","value":"default"}]' },
+    });
+    fireEvent.change(screen.getByLabelText("Channel probe policy JSON"), {
+      target: { value: '{"path":"/health"}' },
+    });
+    fireEvent.change(screen.getByLabelText("Channel timeout policy JSON"), {
+      target: { value: '{"connect_ms":3000}' },
+    });
     await user.click(screen.getByRole("button", { name: "Create channel" }));
 
-    expect(await screen.findByText("anthropic primary")).toBeInTheDocument();
+    expect((await screen.findAllByText("anthropic primary")).length).toBeGreaterThan(0);
+    const createChannelCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).endsWith("/admin/channels") && init?.method === "POST",
+    );
+    expect(JSON.parse(String(createChannelCall?.[1]?.body))).toMatchObject({
+      endpoint: "https://api.anthropic.test/v1",
+      model_mappings: {
+        "claude-3-haiku": "claude-3-haiku-20240307",
+      },
+      name: "anthropic primary",
+      probe_policy: {
+        path: "/health",
+      },
+      provider_id: "provider-2",
+      request_overrides: [
+        {
+          name: "x-ai-profile",
+          type: "header",
+          value: "default",
+        },
+      ],
+      tags: ["backup", "anthropic"],
+      timeout_policy: {
+        connect_ms: 3000,
+      },
+    });
+
+    fireEvent.change(screen.getByLabelText("Channel patch ID"), { target: { value: "channel-1" } });
+    fireEvent.change(screen.getByLabelText("Patch model mappings JSON"), {
+      target: { value: '{"gpt-visible":"gpt-4o-mini-2024-07-18"}' },
+    });
+    fireEvent.change(screen.getByLabelText("Patch tags JSON"), {
+      target: { value: '["primary","low-latency"]' },
+    });
+    fireEvent.change(screen.getByLabelText("Patch request overrides JSON"), {
+      target: { value: '[{"type":"header","name":"x-ai-profile","value":"default"}]' },
+    });
+    fireEvent.change(screen.getByLabelText("Patch probe policy JSON"), {
+      target: { value: '{"path":"/ready"}' },
+    });
+    fireEvent.change(screen.getByLabelText("Patch timeout policy JSON"), {
+      target: { value: '{"connect_ms":2500}' },
+    });
+    await user.click(screen.getByRole("button", { name: "Save channel JSON" }));
+
+    expect(await screen.findByText("openai primary JSON policy saved.")).toBeInTheDocument();
+    const channelPatchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/admin/channels/channel-1") &&
+        init?.method === "PATCH" &&
+        String(init.body).includes("low-latency"),
+    );
+    expect(JSON.parse(String(channelPatchCall?.[1]?.body))).toEqual({
+      model_mappings: {
+        "gpt-visible": "gpt-4o-mini-2024-07-18",
+      },
+      probe_policy: {
+        path: "/ready",
+      },
+      request_overrides: [
+        {
+          name: "x-ai-profile",
+          type: "header",
+          value: "default",
+        },
+      ],
+      tags: ["primary", "low-latency"],
+      timeout_policy: {
+        connect_ms: 2500,
+      },
+    });
 
     await user.click(screen.getByRole("button", { name: "Disable channel openai primary" }));
 
@@ -2083,6 +2207,51 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Delete channel openai primary" }));
 
     expect(await screen.findByText("openai primary deleted.")).toBeInTheDocument();
+  });
+
+  it("rejects malformed or unsafe provider and channel JSON policies", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Providers/ }));
+    expect((await screen.findAllByText("OpenAI")).length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText("Provider code"), { target: { value: "bad-provider" } });
+    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Bad Provider" } });
+    fireEvent.change(screen.getByLabelText("Provider metadata JSON"), { target: { value: "{" } });
+    await user.click(screen.getByRole("button", { name: "Create provider" }));
+
+    expect(await screen.findByText("Provider metadata JSON must be valid JSON.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Provider metadata JSON"), {
+      target: { value: `{"Authorization":"${bearerPlaceholder("provider-json-hidden")}"}` },
+    });
+    await user.click(screen.getByRole("button", { name: "Create provider" }));
+
+    expect(await screen.findByText("Provider metadata JSON contains unsafe fields.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Channel patch ID"), { target: { value: "channel-1" } });
+    fireEvent.change(screen.getByLabelText("Patch model mappings JSON"), {
+      target: { value: '{"raw_key":"hidden"}' },
+    });
+    await user.click(screen.getByRole("button", { name: "Save channel JSON" }));
+
+    expect(await screen.findByText("Patch model mappings JSON contains unsafe fields.")).toBeInTheDocument();
+
+    const unsafeMutationCalls = fetchMock.mock.calls.filter(([url, init]) => {
+      const requestUrl = String(url);
+      const method = init?.method;
+
+      return (
+        (requestUrl.includes("/admin/providers") && method === "POST") ||
+        (requestUrl.includes("/admin/channels/channel-1") && method === "PATCH")
+      );
+    });
+    expect(unsafeMutationCalls).toHaveLength(0);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("provider-json-hidden"));
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain("raw_key");
   });
 
   it("lists and mutates models and model associations", async () => {

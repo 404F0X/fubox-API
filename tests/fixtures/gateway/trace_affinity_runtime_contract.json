@@ -1,0 +1,56 @@
+{
+  "scenario": "gateway_trace_affinity_runtime_contract_v1",
+  "crate": "apps/gateway",
+  "header": "x-ai-trace-id",
+  "runtime_schema": "gateway_trace_affinity_runtime_v1",
+  "lookup_contract": {
+    "only_when_trace_id_present": true,
+    "best_effort": true,
+    "lookback_seconds": 3600,
+    "bounded_limit": 1,
+    "scope": [
+      "tenant_id",
+      "project_id",
+      "trace_id",
+      "canonical_model_id"
+    ],
+    "success_status_only": true,
+    "summary_fields": [
+      "channel_id",
+      "provider_id",
+      "canonical_model_id",
+      "upstream_model"
+    ]
+  },
+  "expected": {
+    "accepted_trace_status": "accepted",
+    "missing_trace_lookup_status": "skipped",
+    "hit_lookup_status": "hit",
+    "miss_lookup_status": "miss",
+    "error_lookup_status": "error",
+    "unsafe_trace_status": "unsafe",
+    "applied_status": "Applied",
+    "filtered_status": "PreviousChannelFiltered",
+    "disabled_status": "Disabled"
+  },
+  "snapshot_contract": {
+    "location": "route_decision_snapshot.gateway_trace_affinity",
+    "stores_trace_id": false,
+    "stores_request_or_response_body": false,
+    "stores_authorization_material": false,
+    "stores_provider_key": false,
+    "stores_raw_endpoint": false
+  },
+  "forbidden_snapshot_markers": [
+    "sk-live-secret",
+    "authorization",
+    "bearer",
+    "provider_key",
+    "provider key",
+    "endpoint",
+    "payload",
+    "request_body",
+    "response_body",
+    "raw"
+  ]
+}

@@ -605,6 +605,10 @@ h3 {
   grid-template-columns: repeat(3, minmax(180px, 1fr));
 }
 
+.field--wide {
+  grid-column: 1 / -1;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -661,7 +665,7 @@ h3 {
 
 .admin-table--channels,
 .admin-table--providers {
-  min-width: 1460px;
+  min-width: 1680px;
 }
 
 .admin-table--profiles,
@@ -760,6 +764,50 @@ h3 {
   align-items: end;
   gap: 8px;
   min-width: 0;
+}
+
+.advanced-json-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(420px, 1.4fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+.advanced-json-form {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.advanced-json-form h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.advanced-json-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.json-summary,
+.json-summary-stack {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.json-summary strong,
+.json-summary span {
+  overflow-wrap: anywhere;
+}
+
+.json-summary span {
+  color: var(--ink-muted);
+  font-size: 12px;
 }
 
 .manual-test-field {
@@ -1056,6 +1104,8 @@ h3 {
   .feature-stats,
   .form-grid--three,
   .form-grid,
+  .advanced-json-grid,
+  .advanced-json-form-grid,
   .filter-bar {
     grid-template-columns: repeat(2, minmax(160px, 1fr));
   }
@@ -1090,6 +1140,8 @@ h3 {
   .feature-stats,
   .form-grid--three,
   .form-grid,
+  .advanced-json-grid,
+  .advanced-json-form-grid,
   .filter-bar,
   .detail-list {
     grid-template-columns: 1fr;

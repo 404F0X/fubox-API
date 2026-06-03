@@ -527,7 +527,10 @@ describe("api client", () => {
       provider_type: "openai",
       status: "enabled",
     });
-    await patchProvider("provider-1", { status: "disabled" });
+    await patchProvider("provider-1", {
+      metadata: { owner: "platform-2" },
+      status: "disabled",
+    });
     await deleteProvider("provider-1");
     await listChannels();
     await createChannel({
@@ -546,7 +549,14 @@ describe("api client", () => {
       timeout_policy: { connect_ms: 2000 },
       weight: 100,
     });
-    await patchChannel("channel-1", { status: "disabled" });
+    await patchChannel("channel-1", {
+      model_mappings: { "gpt-4o-mini": "gpt-4o-mini-2024-07-18" },
+      probe_policy: { path: "/ready" },
+      request_overrides: [{ header: "x-ai-profile", value: "default" }],
+      status: "disabled",
+      tags: ["primary", "low-latency"],
+      timeout_policy: { connect_ms: 2500 },
+    });
     await deleteChannel("channel-1");
 
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
@@ -571,7 +581,10 @@ describe("api client", () => {
       method: "POST",
     });
     expect(fetchMock.mock.calls[2][1]).toMatchObject({
-      body: JSON.stringify({ status: "disabled" }),
+      body: JSON.stringify({
+        metadata: { owner: "platform-2" },
+        status: "disabled",
+      }),
       method: "PATCH",
     });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "DELETE" });
@@ -596,7 +609,14 @@ describe("api client", () => {
       method: "POST",
     });
     expect(fetchMock.mock.calls[6][1]).toMatchObject({
-      body: JSON.stringify({ status: "disabled" }),
+      body: JSON.stringify({
+        model_mappings: { "gpt-4o-mini": "gpt-4o-mini-2024-07-18" },
+        probe_policy: { path: "/ready" },
+        request_overrides: [{ header: "x-ai-profile", value: "default" }],
+        status: "disabled",
+        tags: ["primary", "low-latency"],
+        timeout_policy: { connect_ms: 2500 },
+      }),
       method: "PATCH",
     });
     expect(fetchMock.mock.calls[7][1]).toMatchObject({ method: "DELETE" });
