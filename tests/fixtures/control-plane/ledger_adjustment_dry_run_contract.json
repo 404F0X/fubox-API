@@ -648,6 +648,31 @@
       "billing_ledger_writer_commit_allowed_in_this_contract": false,
       "dual_commit_allowed": false
     },
+    "runtime_env_provider_preflight_contract": {
+      "schema_version": "control_plane_billing_ledger_writer_runtime_env_provider_preflight.v1",
+      "source": "control_plane_runtime_env_config_provider",
+      "summary_field": "runtime_env_provider_preflight",
+      "cutover_mode_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+      "live_database_url_env_var": "BILLING_LEDGER_LIVE_DATABASE_URL",
+      "runtime_writer_feature_marker": "billing_ledger_runtime_writer",
+      "live_database_url_output": "presence_marker_only",
+      "runtime_writer_feature_output": "boolean_only",
+      "supported_modes": ["disabled", "shadow", "ready"],
+      "missing_or_invalid_mode_defaults_disabled": true,
+      "live_cutover_prerequisites": [
+        "explicit_ready_mode",
+        "live_database_url_present",
+        "runtime_writer_feature_available",
+        "no_adapter_refusal"
+      ],
+      "production_source_of_truth_switch_allowed_in_this_contract": false,
+      "billing_ledger_writer_commit_allowed_in_this_contract": false,
+      "dual_commit_allowed": false,
+      "handoff_performance_summary_passthrough_required": true,
+      "raw_env_value_echoed": false,
+      "raw_database_url_echoed": false,
+      "credential_material_echoed": false
+    },
     "handoff_performance_guard_contract": {
       "schema_version": "control_plane_billing_ledger_writer_handoff_performance.v1",
       "summary_field": "handoff_performance_summary",

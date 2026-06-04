@@ -94,6 +94,12 @@ const CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA: &str =
     "control_plane_billing_ledger_writer_cutover_preflight.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR: &str =
     "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE";
+const CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR: &str =
+    "BILLING_LEDGER_LIVE_DATABASE_URL";
+const CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER: &str =
+    "billing_ledger_runtime_writer";
+const CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA: &str =
+    "control_plane_billing_ledger_writer_runtime_env_provider_preflight.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA: &str =
     "control_plane_billing_ledger_writer_handoff_performance.v1";
 
@@ -2561,9 +2567,9 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
             false,
         );
     let billing_ledger_writer_cutover_preflight =
-        ledger_adjustment_billing_ledger_writer_cutover_preflight_from_env_config(
+        ledger_adjustment_billing_ledger_writer_cutover_preflight_from_runtime_env_provider(
             &plan,
-            None,
+            &LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::disabled_default(),
             Some("adapter_unavailable"),
         );
     json!({
@@ -3346,9 +3352,9 @@ fn ledger_adjustment_execute_success_response(
             false,
         );
     let billing_ledger_writer_cutover_preflight =
-        ledger_adjustment_billing_ledger_writer_cutover_preflight_from_env_config(
+        ledger_adjustment_billing_ledger_writer_cutover_preflight_from_runtime_env_provider(
             &validated_plan,
-            None,
+            &LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::disabled_default(),
             None,
         );
     json!({
@@ -3398,9 +3404,9 @@ fn ledger_adjustment_execute_idempotent_response(
             false,
         );
     let billing_ledger_writer_cutover_preflight =
-        ledger_adjustment_billing_ledger_writer_cutover_preflight_from_env_config(
+        ledger_adjustment_billing_ledger_writer_cutover_preflight_from_runtime_env_provider(
             &validated_plan,
-            None,
+            &LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::disabled_default(),
             None,
         );
     json!({
@@ -3984,6 +3990,59 @@ impl LedgerAdjustmentBillingLedgerWriterCutoverMode {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider {
+    cutover_mode: Option<String>,
+    live_database_url: Option<String>,
+    runtime_writer_feature_available: bool,
+}
+
+impl LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider {
+    fn disabled_default() -> Self {
+        Self {
+            cutover_mode: None,
+            live_database_url: None,
+            runtime_writer_feature_available: false,
+        }
+    }
+
+    fn from_injected_values(
+        cutover_mode: Option<&str>,
+        live_database_url: Option<&str>,
+        runtime_writer_feature_available: bool,
+    ) -> Self {
+        Self {
+            cutover_mode: cutover_mode.map(ToString::to_string),
+            live_database_url: live_database_url.map(ToString::to_string),
+            runtime_writer_feature_available,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn from_process_env(runtime_writer_feature_available: bool) -> Self {
+        Self {
+            cutover_mode: std::env::var(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR)
+                .ok(),
+            live_database_url: std::env::var(
+                CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR,
+            )
+            .ok(),
+            runtime_writer_feature_available,
+        }
+    }
+
+    fn cutover_mode(&self) -> Option<&str> {
+        self.cutover_mode.as_deref()
+    }
+
+    fn live_database_url_present(&self) -> bool {
+        self.live_database_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|url| !url.is_empty())
+    }
+}
+
 fn ledger_adjustment_billing_ledger_writer_cutover_mode_parser_guard(
     raw_mode: Option<&str>,
 ) -> (LedgerAdjustmentBillingLedgerWriterCutoverMode, Value) {
@@ -4112,6 +4171,84 @@ fn ledger_adjustment_billing_ledger_writer_cutover_env_config_summary(
         "credential_material_echoed": false,
         "raw_executor_error_detail_echoed": false,
         "mode_parser_guard": mode_parser_guard
+    })
+}
+
+fn ledger_adjustment_billing_ledger_writer_runtime_env_provider_preflight(
+    preflight: &Value,
+    provider: &LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider,
+    failure_kind: Option<&'static str>,
+) -> Value {
+    let live_database_url_present = provider.live_database_url_present();
+    let mode = preflight
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("disabled");
+    let live_cutover_prerequisites_met = mode == "ready"
+        && live_database_url_present
+        && provider.runtime_writer_feature_available
+        && failure_kind.is_none();
+
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA,
+        "source": "control_plane_runtime_env_config_provider",
+        "target": "billing_ledger_runtime_writer_live_cutover_preflight",
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "mode_provider": {
+            "env_var": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR,
+            "env_present": provider.cutover_mode.is_some(),
+            "effective_mode": mode,
+            "mode_parser_guard": preflight
+                .get("mode_parser_guard")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "env_value_output": "omitted",
+            "raw_env_value_echoed": false,
+            "secret_value_echoed": false
+        },
+        "live_database_url_presence": {
+            "env_var": CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR,
+            "present": live_database_url_present,
+            "presence_marker_only": true,
+            "env_value_output": "omitted",
+            "database_url_output": "omitted",
+            "raw_database_url_echoed": false,
+            "credential_material_echoed": false
+        },
+        "runtime_writer_feature": {
+            "feature_marker": CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER,
+            "available": provider.runtime_writer_feature_available,
+            "availability_marker_only": true,
+            "feature_value_output": "boolean_only",
+            "raw_feature_config_echoed": false
+        },
+        "live_cutover_preflight": {
+            "mode_ready": mode == "ready",
+            "live_database_url_present": live_database_url_present,
+            "runtime_writer_feature_available": provider.runtime_writer_feature_available,
+            "failure_kind": failure_kind.unwrap_or("none"),
+            "live_cutover_prerequisites_met": live_cutover_prerequisites_met,
+            "production_source_of_truth_switch_allowed_in_this_contract": false,
+            "billing_ledger_writer_commit_allowed_in_this_contract": false,
+            "control_plane_local_sql_writer_remains_authoritative": true,
+            "ready_requires_separate_live_cutover_acceptance": true,
+            "no_double_write": true
+        },
+        "handoff_performance_summary_passthrough": preflight
+            .get("handoff_performance_summary")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
     })
 }
 
@@ -4436,6 +4573,31 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_contract() -> Value
             "billing_ledger_writer_commit_allowed_in_this_contract": false,
             "dual_commit_allowed": false
         },
+        "runtime_env_provider_preflight_contract": {
+            "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA,
+            "source": "control_plane_runtime_env_config_provider",
+            "summary_field": "runtime_env_provider_preflight",
+            "cutover_mode_env_var": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR,
+            "live_database_url_env_var": CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR,
+            "runtime_writer_feature_marker": CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER,
+            "live_database_url_output": "presence_marker_only",
+            "runtime_writer_feature_output": "boolean_only",
+            "supported_modes": ["disabled", "shadow", "ready"],
+            "missing_or_invalid_mode_defaults_disabled": true,
+            "live_cutover_prerequisites": [
+                "explicit_ready_mode",
+                "live_database_url_present",
+                "runtime_writer_feature_available",
+                "no_adapter_refusal"
+            ],
+            "production_source_of_truth_switch_allowed_in_this_contract": false,
+            "billing_ledger_writer_commit_allowed_in_this_contract": false,
+            "dual_commit_allowed": false,
+            "handoff_performance_summary_passthrough_required": true,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "credential_material_echoed": false
+        },
         "handoff_performance_guard_contract": {
             "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA,
             "summary_field": "handoff_performance_summary",
@@ -4708,6 +4870,31 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_from_env_config(
         preflight.insert(
             "env_config_summary".to_string(),
             ledger_adjustment_billing_ledger_writer_cutover_env_config_summary(raw_cutover_mode),
+        );
+    }
+    preflight
+}
+
+fn ledger_adjustment_billing_ledger_writer_cutover_preflight_from_runtime_env_provider(
+    validated_plan: &Value,
+    provider: &LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider,
+    failure_kind: Option<&'static str>,
+) -> Value {
+    let mut preflight = ledger_adjustment_billing_ledger_writer_cutover_preflight_from_env_config(
+        validated_plan,
+        provider.cutover_mode(),
+        failure_kind,
+    );
+    let runtime_env_provider_preflight =
+        ledger_adjustment_billing_ledger_writer_runtime_env_provider_preflight(
+            &preflight,
+            provider,
+            failure_kind,
+        );
+    if let Some(preflight) = preflight.as_object_mut() {
+        preflight.insert(
+            "runtime_env_provider_preflight".to_string(),
+            runtime_env_provider_preflight,
         );
     }
     preflight
@@ -11796,6 +11983,26 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]
+                ["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]
+                ["live_database_url_presence"]["present"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]
+                ["runtime_writer_feature"]["available"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]
+                ["live_cutover_preflight"]["live_cutover_prerequisites_met"],
+            json!(false)
+        );
+        assert_eq!(
             body["data"]["billing_ledger_writer_cutover_preflight"]["no_double_write"]["dual_commit_allowed"],
             json!(false)
         );
@@ -12964,6 +13171,42 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA)
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["summary_field"],
+            json!("runtime_env_provider_preflight")
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["live_database_url_env_var"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR)
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["runtime_writer_feature_marker"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER)
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["live_database_url_output"],
+            json!("presence_marker_only")
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["runtime_writer_feature_output"],
+            json!("boolean_only")
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["production_source_of_truth_switch_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["billing_ledger_writer_commit_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_env_provider_preflight_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
             contract["handoff_performance_guard_contract"]["schema_version"],
             json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA)
         );
@@ -14017,6 +14260,311 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_billing_runtime_env_provider_preflight_marks_live_db_feature_and_stays_secret_safe()
+     {
+        let plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "-0.10000000",
+            "USD",
+            Some(Uuid::from_u128(20)),
+            Some(Uuid::from_u128(40)),
+            Some(Uuid::from_u128(90)),
+            None,
+            None,
+            false,
+        );
+        let invalid_mode =
+            " READY postgres://db.example.internal Authorization=Bearer sk-live-never-return ";
+        let live_db_url = "postgres://billing_user:super-secret@db.example.internal/fubox";
+
+        for (
+            label,
+            provider,
+            failure_kind,
+            expected_mode,
+            expected_input_state,
+            expected_live_db_present,
+            expected_feature_available,
+            expected_prerequisites_met,
+        ) in [
+            (
+                "missing",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    None, None, false,
+                ),
+                None,
+                "disabled",
+                "missing_defaulted",
+                false,
+                false,
+                false,
+            ),
+            (
+                "invalid",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some(invalid_mode),
+                    Some(live_db_url),
+                    true,
+                ),
+                None,
+                "disabled",
+                "invalid_disabled_guard",
+                true,
+                true,
+                false,
+            ),
+            (
+                "disabled explicit",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some("disabled"),
+                    Some(live_db_url),
+                    true,
+                ),
+                None,
+                "disabled",
+                "valid_normalized",
+                true,
+                true,
+                false,
+            ),
+            (
+                "shadow explicit",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some("shadow"),
+                    Some(live_db_url),
+                    true,
+                ),
+                None,
+                "shadow",
+                "valid_normalized",
+                true,
+                true,
+                false,
+            ),
+            (
+                "ready without live db",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some("ready"),
+                    None,
+                    true,
+                ),
+                None,
+                "ready",
+                "valid_normalized",
+                false,
+                true,
+                false,
+            ),
+            (
+                "ready without feature",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some("ready"),
+                    Some(live_db_url),
+                    false,
+                ),
+                None,
+                "ready",
+                "valid_normalized",
+                true,
+                false,
+                false,
+            ),
+            (
+                "ready live preflight complete",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some("ready"),
+                    Some(live_db_url),
+                    true,
+                ),
+                None,
+                "ready",
+                "valid_normalized",
+                true,
+                true,
+                true,
+            ),
+            (
+                "ready row-count refusal",
+                LedgerAdjustmentBillingLedgerWriterRuntimeEnvProvider::from_injected_values(
+                    Some("ready"),
+                    Some(live_db_url),
+                    true,
+                ),
+                Some("row_count_mismatch"),
+                "ready",
+                "valid_normalized",
+                true,
+                true,
+                false,
+            ),
+        ] {
+            let preflight =
+                ledger_adjustment_billing_ledger_writer_cutover_preflight_from_runtime_env_provider(
+                    &plan,
+                    &provider,
+                    failure_kind,
+                );
+            let runtime_preflight = &preflight["runtime_env_provider_preflight"];
+            let serialized =
+                serde_json::to_string(&preflight).expect("runtime preflight should serialize");
+
+            assert_eq!(
+                preflight["state"],
+                json!(expected_mode),
+                "{label} preflight state"
+            );
+            assert_eq!(
+                runtime_preflight["schema_version"],
+                json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA),
+                "{label} provider schema"
+            );
+            assert_eq!(
+                runtime_preflight["mode_provider"]["env_var"],
+                json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR),
+                "{label} mode env var"
+            );
+            assert_eq!(
+                runtime_preflight["mode_provider"]["effective_mode"],
+                json!(expected_mode),
+                "{label} effective mode"
+            );
+            assert_eq!(
+                runtime_preflight["mode_provider"]["mode_parser_guard"]["input_state"],
+                json!(expected_input_state),
+                "{label} input state"
+            );
+            assert_eq!(
+                runtime_preflight["mode_provider"]["env_value_output"],
+                json!("omitted"),
+                "{label} mode output"
+            );
+            assert_eq!(
+                runtime_preflight["mode_provider"]["raw_env_value_echoed"],
+                json!(false),
+                "{label} raw mode env"
+            );
+            assert_eq!(
+                runtime_preflight["live_database_url_presence"]["env_var"],
+                json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR),
+                "{label} live db env var"
+            );
+            assert_eq!(
+                runtime_preflight["live_database_url_presence"]["present"],
+                json!(expected_live_db_present),
+                "{label} live db presence"
+            );
+            assert_eq!(
+                runtime_preflight["live_database_url_presence"]["presence_marker_only"],
+                json!(true),
+                "{label} live db marker"
+            );
+            assert_eq!(
+                runtime_preflight["live_database_url_presence"]["database_url_output"],
+                json!("omitted"),
+                "{label} db url output"
+            );
+            assert_eq!(
+                runtime_preflight["live_database_url_presence"]["raw_database_url_echoed"],
+                json!(false),
+                "{label} raw db url"
+            );
+            assert_eq!(
+                runtime_preflight["runtime_writer_feature"]["feature_marker"],
+                json!(CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER),
+                "{label} feature marker"
+            );
+            assert_eq!(
+                runtime_preflight["runtime_writer_feature"]["available"],
+                json!(expected_feature_available),
+                "{label} feature availability"
+            );
+            assert_eq!(
+                runtime_preflight["runtime_writer_feature"]["feature_value_output"],
+                json!("boolean_only"),
+                "{label} feature output"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["mode_ready"],
+                json!(expected_mode == "ready"),
+                "{label} mode ready"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["live_database_url_present"],
+                json!(expected_live_db_present),
+                "{label} live db ready"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["runtime_writer_feature_available"],
+                json!(expected_feature_available),
+                "{label} runtime writer ready"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["live_cutover_prerequisites_met"],
+                json!(expected_prerequisites_met),
+                "{label} live cutover prereqs"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["production_source_of_truth_switch_allowed_in_this_contract"],
+                json!(false),
+                "{label} source switch"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["billing_ledger_writer_commit_allowed_in_this_contract"],
+                json!(false),
+                "{label} commit allowed"
+            );
+            assert_eq!(
+                runtime_preflight["live_cutover_preflight"]["no_double_write"],
+                json!(true),
+                "{label} no double write"
+            );
+            assert_eq!(
+                runtime_preflight["handoff_performance_summary_passthrough"],
+                preflight["handoff_performance_summary"],
+                "{label} handoff performance passthrough"
+            );
+            assert_eq!(
+                runtime_preflight["handoff_performance_summary_passthrough"]["schema_version"],
+                json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA),
+                "{label} handoff performance schema"
+            );
+            assert_eq!(
+                runtime_preflight["safe_output_contract"]["operation_key_output"],
+                json!("omitted"),
+                "{label} operation key"
+            );
+            assert_eq!(
+                runtime_preflight["safe_output_contract"]["raw_database_url_echoed"],
+                json!(false),
+                "{label} raw db safe"
+            );
+
+            for forbidden in [
+                "READY postgres",
+                "postgres://",
+                "billing_user",
+                "super-secret",
+                "db.example.internal",
+                "Authorization=Bearer",
+                "Bearer sk-live",
+                "sk-live",
+                "operation_key=",
+                "idempotency_key",
+                "dedupe_key",
+                "raw ledger payload",
+                "raw executor failure detail",
+                "raw credential value",
+                "raw metadata value",
+            ] {
+                assert!(
+                    !serialized.contains(forbidden),
+                    "{label} runtime env provider preflight must not contain {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ledger_adjustment_billing_runtime_mapping_summaries_match_response_contract() {
         let request_id = Uuid::from_u128(90);
         let related_entry =
@@ -14332,6 +14880,21 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]["live_database_url_presence"]
+                ["present"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]["runtime_writer_feature"]
+                ["available"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]["live_cutover_preflight"]
+                ["live_cutover_prerequisites_met"],
+            json!(false)
+        );
+        assert_eq!(
             response["billing_ledger_writer_cutover_preflight"]["cutover"]["cutover_allowed"],
             json!(false)
         );
@@ -14569,6 +15132,21 @@ mod tests {
         );
         assert_eq!(
             response["billing_ledger_writer_cutover_preflight"]["env_config_summary"]["billing_ledger_writer_commit_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]["live_database_url_presence"]
+                ["present"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]["runtime_writer_feature"]
+                ["available"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["runtime_env_provider_preflight"]["live_cutover_preflight"]
+                ["live_cutover_prerequisites_met"],
             json!(false)
         );
         assert_eq!(
@@ -15018,6 +15596,51 @@ mod tests {
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["env_config_summary_contract"]
+                ["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["summary_field"],
+            json!("runtime_env_provider_preflight")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["live_database_url_env_var"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["runtime_writer_feature_marker"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["live_database_url_output"],
+            json!("presence_marker_only")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["runtime_writer_feature_output"],
+            json!("boolean_only")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["production_source_of_truth_switch_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
+                ["billing_ledger_writer_commit_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
                 ["dual_commit_allowed"],
             json!(false)
         );
