@@ -18,7 +18,7 @@ use ai_gateway_billing_ledger::{
 use serde::Deserialize;
 use std::collections::BTreeMap;
 #[cfg(feature = "postgres-sqlx")]
-use std::{borrow::Cow, error::Error, fmt};
+use std::{borrow::Cow, error::Error, fmt, time::Duration};
 use uuid::Uuid;
 
 const EXECUTOR_FIXTURE: &str =
@@ -64,8 +64,13 @@ struct SqlxSchemaFixture {
 #[derive(Debug, Deserialize)]
 struct LiveSmokeFixture {
     env_var: String,
+    dry_run_command: String,
+    preflight_command: String,
+    ignored_test_name: String,
+    query_mode: String,
     status_without_env: String,
     external_blocker: String,
+    missing_env_exit_code: i32,
 }
 
 #[allow(dead_code)]
@@ -354,6 +359,23 @@ fn postgres_sqlx_schema_fixture_documents_live_smoke_boundary() {
         "consistent_writer_executor_contract.json"
     );
     assert_eq!(schema_fixture.feature, "postgres-sqlx");
+    assert_eq!(
+        schema_fixture.live_smoke.dry_run_command,
+        "powershell -ExecutionPolicy Bypass -File scripts/verify_billing_ledger_sqlx_live_smoke.ps1 -DryRun"
+    );
+    assert_eq!(
+        schema_fixture.live_smoke.preflight_command,
+        "powershell -ExecutionPolicy Bypass -File scripts/verify_billing_ledger_sqlx_live_smoke.ps1"
+    );
+    assert_eq!(
+        schema_fixture.live_smoke.ignored_test_name,
+        "postgres_sqlx_live_smoke_preflight_validates_query_shapes_against_schema"
+    );
+    assert_eq!(
+        schema_fixture.live_smoke.query_mode,
+        "explain_only_transaction_rollback"
+    );
+    assert_eq!(schema_fixture.live_smoke.missing_env_exit_code, 2);
 
     if std::env::var(&schema_fixture.live_smoke.env_var).is_err() {
         assert_eq!(schema_fixture.live_smoke.status_without_env, "not_run");
@@ -629,6 +651,96 @@ fn postgres_sqlx_schema_contract_covers_reserve_settle_refund_executables() {
 }
 
 #[cfg(feature = "postgres-sqlx")]
+#[tokio::test]
+#[ignore = "requires BILLING_LEDGER_LIVE_DATABASE_URL and a migrated billing ledger Postgres schema"]
+async fn postgres_sqlx_live_smoke_preflight_validates_query_shapes_against_schema()
+-> Result<(), Box<dyn Error>> {
+    let source_fixture: SourceFixture =
+        serde_json::from_str(EXECUTOR_FIXTURE).expect("source fixture should parse");
+    let schema_fixture: SqlxSchemaFixture =
+        serde_json::from_str(SQLX_SCHEMA_FIXTURE).expect("schema fixture should parse");
+    let database_url = match std::env::var(&schema_fixture.live_smoke.env_var) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            return Err(live_smoke_error(format!(
+                "external_blocker: {} is not set; {}",
+                schema_fixture.live_smoke.env_var, schema_fixture.live_smoke.external_blocker
+            )));
+        }
+    };
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&database_url)
+        .await
+        .map_err(|_| live_smoke_error("live_db_connection_failed: detail omitted"))?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| live_smoke_error("live_db_transaction_begin_failed: detail omitted"))?;
+    sqlx::query("set local statement_timeout = '5000ms'")
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| live_smoke_error("live_db_statement_timeout_preflight_failed"))?;
+
+    let mut checked_statement_count = 0usize;
+    for schema_case in &schema_fixture.cases {
+        let source_case = source_fixture
+            .cases
+            .iter()
+            .find(|case| case.name == schema_case.source_case)
+            .expect("source case");
+        let request = request_from_fixture(&source_fixture.scope, source_case);
+        let state = state_from_fixture(&source_case.state);
+        let writer_plan =
+            plan_consistent_ledger_write(request, &state).expect("writer plan should build");
+        let command_plan = plan_consistent_ledger_write_commands(&writer_plan);
+        let postgres_plan = plan_consistent_ledger_postgres_execution(&writer_plan, &command_plan);
+        let executable_statements = plan_consistent_ledger_postgres_sqlx_executable_statements(
+            &writer_plan,
+            &postgres_plan,
+        )
+        .expect("sqlx executable statements should convert");
+
+        for executable in &executable_statements {
+            let explain_sql = format!("explain (format text) {}", executable.sql);
+            let mut query = sqlx::query(&explain_sql);
+            for bind in &executable.binds {
+                query = bind_live_smoke_sqlx_value(query, bind);
+            }
+
+            let plan_rows = query.fetch_all(&mut *transaction).await.map_err(|_| {
+                live_smoke_error(format!(
+                    "live_sqlx_preflight_failed:{}:{}",
+                    schema_case.operation,
+                    statement_kind_name(executable.kind)
+                ))
+            })?;
+            if plan_rows.is_empty() {
+                return Err(live_smoke_error(format!(
+                    "live_sqlx_preflight_empty_explain:{}:{}",
+                    schema_case.operation,
+                    statement_kind_name(executable.kind)
+                )));
+            }
+            checked_statement_count += 1;
+        }
+    }
+
+    transaction
+        .rollback()
+        .await
+        .map_err(|_| live_smoke_error("live_db_transaction_rollback_failed: detail omitted"))?;
+    assert!(
+        checked_statement_count > 0,
+        "live preflight should validate at least one statement"
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "postgres-sqlx")]
 #[test]
 fn postgres_sqlx_feature_boundary_keeps_bind_values_private_and_maps_sqlx_errors() {
     let adapter_fixture: SqlxAdapterFixture =
@@ -887,6 +999,34 @@ fn bind_type_name(bind: &ConsistentLedgerPostgresSqlxBindValue) -> &'static str 
         ConsistentLedgerPostgresSqlxBindValue::Json(_) => "json",
         ConsistentLedgerPostgresSqlxBindValue::OperationKey(_) => "operation_key",
     }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn bind_live_smoke_sqlx_value<'query>(
+    query: sqlx::query::Query<'query, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    bind: &'query ConsistentLedgerPostgresSqlxBindValue,
+) -> sqlx::query::Query<'query, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    match bind {
+        ConsistentLedgerPostgresSqlxBindValue::Uuid(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::OptionalUuid(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::Text(value) => query.bind(value.as_str()),
+        ConsistentLedgerPostgresSqlxBindValue::OptionalText(value) => query.bind(value.as_deref()),
+        ConsistentLedgerPostgresSqlxBindValue::DecimalText(value) => query.bind(value.as_str()),
+        ConsistentLedgerPostgresSqlxBindValue::I64(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::Bool(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::Json(value) => {
+            query.bind(sqlx::types::Json(value.clone()))
+        }
+        ConsistentLedgerPostgresSqlxBindValue::OperationKey(value) => query.bind(value.as_str()),
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn live_smoke_error(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        message.into(),
+    ))
 }
 
 #[cfg(feature = "postgres-sqlx")]

@@ -4,8 +4,13 @@
   "feature": "postgres-sqlx",
   "live_smoke": {
     "env_var": "BILLING_LEDGER_LIVE_DATABASE_URL",
+    "dry_run_command": "powershell -ExecutionPolicy Bypass -File scripts/verify_billing_ledger_sqlx_live_smoke.ps1 -DryRun",
+    "preflight_command": "powershell -ExecutionPolicy Bypass -File scripts/verify_billing_ledger_sqlx_live_smoke.ps1",
+    "ignored_test_name": "postgres_sqlx_live_smoke_preflight_validates_query_shapes_against_schema",
+    "query_mode": "explain_only_transaction_rollback",
     "status_without_env": "not_run",
-    "external_blocker": "live postgres database URL and migrated ledger schema are required"
+    "external_blocker": "live postgres database URL and migrated ledger schema are required",
+    "missing_env_exit_code": 2
   },
   "returning_schema_by_kind": {
     "lock_wallet": ["id", "balance_floor"],
