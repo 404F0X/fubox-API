@@ -64,6 +64,7 @@
     "fallback_source": "ConservativeFallback",
     "openai_chat_partial_required_tokens": 1152,
     "openai_responses_partial_required_tokens": 1324,
+    "openai_embeddings_fallback_required_tokens": 1024,
     "anthropic_messages_partial_required_tokens": 1536,
     "gemini_native_partial_required_tokens": 1280,
     "missing_max_required_tokens": 1024,

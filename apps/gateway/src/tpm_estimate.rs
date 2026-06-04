@@ -11,6 +11,7 @@ pub(crate) const GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA: &str = "gateway_tpm_estimat
 pub(crate) enum GatewayTpmEstimateEndpoint {
     OpenAiChat,
     OpenAiResponses,
+    OpenAiEmbeddings,
     AnthropicMessages,
     GeminiNative,
 }
@@ -20,6 +21,7 @@ impl GatewayTpmEstimateEndpoint {
         match self {
             Self::OpenAiChat => "openai_chat",
             Self::OpenAiResponses => "openai_responses",
+            Self::OpenAiEmbeddings => "openai_embeddings",
             Self::AnthropicMessages => "anthropic_messages",
             Self::GeminiNative => "gemini_native",
         }
@@ -145,6 +147,7 @@ fn max_completion_tokens_for_endpoint(
         GatewayTpmEstimateEndpoint::OpenAiResponses => {
             first_present_integer_field(request_body, &["max_output_tokens"])
         }
+        GatewayTpmEstimateEndpoint::OpenAiEmbeddings => None,
         GatewayTpmEstimateEndpoint::AnthropicMessages => {
             first_present_integer_field(request_body, &["max_tokens"])
         }
@@ -298,6 +301,24 @@ mod tests {
         );
         assert_eq!(partial.estimate.required_tokens, 384);
         assert!(partial.estimate.used_conservative_fallback);
+
+        let embeddings = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "sk-live-provider-secret raw embedding input" }),
+            GatewayTpmEstimateSignals::missing_tokenizer(256),
+        );
+        assert_eq!(embeddings.input.max_completion_tokens, None);
+        assert_eq!(
+            embeddings.estimate.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(embeddings.estimate.required_tokens, 256);
+        assert!(embeddings.estimate.used_conservative_fallback);
+        let embeddings_summary = serde_json::to_string(&embeddings.safe_summary())
+            .expect("embeddings summary should serialize");
+        assert!(!embeddings_summary.contains("sk-live-provider-secret"));
+        assert!(!embeddings_summary.contains("raw embedding input"));
+        assert!(!embeddings_summary.contains("input"));
 
         let negative = gateway_tpm_estimate_for_request(
             GatewayTpmEstimateEndpoint::AnthropicMessages,

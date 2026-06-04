@@ -2181,6 +2181,14 @@ async fn embeddings(
         return error.into_response();
     }
 
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+        GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+        &body,
+        GatewayTpmEstimateSignals::missing_tokenizer(
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+        ),
+    );
+
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &request.model)
         .await
@@ -2309,7 +2317,8 @@ async fn embeddings(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate));
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_EMBEDDINGS,
             repository,
@@ -13449,6 +13458,16 @@ mod tests {
             (
                 source_section(
                     main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
                     "async fn anthropic_messages(",
                     "async fn gemini_generate_content_native_passthrough(",
                 ),
@@ -13659,6 +13678,98 @@ mod tests {
         assert_eq!(metadata["tpm_estimate"]["source"], bridge["partial_source"]);
         assert_eq!(metadata["tpm_estimate"]["max_completion_tokens"], 300);
         assert_eq!(acquire_tpm["required"], json!(expected_required));
+    }
+
+    #[test]
+    fn rate_limit_reservation_embeddings_tpm_estimate_uses_conservative_fallback_boundary() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(155),
+            0,
+            Some(60),
+            Some(10_000),
+            Some(8),
+            json!({
+                "rpm": { "used": 10 },
+                "tokens_per_minute": { "used": 100 },
+                "concurrency": { "used": 1 },
+                "authorization": "Bearer sk-live-secret",
+                "payload": "raw request body"
+            }),
+        );
+        let tpm_estimate = gateway_tpm_estimate_for_request_body(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            br#"{
+                "model": "mock-embedding",
+                "input": ["sk-live-secret raw embedding input", "second raw input"]
+            }"#,
+            GatewayTpmEstimateSignals::missing_tokenizer(
+                GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+            ),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, Some(&tpm_estimate));
+        let metadata = reservation.metadata("completed");
+        let acquire_tpm = rate_limit_reservation_dimension(&metadata, "acquire", "tpm");
+        let finalize_tpm = rate_limit_reservation_dimension(&metadata, "finalize", "tpm");
+        let db_required =
+            gateway_rate_limit_required_capacity_for_db(reservation.required_capacity);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+        let bridge = &fixture["tpm_estimate_bridge"];
+        let expected_required = bridge["openai_embeddings_fallback_required_tokens"]
+            .as_i64()
+            .expect("expected embeddings TPM required tokens");
+
+        assert!(reservation.acquired());
+        assert_eq!(
+            tpm_estimate.estimate.required_tokens_i64(),
+            expected_required
+        );
+        assert_eq!(
+            reservation.required_capacity.tokens_per_minute,
+            expected_required
+        );
+        assert_eq!(db_required.tokens_per_minute, expected_required);
+        assert_eq!(
+            metadata["required_capacity"]["tokens_per_minute"],
+            json!(expected_required)
+        );
+        assert_eq!(metadata["tpm_estimate"]["endpoint"], "openai_embeddings");
+        assert_eq!(
+            metadata["tpm_estimate"]["source"],
+            bridge["fallback_source"]
+        );
+        assert_eq!(
+            metadata["tpm_estimate"]["fallback_tokens"],
+            bridge["conservative_fallback_tokens"]
+        );
+        assert_eq!(
+            metadata["tpm_estimate"]["max_completion_tokens"],
+            Value::Null
+        );
+        assert_eq!(metadata["tpm_estimate"]["used_conservative_fallback"], true);
+        assert_eq!(acquire_tpm["required"], json!(expected_required));
+        assert_eq!(finalize_tpm["required"], json!(expected_required));
+
+        let metadata_text = metadata.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !metadata_text.contains(&marker.to_ascii_lowercase()),
+                "embeddings TPM reservation bridge leaked forbidden marker: {marker}"
+            );
+        }
+        for marker in ["raw embedding input", "second raw input"] {
+            assert!(
+                !metadata_text.contains(marker),
+                "embeddings TPM reservation bridge leaked raw input marker: {marker}"
+            );
+        }
     }
 
     #[test]

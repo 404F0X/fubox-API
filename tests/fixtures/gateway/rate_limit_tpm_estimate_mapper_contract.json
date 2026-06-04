@@ -19,6 +19,13 @@
       "missing_tokenizer_behavior": "PartialEstimateWithConservativeFallback when max output exists; ConservativeFallback when it does not"
     },
     {
+      "endpoint": "openai_embeddings",
+      "path": "POST /v1/embeddings",
+      "max_output_fields": [],
+      "preferred_source_when_prompt_estimate_present": "ConservativeFallback until a tokenizer or trusted input token signal is wired",
+      "missing_tokenizer_behavior": "ConservativeFallback; raw input is not used or emitted"
+    },
+    {
       "endpoint": "anthropic_messages",
       "path": "POST /v1/messages",
       "max_output_fields": ["max_tokens"],
@@ -99,6 +106,18 @@
       "required_tokens": 384,
       "required_tokens_i64": 384,
       "used_conservative_fallback": true
+    },
+    {
+      "name": "openai_embeddings_missing_tokenizer",
+      "endpoint": "openai_embeddings",
+      "request_numeric_signal": {},
+      "trusted_prompt_tokens": null,
+      "max_completion_tokens": null,
+      "source": "ConservativeFallback",
+      "required_tokens": 256,
+      "required_tokens_i64": 256,
+      "used_conservative_fallback": true,
+      "raw_input_emitted": false
     },
     {
       "name": "negative_max_output_uses_fallback",
