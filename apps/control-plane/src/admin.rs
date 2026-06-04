@@ -4358,6 +4358,19 @@ fn ledger_adjustment_billing_ledger_live_probe_measurement_readback_gate_contrac
         "production_writer_replaced": false,
         "production_source_of_truth_switch_allowed": false,
         "dual_commit_allowed": false,
+        "artifact_path_gate": {
+            "default_write_artifact": false,
+            "explicit_write_flag": "-WriteProbeArtifact",
+            "explicit_read_flag": "-ReadProbeArtifact",
+            "path_flag": "-ArtifactPath",
+            "path_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_PATH",
+            "allowed_root": ".tmp",
+            "repo_bounded": true,
+            "reject_repo_outside": true,
+            "reject_git_dir": true,
+            "reject_source_docs_scripts_overwrite": true,
+            "raw_path_output": "omitted"
+        },
         "required_freshness_fields": [
             "generated_at_utc",
             "current_commit",
@@ -15588,6 +15601,18 @@ mod tests {
             ])
         );
         assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["artifact_path_gate"]["default_write_artifact"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["artifact_path_gate"]["allowed_root"],
+            json!(".tmp")
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["artifact_path_gate"]["reject_source_docs_scripts_overwrite"],
+            json!(true)
+        );
+        assert_eq!(
             contract["live_probe_measurement_readback_gate_contract"]["required_row_count_fields"],
             json!([
                 "statement_kind",
@@ -16986,6 +17011,16 @@ mod tests {
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
                 ["live_probe_measurement_readback_gate_contract"]["required_row_count_fields"][2],
             json!("actual_rows")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["artifact_path_gate"]["allowed_root"],
+            json!(".tmp")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["artifact_path_gate"]["reject_git_dir"],
+            json!(true)
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]

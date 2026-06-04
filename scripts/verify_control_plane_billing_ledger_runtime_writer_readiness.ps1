@@ -10,6 +10,9 @@ param(
   [switch]$SimulateCommitObserved,
   [switch]$SimulateProductionWriterReplaced,
   [switch]$SimulateDualCommitObserved,
+  [switch]$WriteProbeArtifact,
+  [switch]$ReadProbeArtifact,
+  [AllowNull()][string]$ArtifactPath,
   [switch]$RuntimeWriterAvailable,
   [int]$BlockedExitCode = 2
 )
@@ -33,6 +36,9 @@ $modeEnvVar = [string]$providerContract.cutover_mode_env_var
 $databaseUrlEnvVar = [string]$providerContract.live_database_url_env_var
 $featureEnvVar = [string]$readinessContract.opt_in_inputs.runtime_writer_feature_env_var
 $liveOptInEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_READINESS_LIVE"
+$artifactWriteEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_WRITE"
+$artifactReadEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_READ"
+$artifactPathEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_PATH"
 
 function Test-TruthyEnv {
   param([AllowNull()][string]$Value)
@@ -389,6 +395,144 @@ function Get-EvidenceField {
   return $Object.$Field
 }
 
+function Resolve-SafeProbeArtifactPath {
+  param([AllowNull()][string]$RequestedPath)
+
+  $pathValue = $RequestedPath
+  if ([string]::IsNullOrWhiteSpace($pathValue)) {
+    $pathValue = ".tmp\billing-ledger\live-probe-evidence-artifact.json"
+  }
+
+  $candidate = if ([System.IO.Path]::IsPathRooted($pathValue)) {
+    [System.IO.Path]::GetFullPath($pathValue)
+  } else {
+    [System.IO.Path]::GetFullPath((Join-Path $repoRoot $pathValue))
+  }
+
+  $repoFull = [System.IO.Path]::GetFullPath([string]$repoRoot)
+  $tmpRoot = [System.IO.Path]::GetFullPath((Join-Path $repoFull ".tmp"))
+  $directory = [System.IO.Path]::GetDirectoryName($candidate)
+  $extension = [System.IO.Path]::GetExtension($candidate)
+  $relative = if ($candidate.StartsWith($repoFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $candidate.Substring($repoFull.Length).TrimStart('\', '/')
+  } else {
+    ""
+  }
+
+  $safe = $true
+  $reason = "allowed_repo_tmp_artifact_path"
+  if (-not $candidate.StartsWith($tmpRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $safe = $false
+    $reason = "artifact_path_must_be_under_repo_tmp"
+  } elseif ($relative -match '(^|[\\/])\.git([\\/]|$)') {
+    $safe = $false
+    $reason = "artifact_path_must_not_target_git"
+  } elseif ($relative -match '^(apps|crates|docs|scripts|tests|web)([\\/]|$)') {
+    $safe = $false
+    $reason = "artifact_path_must_not_target_source_or_docs"
+  } elseif ($extension -ne ".json") {
+    $safe = $false
+    $reason = "artifact_path_must_be_json"
+  }
+
+  return [ordered]@{
+    safe = $safe
+    reason = $reason
+    full_path = $candidate
+    relative_path = $relative
+    directory = $directory
+  }
+}
+
+function Write-ProbeArtifactIfAllowed {
+  param(
+    [Parameter(Mandatory = $true)]$Artifact,
+    [Parameter(Mandatory = $true)]$PathGate,
+    [Parameter(Mandatory = $true)][bool]$WriteRequested
+  )
+
+  if (-not $WriteRequested) {
+    return [ordered]@{
+      requested = $false
+      performed = $false
+      classification = "blocker"
+      reason = "artifact_write_not_requested"
+      relative_path = [string]$PathGate.relative_path
+    }
+  }
+
+  if (-not [bool]$PathGate.safe) {
+    return [ordered]@{
+      requested = $true
+      performed = $false
+      classification = "blocker"
+      reason = [string]$PathGate.reason
+      relative_path = [string]$PathGate.relative_path
+    }
+  }
+
+  New-Item -ItemType Directory -Path ([string]$PathGate.directory) -Force | Out-Null
+  $Artifact | ConvertTo-Json -Depth 16 | Set-Content -Path ([string]$PathGate.full_path) -Encoding UTF8
+  return [ordered]@{
+    requested = $true
+    performed = $true
+    classification = "pass"
+    reason = "artifact_written"
+    relative_path = [string]$PathGate.relative_path
+  }
+}
+
+function Read-ProbeArtifactIfAllowed {
+  param(
+    [Parameter(Mandatory = $true)]$FallbackArtifact,
+    [Parameter(Mandatory = $true)]$PathGate,
+    [Parameter(Mandatory = $true)][bool]$ReadRequested
+  )
+
+  if (-not $ReadRequested) {
+    return [ordered]@{
+      requested = $false
+      performed = $false
+      classification = "blocker"
+      reason = "artifact_read_not_requested"
+      relative_path = [string]$PathGate.relative_path
+      artifact = $FallbackArtifact
+    }
+  }
+
+  if (-not [bool]$PathGate.safe) {
+    return [ordered]@{
+      requested = $true
+      performed = $false
+      classification = "blocker"
+      reason = [string]$PathGate.reason
+      relative_path = [string]$PathGate.relative_path
+      artifact = $FallbackArtifact
+    }
+  }
+
+  if (-not (Test-Path -LiteralPath ([string]$PathGate.full_path))) {
+    return [ordered]@{
+      requested = $true
+      performed = $false
+      classification = "blocker"
+      reason = "artifact_file_missing"
+      relative_path = [string]$PathGate.relative_path
+      artifact = $FallbackArtifact
+    }
+  }
+
+  $artifact = Get-Content -Raw -LiteralPath ([string]$PathGate.full_path) | ConvertFrom-Json
+  return [ordered]@{
+    requested = $true
+    performed = $true
+    classification = "pass"
+    reason = "artifact_read"
+    relative_path = [string]$PathGate.relative_path
+    artifact = $artifact
+  }
+}
+
 function New-LiveProbeEvidenceArtifact {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -622,7 +766,14 @@ function New-LiveProbeMeasurementReadbackGate {
     }
   }
 
-  if ([bool](Get-EvidenceField -Object $Artifact -Field "stale_artifact") -or [string](Get-EvidenceField -Object $Artifact -Field "freshness_marker") -ne "current") {
+  $generatedAt = [string](Get-EvidenceField -Object $Artifact -Field "generated_at_utc")
+  $parsedGeneratedAt = [DateTimeOffset]::MinValue
+  if ([string]::IsNullOrWhiteSpace($generatedAt) -or -not [DateTimeOffset]::TryParse($generatedAt, [ref]$parsedGeneratedAt)) {
+    [void]$refusals.Add("missing_freshness_field")
+  }
+  $artifactCommit = [string](Get-EvidenceField -Object $Artifact -Field "current_commit")
+  $currentCommit = Get-CurrentCommitMarker
+  if ([bool](Get-EvidenceField -Object $Artifact -Field "stale_artifact") -or [string](Get-EvidenceField -Object $Artifact -Field "freshness_marker") -ne "current" -or $artifactCommit -ne $currentCommit) {
     [void]$refusals.Add("stale_artifact")
   }
 
@@ -694,7 +845,8 @@ function New-LiveProbeMeasurementReadbackGate {
     classification = $classification
     artifact_schema_version = [string](Get-EvidenceField -Object $Artifact -Field "schema_version")
     generated_at_utc = [string](Get-EvidenceField -Object $Artifact -Field "generated_at_utc")
-    current_commit = [string](Get-EvidenceField -Object $Artifact -Field "current_commit")
+    current_commit = $artifactCommit
+    expected_current_commit = $currentCommit
     freshness_marker = [string](Get-EvidenceField -Object $Artifact -Field "freshness_marker")
     stale_artifact = [bool](Get-EvidenceField -Object $Artifact -Field "stale_artifact")
     probe_requested = [bool](Get-EvidenceField -Object $Artifact -Field "probe_requested")
@@ -891,6 +1043,9 @@ $liveOptIn = [bool]$Live -or (Test-TruthyEnv ([Environment]::GetEnvironmentVaria
 $mode = Normalize-CutoverMode ([Environment]::GetEnvironmentVariable($modeEnvVar))
 $liveDatabaseUrlPresent = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($databaseUrlEnvVar))
 $featureAvailable = [bool]$RuntimeWriterAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($featureEnvVar)))
+$artifactWriteRequested = [bool]$WriteProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactWriteEnvVar)))
+$artifactReadRequested = [bool]$ReadProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactReadEnvVar)))
+$artifactPathValue = if ([string]::IsNullOrWhiteSpace($ArtifactPath)) { [Environment]::GetEnvironmentVariable($artifactPathEnvVar) } else { $ArtifactPath }
 $blockers = New-Object System.Collections.Generic.List[string]
 
 if ($liveOptIn) {
@@ -933,7 +1088,11 @@ $schemaStatus = "pass"
 $stopwatch.Stop()
 
 $liveProbeEvidenceArtifact = New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -MeasurementsAvailable ([bool]$SimulateProbeMeasurements) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -StaleArtifact ([bool]$SimulateStaleProbeArtifact) -CommitObserved ([bool]$SimulateCommitObserved) -ProductionWriterReplaced ([bool]$SimulateProductionWriterReplaced) -DualCommitObserved ([bool]$SimulateDualCommitObserved) -Blockers @($blockers)
-$liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifact $liveProbeEvidenceArtifact -MissingRowCount ([bool]$SimulateMissingRowCountReadback) -MissingTiming ([bool]$SimulateMissingTimingReadback) -MissingRollbackProof ([bool]$SimulateMissingRollbackProofReadback)
+$artifactPathGate = Resolve-SafeProbeArtifactPath -RequestedPath $artifactPathValue
+$artifactWriteResult = Write-ProbeArtifactIfAllowed -Artifact $liveProbeEvidenceArtifact -PathGate $artifactPathGate -WriteRequested $artifactWriteRequested
+$artifactReadResult = Read-ProbeArtifactIfAllowed -FallbackArtifact $liveProbeEvidenceArtifact -PathGate $artifactPathGate -ReadRequested $artifactReadRequested
+$readbackArtifact = $artifactReadResult.artifact
+$liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifact $readbackArtifact -MissingRowCount ([bool]$SimulateMissingRowCountReadback) -MissingTiming ([bool]$SimulateMissingTimingReadback) -MissingRollbackProof ([bool]$SimulateMissingRollbackProofReadback)
 
 $summary = [ordered]@{
   schema_version = [string]$readinessContract.schema_version
@@ -1029,6 +1188,32 @@ $summary = [ordered]@{
   live_execution_handoff = (New-LiveExecutionHandoff -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
   live_probe_executor_boundary = (New-LiveProbeExecutorBoundary -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
   live_probe_evidence_artifact = $liveProbeEvidenceArtifact
+  live_probe_artifact_path_gate = [ordered]@{
+    schema_version = "control_plane_billing_ledger_live_probe_artifact_path_gate.v1"
+    write_requested = $artifactWriteRequested
+    read_requested = $artifactReadRequested
+    safe = [bool]$artifactPathGate.safe
+    classification = if ([bool]$artifactPathGate.safe) { "pass" } else { "blocker" }
+    reason = [string]$artifactPathGate.reason
+    relative_path = [string]$artifactPathGate.relative_path
+    allowed_root = ".tmp"
+    env_value_output = "omitted"
+    raw_path_output = "omitted"
+  }
+  live_probe_artifact_write = [ordered]@{
+    requested = [bool]$artifactWriteResult.requested
+    performed = [bool]$artifactWriteResult.performed
+    classification = [string]$artifactWriteResult.classification
+    reason = [string]$artifactWriteResult.reason
+    relative_path = [string]$artifactWriteResult.relative_path
+  }
+  live_probe_artifact_read = [ordered]@{
+    requested = [bool]$artifactReadResult.requested
+    performed = [bool]$artifactReadResult.performed
+    classification = [string]$artifactReadResult.classification
+    reason = [string]$artifactReadResult.reason
+    relative_path = [string]$artifactReadResult.relative_path
+  }
   live_probe_measurement_readback_gate = $liveProbeMeasurementReadbackGate
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
