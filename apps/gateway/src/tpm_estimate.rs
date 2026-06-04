@@ -16,6 +16,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_CONFIG_SCHEMA: &str 
     "gateway_tpm_trusted_numeric_source_runtime_config_guard_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ENV_CONFIG_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_env_config_read_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_runtime_evidence_projection_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV: &str =
@@ -1027,6 +1029,79 @@ pub(crate) struct GatewayTrustedNumericSourceReservationProjectionSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceRuntimeEvidenceStatus {
+    Disabled,
+    Blocked,
+    Ready,
+    ReadyButNotUsed,
+}
+
+impl GatewayTrustedNumericSourceRuntimeEvidenceStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+            Self::ReadyButNotUsed => "ready_but_not_used",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeEvidenceProjection {
+    pub(crate) status: GatewayTrustedNumericSourceRuntimeEvidenceStatus,
+    pub(crate) env_config: GatewayTrustedNumericSourceEnvConfigSummary,
+    pub(crate) adapter: GatewayTrustedNumericSourceRuntimeAdapterSummary,
+    pub(crate) reservation_projection: GatewayTrustedNumericSourceReservationProjectionSummary,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) live_gap_closure_marker: &'static str,
+    pub(crate) performance_markers_present: bool,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceRuntimeEvidenceProjection {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceRuntimeEvidenceSummary {
+        GatewayTrustedNumericSourceRuntimeEvidenceSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA,
+            status: self.status.as_str(),
+            env_config: self.env_config.clone(),
+            adapter: self.adapter.clone(),
+            reservation_projection: self.reservation_projection.clone(),
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            reservation_acquire_ready: self.reservation_acquire_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            live_gap_closure_marker: self.live_gap_closure_marker,
+            performance_markers_present: self.performance_markers_present,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeEvidenceSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) env_config: GatewayTrustedNumericSourceEnvConfigSummary,
+    pub(crate) adapter: GatewayTrustedNumericSourceRuntimeAdapterSummary,
+    pub(crate) reservation_projection: GatewayTrustedNumericSourceReservationProjectionSummary,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) live_gap_closure_marker: &'static str,
+    pub(crate) performance_markers_present: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceAvailabilityStatus {
     Available,
     Unavailable,
@@ -1556,6 +1631,59 @@ pub(crate) fn gateway_trusted_numeric_source_reservation_projection(
         projection_ready: evidence.reservation_evidence_ready && performance_markers_present,
         performance_markers_present,
         capacity_evidence_aligned: evidence.capacity_evidence_aligned,
+        material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_runtime_evidence_projection(
+    env_config: &GatewayTrustedNumericSourceEnvConfigRead,
+    adapter: &GatewayTrustedNumericSourceRuntimeAdapterEvidence,
+    reservation_projection: &GatewayTrustedNumericSourceReservationProjection,
+) -> GatewayTrustedNumericSourceRuntimeEvidenceProjection {
+    let status = match env_config.status {
+        GatewayTrustedNumericSourceEnvConfigStatus::Refused
+        | GatewayTrustedNumericSourceEnvConfigStatus::Disabled => {
+            GatewayTrustedNumericSourceRuntimeEvidenceStatus::Disabled
+        }
+        GatewayTrustedNumericSourceEnvConfigStatus::Blocked => {
+            GatewayTrustedNumericSourceRuntimeEvidenceStatus::Blocked
+        }
+        GatewayTrustedNumericSourceEnvConfigStatus::Ready => {
+            if adapter.status == GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready
+                && reservation_projection.projection_ready
+            {
+                GatewayTrustedNumericSourceRuntimeEvidenceStatus::Ready
+            } else {
+                GatewayTrustedNumericSourceRuntimeEvidenceStatus::ReadyButNotUsed
+            }
+        }
+    };
+    let performance_markers_present = !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+        .is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER.is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER.is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER.is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER.is_empty();
+    let reservation_acquire_ready = adapter.status
+        == GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready
+        && reservation_projection.projection_ready
+        && reservation_projection.capacity_evidence_aligned;
+    let live_gap_closure_ready = status == GatewayTrustedNumericSourceRuntimeEvidenceStatus::Ready
+        && reservation_acquire_ready
+        && performance_markers_present
+        && !env_config.material_in_output
+        && !adapter.material_in_output
+        && !reservation_projection.material_in_output;
+
+    GatewayTrustedNumericSourceRuntimeEvidenceProjection {
+        status,
+        env_config: env_config.safe_summary(),
+        adapter: adapter.safe_summary(),
+        reservation_projection: reservation_projection.safe_summary(),
+        reservation_acquire_ready,
+        live_gap_closure_ready,
+        live_gap_closure_marker: "gateway_tpm_trusted_numeric_source_live_gap_closure_ready",
+        performance_markers_present,
         material_in_output: false,
     }
 }
@@ -3752,6 +3880,351 @@ mod tests {
             assert!(
                 !serialized.contains(&forbidden.to_ascii_lowercase()),
                 "trusted numeric env/config read summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_runtime_evidence_projection_boundary()
+     {
+        let fixture = fixture();
+        let contract =
+            &fixture["trusted_numeric_source_runtime_evidence_projection_boundary_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA)
+        );
+        assert_eq!(
+            contract["live_gap_closure_marker"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_live_gap_closure_ready")
+        );
+        for status in ["disabled", "blocked", "ready", "ready_but_not_used"] {
+            assert!(
+                contract["projected_statuses"]
+                    .as_array()
+                    .expect("projected statuses should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(status)),
+                "runtime evidence projection should include status {status}"
+            );
+        }
+
+        let fields = contract["safe_summary_fields"]
+            .as_array()
+            .expect("runtime evidence safe summary fields should be an array");
+        for field in [
+            "trusted_source_runtime_evidence.env_config",
+            "trusted_source_runtime_evidence.adapter",
+            "trusted_source_runtime_evidence.reservation_projection",
+            "trusted_source_runtime_evidence.availability_marker",
+            "trusted_source_runtime_evidence.preflight_duration_marker",
+            "trusted_source_runtime_evidence.estimate_duration_marker",
+            "trusted_source_runtime_evidence.source_marker",
+            "trusted_source_runtime_evidence.token_count_marker",
+            "trusted_source_runtime_evidence.reservation_acquire_ready",
+            "trusted_source_runtime_evidence.live_gap_closure_ready",
+            "trusted_source_runtime_evidence.live_gap_closure_marker",
+            "trusted_source_runtime_evidence.performance_markers_present",
+            "trusted_source_runtime_evidence.material_in_output",
+        ] {
+            assert!(
+                fields.iter().any(|entry| entry.as_str() == Some(field)),
+                "runtime evidence projection should include {field}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("runtime evidence states should be an array");
+        for required_state in [
+            "disabled_projects_fallback_evidence",
+            "blocked_projects_blocker_evidence",
+            "ready_projects_live_gap_closure_evidence",
+            "ready_but_not_used_projects_non_closing_evidence",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "runtime evidence projection missing state: {required_state}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "runtime evidence projection should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_runtime_evidence_projection_maps_states() {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("runtime evidence states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing runtime evidence state: {name}"))
+        }
+
+        fn assert_runtime_evidence_summary(
+            summary: &GatewayTrustedNumericSourceRuntimeEvidenceSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.env_config.status,
+                expected["env_config_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.adapter.status,
+                expected["adapter_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_projection.status,
+                expected["reservation_projection_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_ready,
+                expected["reservation_acquire_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.performance_markers_present,
+                expected["performance_markers_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert_eq!(
+                summary.live_gap_closure_marker,
+                "gateway_tpm_trusted_numeric_source_live_gap_closure_ready"
+            );
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract =
+            &fixture["trusted_numeric_source_runtime_evidence_projection_boundary_contract"];
+        let unavailable = gateway_trusted_numeric_source_availability_from_adapter(None);
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+
+        let disabled_env = gateway_trusted_numeric_source_env_config_read(
+            GatewayTrustedNumericSourceEnvConfigInput::missing_by_default(),
+        );
+        let disabled_preflight = gateway_trusted_numeric_source_config_preflight(
+            disabled_env.runtime_config.preflight_input,
+        );
+        let disabled_adapter = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &disabled_preflight,
+                256,
+            ),
+            None,
+        );
+        let disabled_opt_in = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &disabled_preflight,
+                &unavailable,
+                335,
+                335,
+                335,
+                335,
+            ),
+        );
+        let disabled_reservation =
+            gateway_trusted_numeric_source_reservation_projection(&disabled_opt_in);
+        let disabled_projection = gateway_trusted_numeric_source_runtime_evidence_projection(
+            &disabled_env,
+            &disabled_adapter,
+            &disabled_reservation,
+        );
+        assert_eq!(
+            disabled_projection.status,
+            GatewayTrustedNumericSourceRuntimeEvidenceStatus::Disabled
+        );
+        assert_runtime_evidence_summary(
+            &disabled_projection.safe_summary(),
+            state(contract, "disabled_projects_fallback_evidence"),
+        );
+
+        let blocked_env = gateway_trusted_numeric_source_env_config_read(
+            GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, false, false),
+        );
+        let blocked_preflight = gateway_trusted_numeric_source_config_preflight(
+            blocked_env.runtime_config.preflight_input,
+        );
+        let blocked_adapter = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &blocked_preflight,
+                256,
+            ),
+            None,
+        );
+        let blocked_opt_in = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &blocked_preflight,
+                &unavailable,
+                384,
+                384,
+                384,
+                384,
+            ),
+        );
+        let blocked_reservation =
+            gateway_trusted_numeric_source_reservation_projection(&blocked_opt_in);
+        let blocked_projection = gateway_trusted_numeric_source_runtime_evidence_projection(
+            &blocked_env,
+            &blocked_adapter,
+            &blocked_reservation,
+        );
+        assert_eq!(
+            blocked_projection.status,
+            GatewayTrustedNumericSourceRuntimeEvidenceStatus::Blocked
+        );
+        assert_runtime_evidence_summary(
+            &blocked_projection.safe_summary(),
+            state(contract, "blocked_projects_blocker_evidence"),
+        );
+
+        let ready_env = gateway_trusted_numeric_source_env_config_read(
+            GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, true, false),
+        );
+        let ready_preflight = gateway_trusted_numeric_source_config_preflight(
+            ready_env.runtime_config.preflight_input,
+        );
+        let ready_adapter = GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+            status: GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready,
+            endpoint: GatewayTpmEstimateEndpoint::OpenAiChat,
+            preflight_status: ready_preflight.status,
+            availability: available_prompt,
+            adapter_invoked: true,
+            fallback_required: false,
+            conservative_fallback_tokens: 256,
+            material_in_output: false,
+            provider_side_effect_required: false,
+        };
+        let ready_opt_in = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &ready_preflight,
+                &available_prompt,
+                400,
+                400,
+                400,
+                400,
+            ),
+        );
+        let ready_reservation =
+            gateway_trusted_numeric_source_reservation_projection(&ready_opt_in);
+        let ready_projection = gateway_trusted_numeric_source_runtime_evidence_projection(
+            &ready_env,
+            &ready_adapter,
+            &ready_reservation,
+        );
+        assert_eq!(
+            ready_projection.status,
+            GatewayTrustedNumericSourceRuntimeEvidenceStatus::Ready
+        );
+        assert_runtime_evidence_summary(
+            &ready_projection.safe_summary(),
+            state(contract, "ready_projects_live_gap_closure_evidence"),
+        );
+
+        let ready_not_used_adapter = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &ready_preflight,
+                256,
+            ),
+            None,
+        );
+        let ready_not_used_opt_in = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &ready_preflight,
+                &available_prompt,
+                400,
+                400,
+                399,
+                400,
+            ),
+        );
+        let ready_not_used_reservation =
+            gateway_trusted_numeric_source_reservation_projection(&ready_not_used_opt_in);
+        let ready_not_used_projection = gateway_trusted_numeric_source_runtime_evidence_projection(
+            &ready_env,
+            &ready_not_used_adapter,
+            &ready_not_used_reservation,
+        );
+        assert_eq!(
+            ready_not_used_projection.status,
+            GatewayTrustedNumericSourceRuntimeEvidenceStatus::ReadyButNotUsed
+        );
+        assert_runtime_evidence_summary(
+            &ready_not_used_projection.safe_summary(),
+            state(contract, "ready_but_not_used_projects_non_closing_evidence"),
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "runtime_evidence": [
+                disabled_projection.safe_summary(),
+                blocked_projection.safe_summary(),
+                ready_projection.safe_summary(),
+                ready_not_used_projection.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric runtime evidence summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric runtime evidence summary leaked forbidden marker: {forbidden}"
             );
         }
     }

@@ -809,6 +809,119 @@
       "maybe"
     ]
   },
+  "trusted_numeric_source_runtime_evidence_projection_boundary_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_runtime_evidence_projection_v1",
+    "implementation_status": "runtime evidence projection boundary only; concrete tokenizer/read-model providers, runtime writes, and live DB/provider smoke are not wired",
+    "runtime_wiring_changed": false,
+    "projected_statuses": ["disabled", "blocked", "ready", "ready_but_not_used"],
+    "live_gap_closure_marker": "gateway_tpm_trusted_numeric_source_live_gap_closure_ready",
+    "marker_names": {
+      "availability": "gateway_tpm_trusted_numeric_source_available",
+      "preflight_duration": "gateway_tpm_trusted_numeric_source_preflight_duration_ms",
+      "estimate_duration": "gateway_tpm_trusted_numeric_source_estimate_duration_ms",
+      "source": "gateway_tpm_trusted_numeric_source_type",
+      "token_count": "gateway_tpm_trusted_numeric_source_token_count"
+    },
+    "safe_summary_fields": [
+      "trusted_source_runtime_evidence.schema",
+      "trusted_source_runtime_evidence.status",
+      "trusted_source_runtime_evidence.env_config",
+      "trusted_source_runtime_evidence.adapter",
+      "trusted_source_runtime_evidence.reservation_projection",
+      "trusted_source_runtime_evidence.availability_marker",
+      "trusted_source_runtime_evidence.preflight_duration_marker",
+      "trusted_source_runtime_evidence.estimate_duration_marker",
+      "trusted_source_runtime_evidence.source_marker",
+      "trusted_source_runtime_evidence.token_count_marker",
+      "trusted_source_runtime_evidence.reservation_acquire_ready",
+      "trusted_source_runtime_evidence.live_gap_closure_ready",
+      "trusted_source_runtime_evidence.live_gap_closure_marker",
+      "trusted_source_runtime_evidence.performance_markers_present",
+      "trusted_source_runtime_evidence.material_in_output"
+    ],
+    "states": [
+      {
+        "name": "disabled_projects_fallback_evidence",
+        "status": "disabled",
+        "env_config_status": "disabled",
+        "adapter_status": "disabled",
+        "reservation_projection_status": "unavailable",
+        "reservation_acquire_ready": false,
+        "live_gap_closure_ready": false,
+        "performance_markers_present": true
+      },
+      {
+        "name": "blocked_projects_blocker_evidence",
+        "status": "blocked",
+        "env_config_status": "blocked",
+        "adapter_status": "blocked",
+        "reservation_projection_status": "blocked",
+        "reservation_acquire_ready": false,
+        "live_gap_closure_ready": false,
+        "performance_markers_present": true
+      },
+      {
+        "name": "ready_projects_live_gap_closure_evidence",
+        "status": "ready",
+        "env_config_status": "ready",
+        "adapter_status": "ready",
+        "reservation_projection_status": "ready",
+        "reservation_acquire_ready": true,
+        "live_gap_closure_ready": true,
+        "performance_markers_present": true
+      },
+      {
+        "name": "ready_but_not_used_projects_non_closing_evidence",
+        "status": "ready_but_not_used",
+        "env_config_status": "ready",
+        "adapter_status": "blocked",
+        "reservation_projection_status": "unavailable",
+        "reservation_acquire_ready": false,
+        "live_gap_closure_ready": false,
+        "performance_markers_present": true
+      }
+    ],
+    "ordering_contract": [
+      "prompt-protection allow",
+      "trusted numeric env/config read boundary",
+      "trusted numeric runtime config guard",
+      "trusted numeric runtime adapter boundary",
+      "trusted numeric runtime evidence projection",
+      "TPM estimate",
+      "rate-limit reservation acquire",
+      "provider side effect"
+    ],
+    "side_effect_contract": {
+      "reservation_acquire": false,
+      "provider_attempt": false,
+      "provider_key_open": false,
+      "upstream_call": false,
+      "billing_side_effect": false
+    },
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\"",
+      "maybe"
+    ]
+  },
   "trusted_numeric_source_runtime_adapter_boundary_contract": {
     "schema": "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1",
     "implementation_status": "runtime adapter boundary only; concrete tokenizer/read-model providers and live DB/provider smoke are not wired",
