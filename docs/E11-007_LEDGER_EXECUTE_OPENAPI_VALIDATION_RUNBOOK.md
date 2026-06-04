@@ -219,13 +219,21 @@ bounded fields:
 - `report_type`
 - `outcome`: `pass`, `failure`, or `blocker`
 - `checked_schema`: repo-relative OpenAPI skeleton path
+- `repo_commit`: the current short git commit, or `unavailable`
+- `repo_commit_status`: `resolved` or `unavailable`
+- `provenance_mode`: `real`, `simulated`, or `mixed`
 - `generated_at_utc`
+- `command_summary`: redacted wrapper invocation summary
+- `openapi_fixture`: path, SHA-256, size, last-write time, and status for the
+  checked OpenAPI skeleton
 - `evidence[]`
 
 Each evidence record contains:
 
 - `kind`: `semantic_validator` or `client_generation`
 - `label`
+- `provenance_mode`: `real` for external validators/client generators or
+  `simulated` for self-test fixtures
 - `tool`
 - `tool_version`
 - `package`
@@ -240,8 +248,9 @@ Each evidence record contains:
 The report must not include raw Authorization/Cookie values, bearer tokens,
 credentials, package tokens, API keys, raw operation keys, raw metadata, payload
 or body data, or raw executor details. The self-test validates the report field
-allowlist, checked schema, output-tail bounds, classification presence, and
-secret-safe redaction.
+allowlist, checked schema, repo commit marker, generated-at timestamp, fixture
+fingerprint, command summary, output-tail bounds, classification presence,
+provenance marker, and secret-safe redaction.
 
 Interpret report outcomes as follows:
 
@@ -254,8 +263,23 @@ Interpret report outcomes as follows:
   `2`.
 
 Do not close the semantic validator gap from a report with outcome `blocker`.
-Do not close it from a simulated report; the simulated report proves wrapper
-classification and redaction only.
+Do not close it from a simulated or mixed-provenance report; simulated evidence
+proves wrapper classification and redaction only.
+
+Fixture freshness guidance:
+
+- The report's `repo_commit` should match the commit under review. If it is
+  `unavailable`, record why git provenance could not be resolved before using
+  the report as acceptance evidence.
+- The report's `openapi_fixture.path` must be
+  `examples\openapi_admin_skeleton.yaml`.
+- The report's `openapi_fixture.sha256`, `size_bytes`, and `last_write_utc`
+  bind the validator result to the exact OpenAPI skeleton bytes checked at run
+  time. If the skeleton changes after the report is written, rerun the opt-in
+  validator/client-generation command and use the newer report.
+- A stale report, a report produced by a default lightweight run, or a report
+  with `provenance_mode=simulated` cannot close the real semantic validator
+  gap.
 
 Evidence lifecycle contract:
 
@@ -267,6 +291,9 @@ Evidence lifecycle contract:
   outside-repo marker.
 - `-Clean` removes stale evidence and known wrapper-owned artifacts only; it
   must not remove arbitrary files another worker placed under the temp root.
+- The command summary stores only bounded flags, repo-relative paths, requested
+  checks, and simulated mode names. It must not include Authorization, Cookie,
+  package credentials, raw operation keys, raw metadata, payload, or body data.
 
 Recommended preflight:
 
@@ -589,7 +616,9 @@ Record all of the following when closing the semantic/client-generation gap:
 - Repository commit.
 - Validator commands and versions.
 - Client generator command and version.
-- Evidence report path and outcome.
+- Evidence report path, outcome, `repo_commit`, `provenance_mode`, and
+  `generated_at_utc`.
+- OpenAPI fixture `sha256`, `size_bytes`, and `last_write_utc`.
 - Whether the npm cache was online, preseeded, or internal-mirror backed.
 - Generated client target, for example `openapi-typescript` or
   `typescript-fetch`.

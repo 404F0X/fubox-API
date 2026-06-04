@@ -255,6 +255,110 @@ function Get-BoundedSafeLines {
   return @($bounded.ToArray())
 }
 
+function Get-RepoCommitProvenance {
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if ($null -eq $git) {
+    return [pscustomobject]@{ Commit = "unavailable"; Status = "unavailable" }
+  }
+
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $output = @(& $git.Source -C $repoRoot rev-parse --short HEAD 2>&1 | ForEach-Object { [string]$_ })
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+
+  $exitCode = if ($null -eq $global:LASTEXITCODE) { 0 } else { [int]$global:LASTEXITCODE }
+  if ($exitCode -eq 0 -and $output.Count -gt 0) {
+    $commit = ([string]$output[0]).Trim()
+    if ($commit -match "^[a-fA-F0-9]{7,40}$") {
+      return [pscustomobject]@{ Commit = $commit.ToLowerInvariant(); Status = "resolved" }
+    }
+  }
+
+  return [pscustomobject]@{ Commit = "unavailable"; Status = "unavailable" }
+}
+
+function Get-OpenApiFixtureFingerprint {
+  if (-not (Test-Path $OpenApiPath -PathType Leaf)) {
+    return [pscustomobject]@{
+      Path = Get-RepoRelativePath $OpenApiPath
+      Sha256 = "unavailable"
+      SizeBytes = 0
+      LastWriteUtc = "unavailable"
+      Status = "unavailable"
+    }
+  }
+
+  try {
+    $item = Get-Item -Path $OpenApiPath
+    $hash = (Get-FileHash -Path $OpenApiPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    return [pscustomobject]@{
+      Path = Get-RepoRelativePath $OpenApiPath
+      Sha256 = $hash
+      SizeBytes = [int64]$item.Length
+      LastWriteUtc = $item.LastWriteTimeUtc.ToString("o")
+      Status = "resolved"
+    }
+  } catch {
+    return [pscustomobject]@{
+      Path = Get-RepoRelativePath $OpenApiPath
+      Sha256 = "unavailable"
+      SizeBytes = 0
+      LastWriteUtc = "unavailable"
+      Status = "unavailable"
+    }
+  }
+}
+
+function Get-ProvenanceMode {
+  if ($script:EvidenceRecords.Count -eq 0) {
+    return "none"
+  }
+
+  $modes = @($script:EvidenceRecords | ForEach-Object { [string]$_.provenance_mode } | Sort-Object -Unique)
+  if ($modes.Count -eq 1) {
+    return $modes[0]
+  }
+
+  return "mixed"
+}
+
+function Get-WrapperCommandSummary {
+  $requestedChecks = New-Object System.Collections.Generic.List[string]
+  if ($Redocly) { [void]$requestedChecks.Add("redocly") }
+  if ($OpenApiGeneratorValidate) { [void]$requestedChecks.Add("openapi_generator_validate") }
+  if ($OpenApiTypescript) { [void]$requestedChecks.Add("openapi_typescript") }
+  if ($TypescriptFetch) { [void]$requestedChecks.Add("typescript_fetch") }
+  if ($requestedChecks.Count -eq 0) { [void]$requestedChecks.Add("lightweight_only") }
+
+  $simulatedModes = New-Object System.Collections.Generic.List[string]
+  if ($SimulateExternalBlocker) { [void]$simulatedModes.Add("external_blocker") }
+  if ($SimulateSchemaMismatch) { [void]$simulatedModes.Add("schema_mismatch") }
+  if ($SimulateClientMismatch) { [void]$simulatedModes.Add("client_mismatch") }
+  if ($SimulateSensitiveOutputTail) { [void]$simulatedModes.Add("sensitive_output_tail") }
+  if ($SimulateSensitiveCommandFailure) { [void]$simulatedModes.Add("sensitive_command_failure") }
+  if ($SimulateGeneratedClientInspectionPass) { [void]$simulatedModes.Add("generated_client_inspection_pass") }
+  if ($SimulateGeneratedClientMissingRequired) { [void]$simulatedModes.Add("generated_client_missing_required") }
+  if ($SimulateSemanticEvidencePass) { [void]$simulatedModes.Add("semantic_evidence_pass") }
+  if ($SimulateSemanticEvidenceFailure) { [void]$simulatedModes.Add("semantic_evidence_failure") }
+  if ($SimulateSemanticEvidenceBlocker) { [void]$simulatedModes.Add("semantic_evidence_blocker") }
+
+  return [ordered]@{
+    script = "scripts/verify_control_plane_ledger_adjustment_openapi_semantic.ps1"
+    openapi_path = Get-RepoRelativePath $OpenApiPath
+    temp_root = Format-BoundedPath $TempRoot
+    npm_cache = Format-BoundedPath $NpmCache
+    requested_checks = @($requestedChecks.ToArray())
+    simulated_modes = @($simulatedModes.ToArray())
+    allow_package_download = [bool]$AllowPackageDownload
+    clean_requested = [bool]$Clean
+    self_test = [bool]$SelfTest
+  }
+}
+
 function Add-EvidenceRecord {
   param(
     [Parameter(Mandatory = $true)][string]$Kind,
@@ -267,12 +371,14 @@ function Add-EvidenceRecord {
     [AllowNull()][string]$Command = "",
     [AllowEmptyString()][AllowEmptyCollection()][string[]]$Output = @(),
     [AllowNull()][string]$FailureReason = "",
-    [AllowNull()][string]$BlockerReason = ""
+    [AllowNull()][string]$BlockerReason = "",
+    [ValidateSet("real", "simulated")][string]$ProvenanceMode = "real"
   )
 
   $record = [ordered]@{
     kind = Redact-SafeText $Kind
     label = Redact-SafeText $Label
+    provenance_mode = $ProvenanceMode
     tool = Redact-SafeText $Tool
     tool_version = Redact-SafeText $ToolVersion
     package = Redact-SafeText $Package
@@ -299,12 +405,25 @@ function Write-EvidenceReport {
     $outcome = "blocker"
   }
 
+  $repoCommit = Get-RepoCommitProvenance
+  $fixture = Get-OpenApiFixtureFingerprint
   $report = [ordered]@{
     schema_version = "ledger_openapi_semantic_evidence.v1"
     report_type = "control_plane_ledger_adjustment_openapi_semantic"
     outcome = $outcome
     checked_schema = Get-RepoRelativePath $OpenApiPath
+    repo_commit = $repoCommit.Commit
+    repo_commit_status = $repoCommit.Status
+    provenance_mode = Get-ProvenanceMode
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    command_summary = Get-WrapperCommandSummary
+    openapi_fixture = [ordered]@{
+      path = $fixture.Path
+      sha256 = $fixture.Sha256
+      size_bytes = $fixture.SizeBytes
+      last_write_utc = $fixture.LastWriteUtc
+      status = $fixture.Status
+    }
     evidence = @($script:EvidenceRecords.ToArray())
   }
 
@@ -318,7 +437,8 @@ function Write-EvidenceReport {
 function Assert-EvidenceReportContract {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)][string[]]$ExpectedClassifications
+    [Parameter(Mandatory = $true)][string[]]$ExpectedClassifications,
+    [ValidateSet("", "real", "simulated", "mixed")][string]$ExpectedProvenanceMode = ""
   )
 
   if (-not (Test-Path $Path)) {
@@ -344,7 +464,7 @@ function Assert-EvidenceReportContract {
   $report = $raw | ConvertFrom-Json
   $rootFields = @($report.PSObject.Properties.Name)
   foreach ($field in $rootFields) {
-    if (-not @("schema_version", "report_type", "outcome", "checked_schema", "generated_at_utc", "evidence").Contains($field)) {
+    if (-not @("schema_version", "report_type", "outcome", "checked_schema", "repo_commit", "repo_commit_status", "provenance_mode", "generated_at_utc", "command_summary", "openapi_fixture", "evidence").Contains($field)) {
       Add-Failure "[FAIL] evidence report contract - unexpected root field '$field'"
     }
   }
@@ -352,8 +472,73 @@ function Assert-EvidenceReportContract {
   if ($report.schema_version -ne "ledger_openapi_semantic_evidence.v1") {
     Add-Failure "[FAIL] evidence report contract - unexpected schema_version '$($report.schema_version)'"
   }
+  if (-not @("pass", "failure", "blocker").Contains([string]$report.outcome)) {
+    Add-Failure "[FAIL] evidence report contract - invalid outcome '$($report.outcome)'"
+  }
   if ($report.checked_schema -ne (Get-RepoRelativePath $OpenApiPath)) {
     Add-Failure "[FAIL] evidence report contract - checked_schema drifted"
+  }
+  if (-not @("resolved", "unavailable").Contains([string]$report.repo_commit_status)) {
+    Add-Failure "[FAIL] evidence report contract - invalid repo_commit_status '$($report.repo_commit_status)'"
+  }
+  if ($report.repo_commit_status -eq "resolved" -and -not ([string]$report.repo_commit -match "^[a-f0-9]{7,40}$")) {
+    Add-Failure "[FAIL] evidence report contract - invalid resolved repo_commit"
+  }
+  if ($report.repo_commit_status -eq "unavailable" -and [string]$report.repo_commit -ne "unavailable") {
+    Add-Failure "[FAIL] evidence report contract - unavailable repo_commit must use unavailable marker"
+  }
+  if (-not @("real", "simulated", "mixed").Contains([string]$report.provenance_mode)) {
+    Add-Failure "[FAIL] evidence report contract - invalid provenance_mode '$($report.provenance_mode)'"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedProvenanceMode) -and [string]$report.provenance_mode -ne $ExpectedProvenanceMode) {
+    Add-Failure "[FAIL] evidence report contract - expected provenance_mode '$ExpectedProvenanceMode', got '$($report.provenance_mode)'"
+  }
+  try {
+    [void][datetime]::Parse([string]$report.generated_at_utc)
+  } catch {
+    Add-Failure "[FAIL] evidence report contract - generated_at_utc is not parseable"
+  }
+
+  if ($null -eq $report.command_summary) {
+    Add-Failure "[FAIL] evidence report contract - missing command_summary"
+  } else {
+    foreach ($field in @($report.command_summary.PSObject.Properties.Name)) {
+      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "clean_requested", "self_test").Contains($field)) {
+        Add-Failure "[FAIL] evidence report contract - unexpected command_summary field '$field'"
+      }
+    }
+    if ([string]$report.command_summary.openapi_path -ne (Get-RepoRelativePath $OpenApiPath)) {
+      Add-Failure "[FAIL] evidence report contract - command_summary openapi_path drifted"
+    }
+  }
+
+  if ($null -eq $report.openapi_fixture) {
+    Add-Failure "[FAIL] evidence report contract - missing openapi_fixture"
+  } else {
+    foreach ($field in @($report.openapi_fixture.PSObject.Properties.Name)) {
+      if (-not @("path", "sha256", "size_bytes", "last_write_utc", "status").Contains($field)) {
+        Add-Failure "[FAIL] evidence report contract - unexpected openapi_fixture field '$field'"
+      }
+    }
+    if ([string]$report.openapi_fixture.path -ne (Get-RepoRelativePath $OpenApiPath)) {
+      Add-Failure "[FAIL] evidence report contract - openapi_fixture path drifted"
+    }
+    if (-not @("resolved", "unavailable").Contains([string]$report.openapi_fixture.status)) {
+      Add-Failure "[FAIL] evidence report contract - invalid openapi_fixture status '$($report.openapi_fixture.status)'"
+    }
+    if ($report.openapi_fixture.status -eq "resolved") {
+      if (-not ([string]$report.openapi_fixture.sha256 -match "^[a-f0-9]{64}$")) {
+        Add-Failure "[FAIL] evidence report contract - invalid openapi_fixture sha256"
+      }
+      if ([int64]$report.openapi_fixture.size_bytes -le 0) {
+        Add-Failure "[FAIL] evidence report contract - invalid openapi_fixture size"
+      }
+      try {
+        [void][datetime]::Parse([string]$report.openapi_fixture.last_write_utc)
+      } catch {
+        Add-Failure "[FAIL] evidence report contract - openapi_fixture last_write_utc is not parseable"
+      }
+    }
   }
 
   $records = @($report.evidence)
@@ -370,9 +555,12 @@ function Assert-EvidenceReportContract {
 
   foreach ($record in $records) {
     foreach ($field in @($record.PSObject.Properties.Name)) {
-      if (-not @("kind", "label", "tool", "tool_version", "package", "checked_schema", "classification", "exit_code", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
+      if (-not @("kind", "label", "provenance_mode", "tool", "tool_version", "package", "checked_schema", "classification", "exit_code", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected evidence field '$field'"
       }
+    }
+    if (-not @("real", "simulated").Contains([string]$record.provenance_mode)) {
+      Add-Failure "[FAIL] evidence report contract - invalid evidence provenance_mode '$($record.provenance_mode)'"
     }
     if (-not @("pass", "failure", "blocker").Contains([string]$record.classification)) {
       Add-Failure "[FAIL] evidence report contract - invalid classification '$($record.classification)'"
@@ -1191,7 +1379,8 @@ function Add-SimulatedSemanticEvidence {
     -Command "redocly lint examples/openapi_admin_skeleton.yaml --operation_key=selftest-operation-key" `
     -Output $sensitiveTail `
     -FailureReason $failureReason `
-    -BlockerReason $blockerReason
+    -BlockerReason $blockerReason `
+    -ProvenanceMode "simulated"
 }
 
 function Invoke-Redocly {
@@ -1293,6 +1482,7 @@ function Invoke-SelfTestChild {
     [string]$ChildNpmCache = $NpmCache,
     [Parameter(Mandatory = $true)][int]$ExpectedExitCode,
     [string[]]$ExpectedEvidenceClassifications = @(),
+    [ValidateSet("", "real", "simulated", "mixed")][string]$ExpectedProvenanceMode = "",
     [switch]$ExpectedEvidenceAbsent
   )
 
@@ -1343,7 +1533,8 @@ function Invoke-SelfTestChild {
   if ($ExpectedEvidenceClassifications.Count -gt 0) {
     Assert-EvidenceReportContract `
       -Path (Get-EvidenceReportPath -Root $ChildTempRoot) `
-      -ExpectedClassifications $ExpectedEvidenceClassifications
+      -ExpectedClassifications $ExpectedEvidenceClassifications `
+      -ExpectedProvenanceMode $ExpectedProvenanceMode
   }
 
   if ($ExpectedEvidenceAbsent) {
@@ -1381,19 +1572,22 @@ function Invoke-SelfTest {
     -Arguments @("-SimulateSemanticEvidencePass") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-pass") `
     -ExpectedExitCode 0 `
-    -ExpectedEvidenceClassifications @("pass")
+    -ExpectedEvidenceClassifications @("pass") `
+    -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild `
     -Name "simulated semantic validator evidence failure" `
     -Arguments @("-SimulateSemanticEvidenceFailure") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-failure") `
     -ExpectedExitCode 1 `
-    -ExpectedEvidenceClassifications @("failure")
+    -ExpectedEvidenceClassifications @("failure") `
+    -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild `
     -Name "simulated semantic validator evidence blocker" `
     -Arguments @("-SimulateSemanticEvidenceBlocker") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-blocker") `
     -ExpectedExitCode 2 `
-    -ExpectedEvidenceClassifications @("blocker")
+    -ExpectedEvidenceClassifications @("blocker") `
+    -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild -Name "temp root repo escape rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "..\ledger-openapi-outside") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "source temp root rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "scripts\ledger-openapi-semantic") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "git temp root rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot ".git\ledger-openapi-semantic") -ExpectedExitCode 1
