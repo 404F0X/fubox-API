@@ -735,6 +735,89 @@
         "row_count_summary": "unavailable_marker_without_db_io",
         "transaction_summary": "unavailable_marker_without_db_io"
       },
+      "live_cutover_evidence_matrix_contract": {
+        "schema_version": "control_plane_billing_ledger_live_cutover_evidence_matrix.v1",
+        "source": "billing_ledger_runtime_writer_readiness_smoke_wrapper",
+        "target": "billing_ledger_runtime_writer_live_cutover_evidence",
+        "default_classification": "blocker",
+        "supported_classifications": ["ready", "pass", "blocker", "fail"],
+        "production_writer_replaced": false,
+        "production_source_of_truth_switch_allowed_in_this_contract": false,
+        "billing_ledger_writer_commit_allowed_in_this_contract": false,
+        "dual_commit_allowed": false,
+        "required_evidence": [
+          {
+            "key": "migrated_db",
+            "status_values": ["pass", "blocker", "fail"],
+            "marker": "BILLING_LEDGER_LIVE_DATABASE_URL",
+            "evidence_output": "presence_marker_only",
+            "raw_value_echoed": false
+          },
+          {
+            "key": "runtime_writer_feature",
+            "status_values": ["pass", "blocker", "fail"],
+            "marker": "billing_ledger_runtime_writer",
+            "evidence_output": "boolean_marker_only",
+            "raw_value_echoed": false
+          },
+          {
+            "key": "source_of_truth_switch",
+            "status_values": ["pass", "blocker", "fail"],
+            "marker": "separate_live_cutover_acceptance_required",
+            "evidence_output": "guard_marker_only",
+            "production_switch_performed": false
+          },
+          {
+            "key": "rollback_path",
+            "status_values": ["pass", "blocker", "fail"],
+            "marker": "control_plane_local_sql_writer_fallback",
+            "fallback_writer": "control_plane_local_sql_writer",
+            "rollback_summary_required": true
+          },
+          {
+            "key": "performance_summaries",
+            "status_values": ["pass", "blocker", "fail"],
+            "required_fields": [
+              "duration_ms",
+              "handoff_performance_summary",
+              "row_count_summary",
+              "transaction_summary"
+            ],
+            "row_count_summary_output": "unavailable_marker_without_db_io",
+            "transaction_summary_output": "unavailable_marker_without_db_io"
+          },
+          {
+            "key": "schema_markers",
+            "status_values": ["pass", "blocker", "fail"],
+            "required_schema_versions": [
+              "control_plane_billing_ledger_writer_runtime_env_provider_preflight.v1",
+              "control_plane_billing_ledger_writer_handoff_performance.v1",
+              "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1"
+            ]
+          }
+        ],
+        "blocker_classification": {
+          "missing_migrated_db": "blocker",
+          "runtime_writer_feature_unavailable": "blocker",
+          "cutover_mode_not_ready": "blocker",
+          "invalid_cutover_mode_guard": "blocker",
+          "source_of_truth_switch_not_accepted": "blocker_for_real_cutover_not_readiness"
+        },
+        "fail_classification": {
+          "contract_schema_mismatch": "fail",
+          "unsafe_output_detected": "fail",
+          "required_summary_field_missing": "fail"
+        },
+        "safe_output_contract": {
+          "database_url_output": "omitted",
+          "env_value_output": "omitted",
+          "operation_key_output": "omitted",
+          "raw_env_value_echoed": false,
+          "raw_database_url_echoed": false,
+          "credential_material_echoed": false,
+          "raw_executor_error_detail_echoed": false
+        }
+      },
       "safe_output_contract": {
         "env_value_output": "omitted",
         "database_url_output": "omitted",

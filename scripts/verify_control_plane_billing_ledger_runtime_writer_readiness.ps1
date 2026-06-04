@@ -10,6 +10,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $fixturePath = Join-Path $repoRoot "tests\fixtures\control-plane\ledger_adjustment_dry_run_contract.json"
 $contract = (Get-Content -Raw $fixturePath | ConvertFrom-Json).billing_ledger_writer_cutover_preflight_contract
 $readinessContract = $contract.readiness_smoke_wrapper_contract
+$evidenceMatrixContract = $readinessContract.live_cutover_evidence_matrix_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -89,6 +90,21 @@ function Assert-Contract {
   if ([string]$performanceContract.summary_field -ne "handoff_performance_summary") {
     throw "handoff performance summary contract missing"
   }
+  if ([string]$evidenceMatrixContract.schema_version -ne "control_plane_billing_ledger_live_cutover_evidence_matrix.v1") {
+    throw "live cutover evidence matrix schema mismatch"
+  }
+  if ([bool]$evidenceMatrixContract.production_source_of_truth_switch_allowed_in_this_contract) {
+    throw "evidence matrix must not allow source-of-truth switch"
+  }
+  if ([bool]$evidenceMatrixContract.dual_commit_allowed) {
+    throw "evidence matrix must not allow dual commit"
+  }
+  $evidenceKeys = @($evidenceMatrixContract.required_evidence | ForEach-Object { [string]$_.key })
+  foreach ($requiredEvidence in @("migrated_db", "runtime_writer_feature", "source_of_truth_switch", "rollback_path", "performance_summaries", "schema_markers")) {
+    if ($requiredEvidence -notin $evidenceKeys) {
+      throw "evidence matrix missing required evidence key: $requiredEvidence"
+    }
+  }
 }
 
 function New-UnavailableMarker {
@@ -125,6 +141,25 @@ function Assert-SecretSafeJson {
   }
 }
 
+function New-EvidenceItem {
+  param(
+    [Parameter(Mandatory = $true)][string]$Key,
+    [Parameter(Mandatory = $true)][string]$Status,
+    [Parameter(Mandatory = $true)][string]$Marker,
+    [Parameter(Mandatory = $true)][string]$EvidenceOutput,
+    [Parameter(Mandatory = $true)][bool]$Required
+  )
+
+  return [ordered]@{
+    key = $Key
+    status = $Status
+    marker = $Marker
+    required = $Required
+    evidence_output = $EvidenceOutput
+    raw_value_echoed = $false
+  }
+}
+
 Assert-Contract
 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -156,6 +191,20 @@ if ($liveOptIn) {
     $readiness = "blocked"
   }
 }
+
+$evidenceClassification = "blocker"
+if ($readiness -eq "ready") {
+  $evidenceClassification = "pass"
+} elseif ($readiness -eq "blocked") {
+  $evidenceClassification = "blocker"
+}
+
+$migratedDbStatus = if ($liveOptIn -and $liveDatabaseUrlPresent) { "pass" } else { "blocker" }
+$featureStatus = if ($liveOptIn -and $featureAvailable) { "pass" } else { "blocker" }
+$sourceOfTruthStatus = if ($readiness -eq "ready") { "pass" } else { "blocker" }
+$rollbackStatus = "pass"
+$performanceStatus = "pass"
+$schemaStatus = "pass"
 
 $stopwatch.Stop()
 
@@ -190,6 +239,66 @@ $summary = [ordered]@{
     raw_feature_config_echoed = $false
   }
   blockers = @($blockers)
+  evidence_matrix = [ordered]@{
+    schema_version = [string]$evidenceMatrixContract.schema_version
+    classification = $evidenceClassification
+    supported_classifications = @("ready", "pass", "blocker", "fail")
+    required_env_markers = @($modeEnvVar, $databaseUrlEnvVar, $featureEnvVar)
+    required_tool_markers = @([string]$readinessContract.script, [string]$providerContract.runtime_writer_feature_marker)
+    required_schema_markers = @(
+      [string]$providerContract.schema_version,
+      [string]$performanceContract.schema_version,
+      [string]$readinessContract.schema_version
+    )
+    evidence = @(
+      (New-EvidenceItem -Key "migrated_db" -Status $migratedDbStatus -Marker $databaseUrlEnvVar -EvidenceOutput "presence_marker_only" -Required $true),
+      (New-EvidenceItem -Key "runtime_writer_feature" -Status $featureStatus -Marker ([string]$providerContract.runtime_writer_feature_marker) -EvidenceOutput "boolean_marker_only" -Required $true),
+      (New-EvidenceItem -Key "source_of_truth_switch" -Status $sourceOfTruthStatus -Marker "separate_live_cutover_acceptance_required" -EvidenceOutput "guard_marker_only" -Required $true),
+      (New-EvidenceItem -Key "rollback_path" -Status $rollbackStatus -Marker "control_plane_local_sql_writer_fallback" -EvidenceOutput "fallback_marker_only" -Required $true),
+      (New-EvidenceItem -Key "performance_summaries" -Status $performanceStatus -Marker "handoff_performance_summary" -EvidenceOutput "unavailable_marker_without_db_io" -Required $true),
+      (New-EvidenceItem -Key "schema_markers" -Status $schemaStatus -Marker "contract_schema_versions" -EvidenceOutput "schema_version_markers_only" -Required $true)
+    )
+    rollback_path = [ordered]@{
+      local_writer_fallback = "control_plane_local_sql_writer"
+      rollback_summary_required = $true
+      fallback_after_billing_commit_allowed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+    performance_required_fields = @(
+      "duration_ms",
+      "handoff_performance_summary",
+      "row_count_summary",
+      "transaction_summary"
+    )
+    no_double_write = [ordered]@{
+      production_writer_replaced = $false
+      production_source_of_truth_switch_allowed = $false
+      billing_ledger_writer_commit_allowed = $false
+      dual_commit_allowed = $false
+    }
+    blocker_classification = [ordered]@{
+      blockers = @($blockers)
+      missing_migrated_db = "blocker"
+      runtime_writer_feature_unavailable = "blocker"
+      cutover_mode_not_ready = "blocker"
+      invalid_cutover_mode_guard = "blocker"
+      source_of_truth_switch_not_accepted = "blocker_for_real_cutover_not_readiness"
+    }
+    fail_classification = [ordered]@{
+      contract_schema_mismatch = "fail"
+      unsafe_output_detected = "fail"
+      required_summary_field_missing = "fail"
+    }
+    safe_output = [ordered]@{
+      env_value_output = "omitted"
+      database_url_output = "omitted"
+      operation_key_output = "omitted"
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version
     available = $false

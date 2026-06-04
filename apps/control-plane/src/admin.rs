@@ -104,6 +104,8 @@ const CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA: &str =
     "control_plane_billing_ledger_writer_handoff_performance.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA: &str =
     "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1";
+const CONTROL_PLANE_BILLING_LEDGER_LIVE_CUTOVER_EVIDENCE_MATRIX_SCHEMA: &str =
+    "control_plane_billing_ledger_live_cutover_evidence_matrix.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4317,6 +4319,7 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
             "row_count_summary": "unavailable_marker_without_db_io",
             "transaction_summary": "unavailable_marker_without_db_io"
         },
+        "live_cutover_evidence_matrix_contract": ledger_adjustment_billing_ledger_live_cutover_evidence_matrix_contract(),
         "safe_output_contract": {
             "env_value_output": "omitted",
             "database_url_output": "omitted",
@@ -4325,6 +4328,92 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
             "raw_env_value_echoed": false,
             "raw_database_url_echoed": false,
             "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_live_cutover_evidence_matrix_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_LIVE_CUTOVER_EVIDENCE_MATRIX_SCHEMA,
+        "source": "billing_ledger_runtime_writer_readiness_smoke_wrapper",
+        "target": "billing_ledger_runtime_writer_live_cutover_evidence",
+        "default_classification": "blocker",
+        "supported_classifications": ["ready", "pass", "blocker", "fail"],
+        "production_writer_replaced": false,
+        "production_source_of_truth_switch_allowed_in_this_contract": false,
+        "billing_ledger_writer_commit_allowed_in_this_contract": false,
+        "dual_commit_allowed": false,
+        "required_evidence": [
+            {
+                "key": "migrated_db",
+                "status_values": ["pass", "blocker", "fail"],
+                "marker": CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR,
+                "evidence_output": "presence_marker_only",
+                "raw_value_echoed": false
+            },
+            {
+                "key": "runtime_writer_feature",
+                "status_values": ["pass", "blocker", "fail"],
+                "marker": CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER,
+                "evidence_output": "boolean_marker_only",
+                "raw_value_echoed": false
+            },
+            {
+                "key": "source_of_truth_switch",
+                "status_values": ["pass", "blocker", "fail"],
+                "marker": "separate_live_cutover_acceptance_required",
+                "evidence_output": "guard_marker_only",
+                "production_switch_performed": false
+            },
+            {
+                "key": "rollback_path",
+                "status_values": ["pass", "blocker", "fail"],
+                "marker": "control_plane_local_sql_writer_fallback",
+                "fallback_writer": "control_plane_local_sql_writer",
+                "rollback_summary_required": true
+            },
+            {
+                "key": "performance_summaries",
+                "status_values": ["pass", "blocker", "fail"],
+                "required_fields": [
+                    "duration_ms",
+                    "handoff_performance_summary",
+                    "row_count_summary",
+                    "transaction_summary"
+                ],
+                "row_count_summary_output": "unavailable_marker_without_db_io",
+                "transaction_summary_output": "unavailable_marker_without_db_io"
+            },
+            {
+                "key": "schema_markers",
+                "status_values": ["pass", "blocker", "fail"],
+                "required_schema_versions": [
+                    CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA,
+                    CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA,
+                    CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA
+                ]
+            }
+        ],
+        "blocker_classification": {
+            "missing_migrated_db": "blocker",
+            "runtime_writer_feature_unavailable": "blocker",
+            "cutover_mode_not_ready": "blocker",
+            "invalid_cutover_mode_guard": "blocker",
+            "source_of_truth_switch_not_accepted": "blocker_for_real_cutover_not_readiness"
+        },
+        "fail_classification": {
+            "contract_schema_mismatch": "fail",
+            "unsafe_output_detected": "fail",
+            "required_summary_field_missing": "fail"
+        },
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
+            "operation_key_output": "omitted",
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
             "credential_material_echoed": false,
             "raw_executor_error_detail_echoed": false
         }
@@ -14759,6 +14848,59 @@ mod tests {
             json!("unavailable_marker_without_db_io")
         );
         assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_CUTOVER_EVIDENCE_MATRIX_SCHEMA)
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["default_classification"],
+            json!("blocker")
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["supported_classifications"],
+            json!(["ready", "pass", "blocker", "fail"])
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["production_source_of_truth_switch_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["required_evidence"][0]["key"],
+            json!("migrated_db")
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["required_evidence"][1]["key"],
+            json!("runtime_writer_feature")
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["required_evidence"][2]["production_switch_performed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["required_evidence"][3]["fallback_writer"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["required_evidence"][4]["required_fields"],
+            json!([
+                "duration_ms",
+                "handoff_performance_summary",
+                "row_count_summary",
+                "transaction_summary"
+            ])
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["blocker_classification"]["missing_migrated_db"],
+            json!("blocker")
+        );
+        assert_eq!(
+            contract["live_cutover_evidence_matrix_contract"]["fail_classification"]["unsafe_output_detected"],
+            json!("fail")
+        );
+        assert_eq!(
             contract["safe_output_contract"]["database_url_output"],
             json!("omitted")
         );
@@ -15903,6 +16045,46 @@ mod tests {
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
                 ["summary_contract"]["duration_ms"],
             json!("bounded_non_negative_number")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_CUTOVER_EVIDENCE_MATRIX_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["supported_classifications"],
+            json!(["ready", "pass", "blocker", "fail"])
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["required_evidence"][0]["key"],
+            json!("migrated_db")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["required_evidence"][1]["key"],
+            json!("runtime_writer_feature")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["required_evidence"][2]["production_switch_performed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["required_evidence"][3]["fallback_writer"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["blocker_classification"]["source_of_truth_switch_not_accepted"],
+            json!("blocker_for_real_cutover_not_readiness")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_cutover_evidence_matrix_contract"]["safe_output_contract"]["raw_database_url_echoed"],
+            json!(false)
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
