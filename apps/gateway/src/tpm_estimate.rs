@@ -14,6 +14,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA: &st
     "gateway_tpm_trusted_numeric_source_config_preflight_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_opt_in_evidence_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RESERVATION_PROJECTION_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_reservation_projection_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER: &str =
     "gateway_tpm_trusted_numeric_source_available";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER: &str =
@@ -542,6 +544,74 @@ pub(crate) struct GatewayTrustedNumericSourceOptInEvidenceSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceReservationProjectionStatus {
+    Unavailable,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceReservationProjectionStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceReservationProjection {
+    pub(crate) status: GatewayTrustedNumericSourceReservationProjectionStatus,
+    pub(crate) rate_limit_metadata_path: &'static str,
+    pub(crate) smoke_evidence_path: &'static str,
+    pub(crate) trusted_source_evidence: GatewayTrustedNumericSourceOptInEvidenceSummary,
+    pub(crate) projection_ready: bool,
+    pub(crate) performance_markers_present: bool,
+    pub(crate) capacity_evidence_aligned: bool,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceReservationProjection {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceReservationProjectionSummary {
+        GatewayTrustedNumericSourceReservationProjectionSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RESERVATION_PROJECTION_SCHEMA,
+            status: self.status.as_str(),
+            rate_limit_metadata_path: self.rate_limit_metadata_path,
+            smoke_evidence_path: self.smoke_evidence_path,
+            trusted_source_evidence: self.trusted_source_evidence.clone(),
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            projection_ready: self.projection_ready,
+            performance_markers_present: self.performance_markers_present,
+            capacity_evidence_aligned: self.capacity_evidence_aligned,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceReservationProjectionSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) rate_limit_metadata_path: &'static str,
+    pub(crate) smoke_evidence_path: &'static str,
+    pub(crate) trusted_source_evidence: GatewayTrustedNumericSourceOptInEvidenceSummary,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) projection_ready: bool,
+    pub(crate) performance_markers_present: bool,
+    pub(crate) capacity_evidence_aligned: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceAvailabilityStatus {
     Available,
     Unavailable,
@@ -817,6 +887,43 @@ pub(crate) fn gateway_trusted_numeric_source_opt_in_evidence(
         capacity_evidence_aligned,
         reservation_evidence_ready,
         live_gap_closure_ready: reservation_evidence_ready,
+        material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_reservation_projection(
+    evidence: &GatewayTrustedNumericSourceOptInEvidence,
+) -> GatewayTrustedNumericSourceReservationProjection {
+    let status = match evidence.status {
+        GatewayTrustedNumericSourceOptInEvidenceStatus::Disabled => {
+            GatewayTrustedNumericSourceReservationProjectionStatus::Unavailable
+        }
+        GatewayTrustedNumericSourceOptInEvidenceStatus::Blocked => {
+            GatewayTrustedNumericSourceReservationProjectionStatus::Blocked
+        }
+        GatewayTrustedNumericSourceOptInEvidenceStatus::Ready => {
+            if evidence.reservation_evidence_ready {
+                GatewayTrustedNumericSourceReservationProjectionStatus::Ready
+            } else {
+                GatewayTrustedNumericSourceReservationProjectionStatus::Unavailable
+            }
+        }
+    };
+    let performance_markers_present = !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+        .is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER.is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER.is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER.is_empty()
+        && !GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER.is_empty();
+
+    GatewayTrustedNumericSourceReservationProjection {
+        status,
+        rate_limit_metadata_path: "rate_limit_reservation.trusted_source_evidence",
+        smoke_evidence_path: "smoke.rate_limit_reservation.trusted_source_evidence",
+        trusted_source_evidence: evidence.safe_summary(),
+        projection_ready: evidence.reservation_evidence_ready && performance_markers_present,
+        performance_markers_present,
+        capacity_evidence_aligned: evidence.capacity_evidence_aligned,
         material_in_output: false,
     }
 }
@@ -2802,6 +2909,332 @@ mod tests {
             assert!(
                 !serialized.contains(raw_marker),
                 "trusted numeric source opt-in evidence output leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_reservation_projection_handoff() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_reservation_projection_handoff_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RESERVATION_PROJECTION_SCHEMA)
+        );
+        assert_eq!(
+            contract["implementation_status"].as_str(),
+            Some(
+                "projection handoff only; runtime tokenizer/read-model implementation and live DB/provider smoke are not wired"
+            )
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(
+            contract["metadata_path"].as_str(),
+            Some("rate_limit_reservation.trusted_source_evidence")
+        );
+        assert_eq!(
+            contract["smoke_evidence_path"].as_str(),
+            Some("smoke.rate_limit_reservation.trusted_source_evidence")
+        );
+
+        let statuses = contract["projected_statuses"]
+            .as_array()
+            .expect("projected statuses should be an array");
+        for status in ["unavailable", "blocked", "ready"] {
+            assert!(
+                statuses.iter().any(|entry| entry.as_str() == Some(status)),
+                "projection handoff should include status: {status}"
+            );
+        }
+
+        let fields = contract["required_projection_fields"]
+            .as_array()
+            .expect("required projection fields should be an array");
+        for field in [
+            "trusted_source_projection.trusted_source_evidence.availability_marker",
+            "trusted_source_projection.trusted_source_evidence.preflight_duration_marker",
+            "trusted_source_projection.trusted_source_evidence.estimate_duration_marker",
+            "trusted_source_projection.trusted_source_evidence.source_marker",
+            "trusted_source_projection.trusted_source_evidence.token_count_marker",
+            "trusted_source_projection.trusted_source_evidence.required_capacity_tokens_per_minute",
+            "trusted_source_projection.trusted_source_evidence.acquire_tpm_required_tokens",
+            "trusted_source_projection.trusted_source_evidence.db_required_capacity_tokens_per_minute",
+            "trusted_source_projection.performance_markers_present",
+            "trusted_source_projection.capacity_evidence_aligned",
+            "trusted_source_projection.material_in_output",
+        ] {
+            assert!(
+                fields.iter().any(|entry| entry.as_str() == Some(field)),
+                "projection handoff should require field: {field}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("projection states should be an array");
+        for required_state in [
+            "disabled_projects_unavailable_fallback",
+            "blocked_projects_blocker_fallback",
+            "ready_projects_reservation_evidence",
+            "ready_misaligned_projects_unavailable",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "projection handoff contract missing state: {required_state}"
+            );
+        }
+
+        let closure_conditions = contract["live_gap_closure_conditions"]
+            .as_array()
+            .expect("projection closure conditions should be an array");
+        for condition in [
+            "trusted_source_projection.status is ready",
+            "trusted_source_projection.trusted_source_evidence.availability_status is available",
+            "trusted_source_projection.trusted_source_evidence.token_count is a bounded non-negative integer",
+            "trusted_source_projection.performance_markers_present is true",
+            "trusted_source_projection.material_in_output is false",
+            "projection is recorded after prompt-protection allow and before reservation acquire/provider side effect",
+        ] {
+            assert!(
+                closure_conditions
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(condition)),
+                "projection closure should require {condition}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "projection handoff contract should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_reservation_projection_maps_smoke_evidence() {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("projection states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing projection state: {name}"))
+        }
+
+        fn assert_projection_summary(
+            summary: &GatewayTrustedNumericSourceReservationProjectionSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RESERVATION_PROJECTION_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.rate_limit_metadata_path,
+                "rate_limit_reservation.trusted_source_evidence"
+            );
+            assert_eq!(
+                summary.smoke_evidence_path,
+                "smoke.rate_limit_reservation.trusted_source_evidence"
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert_eq!(
+                summary.projection_ready,
+                expected["projection_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.performance_markers_present,
+                expected["performance_markers_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.capacity_evidence_aligned,
+                expected["capacity_evidence_aligned"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.trusted_source_evidence.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert!(!summary.material_in_output);
+            assert!(!summary.trusted_source_evidence.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_reservation_projection_handoff_contract"];
+        let unavailable = gateway_trusted_numeric_source_availability_from_adapter(None);
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+
+        let disabled_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::disabled_by_default(),
+        );
+        let disabled_evidence = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &disabled_preflight,
+                &unavailable,
+                335,
+                335,
+                335,
+                335,
+            ),
+        );
+        let disabled_projection =
+            gateway_trusted_numeric_source_reservation_projection(&disabled_evidence);
+        assert_eq!(
+            disabled_projection.status,
+            GatewayTrustedNumericSourceReservationProjectionStatus::Unavailable
+        );
+        assert!(!disabled_projection.projection_ready);
+        assert_projection_summary(
+            &disabled_projection.safe_summary(),
+            state(contract, "disabled_projects_unavailable_fallback"),
+        );
+
+        let blocked_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, false, false, false),
+        );
+        let blocked_evidence = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &blocked_preflight,
+                &unavailable,
+                384,
+                384,
+                384,
+                384,
+            ),
+        );
+        let blocked_projection =
+            gateway_trusted_numeric_source_reservation_projection(&blocked_evidence);
+        assert_eq!(
+            blocked_projection.status,
+            GatewayTrustedNumericSourceReservationProjectionStatus::Blocked
+        );
+        assert!(!blocked_projection.projection_ready);
+        assert_projection_summary(
+            &blocked_projection.safe_summary(),
+            state(contract, "blocked_projects_blocker_fallback"),
+        );
+
+        let ready_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, true, false, false),
+        );
+        let ready_evidence = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &ready_preflight,
+                &available_prompt,
+                400,
+                400,
+                400,
+                400,
+            ),
+        );
+        let ready_projection =
+            gateway_trusted_numeric_source_reservation_projection(&ready_evidence);
+        assert_eq!(
+            ready_projection.status,
+            GatewayTrustedNumericSourceReservationProjectionStatus::Ready
+        );
+        assert!(ready_projection.projection_ready);
+        assert!(ready_projection.performance_markers_present);
+        assert!(ready_projection.capacity_evidence_aligned);
+        assert_projection_summary(
+            &ready_projection.safe_summary(),
+            state(contract, "ready_projects_reservation_evidence"),
+        );
+
+        let misaligned_evidence = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &ready_preflight,
+                &available_prompt,
+                400,
+                400,
+                399,
+                400,
+            ),
+        );
+        let misaligned_projection =
+            gateway_trusted_numeric_source_reservation_projection(&misaligned_evidence);
+        assert_eq!(
+            misaligned_projection.status,
+            GatewayTrustedNumericSourceReservationProjectionStatus::Unavailable
+        );
+        assert!(!misaligned_projection.projection_ready);
+        assert!(!misaligned_projection.capacity_evidence_aligned);
+        assert_projection_summary(
+            &misaligned_projection.safe_summary(),
+            state(contract, "ready_misaligned_projects_unavailable"),
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "trusted_source_projection": [
+                disabled_projection.safe_summary(),
+                blocked_projection.safe_summary(),
+                ready_projection.safe_summary(),
+                misaligned_projection.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric reservation projection summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric source reservation projection leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in [
+            "raw prompt",
+            "raw response input",
+            "raw embedding input",
+            "request_body",
+            "body_length",
+            "string_length",
+            "\"messages\"",
+            "\"contents\"",
+            "\"input\"",
+        ] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "trusted numeric source reservation projection leaked raw marker: {raw_marker}"
             );
         }
     }
