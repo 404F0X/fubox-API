@@ -3098,6 +3098,22 @@ describe("App", () => {
     expect(parsed).toEqual(handoff);
     expect(ledgerExecuteSmokeSerializableHandoffArtifact).toEqual(handoff);
     expect(JSON.parse(JSON.stringify(ledgerExecuteSmokeSerializableHandoffArtifact))).toEqual(handoff);
+    expect(parsed.browserPreflight).toEqual({
+      defaultMode: "preflight_only",
+      metricMarkers: {
+        ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+        readiness: "browser_smoke_readiness",
+        submitLatencyMs: "submit_latency_ms",
+        unavailable: "unavailable",
+      },
+      requiredInputs: {
+        adminUiBaseUrl: "ADMIN_UI_BASE_URL",
+        controlPlaneBaseUrl: "CONTROL_PLANE_BASE_URL",
+        handoffArtifact: "web/admin-ui/src/billingExecuteSmokeContract.serializable.json",
+      },
+      requiresLiveBackendByDefault: false,
+      usesDataTestIdsOnly: true,
+    });
     expect(parsed.selectors).toEqual(ledgerExecuteSmoke.selectors);
     expect(parsed.statusMarkers).toEqual(ledgerExecuteSmoke.markers);
     expect(parsed.forbiddenSensitiveMarkers).toEqual(ledgerExecuteSmoke.forbiddenSensitiveMarkers);

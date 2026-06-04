@@ -62,7 +62,25 @@ export const ledgerAdjustmentExecuteReadinessMarkerKeys = [
   "ledgerRefreshStatus",
 ] as const;
 
+export const ledgerAdjustmentExecuteBrowserPreflightContract = {
+  defaultMode: "preflight_only",
+  metricMarkers: {
+    ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+    readiness: "browser_smoke_readiness",
+    submitLatencyMs: "submit_latency_ms",
+    unavailable: "unavailable",
+  },
+  requiredInputs: {
+    adminUiBaseUrl: "ADMIN_UI_BASE_URL",
+    controlPlaneBaseUrl: "CONTROL_PLANE_BASE_URL",
+    handoffArtifact: "web/admin-ui/src/billingExecuteSmokeContract.serializable.json",
+  },
+  requiresLiveBackendByDefault: false,
+  usesDataTestIdsOnly: true,
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
+  browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
   forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
   readinessStates: {
     appliedRefreshError: {

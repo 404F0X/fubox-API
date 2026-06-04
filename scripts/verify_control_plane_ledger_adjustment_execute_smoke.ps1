@@ -3,8 +3,10 @@ param(
   [string]$AdminEmail = "admin@example.com",
   [string]$AdminPassword = "local-password",
   [string]$AdminSessionToken = "",
+  [string]$AdminUiBaseUrl = "http://127.0.0.1:5173",
   [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [int]$TimeoutSeconds = 10,
+  [switch]$BrowserPreflight,
   [switch]$ContractOnly,
   [switch]$KeepSmokeRows
 )
@@ -16,6 +18,8 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $fixturePath = Join-Path $repoRoot "tests\fixtures\control-plane\ledger_adjustment_execute_live_smoke.json"
 $dryRunContractPath = Join-Path $repoRoot "tests\fixtures\control-plane\ledger_adjustment_dry_run_contract.json"
 $uiSmokeHandoffPath = Join-Path $repoRoot "web\admin-ui\src\billingExecuteSmokeContract.serializable.json"
+$uiSmokeContractPath = Join-Path $repoRoot "web\admin-ui\src\billingExecuteSmokeContract.ts"
+$uiSmokeContractTestPath = Join-Path $repoRoot "web\admin-ui\src\App.test.tsx"
 $adminSourcePath = Join-Path $repoRoot "apps\control-plane\src\admin.rs"
 
 $script:Failures = @()
@@ -29,12 +33,15 @@ $script:Fixture = $null
 $script:SmokeRunId = ([guid]::NewGuid().ToString("N"))
 
 if ($env:CONTROL_PLANE_BASE_URL) { $ControlPlaneBaseUrl = $env:CONTROL_PLANE_BASE_URL }
+if ($env:ADMIN_UI_BASE_URL) { $AdminUiBaseUrl = $env:ADMIN_UI_BASE_URL }
 if ($env:CONTROL_PLANE_ADMIN_EMAIL) { $AdminEmail = $env:CONTROL_PLANE_ADMIN_EMAIL }
 if ($env:CONTROL_PLANE_ADMIN_PASSWORD) { $AdminPassword = $env:CONTROL_PLANE_ADMIN_PASSWORD }
 if ($env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $script:AdminSessionToken = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN }
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_CONTRACT_ONLY -eq "1") { $ContractOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS -eq "1") { $KeepSmokeRows = $true }
+if ($BrowserPreflight) { $ContractOnly = $true }
 
 Add-Type -AssemblyName System.Net.Http
 
@@ -634,6 +641,130 @@ function Assert-UiLiveSmokeSerializableHandoff {
   Assert-UiSmokeReadinessState $roundTrip "appliedRefreshSuccess" "applied" $true $false $true "applied" $true $true "success"
 }
 
+function Get-SafeSmokeUrlSummary {
+  param(
+    [Parameter(Mandatory = $true)][string]$Url,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  try {
+    $uri = [Uri]$Url
+  } catch {
+    throw "$Name must be an absolute http(s) URL"
+  }
+
+  if (-not $uri.IsAbsoluteUri -or ($uri.Scheme -ne "http" -and $uri.Scheme -ne "https")) {
+    throw "$Name must be an absolute http(s) URL"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($uri.UserInfo)) {
+    throw "$Name must not include userinfo or credentials"
+  }
+
+  return $uri.GetLeftPart([UriPartial]::Authority)
+}
+
+function Get-BrowserToolingStatus {
+  $node = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $node) {
+    return "unavailable:node"
+  }
+
+  $adminUiRoot = Join-Path $repoRoot "web\admin-ui"
+  $localPlaywrightPackages = @(
+    (Join-Path $adminUiRoot "node_modules\@playwright\test\package.json"),
+    (Join-Path $adminUiRoot "node_modules\playwright\package.json")
+  )
+  $hasLocalPlaywright = @($localPlaywrightPackages | Where-Object { Test-Path $_ }).Count -gt 0
+  $playwrightCli = Get-Command playwright -ErrorAction SilentlyContinue
+  if (-not $hasLocalPlaywright -and -not $playwrightCli) {
+    return "unavailable:playwright"
+  }
+
+  return "available"
+}
+
+function Assert-UiSmokeHandoffFreshness {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  if (-not (Test-Path $uiSmokeContractPath)) {
+    throw "missing web admin UI smoke contract source"
+  }
+  if (-not (Test-Path $uiSmokeContractTestPath)) {
+    throw "missing web admin UI smoke contract test"
+  }
+
+  $source = Get-Content -Path $uiSmokeContractPath -Raw
+  foreach ($needle in @(
+      "ledgerAdjustmentExecuteBrowserPreflightContract",
+      "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
+      "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
+      "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract"
+    )) {
+    if (-not $source.Contains($needle)) {
+      throw "UI smoke contract source missing freshness marker '$needle'"
+    }
+  }
+
+  $testSource = Get-Content -Path $uiSmokeContractTestPath -Raw
+  foreach ($needle in @(
+      "billingExecuteSmokeContract.serializable.json",
+      "ledgerExecuteSmokeSerializableHandoffArtifact",
+      "browserPreflight",
+      "ledger_refresh_duration_ms",
+      "submit_latency_ms"
+    )) {
+    if (-not $testSource.Contains($needle)) {
+      throw "UI smoke contract test missing artifact freshness marker '$needle'"
+    }
+  }
+
+  $browserPreflight = Get-JsonProperty $Handoff "browserPreflight" "UI handoff"
+  Assert-Equal (Get-JsonProperty $browserPreflight "defaultMode" "UI browser preflight") "preflight_only" "UI browser preflight default mode"
+  Assert-True ((Get-JsonProperty $browserPreflight "requiresLiveBackendByDefault" "UI browser preflight") -eq $false) "UI browser preflight must not require live backend by default"
+  Assert-True ([bool](Get-JsonProperty $browserPreflight "usesDataTestIdsOnly" "UI browser preflight")) "UI browser preflight must use data-testid selectors"
+
+  $requiredInputs = Get-JsonProperty $browserPreflight "requiredInputs" "UI browser preflight"
+  Assert-Equal (Get-JsonProperty $requiredInputs "adminUiBaseUrl" "UI browser preflight inputs") "ADMIN_UI_BASE_URL" "UI browser preflight Admin UI env"
+  Assert-Equal (Get-JsonProperty $requiredInputs "controlPlaneBaseUrl" "UI browser preflight inputs") "CONTROL_PLANE_BASE_URL" "UI browser preflight backend env"
+  Assert-Equal (Get-JsonProperty $requiredInputs "handoffArtifact" "UI browser preflight inputs") "web/admin-ui/src/billingExecuteSmokeContract.serializable.json" "UI browser preflight handoff artifact path"
+
+  $metricMarkers = Get-JsonProperty $browserPreflight "metricMarkers" "UI browser preflight"
+  foreach ($name in @("readiness", "submitLatencyMs", "ledgerRefreshDurationMs", "unavailable")) {
+    $marker = [string](Get-JsonProperty $metricMarkers $name "UI browser preflight metric markers")
+    if ($marker -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser preflight metric marker '$name' must be machine readable"
+    }
+  }
+}
+
+function Assert-BrowserLiveSmokeHarnessPreflight {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-UiSmokeHandoffFreshness $Handoff
+  $adminUiUrl = Get-SafeSmokeUrlSummary $AdminUiBaseUrl "Admin UI URL"
+  $backendUrl = Get-SafeSmokeUrlSummary $ControlPlaneBaseUrl "Control Plane backend URL"
+  $browserPreflight = Get-JsonProperty $Handoff "browserPreflight" "UI handoff"
+  $metricMarkers = Get-JsonProperty $browserPreflight "metricMarkers" "UI browser preflight"
+  $readinessMarker = [string](Get-JsonProperty $metricMarkers "readiness" "UI browser preflight metric markers")
+  $submitLatencyMarker = [string](Get-JsonProperty $metricMarkers "submitLatencyMs" "UI browser preflight metric markers")
+  $ledgerRefreshMarker = [string](Get-JsonProperty $metricMarkers "ledgerRefreshDurationMs" "UI browser preflight metric markers")
+  $unavailableMarker = [string](Get-JsonProperty $metricMarkers "unavailable" "UI browser preflight metric markers")
+  $toolingStatus = Get-BrowserToolingStatus
+  $readiness = "ready"
+  if ($toolingStatus -ne "available") {
+    $readiness = $unavailableMarker
+  }
+
+  Write-SafeHost "Browser ledger execute smoke harness preflight:"
+  Write-SafeHost "$readinessMarker=$readiness"
+  Write-SafeHost "browser_tooling=$toolingStatus"
+  Write-SafeHost "admin_ui_url=$adminUiUrl"
+  Write-SafeHost "control_plane_backend_url=$backendUrl"
+  Write-SafeHost "handoff_artifact=fresh"
+  Write-SafeHost "$submitLatencyMarker=$unavailableMarker"
+  Write-SafeHost "$ledgerRefreshMarker=$unavailableMarker"
+}
+
 function Assert-AdminSourceMarkers {
   if (-not (Test-Path $adminSourcePath)) {
     throw "missing apps\control-plane\src\admin.rs"
@@ -1019,6 +1150,10 @@ try {
 
   Check "Admin UI ledger execute smoke selector handoff consumption contract" {
     Assert-UiLiveSmokeSerializableHandoff (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  Check "Admin UI ledger execute browser live-smoke harness preflight contract" {
+    Assert-BrowserLiveSmokeHarnessPreflight (Read-JsonFile $uiSmokeHandoffPath)
   }
 
   Check "control-plane source contains transactional execute boundary" {
