@@ -87,6 +87,9 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER=1`
 
 Optional path/env overrides:
 
@@ -135,6 +138,13 @@ Expected result:
   writes bounded evidence covering available/missing tools, offline cache
   present/missing, download-disabled state, per-command blocker classification,
   and duration fields without running validators/generators.
+- Child case `simulated real-tool execution evidence pass` returns exit `0` and
+  writes execution-shaped evidence with real-command fields but simulated
+  provenance, so it cannot close the real gap.
+- Child case `simulated real-tool execution evidence failure` returns exit `1`
+  and writes execution-shaped failure evidence.
+- Child case `simulated real-tool execution evidence blocker` returns exit `2`
+  and writes execution-shaped blocker evidence.
 - Child case `simulated semantic validator evidence pass` returns exit `0` and
   writes a bounded evidence report with classification `pass`.
 - Child case `simulated semantic validator evidence failure` returns exit `1`
@@ -183,6 +193,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateCacheProbe
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidencePass
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidenceFailure
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidenceBlocker
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceFailure
@@ -198,15 +214,16 @@ returns `0`; the sensitive-command failure returns `1`. The generated-client
 inspection commands return `0` and `1`. The generated-client readiness commands
 return `1` for missing output, stale marker, and unsafe target. The command
 matrix dry-run returns `0`. The simulated cache probe returns `2`. The semantic
+evidence commands return `0`, `1`, and `2`. The simulated real execution
 evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
 returns `2`. They prove wrapper failure-path classification, generated-client
 readiness gating, command matrix coverage, cache/tool availability evidence,
-bounded evidence lifecycle, path/output hardening, preflight/performance
-evidence shape, and redaction only. They do not run Redocly, OpenAPI Generator,
-`openapi-typescript`, generated-client inspection against real generated
-output, or any live Postgres checks. Do not use simulated passes, cache-probe
-blockers, or the matrix dry-run to close the real semantic/client-generation
-gap.
+real-execution evidence shape, bounded evidence lifecycle, path/output
+hardening, preflight/performance evidence shape, and redaction only. They do not
+run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
+inspection against real generated output, or any live Postgres checks. Do not
+use simulated passes, cache-probe blockers, simulated execution evidence, or
+the matrix dry-run to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -285,6 +302,12 @@ Each evidence record contains:
   `offline_repo_cache_missing`, `simulated`, or `not_applicable`
 - `package_download_allowed`
 - `preflight_status`: `passed`, `blocked`, `simulated`, or `not_run`
+- `execution_mode`: `real_tool_execution`, `cache_probe`, `command_matrix`,
+  `simulated`, or `not_run`
+- `real_command_executed`
+- `readiness_marker_status`: `current`, `missing`, `stale`, `pending`, or
+  `not_applicable`
+- `closure_eligible`
 - `checked_schema`
 - `classification`: `pass`, `failure`, or `blocker`
 - `exit_code`
@@ -300,8 +323,9 @@ credentials, package tokens, API keys, raw operation keys, raw metadata, payload
 or body data, or raw executor details. The self-test validates the report field
 allowlist, checked schema, repo commit marker, generated-at timestamp, fixture
 fingerprint, command summary, tool path, version/cache preflight status,
-duration bounds, output-tail bounds, classification presence, provenance marker,
-and secret-safe redaction.
+execution mode, real-command marker, generated-client readiness marker status,
+closure eligibility, duration bounds, output-tail bounds, classification
+presence, provenance marker, and secret-safe redaction.
 
 Interpret report outcomes as follows:
 
@@ -327,6 +351,28 @@ Real-tool preflight/performance evidence:
 - Version probes and requested validator/generator commands record bounded
   `duration_ms`. The self-test locks that duration is numeric and bounded, but
   it does not run real npm tools.
+
+Real-tool execution evidence:
+
+- `execution_mode=real_tool_execution` is required for real Redocly, OpenAPI
+  Generator, `openapi-typescript`, and `typescript-fetch` opt-in executions.
+- `real_command_executed=true` is required only after the requested external
+  command actually ran. Tool/cache preflight blockers keep this field `false`.
+- `duration_ms` records the real command runtime for the evidence record, not
+  just a wrapper-level timestamp.
+- `classification=pass` means the real command exited successfully and the
+  wrapper-specific post-checks passed where applicable.
+- `classification=failure` means the real command ran but schema validation,
+  generated-client readiness, generated-client inspection, or contract checks
+  failed.
+- `classification=blocker` means the command could not be run because required
+  tooling or package/cache availability was missing.
+- Generated-client evidence must have `readiness_marker_status=current` before
+  it can be used as acceptance evidence.
+- `closure_eligible=true` is allowed only for `provenance_mode=real`,
+  `execution_mode=real_tool_execution`, `real_command_executed=true`,
+  `classification=pass`, and a current readiness marker when the evidence kind
+  is `client_generation`.
 
 Do not close the semantic validator gap from a report with outcome `blocker`.
 Do not close it from a simulated or mixed-provenance report; simulated evidence
@@ -807,6 +853,9 @@ Record all of the following when closing the semantic/client-generation gap:
 - Whether the npm cache was online, preseeded, or internal-mirror backed.
 - Tool preflight status, safe tool path summary, package/cache status, and
   bounded `duration_ms` for each opt-in evidence record.
+- Real execution evidence fields for each opt-in command:
+  `execution_mode`, `real_command_executed`, `duration_ms`,
+  `readiness_marker_status`, `closure_eligible`, and exit classification.
 - Generated client target, for example `openapi-typescript` or
   `typescript-fetch`.
 - Confirmation that ledger execute/executor summary fields listed above were

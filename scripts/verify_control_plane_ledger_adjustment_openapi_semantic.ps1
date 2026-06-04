@@ -27,7 +27,10 @@ param(
   [switch]$SimulateSemanticEvidenceFailure,
   [switch]$SimulateSemanticEvidenceBlocker,
   [switch]$SimulateToolPreflightBlocker,
-  [switch]$SimulateCacheProbe
+  [switch]$SimulateCacheProbe,
+  [switch]$SimulateRealExecutionEvidencePass,
+  [switch]$SimulateRealExecutionEvidenceFailure,
+  [switch]$SimulateRealExecutionEvidenceBlocker
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,6 +74,9 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER) { $SimulateSemanticEvidenceBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER) { $SimulateToolPreflightBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE) { $SimulateCacheProbe = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS) { $SimulateRealExecutionEvidencePass = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE) { $SimulateRealExecutionEvidenceFailure = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER) { $SimulateRealExecutionEvidenceBlocker = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -229,6 +235,9 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-generated-client-missing-output"),
     (Join-Path $TempRoot "self-test-generated-client-stale-marker"),
     (Join-Path $TempRoot "self-test-cache-probe"),
+    (Join-Path $TempRoot "self-test-real-execution-pass"),
+    (Join-Path $TempRoot "self-test-real-execution-failure"),
+    (Join-Path $TempRoot "self-test-real-execution-blocker"),
     (Join-Path $TempRoot "self-test-semantic-evidence-pass"),
     (Join-Path $TempRoot "self-test-semantic-evidence-failure"),
     (Join-Path $TempRoot "self-test-semantic-evidence-blocker"),
@@ -375,6 +384,9 @@ function Get-WrapperCommandSummary {
   if ($SimulateSemanticEvidenceBlocker) { [void]$simulatedModes.Add("semantic_evidence_blocker") }
   if ($SimulateToolPreflightBlocker) { [void]$simulatedModes.Add("tool_preflight_blocker") }
   if ($SimulateCacheProbe) { [void]$simulatedModes.Add("cache_probe") }
+  if ($SimulateRealExecutionEvidencePass) { [void]$simulatedModes.Add("real_execution_evidence_pass") }
+  if ($SimulateRealExecutionEvidenceFailure) { [void]$simulatedModes.Add("real_execution_evidence_failure") }
+  if ($SimulateRealExecutionEvidenceBlocker) { [void]$simulatedModes.Add("real_execution_evidence_blocker") }
 
   return [ordered]@{
     script = "scripts/verify_control_plane_ledger_adjustment_openapi_semantic.ps1"
@@ -778,7 +790,11 @@ function Add-OpenApiCacheProbeEvidence {
       -PreflightStatus $preflightStatus `
       -PackageCacheStatus ([string]$cacheProbe.Status) `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
-      -DurationMs ([int64]($cacheProbe.DurationMs + ($requiredTools | ForEach-Object { if ($toolProbes.ContainsKey($_)) { $toolProbes[$_].DurationMs } else { 0 } } | Measure-Object -Sum).Sum))
+      -DurationMs ([int64]($cacheProbe.DurationMs + ($requiredTools | ForEach-Object { if ($toolProbes.ContainsKey($_)) { $toolProbes[$_].DurationMs } else { 0 } } | Measure-Object -Sum).Sum)) `
+      -ExecutionMode "cache_probe" `
+      -RealCommandExecuted $false `
+      -ReadinessMarkerStatus $(if ([string]$entry.evidence_kind -eq "client_generation") { "missing" } else { "not_applicable" }) `
+      -ClosureEligible $false
   }
 }
 
@@ -800,7 +816,11 @@ function Add-EvidenceRecord {
     [ValidateSet("passed", "blocked", "simulated", "not_run")][string]$PreflightStatus = "not_run",
     [AllowNull()][string]$PackageCacheStatus = "",
     [bool]$PackageDownloadAllowed = [bool]$AllowPackageDownload,
-    [int64]$DurationMs = 0
+    [int64]$DurationMs = 0,
+    [ValidateSet("real_tool_execution", "cache_probe", "command_matrix", "simulated", "not_run")][string]$ExecutionMode = "not_run",
+    [bool]$RealCommandExecuted = $false,
+    [ValidateSet("current", "missing", "stale", "not_applicable", "pending")][string]$ReadinessMarkerStatus = "not_applicable",
+    [bool]$ClosureEligible = $false
   )
 
   if ([string]::IsNullOrWhiteSpace($ToolPath)) {
@@ -824,6 +844,10 @@ function Add-EvidenceRecord {
     package_cache_status = Redact-SafeText $PackageCacheStatus
     package_download_allowed = [bool]$PackageDownloadAllowed
     preflight_status = $PreflightStatus
+    execution_mode = $ExecutionMode
+    real_command_executed = [bool]$RealCommandExecuted
+    readiness_marker_status = $ReadinessMarkerStatus
+    closure_eligible = [bool]$ClosureEligible
     checked_schema = Get-RepoRelativePath $OpenApiPath
     classification = $Classification
     exit_code = $ExitCode
@@ -834,6 +858,24 @@ function Add-EvidenceRecord {
     blocker_reason = Redact-SafeText $BlockerReason
   }
   [void]$script:EvidenceRecords.Add([pscustomobject]$record)
+}
+
+function Set-ClientGenerationEvidenceReadiness {
+  param(
+    [Parameter(Mandatory = $true)][string]$Tool,
+    [Parameter(Mandatory = $true)][ValidateSet("current", "missing", "stale", "not_applicable", "pending")][string]$Status
+  )
+
+  for ($index = $script:EvidenceRecords.Count - 1; $index -ge 0; $index -= 1) {
+    $record = $script:EvidenceRecords[$index]
+    if ([string]$record.kind -eq "client_generation" -and [string]$record.tool -eq $Tool) {
+      $record.readiness_marker_status = $Status
+      if ([string]$record.provenance_mode -eq "real" -and [string]$record.execution_mode -eq "real_tool_execution" -and [bool]$record.real_command_executed -and [string]$record.classification -eq "pass" -and $Status -eq "current") {
+        $record.closure_eligible = $true
+      }
+      return
+    }
+  }
 }
 
 function Write-EvidenceReport {
@@ -998,7 +1040,7 @@ function Assert-EvidenceReportContract {
 
   foreach ($record in $records) {
     foreach ($field in @($record.PSObject.Properties.Name)) {
-      if (-not @("kind", "label", "provenance_mode", "tool", "tool_path", "tool_version", "package", "package_cache_status", "package_download_allowed", "preflight_status", "checked_schema", "classification", "exit_code", "duration_ms", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
+      if (-not @("kind", "label", "provenance_mode", "tool", "tool_path", "tool_version", "package", "package_cache_status", "package_download_allowed", "preflight_status", "execution_mode", "real_command_executed", "readiness_marker_status", "closure_eligible", "checked_schema", "classification", "exit_code", "duration_ms", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected evidence field '$field'"
       }
     }
@@ -1016,6 +1058,21 @@ function Assert-EvidenceReportContract {
     }
     if (-not @("passed", "blocked", "simulated", "not_run").Contains([string]$record.preflight_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid preflight_status '$($record.preflight_status)'"
+    }
+    if (-not @("real_tool_execution", "cache_probe", "command_matrix", "simulated", "not_run").Contains([string]$record.execution_mode)) {
+      Add-Failure "[FAIL] evidence report contract - invalid execution_mode '$($record.execution_mode)'"
+    }
+    if ($null -eq $record.real_command_executed) {
+      Add-Failure "[FAIL] evidence report contract - missing real_command_executed"
+    }
+    if (-not @("current", "missing", "stale", "not_applicable", "pending").Contains([string]$record.readiness_marker_status)) {
+      Add-Failure "[FAIL] evidence report contract - invalid readiness_marker_status '$($record.readiness_marker_status)'"
+    }
+    if ($null -eq $record.closure_eligible) {
+      Add-Failure "[FAIL] evidence report contract - missing closure_eligible"
+    }
+    if ([bool]$record.closure_eligible -and (-not ([string]$record.provenance_mode -eq "real" -and [string]$record.execution_mode -eq "real_tool_execution" -and [bool]$record.real_command_executed -and [string]$record.classification -eq "pass"))) {
+      Add-Failure "[FAIL] evidence report contract - closure_eligible requires real pass execution"
     }
     if (-not @("download_allowed", "offline_repo_cache_present", "offline_repo_cache_missing", "simulated", "not_applicable").Contains([string]$record.package_cache_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid package_cache_status '$($record.package_cache_status)'"
@@ -1272,7 +1329,11 @@ function Invoke-NpmTool {
       -PreflightStatus "blocked" `
       -PackageCacheStatus $packageCacheStatus `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
-      -DurationMs 0
+      -DurationMs 0 `
+      -ExecutionMode "real_tool_execution" `
+      -RealCommandExecuted $false `
+      -ReadinessMarkerStatus "not_applicable" `
+      -ClosureEligible $false
     return
   }
 
@@ -1312,7 +1373,11 @@ function Invoke-NpmTool {
           -PreflightStatus "passed" `
           -PackageCacheStatus $packageCacheStatus `
           -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
-          -DurationMs $versionResult.DurationMs
+          -DurationMs $versionResult.DurationMs `
+          -ExecutionMode "real_tool_execution" `
+          -RealCommandExecuted $false `
+          -ReadinessMarkerStatus "not_applicable" `
+          -ClosureEligible $false
         return $versionResult
       }
 
@@ -1353,7 +1418,11 @@ function Invoke-NpmTool {
       -PreflightStatus "passed" `
       -PackageCacheStatus $packageCacheStatus `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
-      -DurationMs $result.DurationMs
+      -DurationMs $result.DurationMs `
+      -ExecutionMode "real_tool_execution" `
+      -RealCommandExecuted $true `
+      -ReadinessMarkerStatus $(if ($EvidenceKind -eq "client_generation") { "pending" } else { "not_applicable" }) `
+      -ClosureEligible $($result.Classification -eq "pass" -and $EvidenceKind -eq "semantic_validator")
     return $result
   } finally {
     $env:npm_config_cache = $oldCache
@@ -2033,7 +2102,11 @@ function Add-SimulatedSemanticEvidence {
     -PreflightStatus "simulated" `
     -PackageCacheStatus "simulated" `
     -PackageDownloadAllowed $false `
-    -DurationMs 12
+    -DurationMs 12 `
+    -ExecutionMode "simulated" `
+    -RealCommandExecuted $false `
+    -ReadinessMarkerStatus "not_applicable" `
+    -ClosureEligible $false
 }
 
 function Add-SimulatedToolPreflightBlockerEvidence {
@@ -2061,7 +2134,56 @@ function Add-SimulatedToolPreflightBlockerEvidence {
     -PreflightStatus "blocked" `
     -PackageCacheStatus "offline_repo_cache_missing" `
     -PackageDownloadAllowed $false `
-    -DurationMs 0
+    -DurationMs 0 `
+    -ExecutionMode "simulated" `
+    -RealCommandExecuted $false `
+    -ReadinessMarkerStatus "not_applicable" `
+    -ClosureEligible $false
+}
+
+function Add-SimulatedRealExecutionEvidence {
+  param(
+    [Parameter(Mandatory = $true)][ValidateSet("pass", "failure", "blocker")][string]$Classification
+  )
+
+  $exitCode = switch ($Classification) {
+    "pass" { 0 }
+    "failure" { 1 }
+    "blocker" { 2 }
+  }
+  $failureReason = if ($Classification -eq "failure") { "simulated real command schema/client mismatch" } else { "" }
+  $blockerReason = if ($Classification -eq "blocker") { "simulated real command tool/cache blocker" } else { "" }
+  $output = @(
+    "simulated real opt-in command completed",
+    "Authorization: Bearer selftest-token-123456789",
+    "Cookie: session=selftest-cookie",
+    "package_token=selftest-package-token",
+    "operation_key=selftest-operation-key",
+    "raw_metadata={never-return}"
+  )
+
+  Add-EvidenceRecord `
+    -Kind "client_generation" `
+    -Label "simulated real-tool opt-in execution evidence $Classification" `
+    -Tool "openapi-typescript" `
+    -ToolVersion "simulated-1.0.0" `
+    -Package "openapi-typescript" `
+    -Classification $Classification `
+    -ExitCode $exitCode `
+    -Command "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiTypescript --package_token=selftest-package-token" `
+    -Output $output `
+    -FailureReason $failureReason `
+    -BlockerReason $blockerReason `
+    -ProvenanceMode "simulated" `
+    -ToolPath "node=simulated;npm=simulated" `
+    -PreflightStatus $(if ($Classification -eq "blocker") { "blocked" } else { "passed" }) `
+    -PackageCacheStatus $(if ($Classification -eq "blocker") { "offline_repo_cache_missing" } else { "offline_repo_cache_present" }) `
+    -PackageDownloadAllowed $false `
+    -DurationMs 24 `
+    -ExecutionMode "real_tool_execution" `
+    -RealCommandExecuted $($Classification -ne "blocker") `
+    -ReadinessMarkerStatus $(if ($Classification -eq "pass") { "current" } elseif ($Classification -eq "failure") { "missing" } else { "not_applicable" }) `
+    -ClosureEligible $false
 }
 
 function Invoke-Redocly {
@@ -2109,6 +2231,7 @@ function Invoke-OpenApiTypescript {
       -PackageCacheStatus (Get-NpmPackageCacheStatus) `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload)
     Assert-GeneratedClientReadinessGate -Path $outFile -Label "openapi-typescript ledger execute generated-client readiness"
+    Set-ClientGenerationEvidenceReadiness -Tool "openapi-typescript" -Status $(if ($script:Failures.Count -eq 0) { "current" } else { "missing" })
   }
 }
 
@@ -2146,6 +2269,7 @@ function Invoke-TypescriptFetch {
       -PackageCacheStatus (Get-NpmPackageCacheStatus) `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload)
     Assert-GeneratedClientReadinessGate -Path $outDir -Label "typescript-fetch ledger execute generated-client readiness"
+    Set-ClientGenerationEvidenceReadiness -Tool "openapi-generator-cli" -Status $(if ($script:Failures.Count -eq 0) { "current" } else { "missing" })
   }
 }
 
@@ -2274,6 +2398,27 @@ function Invoke-SelfTest {
     -ChildTempRoot (Join-Path $TempRoot "self-test-cache-probe") `
     -ExpectedExitCode 2 `
     -ExpectedEvidenceClassifications @("pass", "blocker") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool execution evidence pass" `
+    -Arguments @("-SimulateRealExecutionEvidencePass") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-real-execution-pass") `
+    -ExpectedExitCode 0 `
+    -ExpectedEvidenceClassifications @("pass") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool execution evidence failure" `
+    -Arguments @("-SimulateRealExecutionEvidenceFailure") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-real-execution-failure") `
+    -ExpectedExitCode 1 `
+    -ExpectedEvidenceClassifications @("failure") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool execution evidence blocker" `
+    -Arguments @("-SimulateRealExecutionEvidenceBlocker") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-real-execution-blocker") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("blocker") `
     -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild `
     -Name "simulated semantic validator evidence pass" `
@@ -2478,6 +2623,20 @@ if ($SimulateToolPreflightBlocker) {
 
 if ($SimulateCacheProbe) {
   Add-OpenApiCacheProbeEvidence -Simulated
+  Exit-WithResult
+}
+if ($SimulateRealExecutionEvidencePass) {
+  Add-SimulatedRealExecutionEvidence -Classification "pass"
+  Exit-WithResult
+}
+if ($SimulateRealExecutionEvidenceFailure) {
+  Add-SimulatedRealExecutionEvidence -Classification "failure"
+  Add-Failure "[FAIL] simulated real-tool execution evidence failure - semantic/client mismatch"
+  Exit-WithResult
+}
+if ($SimulateRealExecutionEvidenceBlocker) {
+  Add-SimulatedRealExecutionEvidence -Classification "blocker"
+  Add-Blocker "[BLOCKED] simulated real-tool execution evidence blocker - tool/cache unavailable"
   Exit-WithResult
 }
 
