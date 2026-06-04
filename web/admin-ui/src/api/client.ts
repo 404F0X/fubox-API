@@ -909,14 +909,64 @@ export type LedgerAdjustmentExecuteContractFlags = {
   audit_log_write: boolean;
   audit_snapshot_policy?: string;
   business_and_success_audit_share_transaction: boolean;
+  contract_version?: string;
   dedupe_material_echoed?: boolean;
+  dedupe_contract?: {
+    client_supplied_dedupe_material_rejected?: boolean;
+    conflicting_duplicate_refused_before_ledger_insert?: boolean;
+    dedupe_material_echoed?: boolean;
+    public_output?: string;
+    replay_same_digest_returns_prior_result_after_writer_exists?: boolean;
+    server_generated_dedupe_material?: boolean;
+  };
+  dry_run_constraints_enforced_before_refusal?: string[];
   future_writer_required?: boolean;
   ledger_write: boolean;
+  ledger_writer_contract?: {
+    future_writer?: string;
+    insert_status_on_success?: string;
+    metadata_policy?: string;
+    refund_over_remaining_refused_after_locked_recompute?: boolean;
+    write_performed?: boolean;
+  };
   refusal_does_not_build_success_audit: boolean;
   request_log_write: boolean;
+  request_log_contract?: {
+    future_behavior?: string;
+    request_log_mutation_allowed?: boolean;
+    request_material_echoed?: boolean;
+    write_performed?: boolean;
+  };
+  safe_output_contract?: {
+    audit_snapshot_policy?: string;
+    credential_material_echoed?: boolean;
+    dedupe_material_echoed?: boolean;
+    request_material_echoed?: boolean;
+  };
   server_generated_dedupe_material?: boolean;
   success_audit_only_after_ledger_write: boolean;
+  transaction_contract?: {
+    begin_before_locking?: boolean;
+    bounded_by?: string[];
+    bounded_lock_order?: string[];
+    commit_only_after_ledger_and_success_audit?: boolean;
+    future_isolation?: string;
+    recompute_after_locks?: string[];
+    rollback_on_audit_insert_failure?: boolean;
+    rollback_on_ledger_write_failure?: boolean;
+    rollback_on_refund_remaining_change?: boolean;
+    unbounded_scan_allowed?: boolean;
+  };
   upstream_call: boolean;
+  validated_before_refusal?: boolean;
+  audit_contract?: {
+    audit_insert_failure_rolls_back_ledger_write?: boolean;
+    business_and_success_audit_share_transaction?: boolean;
+    refusal_does_not_build_success_audit?: boolean;
+    snapshot_policy?: string;
+    success_audit_only_after_ledger_write?: boolean;
+    write_performed?: boolean;
+  };
 };
 
 export type LedgerAdjustmentExecuteContractResponse = {

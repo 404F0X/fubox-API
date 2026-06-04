@@ -27,6 +27,13 @@
       "streaming_supported": false,
       "runtime_entry": "apps/gateway/src/main.rs::embeddings",
       "preflight_marker": "prompt_protection_rejection_for_embeddings_request"
+    },
+    {
+      "name": "anthropic_messages",
+      "path": "POST /v1/messages",
+      "streaming_supported": true,
+      "runtime_entry": "apps/gateway/src/main.rs::anthropic_messages",
+      "preflight_marker": "prompt_protection_rejection_for_anthropic_messages_request"
     }
   ],
   "runtime_policy": {
@@ -86,6 +93,20 @@
       "resolve_canonical_model",
       "select_route_candidates",
       "create_request_started",
+      "pre_authorize_before_provider_attempt",
+      "create_provider_attempt_started",
+      "open_provider_key_for_route",
+      "upstream_call"
+    ],
+    "anthropic_messages": [
+      "authenticate_virtual_key",
+      "parse_anthropic_messages_request",
+      "compute_request_body_hash",
+      "prompt_protection_preflight",
+      "resolve_canonical_model",
+      "select_route_candidates",
+      "create_request_started",
+      "anthropic_messages_streaming_or_provider_attempt",
       "pre_authorize_before_provider_attempt",
       "create_provider_attempt_started",
       "open_provider_key_for_route",
@@ -156,5 +177,5 @@
     "Authorization: Bearer",
     "provider-secret-value"
   ],
-  "notes": "Gateway chat, responses, and embeddings prompt protection runs after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Chat and responses cover stream=true requests through their shared preflight; embeddings is non-stream. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
+  "notes": "Gateway chat, responses, embeddings, and Anthropic messages prompt protection runs after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Chat, responses, and Anthropic messages cover stream=true requests through their shared preflight; embeddings is non-stream. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
 }

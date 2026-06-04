@@ -832,6 +832,7 @@ function LedgerAdjustmentExecuteAffordance({
           <h2>Execute Readiness</h2>
           <p>{statusText}</p>
         </div>
+        <StateChip status={executeStatus(executeResult, { dryRunFresh, executeFresh, hasDryRun })} />
       </div>
       <div className="manual-test-flags" aria-label="Execute contract flags">
         <span>execute_contract_mode=true</span>
@@ -881,13 +882,25 @@ function LedgerAdjustmentExecuteContractResult({
 }) {
   const flags = executeFlags(result);
   const snapshotPolicy = executeAuditSnapshotPolicy(result);
+  const contract = result.kind === "future_execute" ? undefined : result.response.execute_contract;
+  const reasons = executeBlockedReasons(result, fresh);
 
   return (
     <section aria-label="Ledger adjustment execute contract result">
+      {reasons.length > 0 ? (
+        <div className="issue-list" aria-label="Execute blocked reasons">
+          {reasons.map((reason) => (
+            <span className="issue-pill issue-pill--warn" key={reason}>
+              {formatStatus(reason)}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <Fields
         items={[
           ["Result", executeResultLabel(result)],
           ["Contract fresh", String(fresh)],
+          ["Contract version", contract?.contract_version ?? "-"],
           ["Writer required", String(flags.futureWriterRequired)],
           ["Ledger write", String(flags.ledgerWrite)],
           ["Audit write", String(flags.auditLogWrite)],
@@ -898,7 +911,89 @@ function LedgerAdjustmentExecuteContractResult({
           ["Audit snapshot", snapshotPolicy],
         ]}
       />
+      {contract ? <LedgerAdjustmentExecuteV2Summary contract={contract} /> : null}
     </section>
+  );
+}
+
+function LedgerAdjustmentExecuteV2Summary({
+  contract,
+}: {
+  contract: Extract<LedgerAdjustmentExecuteResult, { kind: "writer_required" | "contract_ready" }>["response"]["execute_contract"];
+}) {
+  const transaction = contract.transaction_contract;
+  const dedupe = contract.dedupe_contract;
+  const writer = contract.ledger_writer_contract;
+  const audit = contract.audit_contract;
+  const requestLog = contract.request_log_contract;
+  const safeOutput = contract.safe_output_contract;
+
+  return (
+    <div className="detail-grid detail-grid--compact" aria-label="Execute contract v2 summary">
+      <article>
+        <h3>Dedupe Summary</h3>
+        <Fields
+          items={[
+            ["Server generated", String(dedupe?.server_generated_dedupe_material ?? contract.server_generated_dedupe_material)],
+            ["Client material rejected", String(dedupe?.client_supplied_dedupe_material_rejected ?? "-")],
+            ["Material echoed", String(dedupe?.dedupe_material_echoed ?? contract.dedupe_material_echoed ?? false)],
+            ["Public output", safeFieldValue(dedupe?.public_output)],
+            ["Replay behavior", String(dedupe?.replay_same_digest_returns_prior_result_after_writer_exists ?? "-")],
+            ["Duplicate conflict refused", String(dedupe?.conflicting_duplicate_refused_before_ledger_insert ?? "-")],
+          ]}
+        />
+      </article>
+
+      <article>
+        <h3>Transaction Summary</h3>
+        <Fields
+          items={[
+            ["Isolation", safeFieldValue(transaction?.future_isolation)],
+            ["Begin before locks", String(transaction?.begin_before_locking ?? "-")],
+            ["Commit after ledger/audit", String(transaction?.commit_only_after_ledger_and_success_audit ?? "-")],
+            ["Rollback on ledger failure", String(transaction?.rollback_on_ledger_write_failure ?? "-")],
+            ["Rollback on audit failure", String(transaction?.rollback_on_audit_insert_failure ?? "-")],
+            ["Refund recompute rollback", String(transaction?.rollback_on_refund_remaining_change ?? "-")],
+            ["Lock steps", String(transaction?.bounded_lock_order?.length ?? 0)],
+            ["Bounds", String(transaction?.bounded_by?.length ?? 0)],
+            ["Recompute checks", String(transaction?.recompute_after_locks?.length ?? 0)],
+            ["Unbounded scan", String(transaction?.unbounded_scan_allowed ?? "-")],
+          ]}
+        />
+      </article>
+
+      <article>
+        <h3>Writer / Audit Summary</h3>
+        <Fields
+          items={[
+            ["Writer available", String(!(contract.future_writer_required ?? false))],
+            ["Writer name", safeFieldValue(writer?.future_writer)],
+            ["Write performed", String(writer?.write_performed ?? false)],
+            ["Success status", safeFieldValue(writer?.insert_status_on_success)],
+            ["Metadata policy", safeFieldValue(writer?.metadata_policy)],
+            ["Audit write performed", String(audit?.write_performed ?? contract.audit_log_write)],
+            ["Shared transaction", String(audit?.business_and_success_audit_share_transaction ?? contract.business_and_success_audit_share_transaction)],
+            ["Audit rollback", String(audit?.audit_insert_failure_rolls_back_ledger_write ?? contract.audit_insert_failure_rolls_back_ledger_write)],
+            ["Refusal audit", String(audit?.refusal_does_not_build_success_audit ?? contract.refusal_does_not_build_success_audit)],
+            ["Snapshot policy", safeFieldValue(audit?.snapshot_policy ?? contract.audit_snapshot_policy)],
+          ]}
+        />
+      </article>
+
+      <article>
+        <h3>Safe Output Summary</h3>
+        <Fields
+          items={[
+            ["Request log write", String(requestLog?.write_performed ?? contract.request_log_write)],
+            ["Request log mutation", String(requestLog?.request_log_mutation_allowed ?? "-")],
+            ["Request material echoed", String(requestLog?.request_material_echoed ?? safeOutput?.request_material_echoed ?? false)],
+            ["Credential material echoed", String(safeOutput?.credential_material_echoed ?? false)],
+            ["Output token echoed", String(safeOutput?.dedupe_material_echoed ?? contract.dedupe_material_echoed ?? false)],
+            ["Constraints checked", String(contract.dry_run_constraints_enforced_before_refusal?.length ?? 0)],
+          ]}
+        />
+      </article>
+    </div>
   );
 }
 
@@ -926,6 +1021,68 @@ function executeReadinessStatus(result: LedgerAdjustmentExecuteResult, fresh: bo
   }
 
   return "Execute contract validated without ledger, request log, audit, or upstream writes.";
+}
+
+function executeStatus(
+  result: LedgerAdjustmentExecuteResult | null,
+  state: { dryRunFresh: boolean; executeFresh: boolean; hasDryRun: boolean },
+): string {
+  if (!state.hasDryRun) {
+    return "dry_run_required";
+  }
+
+  if (!state.dryRunFresh) {
+    return "stale_plan";
+  }
+
+  if (!result) {
+    return "execute_preflight";
+  }
+
+  if (!state.executeFresh) {
+    return "blocked";
+  }
+
+  if (result.kind === "writer_required") {
+    return "blocked";
+  }
+
+  if (result.kind === "future_execute") {
+    return result.response.executed ? "success" : "failed";
+  }
+
+  return "execute_preflight";
+}
+
+function executeBlockedReasons(result: LedgerAdjustmentExecuteResult, fresh: boolean): string[] {
+  if (!fresh) {
+    return ["stale_contract_check"];
+  }
+
+  if (result.kind === "writer_required") {
+    const contract = result.response.execute_contract;
+    const reasons = ["future_writer_required"];
+
+    if (contract.validated_before_refusal) {
+      reasons.push("validated_before_refusal");
+    }
+
+    if (contract.refusal_does_not_build_success_audit) {
+      reasons.push("success_audit_not_built");
+    }
+
+    if (contract.ledger_writer_contract?.future_writer) {
+      reasons.push("transactional_writer_pending");
+    }
+
+    return reasons;
+  }
+
+  if (result.kind === "future_execute" && !result.response.executed) {
+    return ["future_execute_not_confirmed"];
+  }
+
+  return [];
 }
 
 function executeResultLabel(result: LedgerAdjustmentExecuteResult): string {

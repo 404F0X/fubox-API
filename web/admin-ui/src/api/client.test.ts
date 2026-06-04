@@ -1056,14 +1056,56 @@ describe("api client", () => {
         audit_log_write: false,
         audit_snapshot_policy: "bounded public ids and amounts only",
         business_and_success_audit_share_transaction: true,
+        contract_version: "ledger_adjustment_execute_preflight_contract.v2",
+        dedupe_contract: {
+          client_supplied_dedupe_material_rejected: true,
+          conflicting_duplicate_refused_before_ledger_insert: true,
+          dedupe_material_echoed: false,
+          public_output: "digest_marker_only",
+          replay_same_digest_returns_prior_result_after_writer_exists: true,
+          server_generated_dedupe_material: true,
+        },
         dedupe_material_echoed: false,
+        dry_run_constraints_enforced_before_refusal: ["billing_adjust_permission", "refund_remaining_amount_checked"],
         future_writer_required: true,
+        ledger_writer_contract: {
+          future_writer: "transactional_admin_ledger_adjustment_writer",
+          insert_status_on_success: "confirmed",
+          metadata_policy: "bounded_admin_adjustment_metadata_only",
+          refund_over_remaining_refused_after_locked_recompute: true,
+          write_performed: false,
+        },
         ledger_write: false,
         refusal_does_not_build_success_audit: true,
+        request_log_contract: {
+          future_behavior: "reference_existing_request_id_only",
+          request_log_mutation_allowed: false,
+          request_material_echoed: false,
+          write_performed: false,
+        },
         request_log_write: false,
+        safe_output_contract: {
+          audit_snapshot_policy: "bounded public ids and amounts only",
+          credential_material_echoed: false,
+          dedupe_material_echoed: false,
+          request_material_echoed: false,
+        },
         server_generated_dedupe_material: true,
         success_audit_only_after_ledger_write: true,
+        transaction_contract: {
+          begin_before_locking: true,
+          bounded_by: ["tenant_id", "currency"],
+          bounded_lock_order: ["source_ledger_entry_for_update", "ledger_insert"],
+          commit_only_after_ledger_and_success_audit: true,
+          future_isolation: "read_committed_or_stronger",
+          recompute_after_locks: ["confirmed_credit_sum"],
+          rollback_on_audit_insert_failure: true,
+          rollback_on_ledger_write_failure: true,
+          rollback_on_refund_remaining_change: true,
+          unbounded_scan_allowed: false,
+        },
         upstream_call: false,
+        validated_before_refusal: true,
       },
       mode: "execute_contract",
       validated_plan: validatedPlan,
@@ -1104,6 +1146,9 @@ describe("api client", () => {
       response: contractData,
       status: 501,
     });
+    expect(contractData.execute_contract.contract_version).toBe("ledger_adjustment_execute_preflight_contract.v2");
+    expect(contractData.execute_contract.transaction_contract?.unbounded_scan_allowed).toBe(false);
+    expect(contractData.execute_contract.dedupe_contract?.public_output).toBe("digest_marker_only");
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");

@@ -1003,14 +1003,60 @@ function stubAdminFetch(
                   audit_log_write: false,
                   audit_snapshot_policy: "bounded public ids and amounts only",
                   business_and_success_audit_share_transaction: true,
+                  contract_version: "ledger_adjustment_execute_preflight_contract.v2",
+                  dedupe_contract: {
+                    client_supplied_dedupe_material_rejected: true,
+                    conflicting_duplicate_refused_before_ledger_insert: true,
+                    dedupe_material_echoed: false,
+                    public_output: "digest_marker_only",
+                    replay_same_digest_returns_prior_result_after_writer_exists: true,
+                    server_generated_dedupe_material: true,
+                  },
                   dedupe_material_echoed: false,
+                  dry_run_constraints_enforced_before_refusal: [
+                    "billing_adjust_permission",
+                    "tenant_scoped_related_entry",
+                    "refund_remaining_amount_checked",
+                  ],
                   future_writer_required: true,
+                  ledger_writer_contract: {
+                    future_writer: "transactional_admin_ledger_adjustment_writer",
+                    insert_status_on_success: "confirmed",
+                    metadata_policy: "bounded_admin_adjustment_metadata_only",
+                    refund_over_remaining_refused_after_locked_recompute: true,
+                    write_performed: false,
+                  },
                   ledger_write: false,
                   refusal_does_not_build_success_audit: true,
+                  request_log_contract: {
+                    future_behavior: "reference_existing_request_id_only",
+                    request_log_mutation_allowed: false,
+                    request_material_echoed: false,
+                    write_performed: false,
+                  },
                   request_log_write: false,
+                  safe_output_contract: {
+                    audit_snapshot_policy: "bounded public ids and amounts only",
+                    credential_material_echoed: false,
+                    dedupe_material_echoed: false,
+                    request_material_echoed: false,
+                  },
                   server_generated_dedupe_material: true,
                   success_audit_only_after_ledger_write: true,
+                  transaction_contract: {
+                    begin_before_locking: true,
+                    bounded_by: ["tenant_id", "related_ledger_entry_id", "currency"],
+                    bounded_lock_order: ["source_ledger_entry_for_update", "ledger_insert", "success_audit_insert"],
+                    commit_only_after_ledger_and_success_audit: true,
+                    future_isolation: "read_committed_or_stronger",
+                    recompute_after_locks: ["confirmed_credit_sum", "remaining_refundable_amount"],
+                    rollback_on_audit_insert_failure: true,
+                    rollback_on_ledger_write_failure: true,
+                    rollback_on_refund_remaining_change: true,
+                    unbounded_scan_allowed: false,
+                  },
                   upstream_call: false,
+                  validated_before_refusal: true,
                 },
                 mode: "execute_contract",
                 validated_plan: validatedPlan,
@@ -2357,7 +2403,11 @@ describe("App", () => {
     expect(screen.getByRole("region", { name: "Ledger adjustment execute contract result" })).toBeInTheDocument();
     expect(screen.getByText("contract_check_network_call=true")).toBeInTheDocument();
     expect(screen.getByText("execute_write_network_call=false")).toBeInTheDocument();
+    expect(screen.getByText("blocked")).toBeInTheDocument();
     expect(screen.getAllByText("future_writer_required").length).toBeGreaterThan(0);
+    expect(screen.getByText("ledger_adjustment_execute_preflight_contract.v2")).toBeInTheDocument();
+    expect(screen.getByText("validated before refusal")).toBeInTheDocument();
+    expect(screen.getByText("transactional writer pending")).toBeInTheDocument();
     expect(screen.getByText("future_writer_required=true")).toBeInTheDocument();
     expect(screen.getAllByText("ledger_write=false").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("audit_log_write=false").length).toBeGreaterThanOrEqual(2);
@@ -2365,6 +2415,15 @@ describe("App", () => {
     expect(screen.getAllByText("upstream_call=false").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("server_generated_write_token=true")).toBeInTheDocument();
     expect(screen.getByText("write_token_echoed=false")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Dedupe Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Transaction Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Writer / Audit Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Safe Output Summary" })).toBeInTheDocument();
+    expect(screen.getByText("read_committed_or_stronger")).toBeInTheDocument();
+    expect(screen.getByText("digest_marker_only")).toBeInTheDocument();
+    expect(screen.getByText("transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
+    expect(screen.getByText("Constraints checked")).toBeInTheDocument();
+    expect(screen.getAllByText("3").length).toBeGreaterThan(0);
 
     const dryRunCall = fetchMock.mock.calls.find(
       ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
@@ -2396,7 +2455,9 @@ describe("App", () => {
       request_id: "00000000-0000-0000-0000-000000000090",
     });
     expect(document.body.textContent).not.toContain("idempotency_key");
-    expect(document.body.textContent).not.toMatch(/dedupe/i);
+    expect(document.body.textContent).not.toContain("server_dedupe_digest");
+    expect(document.body.textContent).not.toContain("dedupe_replay_state");
+    expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
     expect(document.body.textContent).not.toContain("raw metadata");
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
