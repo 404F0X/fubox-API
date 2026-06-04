@@ -73,6 +73,8 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_EXTERNAL_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SCHEMA_MISMATCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLIENT_MISMATCH=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_OUTPUT_TAIL=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE=1`
 
 Optional path/env overrides:
 
@@ -96,8 +98,18 @@ Expected result:
 - Child case `simulated external blocker` returns exit `2`.
 - Child cases `simulated schema mismatch` and `simulated client mismatch` return
   exit `1`.
+- Child case `sensitive success output tail redacted` returns exit `0` after
+  proving successful child output tails are redacted.
+- Child case `sensitive failing command display redacted` returns exit `1` after
+  proving failure output and displayed command lines are redacted.
+- Child cases `temp root repo escape rejected` and `npm cache repo escape
+  rejected` return exit `1`, proving custom paths cannot write outside the
+  allowed repository roots.
+- Child case `artifact cleanup removes temp root` returns exit `0` and removes a
+  marker under `.tmp\ledger-adjustment-openapi-semantic`.
 - Output remains secret-safe; it must not print raw Authorization/Cookie values,
-  bearer tokens, credentials, raw operation keys, or package credentials.
+  bearer tokens, credentials, raw operation keys, package credentials, API keys,
+  or raw metadata.
 
 The simulated switches can also be run directly when diagnosing the wrapper:
 
@@ -107,13 +119,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSchemaMismatch
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClientMismatch
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSensitiveOutputTail
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSensitiveCommandFailure
 ```
 
-These direct simulated commands are expected to return `2`, `1`, and `1`
-respectively after the lightweight gate passes. They prove wrapper failure-path
-classification only. They do not run Redocly, OpenAPI Generator,
-`openapi-typescript`, generated-client inspection, or any live Postgres checks.
-Do not use simulated passes to close the real semantic/client-generation gap.
+The first three direct simulated commands are expected to return `2`, `1`, and
+`1` respectively after the lightweight gate passes. The sensitive-output command
+returns `0`; the sensitive-command failure returns `1`. They prove wrapper
+failure-path classification, path/output hardening, and redaction only. They do
+not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
+inspection, or any live Postgres checks. Do not use simulated passes to close
+the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -422,9 +440,15 @@ Remove-Item -Recurse -Force .tmp\openapi-admin-typescript-fetch -ErrorAction Sil
 The wrapper writes generated artifacts under
 `.tmp\ledger-adjustment-openapi-semantic` unless `-TempRoot` or
 `CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT` is supplied. The temp root must stay
-inside the repository. The wrapper npm cache defaults to `.tool-cache\npm`; if
-overridden with `-NpmCache` or `CONTROL_PLANE_LEDGER_OPENAPI_NPM_CACHE`, it must
-also stay inside the repository.
+inside the repository and under repository `.tmp`; this keeps `-Clean` from
+deleting source, `.git`, or another worker's files. The wrapper npm cache
+defaults to `.tool-cache\npm`; if overridden with `-NpmCache` or
+`CONTROL_PLANE_LEDGER_OPENAPI_NPM_CACHE`, it must stay inside repository
+`.tool-cache` or `.tmp`.
+
+External tool output and displayed command lines are redacted before printing.
+The wrapper must not print raw Authorization/Cookie values, bearer tokens,
+credentials, API keys, operation keys, package credentials, or raw metadata.
 
 ## Acceptance Record
 

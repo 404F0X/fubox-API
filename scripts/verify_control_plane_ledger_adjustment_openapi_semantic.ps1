@@ -13,7 +13,9 @@ param(
   [switch]$SelfTest,
   [switch]$SimulateExternalBlocker,
   [switch]$SimulateSchemaMismatch,
-  [switch]$SimulateClientMismatch
+  [switch]$SimulateClientMismatch,
+  [switch]$SimulateSensitiveOutputTail,
+  [switch]$SimulateSensitiveCommandFailure
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,6 +45,8 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST) { $SelfTest = $t
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_EXTERNAL_BLOCKER) { $SimulateExternalBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SCHEMA_MISMATCH) { $SimulateSchemaMismatch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLIENT_MISMATCH) { $SimulateClientMismatch = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_OUTPUT_TAIL) { $SimulateSensitiveOutputTail = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE) { $SimulateSensitiveCommandFailure = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -73,6 +77,17 @@ $OpenApiPath = Resolve-RepoRelativePath $OpenApiPath
 $TempRoot = Resolve-RepoRelativePath $TempRoot
 $NpmCache = Resolve-RepoRelativePath $NpmCache
 
+function Test-PathUnderRoot {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+  return $fullPath.StartsWith($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Assert-PathUnderRepo {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -86,46 +101,85 @@ function Assert-PathUnderRepo {
   }
 }
 
+$tmpRoot = Join-Path $repoRoot ".tmp"
+$toolCacheRoot = Join-Path $repoRoot ".tool-cache"
+Assert-PathUnderRepo -Path $OpenApiPath -Label "OpenApiPath"
 Assert-PathUnderRepo -Path $TempRoot -Label "TempRoot"
 Assert-PathUnderRepo -Path $NpmCache -Label "NpmCache"
+if (-not (Test-PathUnderRoot -Path $TempRoot -Root $tmpRoot)) {
+  throw "TempRoot must stay under repository .tmp: $TempRoot"
+}
+if (
+  -not (Test-PathUnderRoot -Path $NpmCache -Root $toolCacheRoot) -and
+  -not (Test-PathUnderRoot -Path $NpmCache -Root $tmpRoot)
+) {
+  throw "NpmCache must stay under repository .tool-cache or .tmp: $NpmCache"
+}
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
 $script:Blockers = New-Object System.Collections.Generic.List[string]
 
+function Redact-SafeText {
+  param([AllowNull()][string]$Text)
+
+  if ($null -eq $Text) {
+    return ""
+  }
+
+  $redacted = [string]$Text
+  $redacted = $redacted -replace '(?i)Authorization\s*[:=]\s*Bearer\s+[^\s,;)}]+', '[REDACTED_HEADER]'
+  $redacted = $redacted -replace '(?i)Authorization\s*[:=]\s*[^\r\n,;)}]+', '[REDACTED_HEADER]'
+  $redacted = $redacted -replace '(?i)Cookie\s*[:=]\s*[^\r\n]+', '[REDACTED_HEADER]'
+  $redacted = $redacted -replace '(?i)Bearer\s+[A-Za-z0-9._~+/\-=]+', '[REDACTED_BEARER]'
+  $redacted = $redacted -replace 'sk-[A-Za-z0-9._~+/\-=]+', 'sk-[REDACTED]'
+  $redacted = $redacted -replace '(?i)(https?://)([^/\s:@]+):([^/\s@]+)@', '$1[REDACTED]@'
+  $redacted = $redacted -replace '(?i)(_authToken\s*=\s*)[^\s;]+', '[REDACTED_MATERIAL]'
+  $redacted = $redacted -replace '(?i)((?:password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key|package[_-]?token|npm[_-]?token|raw[_-]?metadata|metadata)\s*[:=]\s*)[^\s''",;}]+', '[REDACTED_MATERIAL]'
+  return $redacted
+}
+
+function Write-SafeHost {
+  param([AllowNull()][string]$Text)
+
+  Write-Host (Redact-SafeText $Text)
+}
+
 function Add-Failure {
   param([Parameter(Mandatory = $true)][string]$Message)
 
-  [void]$script:Failures.Add($Message)
-  Write-Host $Message
+  $safe = Redact-SafeText $Message
+  [void]$script:Failures.Add($safe)
+  Write-SafeHost $safe
 }
 
 function Add-Blocker {
   param([Parameter(Mandatory = $true)][string]$Message)
 
-  [void]$script:Blockers.Add($Message)
-  Write-Host $Message
+  $safe = Redact-SafeText $Message
+  [void]$script:Blockers.Add($safe)
+  Write-SafeHost $safe
 }
 
 function Exit-WithResult {
   if ($script:Failures.Count -gt 0) {
-    Write-Host ""
-    Write-Host "Control Plane ledger adjustment OpenAPI semantic validation failed:"
+    Write-SafeHost ""
+    Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic validation failed:"
     foreach ($failure in $script:Failures) {
-      Write-Host $failure
+      Write-SafeHost $failure
     }
     exit 1
   }
 
   if ($script:Blockers.Count -gt 0) {
-    Write-Host ""
-    Write-Host "Control Plane ledger adjustment OpenAPI semantic validation is externally blocked:"
+    Write-SafeHost ""
+    Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic validation is externally blocked:"
     foreach ($blocker in $script:Blockers) {
-      Write-Host $blocker
+      Write-SafeHost $blocker
     }
     exit 2
   }
 
-  Write-Host "Control Plane ledger adjustment OpenAPI semantic validation passed."
+  Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic validation passed."
   exit 0
 }
 
@@ -161,7 +215,7 @@ function Format-CommandLine {
     }
     [void]$parts.Add($text)
   }
-  return ($parts.ToArray() -join " ")
+  return Redact-SafeText ($parts.ToArray() -join " ")
 }
 
 function Test-BlockerOutput {
@@ -214,16 +268,16 @@ function Invoke-Process {
   $commandLine = Format-CommandLine -FileName $FileName -Arguments $Arguments
 
   if ($exitCode -eq 0) {
-    Write-Host "[OK] $Label"
+    Write-SafeHost "[OK] $Label"
     foreach ($line in $output | Select-Object -Last 8) {
       if (-not [string]::IsNullOrWhiteSpace($line)) {
-        Write-Host $line
+        Write-SafeHost $line
       }
     }
     return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine }
   }
 
-  $joined = ($output -join "`n")
+  $joined = Redact-SafeText ($output -join "`n")
   if ($ExternalTool -and (Test-BlockerOutput $joined)) {
     Add-Blocker "[BLOCKED] $Label - external tool/package cache unavailable while running: $commandLine"
   } else {
@@ -471,7 +525,8 @@ function Assert-SelfTestOutputSecretSafe {
       "(?i)Cookie\s*[:=]",
       "(?i)Bearer\s+[A-Za-z0-9._~+/\-]+=*",
       "sk-[A-Za-z0-9._~+/\-]{8,}",
-      "(?i)(password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key)\s*[:=]\s*[^,\s]+"
+      "(?i)(password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key|package[_-]?token|npm[_-]?token|raw[_-]?metadata|metadata)\s*[:=]\s*[^,\s]+",
+      "(?i)https?://[^/\s:@]+:[^/\s@]+@"
     )) {
     if ($text -match $pattern) {
       Add-Failure "[FAIL] self-test output secret-safe check - $Name printed forbidden material pattern"
@@ -484,6 +539,8 @@ function Invoke-SelfTestChild {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
     [string[]]$Arguments = @(),
+    [string]$ChildTempRoot = $TempRoot,
+    [string]$ChildNpmCache = $NpmCache,
     [Parameter(Mandatory = $true)][int]$ExpectedExitCode
   )
 
@@ -502,9 +559,9 @@ function Invoke-SelfTestChild {
     "-OpenApiPath",
     $OpenApiPath,
     "-TempRoot",
-    $TempRoot,
+    $ChildTempRoot,
     "-NpmCache",
-    $NpmCache
+    $ChildNpmCache
   ) + $Arguments
 
   $global:LASTEXITCODE = 0
@@ -523,30 +580,44 @@ function Invoke-SelfTestChild {
     Add-Failure "[FAIL] self-test $Name - expected exit $ExpectedExitCode, got exit $exitCode"
     foreach ($line in $output | Select-Object -Last 12) {
       if (-not [string]::IsNullOrWhiteSpace($line)) {
-        Write-Host $line
+        Write-SafeHost $line
       }
     }
     return
   }
 
-  Write-Host "[OK] self-test $Name returned exit $ExpectedExitCode"
+  Write-SafeHost "[OK] self-test $Name returned exit $ExpectedExitCode"
 }
 
 function Invoke-SelfTest {
-  Write-Host "Control Plane ledger adjustment OpenAPI semantic wrapper self-test"
-  Write-Host "Self-test uses only the lightweight gate and simulated outcomes; it does not run npm tools, generate clients, or call live services."
+  Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic wrapper self-test"
+  Write-SafeHost "Self-test uses only the lightweight gate and simulated outcomes; it does not run npm tools, generate clients, or call live services."
 
   Invoke-SelfTestChild -Name "default lightweight path" -Arguments @() -ExpectedExitCode 0
   Invoke-SelfTestChild -Name "simulated external blocker" -Arguments @("-SimulateExternalBlocker") -ExpectedExitCode 2
   Invoke-SelfTestChild -Name "simulated schema mismatch" -Arguments @("-SimulateSchemaMismatch") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "simulated client mismatch" -Arguments @("-SimulateClientMismatch") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "sensitive success output tail redacted" -Arguments @("-SimulateSensitiveOutputTail") -ExpectedExitCode 0
+  Invoke-SelfTestChild -Name "sensitive failing command display redacted" -Arguments @("-SimulateSensitiveCommandFailure") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "temp root repo escape rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "..\ledger-openapi-outside") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "npm cache repo escape rejected" -Arguments @() -ChildNpmCache (Join-Path $repoRoot "..\ledger-openapi-cache-outside") -ExpectedExitCode 1
+
+  $cleanupProbe = Join-Path $TempRoot "self-test-cleanup-marker.txt"
+  New-Item -ItemType Directory -Force $TempRoot | Out-Null
+  Set-Content -Path $cleanupProbe -Value "cleanup marker" -Encoding ascii
+  Invoke-SelfTestChild -Name "artifact cleanup removes temp root" -Arguments @("-Clean") -ExpectedExitCode 0
+  if (Test-Path $cleanupProbe) {
+    Add-Failure "[FAIL] self-test artifact cleanup - temp marker remained after -Clean"
+  } else {
+    Write-SafeHost "[OK] self-test artifact cleanup removed temp marker"
+  }
 
   Exit-WithResult
 }
 
 if ($Clean) {
   Remove-Item -Recurse -Force $TempRoot -ErrorAction SilentlyContinue
-  Write-Host "[OK] cleaned temp artifacts: $TempRoot"
+  Write-SafeHost "[OK] cleaned temp artifacts: $TempRoot"
 }
 
 if (-not (Test-Path $OpenApiPath)) {
@@ -558,11 +629,11 @@ if ($SelfTest) {
   Invoke-SelfTest
 }
 
-Write-Host "Control Plane ledger adjustment OpenAPI semantic wrapper"
-Write-Host "OpenAPI: $OpenApiPath"
-Write-Host "TempRoot: $TempRoot"
-Write-Host "NpmCache: $NpmCache"
-Write-Host "Package download allowed: $([bool]$AllowPackageDownload)"
+Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic wrapper"
+Write-SafeHost "OpenAPI: $OpenApiPath"
+Write-SafeHost "TempRoot: $TempRoot"
+Write-SafeHost "NpmCache: $NpmCache"
+Write-SafeHost "Package download allowed: $([bool]$AllowPackageDownload)"
 
 Invoke-ContractGate
 if ($script:Failures.Count -gt 0 -or $script:Blockers.Count -gt 0) {
@@ -581,9 +652,33 @@ if ($SimulateClientMismatch) {
   Add-Failure "[FAIL] simulated generated-client contract mismatch - ledger executor summary field drift"
   Exit-WithResult
 }
+if ($SimulateSensitiveOutputTail) {
+  $ps = Get-PowerShellRunner
+  [void](Invoke-Process `
+      -FileName $ps.Source `
+      -Arguments @(
+        "-NoProfile",
+        "-Command",
+        "Write-Output 'Authorization: Bearer selftest-token-123456789'; Write-Output 'Cookie: session=selftest-cookie'; Write-Output 'api_key=selftest-api-key'; Write-Output 'operation_key=selftest-operation-key'; Write-Output 'raw_metadata={never-return}'"
+      ) `
+      -Label "simulated sensitive output tail")
+  Exit-WithResult
+}
+if ($SimulateSensitiveCommandFailure) {
+  $ps = Get-PowerShellRunner
+  [void](Invoke-Process `
+      -FileName $ps.Source `
+      -Arguments @(
+        "-NoProfile",
+        "-Command",
+        "Write-Error 'Authorization: Bearer selftest-token-123456789 package_token=selftest-package-token raw_metadata={never-return}'; exit 9"
+      ) `
+      -Label "simulated sensitive command failure")
+  Exit-WithResult
+}
 
 if (-not ($Redocly -or $OpenApiGeneratorValidate -or $OpenApiTypescript -or $TypescriptFetch)) {
-  Write-Host "[OK] semantic/client generation tools were not requested; default mode performed lightweight gate only."
+  Write-SafeHost "[OK] semantic/client generation tools were not requested; default mode performed lightweight gate only."
   Exit-WithResult
 }
 
