@@ -69,11 +69,51 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_EXTERNAL_BLOCKER=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SCHEMA_MISMATCH=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLIENT_MISMATCH=1`
 
 Optional path/env overrides:
 
 - `CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT`
 - `CONTROL_PLANE_LEDGER_OPENAPI_NPM_CACHE`
+
+## Wrapper Failure-Path Self-Test
+
+The wrapper has a script-level self-test that locks the exit-code semantics
+without downloading npm packages, generating clients, opening DB connections, or
+calling live services.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SelfTest
+```
+
+Expected result:
+
+- Exit `0` for the self-test command when every child case behaves as expected.
+- Child case `default lightweight path` returns exit `0`.
+- Child case `simulated external blocker` returns exit `2`.
+- Child cases `simulated schema mismatch` and `simulated client mismatch` return
+  exit `1`.
+- Output remains secret-safe; it must not print raw Authorization/Cookie values,
+  bearer tokens, credentials, raw operation keys, or package credentials.
+
+The simulated switches can also be run directly when diagnosing the wrapper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateExternalBlocker
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSchemaMismatch
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClientMismatch
+```
+
+These direct simulated commands are expected to return `2`, `1`, and `1`
+respectively after the lightweight gate passes. They prove wrapper failure-path
+classification only. They do not run Redocly, OpenAPI Generator,
+`openapi-typescript`, generated-client inspection, or any live Postgres checks.
+Do not use simulated passes to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 

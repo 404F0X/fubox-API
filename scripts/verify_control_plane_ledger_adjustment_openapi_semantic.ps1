@@ -9,7 +9,11 @@ param(
   [switch]$OpenApiTypescript,
   [switch]$TypescriptFetch,
   [switch]$AllowPackageDownload,
-  [switch]$Clean
+  [switch]$Clean,
+  [switch]$SelfTest,
+  [switch]$SimulateExternalBlocker,
+  [switch]$SimulateSchemaMismatch,
+  [switch]$SimulateClientMismatch
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +39,10 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT) { $OpenApiTypes
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH) { $TypescriptFetch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD) { $AllowPackageDownload = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLEAN) { $Clean = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST) { $SelfTest = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_EXTERNAL_BLOCKER) { $SimulateExternalBlocker = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SCHEMA_MISMATCH) { $SimulateSchemaMismatch = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLIENT_MISMATCH) { $SimulateClientMismatch = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -225,10 +233,7 @@ function Invoke-Process {
 }
 
 function Invoke-ContractGate {
-  $ps = Get-Command powershell -ErrorAction SilentlyContinue
-  if ($null -eq $ps) {
-    $ps = Get-Command pwsh -ErrorAction SilentlyContinue
-  }
+  $ps = Get-PowerShellRunner
   if ($null -eq $ps) {
     Add-Blocker "[BLOCKED] lightweight OpenAPI contract gate - powershell/pwsh not found"
     return
@@ -238,6 +243,14 @@ function Invoke-ContractGate {
       -FileName $ps.Source `
       -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $contractGatePath, "-OpenApiPath", $OpenApiPath) `
       -Label "lightweight ledger execute OpenAPI contract gate")
+}
+
+function Get-PowerShellRunner {
+  $ps = Get-Command powershell -ErrorAction SilentlyContinue
+  if ($null -eq $ps) {
+    $ps = Get-Command pwsh -ErrorAction SilentlyContinue
+  }
+  return $ps
 }
 
 function New-NpmExecArguments {
@@ -446,6 +459,91 @@ function Invoke-TypescriptFetch {
   }
 }
 
+function Assert-SelfTestOutputSecretSafe {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [AllowEmptyString()][AllowEmptyCollection()][string[]]$Output = @()
+  )
+
+  $text = $Output -join "`n"
+  foreach ($pattern in @(
+      "(?i)Authorization\s*[:=]",
+      "(?i)Cookie\s*[:=]",
+      "(?i)Bearer\s+[A-Za-z0-9._~+/\-]+=*",
+      "sk-[A-Za-z0-9._~+/\-]{8,}",
+      "(?i)(password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key)\s*[:=]\s*[^,\s]+"
+    )) {
+    if ($text -match $pattern) {
+      Add-Failure "[FAIL] self-test output secret-safe check - $Name printed forbidden material pattern"
+      return
+    }
+  }
+}
+
+function Invoke-SelfTestChild {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [string[]]$Arguments = @(),
+    [Parameter(Mandatory = $true)][int]$ExpectedExitCode
+  )
+
+  $ps = Get-PowerShellRunner
+  if ($null -eq $ps) {
+    Add-Blocker "[BLOCKED] self-test child runner - powershell/pwsh not found"
+    return
+  }
+
+  $childArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    $PSCommandPath,
+    "-OpenApiPath",
+    $OpenApiPath,
+    "-TempRoot",
+    $TempRoot,
+    "-NpmCache",
+    $NpmCache
+  ) + $Arguments
+
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $output = @(& $ps.Source @childArgs 2>&1 | ForEach-Object { [string]$_ })
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+
+  $exitCode = if ($null -eq $global:LASTEXITCODE) { 0 } else { [int]$global:LASTEXITCODE }
+  Assert-SelfTestOutputSecretSafe -Name $Name -Output $output
+
+  if ($exitCode -ne $ExpectedExitCode) {
+    Add-Failure "[FAIL] self-test $Name - expected exit $ExpectedExitCode, got exit $exitCode"
+    foreach ($line in $output | Select-Object -Last 12) {
+      if (-not [string]::IsNullOrWhiteSpace($line)) {
+        Write-Host $line
+      }
+    }
+    return
+  }
+
+  Write-Host "[OK] self-test $Name returned exit $ExpectedExitCode"
+}
+
+function Invoke-SelfTest {
+  Write-Host "Control Plane ledger adjustment OpenAPI semantic wrapper self-test"
+  Write-Host "Self-test uses only the lightweight gate and simulated outcomes; it does not run npm tools, generate clients, or call live services."
+
+  Invoke-SelfTestChild -Name "default lightweight path" -Arguments @() -ExpectedExitCode 0
+  Invoke-SelfTestChild -Name "simulated external blocker" -Arguments @("-SimulateExternalBlocker") -ExpectedExitCode 2
+  Invoke-SelfTestChild -Name "simulated schema mismatch" -Arguments @("-SimulateSchemaMismatch") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "simulated client mismatch" -Arguments @("-SimulateClientMismatch") -ExpectedExitCode 1
+
+  Exit-WithResult
+}
+
 if ($Clean) {
   Remove-Item -Recurse -Force $TempRoot -ErrorAction SilentlyContinue
   Write-Host "[OK] cleaned temp artifacts: $TempRoot"
@@ -456,6 +554,10 @@ if (-not (Test-Path $OpenApiPath)) {
   Exit-WithResult
 }
 
+if ($SelfTest) {
+  Invoke-SelfTest
+}
+
 Write-Host "Control Plane ledger adjustment OpenAPI semantic wrapper"
 Write-Host "OpenAPI: $OpenApiPath"
 Write-Host "TempRoot: $TempRoot"
@@ -464,6 +566,19 @@ Write-Host "Package download allowed: $([bool]$AllowPackageDownload)"
 
 Invoke-ContractGate
 if ($script:Failures.Count -gt 0 -or $script:Blockers.Count -gt 0) {
+  Exit-WithResult
+}
+
+if ($SimulateExternalBlocker) {
+  Add-Blocker "[BLOCKED] simulated external semantic-tool blocker - package cache or local tool unavailable"
+  Exit-WithResult
+}
+if ($SimulateSchemaMismatch) {
+  Add-Failure "[FAIL] simulated OpenAPI schema mismatch - ledger execute response contract drift"
+  Exit-WithResult
+}
+if ($SimulateClientMismatch) {
+  Add-Failure "[FAIL] simulated generated-client contract mismatch - ledger executor summary field drift"
   Exit-WithResult
 }
 
