@@ -11,9 +11,11 @@ use ai_gateway_billing_ledger::{
 };
 #[cfg(feature = "postgres-sqlx")]
 use ai_gateway_billing_ledger::{
-    ConsistentLedgerPostgresSqlxBindValue, ConsistentLedgerPostgresSqlxExecutableStatement,
+    ConsistentLedgerPostgresExecutorOutcome, ConsistentLedgerPostgresSqlxBindValue,
+    ConsistentLedgerPostgresSqlxExecutableStatement, execute_consistent_ledger_postgres_sqlx_plan,
     map_consistent_ledger_postgres_sqlx_error,
     plan_consistent_ledger_postgres_sqlx_executable_statements,
+    summarize_consistent_ledger_postgres_executor_result,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -648,6 +650,89 @@ fn postgres_sqlx_schema_contract_covers_reserve_settle_refund_executables() {
             &format!("{} sqlx schema debug", schema_case.source_case),
         );
     }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[tokio::test]
+async fn postgres_sqlx_executor_validation_summary_is_secret_safe_without_live_db() {
+    let source_fixture: SourceFixture =
+        serde_json::from_str(EXECUTOR_FIXTURE).expect("source fixture should parse");
+    let adapter_fixture: SqlxAdapterFixture =
+        serde_json::from_str(SQLX_ADAPTER_FIXTURE).expect("adapter fixture should parse");
+    let source_case = source_fixture
+        .cases
+        .iter()
+        .find(|case| {
+            case.name == "reserve_apply_generates_bounded_commands_and_inserts_pending_debit"
+        })
+        .expect("source case");
+    let request = request_from_fixture(&source_fixture.scope, source_case);
+    let state = state_from_fixture(&source_case.state);
+    let writer_plan =
+        plan_consistent_ledger_write(request, &state).expect("writer plan should build");
+    let command_plan = plan_consistent_ledger_write_commands(&writer_plan);
+    let postgres_plan = plan_consistent_ledger_postgres_execution(&writer_plan, &command_plan);
+    let mut executable_statements =
+        plan_consistent_ledger_postgres_sqlx_executable_statements(&writer_plan, &postgres_plan)
+            .expect("sqlx executable statements should convert");
+    executable_statements[0].returning_columns = vec!["id"];
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgres://localhost/billing_ledger_unused")
+        .expect("lazy pool should not connect during validation refusal");
+    let result =
+        execute_consistent_ledger_postgres_sqlx_plan(&pool, &postgres_plan, &executable_statements)
+            .await;
+    let summary = summarize_consistent_ledger_postgres_executor_result(&result);
+
+    assert_eq!(
+        result.outcome,
+        ConsistentLedgerPostgresExecutorOutcome::RolledBack
+    );
+    assert!(!result.committed);
+    assert!(!result.rolled_back);
+    assert!(result.statement_results.is_empty());
+    assert_eq!(
+        result.error.as_ref().map(|error| error.code.as_str()),
+        Some("sqlx_executable_returning_schema_mismatch")
+    );
+    assert_eq!(
+        result.error.as_ref().map(|error| error.category.as_str()),
+        Some("statement_refusal")
+    );
+
+    assert_eq!(summary.operation_key_output, "omitted");
+    assert_eq!(
+        summary.outcome,
+        ConsistentLedgerPostgresExecutorOutcome::RolledBack
+    );
+    assert!(!summary.committed);
+    assert!(!summary.rolled_back);
+    assert_eq!(summary.statement_count, 0);
+    assert_eq!(summary.executed_statement_count, 0);
+    assert_eq!(summary.refused_statement_count, 0);
+    assert_eq!(summary.total_rows_affected, 0);
+    assert_eq!(
+        summary.error_code.as_deref(),
+        Some("sqlx_executable_returning_schema_mismatch")
+    );
+    assert_eq!(summary.error_category.as_deref(), Some("statement_refusal"));
+    assert_eq!(summary.error_detail_output, "omitted");
+    assert!(!summary.row_count_mismatch);
+
+    let serialized = serde_json::to_string(&summary).expect("summary should serialize");
+    assert_secret_safe_text(
+        &serialized,
+        &adapter_fixture.secret_safe_forbidden_terms,
+        "sqlx validation summary",
+    );
+    let debug = format!("{summary:?}");
+    assert_secret_safe_text(
+        &debug,
+        &adapter_fixture.secret_safe_forbidden_terms,
+        "sqlx validation summary debug",
+    );
 }
 
 #[cfg(feature = "postgres-sqlx")]

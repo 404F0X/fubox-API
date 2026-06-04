@@ -17,6 +17,8 @@ use crate::{
 pub const CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA: &str =
     "billing_ledger_postgres_execution_plan.v1";
 pub const CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA: &str = "billing_ledger_postgres_executor.v1";
+pub const CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SUMMARY_SCHEMA: &str =
+    "billing_ledger_postgres_executor_summary.v1";
 pub const CONSISTENT_LEDGER_POSTGRES_SQLX_ADAPTER_SCHEMA: &str =
     "billing_ledger_postgres_sqlx_adapter_contract.v1";
 
@@ -44,6 +46,29 @@ pub struct ConsistentLedgerPostgresExecutorResult {
     pub statement_results: Vec<ConsistentLedgerPostgresStatementResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ConsistentLedgerPostgresExecutorError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresExecutorResultSummary {
+    pub schema_version: &'static str,
+    pub executor: &'static str,
+    pub operation: LedgerOperationKind,
+    pub outcome: ConsistentLedgerPostgresExecutorOutcome,
+    pub operation_key_output: &'static str,
+    pub committed: bool,
+    pub rolled_back: bool,
+    pub statement_count: usize,
+    pub executed_statement_count: usize,
+    pub refused_statement_count: usize,
+    pub total_rows_affected: u64,
+    pub final_statement_order: Option<u16>,
+    pub final_statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+    pub error_detail_output: &'static str,
+    pub row_count_mismatch: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -486,6 +511,58 @@ where
         ConsistentLedgerPostgresExecutorOutcome::Applied
     };
     executor_result(plan, outcome, true, false, statement_results, None)
+}
+
+pub fn summarize_consistent_ledger_postgres_executor_result(
+    result: &ConsistentLedgerPostgresExecutorResult,
+) -> ConsistentLedgerPostgresExecutorResultSummary {
+    let executed_statement_count = result
+        .statement_results
+        .iter()
+        .filter(|statement| statement.outcome == ConsistentLedgerPostgresStatementOutcome::Executed)
+        .count();
+    let refused_statement_count = result
+        .statement_results
+        .iter()
+        .filter(|statement| statement.outcome == ConsistentLedgerPostgresStatementOutcome::Refused)
+        .count();
+    let total_rows_affected = result
+        .statement_results
+        .iter()
+        .map(|statement| statement.rows_affected)
+        .sum();
+    let final_statement = result.statement_results.last();
+    let error_code = result.error.as_ref().map(|error| error.code.clone());
+    let error_category = result.error.as_ref().map(|error| error.category.clone());
+    let error_detail_output = result
+        .error
+        .as_ref()
+        .map(|error| error.detail_output)
+        .unwrap_or("omitted");
+    let row_count_mismatch = result
+        .error
+        .as_ref()
+        .is_some_and(|error| error.category == "row_count_enforcement");
+
+    ConsistentLedgerPostgresExecutorResultSummary {
+        schema_version: CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SUMMARY_SCHEMA,
+        executor: result.executor,
+        operation: result.operation,
+        outcome: result.outcome,
+        operation_key_output: "omitted",
+        committed: result.committed,
+        rolled_back: result.rolled_back,
+        statement_count: result.statement_results.len(),
+        executed_statement_count,
+        refused_statement_count,
+        total_rows_affected,
+        final_statement_order: final_statement.map(|statement| statement.order),
+        final_statement_kind: final_statement.map(|statement| statement.kind),
+        error_code,
+        error_category,
+        error_detail_output,
+        row_count_mismatch,
+    }
 }
 
 pub fn plan_consistent_ledger_postgres_sqlx_adapter_contract(

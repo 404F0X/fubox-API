@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 
 use ai_gateway_billing_ledger::{
-    CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA, ConsistentBudgetDimension,
-    ConsistentBudgetSnapshot, ConsistentCreditGrantSnapshot, ConsistentLedgerPostgresExecutionPlan,
-    ConsistentLedgerPostgresExecutorError, ConsistentLedgerPostgresExecutorOutcome,
-    ConsistentLedgerPostgresStatement, ConsistentLedgerPostgresStatementKind,
-    ConsistentLedgerPostgresStatementOutcome, ConsistentLedgerPostgresStatementResult,
-    ConsistentLedgerPostgresTransactionExecutor, ConsistentLedgerScope,
-    ConsistentLedgerWriteRequest, ConsistentLedgerWriterState, ConsistentWalletSnapshot,
-    FixedDecimal, LedgerEntryRecord, LedgerEntryStatus, LedgerEntryType,
+    CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA, CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SUMMARY_SCHEMA,
+    ConsistentBudgetDimension, ConsistentBudgetSnapshot, ConsistentCreditGrantSnapshot,
+    ConsistentLedgerPostgresExecutionPlan, ConsistentLedgerPostgresExecutorError,
+    ConsistentLedgerPostgresExecutorOutcome, ConsistentLedgerPostgresStatement,
+    ConsistentLedgerPostgresStatementKind, ConsistentLedgerPostgresStatementOutcome,
+    ConsistentLedgerPostgresStatementResult, ConsistentLedgerPostgresTransactionExecutor,
+    ConsistentLedgerScope, ConsistentLedgerWriteRequest, ConsistentLedgerWriterState,
+    ConsistentWalletSnapshot, FixedDecimal, LedgerEntryRecord, LedgerEntryStatus, LedgerEntryType,
     execute_consistent_ledger_postgres_plan, plan_consistent_ledger_postgres_execution,
     plan_consistent_ledger_write, plan_consistent_ledger_write_commands,
+    summarize_consistent_ledger_postgres_executor_result,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -34,7 +35,17 @@ struct PostgresExecutorFixture {
     contract: String,
     source_fixture: String,
     secret_safe_forbidden_terms: Vec<String>,
+    result_summary_contract: ResultSummaryContractFixture,
     cases: Vec<PostgresExecutorCaseFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResultSummaryContractFixture {
+    schema_version: String,
+    operation_key_output: String,
+    error_detail_output: String,
+    row_count_mismatch_category: String,
+    public_fields: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +149,46 @@ fn postgres_executor_fixture_matches_boundary_contract() {
         executor_fixture.source_fixture,
         "consistent_writer_executor_contract.json"
     );
+    assert_eq!(
+        executor_fixture.result_summary_contract.schema_version,
+        CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SUMMARY_SCHEMA
+    );
+    assert_eq!(
+        executor_fixture
+            .result_summary_contract
+            .operation_key_output,
+        "omitted"
+    );
+    assert_eq!(
+        executor_fixture.result_summary_contract.error_detail_output,
+        "omitted"
+    );
+    assert_eq!(
+        executor_fixture
+            .result_summary_contract
+            .row_count_mismatch_category,
+        "row_count_enforcement"
+    );
+    for required_field in [
+        "committed",
+        "rolled_back",
+        "statement_count",
+        "executed_statement_count",
+        "refused_statement_count",
+        "total_rows_affected",
+        "final_statement_kind",
+        "error_code",
+        "error_category",
+    ] {
+        assert!(
+            executor_fixture
+                .result_summary_contract
+                .public_fields
+                .iter()
+                .any(|field| field == required_field),
+            "summary contract should expose {required_field}"
+        );
+    }
 
     let source_cases = source_fixture
         .cases
@@ -259,6 +310,55 @@ fn postgres_executor_fixture_matches_boundary_contract() {
             &executor_fixture.secret_safe_forbidden_terms,
             &case.name,
         );
+
+        let summary = summarize_consistent_ledger_postgres_executor_result(&result);
+        assert_eq!(
+            summary.schema_version,
+            executor_fixture.result_summary_contract.schema_version
+        );
+        assert_eq!(
+            summary.operation_key_output,
+            executor_fixture
+                .result_summary_contract
+                .operation_key_output
+        );
+        assert_eq!(
+            summary.error_detail_output,
+            executor_fixture.result_summary_contract.error_detail_output
+        );
+        assert_eq!(summary.committed, result.committed);
+        assert_eq!(summary.rolled_back, result.rolled_back);
+        assert_eq!(summary.statement_count, result.statement_results.len());
+        assert_eq!(
+            summary.executed_statement_count + summary.refused_statement_count,
+            summary.statement_count,
+            "{} summary statement counts",
+            case.name
+        );
+        assert_eq!(
+            summary.row_count_mismatch,
+            case.expected_error_category.as_deref()
+                == Some(
+                    executor_fixture
+                        .result_summary_contract
+                        .row_count_mismatch_category
+                        .as_str()
+                ),
+            "{} row count mismatch flag",
+            case.name
+        );
+        let serialized_summary = serde_json::to_string(&summary).expect("summary should serialize");
+        assert_secret_safe_text(
+            &serialized_summary,
+            &executor_fixture.secret_safe_forbidden_terms,
+            &format!("{} summary", case.name),
+        );
+        let debug_summary = format!("{summary:?}");
+        assert_secret_safe_text(
+            &debug_summary,
+            &executor_fixture.secret_safe_forbidden_terms,
+            &format!("{} summary debug", case.name),
+        );
     }
 }
 
@@ -286,6 +386,31 @@ fn postgres_executor_public_statement_results_are_normalized() {
     assert!(!serialized.contains("reserve:00000000"));
     assert!(!serialized.contains("idempotency_key"));
     assert!(!serialized.contains("raw private key"));
+
+    let summary = summarize_consistent_ledger_postgres_executor_result(&result);
+    assert_eq!(
+        summary.schema_version,
+        CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SUMMARY_SCHEMA
+    );
+    assert_eq!(summary.operation_key_output, "omitted");
+    assert!(summary.committed);
+    assert!(!summary.rolled_back);
+    assert_eq!(summary.statement_count, postgres_plan.sql_statements.len());
+    assert_eq!(summary.executed_statement_count, summary.statement_count);
+    assert_eq!(summary.refused_statement_count, 0);
+    assert_eq!(summary.error_code, None);
+    assert_eq!(summary.error_category, None);
+    assert_eq!(summary.error_detail_output, "omitted");
+    assert!(!summary.row_count_mismatch);
+
+    let serialized_summary = serde_json::to_string(&summary).expect("summary should serialize");
+    assert!(!serialized_summary.contains("reserve:00000000"));
+    assert!(!serialized_summary.contains("idempotency_key"));
+    assert!(!serialized_summary.contains("raw private key"));
+    let debug_summary = format!("{summary:?}");
+    assert!(!debug_summary.contains("reserve:00000000"));
+    assert!(!debug_summary.contains("idempotency_key"));
+    assert!(!debug_summary.contains("raw private key"));
 }
 
 #[test]
@@ -323,6 +448,58 @@ fn postgres_executor_ok_refused_rolls_back_and_sanitizes_statement_result() {
     assert!(!serialized.contains("reserve:00000000"));
     assert!(!serialized.contains("idempotency_key"));
     assert!(!serialized.contains("raw private key"));
+}
+
+#[test]
+fn postgres_executor_summary_maps_row_count_refusal_for_runtime_writer() {
+    let postgres_plan = postgres_plan_for_source_case(
+        "settle_apply_reverses_pending_reserve_and_inserts_confirmed_debit",
+    );
+    let mut executor = FakePostgresExecutor::new(
+        None,
+        Some(ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus),
+        Some(0),
+        None,
+        None,
+    );
+    let result = execute_consistent_ledger_postgres_plan(&mut executor, &postgres_plan);
+    let summary = summarize_consistent_ledger_postgres_executor_result(&result);
+
+    assert_eq!(
+        summary.schema_version,
+        CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SUMMARY_SCHEMA
+    );
+    assert_eq!(summary.operation_key_output, "omitted");
+    assert_eq!(
+        summary.outcome,
+        ConsistentLedgerPostgresExecutorOutcome::RolledBack
+    );
+    assert!(!summary.committed);
+    assert!(summary.rolled_back);
+    assert_eq!(summary.statement_count, 7);
+    assert_eq!(summary.executed_statement_count, 6);
+    assert_eq!(summary.refused_statement_count, 1);
+    assert_eq!(summary.total_rows_affected, 6);
+    assert_eq!(summary.final_statement_order, Some(7));
+    assert_eq!(
+        summary.final_statement_kind,
+        Some(ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus)
+    );
+    assert_eq!(
+        summary.error_code.as_deref(),
+        Some("ledger_update_missing_row")
+    );
+    assert_eq!(
+        summary.error_category.as_deref(),
+        Some("row_count_enforcement")
+    );
+    assert_eq!(summary.error_detail_output, "omitted");
+    assert!(summary.row_count_mismatch);
+
+    let serialized = serde_json::to_string(&summary).expect("summary should serialize");
+    assert!(!serialized.contains("settle:00000000"));
+    assert!(!serialized.contains("idempotency_key"));
+    assert!(!serialized.contains("private_operation_key"));
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

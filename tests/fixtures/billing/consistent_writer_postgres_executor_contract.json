@@ -18,6 +18,23 @@
     "settle:00000000",
     "refund_partial:00000000"
   ],
+  "result_summary_contract": {
+    "schema_version": "billing_ledger_postgres_executor_summary.v1",
+    "operation_key_output": "omitted",
+    "error_detail_output": "omitted",
+    "row_count_mismatch_category": "row_count_enforcement",
+    "public_fields": [
+      "committed",
+      "rolled_back",
+      "statement_count",
+      "executed_statement_count",
+      "refused_statement_count",
+      "total_rows_affected",
+      "final_statement_kind",
+      "error_code",
+      "error_category"
+    ]
+  },
   "cases": [
     {
       "name": "reserve_apply_executor_commits_in_statement_order",
