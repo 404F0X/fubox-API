@@ -1,9 +1,33 @@
 {
   "scenario": "control_plane_ledger_adjustment_execute_live_postgres_smoke",
-  "todo": ["E11-007-S6", "E1-004"],
+  "todo": ["E11-007-S6", "E11-007-S8", "E1-004"],
   "script": "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
   "default_tests_require_live_db": false,
   "external_blocked_exit_code": 2,
+  "gate_contract": {
+    "scripts_test_default": {
+      "mode": "contract_only",
+      "requires_live_db": false,
+      "script_arguments": ["-ContractOnly"]
+    },
+    "scripts_test_live_opt_in": {
+      "flag": "-ControlPlaneLedgerAdjustmentExecuteSmokeLive",
+      "only_flag": "-ControlPlaneLedgerAdjustmentExecuteSmokeOnly",
+      "env": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_LIVE",
+      "only_env": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_ONLY",
+      "blocked_exit_code": 2
+    },
+    "release_check_default": {
+      "mode": "contract_only",
+      "requires_live_db": false,
+      "script_arguments": ["-ContractOnly"]
+    },
+    "release_check_live_opt_in": {
+      "flag": "-RunRuntimeSmoke",
+      "env": ["RUN_RUNTIME_SMOKE", "RELEASE_RUN_RUNTIME_SMOKE"],
+      "blocked_exit_code": 2
+    }
+  },
   "endpoint": {
     "method": "POST",
     "path": "/admin/ledger/adjustments/dry-run",

@@ -1,7 +1,9 @@
 param(
   [switch]$GatewayRateLimitReservationSmokeOnly,
   [switch]$GatewayRateLimitReservationSmokePreflight,
-  [switch]$GatewayRateLimitReservationSmokeLive
+  [switch]$GatewayRateLimitReservationSmokeLive,
+  [switch]$ControlPlaneLedgerAdjustmentExecuteSmokeOnly,
+  [switch]$ControlPlaneLedgerAdjustmentExecuteSmokeLive
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +61,26 @@ function Invoke-GatewayRateLimitReservationSmoke {
     -Parameters (Get-GatewayRateLimitReservationSmokeParameters)
 }
 
+function Get-ControlPlaneLedgerAdjustmentExecuteSmokeParameters {
+  if ($ControlPlaneLedgerAdjustmentExecuteSmokeLive) {
+    return @{}
+  }
+
+  return @{ ContractOnly = $true }
+}
+
+function Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke {
+  $mode = "contract-only"
+  if ($ControlPlaneLedgerAdjustmentExecuteSmokeLive) {
+    $mode = "live"
+  }
+
+  Write-Host "Control Plane ledger adjustment execute smoke mode: $mode"
+  Invoke-CheckedScript `
+    -Path "$PSScriptRoot\verify_control_plane_ledger_adjustment_execute_smoke.ps1" `
+    -Parameters (Get-ControlPlaneLedgerAdjustmentExecuteSmokeParameters)
+}
+
 if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_ONLY) {
   $GatewayRateLimitReservationSmokeOnly = $true
 }
@@ -68,13 +90,26 @@ if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_PREFLIGHT) {
 if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_LIVE) {
   $GatewayRateLimitReservationSmokeLive = $true
 }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_ONLY) {
+  $ControlPlaneLedgerAdjustmentExecuteSmokeOnly = $true
+}
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_LIVE) {
+  $ControlPlaneLedgerAdjustmentExecuteSmokeLive = $true
+}
 
 if ($GatewayRateLimitReservationSmokePreflight -and $GatewayRateLimitReservationSmokeLive) {
   throw "Use either -GatewayRateLimitReservationSmokePreflight or -GatewayRateLimitReservationSmokeLive, not both."
 }
+if ($GatewayRateLimitReservationSmokeOnly -and $ControlPlaneLedgerAdjustmentExecuteSmokeOnly) {
+  throw "Use only one smoke-only switch at a time."
+}
 
 if ($GatewayRateLimitReservationSmokeOnly) {
   Invoke-GatewayRateLimitReservationSmoke
+  exit 0
+}
+if ($ControlPlaneLedgerAdjustmentExecuteSmokeOnly) {
+  Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke
   exit 0
 }
 
@@ -91,6 +126,7 @@ Invoke-CheckedScript -Path "$PSScriptRoot\verify_gateway_streaming_smoke.ps1" -P
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_gateway_retry_fallback_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_provider_key_runtime_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-GatewayRateLimitReservationSmoke
+Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_compose_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-CheckedScript -Path "$PSScriptRoot\test_supply_chain_scan.ps1"
 Invoke-CheckedScript -Path "$PSScriptRoot\test_supply_chain_artifacts.ps1"
