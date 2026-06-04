@@ -70,6 +70,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_READINESS=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_EXECUTION_BRIDGE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
@@ -92,6 +93,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_CURRENT=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_STALE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_EXECUTION_BRIDGE_READY=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_CURRENT=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_STALE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_SIMULATED=1`
@@ -159,6 +161,9 @@ Expected result:
   per-tool readiness evidence without executing validators/generators.
 - Child case `simulated real-tool readiness stale` returns exit `2` and writes
   stale/incomplete cache blocker evidence without executing validators/generators.
+- Child case `simulated real-tool execution bridge ready` returns exit `0`,
+  writes simulated per-tool readiness evidence, prints the materialized execution
+  bridge command/targets, and still cannot set `closure_eligible=true`.
 - Child case `simulated real-tool closure marker current` returns exit `0`
   after writing and reading a current closure marker under validated `TempRoot`
   without writing an evidence report.
@@ -234,6 +239,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealToolReadinessStale -RealToolReadiness
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolExecutionBridge
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolExecutionBridge -SimulateRealToolExecutionBridgeReady
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClosureMarkerCurrent
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClosureMarkerStale
@@ -265,20 +274,24 @@ return `1` for missing output, stale marker, and unsafe target. The command
 matrix dry-run returns `0`. The simulated cache probe returns `2`. The semantic
 evidence commands return `0`, `1`, and `2`. The simulated real execution
 evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
-returns `2`. The simulated closure marker commands return `0`, `1`, `1`, and
+returns `2`. The real-tool execution bridge returns `2` when materialized
+package cache/tool readiness is missing. The simulated bridge-ready command
+returns `0` while remaining non-closure evidence. The simulated closure marker
+commands return `0`, `1`, `1`, and
 `1`, and they do not write an evidence report. They prove wrapper failure-path
 classification, generated-client readiness gating, command matrix coverage,
 cache/tool availability evidence, package download opt-in provenance, package
 materialization boundary evidence, real-tool readiness evidence, real-tool
-closure marker readback, real-execution evidence shape, bounded evidence
+execution bridge command wiring, real-tool closure marker readback,
+real-execution evidence shape, bounded evidence
 lifecycle, path/output hardening, preflight/performance evidence shape, and
 redaction only. They do not run Redocly, OpenAPI Generator,
 `openapi-typescript`, generated-client inspection against real generated output,
 download packages in self-test, or any live Postgres checks. Do not use
 simulated passes, cache-probe blockers, simulated execution evidence, simulated
 download opt-in evidence, simulated materialization evidence, simulated
-readiness evidence, simulated closure marker checks, or the matrix dry-run to close the real
-semantic/client-generation gap.
+readiness evidence, simulated bridge evidence, simulated closure marker checks,
+or the matrix dry-run to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -529,6 +542,42 @@ Readiness dry-run command:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolReadiness
 ```
 
+Real-tool execution bridge:
+
+- `-RealToolExecutionBridge` or
+  `CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_EXECUTION_BRIDGE=1` performs a
+  materialized execution dry-run bridge. It reuses the real-tool readiness
+  readback, prints the one-command real semantic/client-generation invocation,
+  and lists generated client targets plus closure marker paths.
+- The bridge requires the same current materialization marker, tool availability,
+  and offline cache readback as `-RealToolReadiness`. Missing or stale cache/tool
+  state is a blocker; it does not run Redocly, OpenAPI Generator,
+  `openapi-typescript`, or `typescript-fetch`.
+- The bridge command is:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -ClientGeneration`.
+  That command is the later controlled-environment real execution step, not part
+  of default or bridge dry-run behavior.
+- The bridge lists generated targets under the validated `TempRoot`:
+  `openapi-typescript\admin-api.d.ts` and `typescript-fetch`, plus the
+  `.ledger-openapi-real-tool-closure-readiness.json` marker path for each
+  generated-client output.
+- Simulated bridge readiness is self-test evidence only. It must not set
+  `closure_eligible=true`, and it cannot close the real semantic/client-generation
+  gap.
+
+Bridge commands:
+
+```powershell
+# Dry-run bridge. Blocks when materialized package cache/tool readiness is absent.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolExecutionBridge
+
+# Self-test-only simulated bridge; does not execute validators/generators.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolExecutionBridge -SimulateRealToolExecutionBridgeReady
+
+# Controlled-environment real execution after materialization/readiness passes.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -ClientGeneration
+```
+
 Real-tool execution evidence:
 
 - `execution_mode=real_tool_execution` is required for real Redocly, OpenAPI
@@ -625,7 +674,9 @@ python -m pip --version
 
 Before running real validators or generators, record the command matrix. This
 dry-run does not download packages, run npm tools, generate clients, or write an
-evidence report.
+evidence report. It also prints a `[BRIDGE]` row that ties the materialized cache
+readiness command, the controlled-environment `-Semantic -ClientGeneration`
+execution command, generated client targets, and closure marker paths together.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -CommandMatrix
@@ -639,6 +690,19 @@ The matrix must include exactly these real opt-in entries:
 | OpenAPI Generator validate | `-OpenApiGeneratorValidate` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass, `1` schema failure, `2` tool/cache blocker |
 | openapi-typescript generation | `-OpenApiTypescript` | `node`, `npm` | `openapi-typescript` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness and closure markers, `1` generated-client mismatch, `2` tool/cache blocker |
 | typescript-fetch generation | `-TypescriptFetch` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness and closure markers, `1` generated-client mismatch, `2` tool/cache blocker |
+
+The bridge row must include:
+
+- `flag=-RealToolExecutionBridge`
+- `env=CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_EXECUTION_BRIDGE=1`
+- `readiness` command using `-RealToolReadiness`
+- `execute` command using `-Semantic -ClientGeneration`
+- current materialization marker path
+- repo-local npm cache path
+- generated targets for `openapi-typescript` and `typescript-fetch`
+- closure marker paths for both generated-client targets
+- closure rule requiring real command pass, current materialization marker,
+  current generated-client readiness marker, and current closure marker
 
 Each matrix row must document these evidence fields before a real opt-in run is
 accepted:
@@ -1088,6 +1152,10 @@ Record all of the following when closing the semantic/client-generation gap:
 - Real-tool readiness evidence: materialization marker status, per-tool
   `real_tool_readiness` records, cache readback status, cache readback duration,
   and any stale/incomplete blocker reason before real command execution.
+- Real-tool execution bridge evidence when used: bridge command, controlled
+  execution command, materialized cache readiness status, generated targets, and
+  closure marker target paths. Simulated bridge evidence cannot close the real
+  gap.
 - Tool preflight status, safe tool path summary, package/cache status, and
   bounded `duration_ms` for each opt-in evidence record.
 - Real execution evidence fields for each opt-in command:

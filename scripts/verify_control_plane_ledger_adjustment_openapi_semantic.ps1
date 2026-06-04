@@ -11,6 +11,7 @@ param(
   [switch]$AllowPackageDownload,
   [switch]$MaterializePackageCache,
   [switch]$RealToolReadiness,
+  [switch]$RealToolExecutionBridge,
   [switch]$CacheProbe,
   [switch]$CommandMatrix,
   [switch]$Clean,
@@ -33,6 +34,7 @@ param(
   [switch]$SimulatePackageMaterializationBoundary,
   [switch]$SimulateRealToolReadinessCurrent,
   [switch]$SimulateRealToolReadinessStale,
+  [switch]$SimulateRealToolExecutionBridgeReady,
   [switch]$SimulateClosureMarkerCurrent,
   [switch]$SimulateClosureMarkerStale,
   [switch]$SimulateClosureMarkerSimulated,
@@ -66,6 +68,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH) { $Typesc
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD) { $AllowPackageDownload = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE) { $MaterializePackageCache = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_READINESS) { $RealToolReadiness = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_EXECUTION_BRIDGE) { $RealToolExecutionBridge = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE) { $CacheProbe = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX) { $CommandMatrix = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLEAN) { $Clean = $true }
@@ -88,6 +91,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE) { $Si
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY) { $SimulatePackageMaterializationBoundary = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_CURRENT) { $SimulateRealToolReadinessCurrent = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_STALE) { $SimulateRealToolReadinessStale = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_EXECUTION_BRIDGE_READY) { $SimulateRealToolExecutionBridgeReady = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_CURRENT) { $SimulateClosureMarkerCurrent = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_STALE) { $SimulateClosureMarkerStale = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_SIMULATED) { $SimulateClosureMarkerSimulated = $true }
@@ -112,6 +116,16 @@ if ($ClientGeneration) {
 }
 
 if ($CommandMatrix -or $CacheProbe) {
+  $Redocly = $false
+  $OpenApiGeneratorValidate = $false
+  $OpenApiTypescript = $false
+  $TypescriptFetch = $false
+  $MaterializePackageCache = $false
+  $RealToolReadiness = $false
+  $RealToolExecutionBridge = $false
+}
+
+if ($RealToolExecutionBridge) {
   $Redocly = $false
   $OpenApiGeneratorValidate = $false
   $OpenApiTypescript = $false
@@ -260,6 +274,7 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-package-materialization-boundary"),
     (Join-Path $TempRoot "self-test-real-tool-readiness-current"),
     (Join-Path $TempRoot "self-test-real-tool-readiness-stale"),
+    (Join-Path $TempRoot "self-test-real-tool-execution-bridge-ready"),
     (Join-Path $TempRoot "self-test-closure-marker-current"),
     (Join-Path $TempRoot "self-test-closure-marker-stale"),
     (Join-Path $TempRoot "self-test-closure-marker-simulated"),
@@ -397,6 +412,7 @@ function Get-WrapperCommandSummary {
   if ($TypescriptFetch) { [void]$requestedChecks.Add("typescript_fetch") }
   if ($MaterializePackageCache) { [void]$requestedChecks.Add("package_cache_materialization") }
   if ($RealToolReadiness) { [void]$requestedChecks.Add("real_tool_readiness") }
+  if ($RealToolExecutionBridge) { [void]$requestedChecks.Add("real_tool_execution_bridge") }
   if ($requestedChecks.Count -eq 0) { [void]$requestedChecks.Add("lightweight_only") }
 
   $simulatedModes = New-Object System.Collections.Generic.List[string]
@@ -418,6 +434,7 @@ function Get-WrapperCommandSummary {
   if ($SimulatePackageMaterializationBoundary) { [void]$simulatedModes.Add("package_materialization_boundary") }
   if ($SimulateRealToolReadinessCurrent) { [void]$simulatedModes.Add("real_tool_readiness_current") }
   if ($SimulateRealToolReadinessStale) { [void]$simulatedModes.Add("real_tool_readiness_stale") }
+  if ($SimulateRealToolExecutionBridgeReady) { [void]$simulatedModes.Add("real_tool_execution_bridge_ready") }
   if ($SimulateClosureMarkerCurrent) { [void]$simulatedModes.Add("closure_marker_current") }
   if ($SimulateClosureMarkerStale) { [void]$simulatedModes.Add("closure_marker_stale") }
   if ($SimulateClosureMarkerSimulated) { [void]$simulatedModes.Add("closure_marker_simulated") }
@@ -436,6 +453,7 @@ function Get-WrapperCommandSummary {
     allow_package_download = [bool]$AllowPackageDownload
     materialize_package_cache = [bool]$MaterializePackageCache
     real_tool_readiness = [bool]$RealToolReadiness
+    real_tool_execution_bridge = [bool]$RealToolExecutionBridge
     cache_probe = [bool]$CacheProbe
     command_matrix = [bool]$CommandMatrix
     clean_requested = [bool]$Clean
@@ -789,6 +807,103 @@ function Write-OpenApiCommandMatrix {
         (@($entry.evidence_fields) -join "+"),
         $entry.safe_command)
   }
+  Write-RealToolExecutionBridgeMatrix
+}
+
+function Get-RealToolExecutionBridgePlan {
+  $openApiTypescriptTargetDir = Join-Path $TempRoot "openapi-typescript"
+  $openApiTypescriptTarget = Join-Path $openApiTypescriptTargetDir "admin-api.d.ts"
+  $typescriptFetchTarget = Join-Path $TempRoot "typescript-fetch"
+  return [ordered]@{
+    name = "real_tool_materialized_execution_bridge"
+    flag = "-RealToolExecutionBridge"
+    env = "CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_EXECUTION_BRIDGE=1"
+    readiness_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolReadiness"
+    execution_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -ClientGeneration"
+    required_materialization_marker = Format-BoundedPath (Get-PackageMaterializationMarkerPath)
+    package_cache_path = Format-BoundedPath $NpmCache
+    generated_client_targets = @(
+      "openapi-typescript=$(Format-BoundedPath $openApiTypescriptTarget)",
+      "typescript-fetch=$(Format-BoundedPath $typescriptFetchTarget)"
+    )
+    closure_marker_targets = @(
+      "openapi-typescript=$(Format-BoundedPath (Get-RealToolClosureReadinessMarkerPath -Path $openApiTypescriptTargetDir))",
+      "typescript-fetch=$(Format-BoundedPath (Get-RealToolClosureReadinessMarkerPath -Path $typescriptFetchTarget))"
+    )
+    closure_rule = "real command pass + current materialization marker + current generated-client readiness marker + current closure marker"
+  }
+}
+
+function Assert-RealToolExecutionBridgePlanContract {
+  param([Parameter(Mandatory = $true)][object]$Plan)
+
+  foreach ($field in @("name", "flag", "env", "readiness_command", "execution_command", "required_materialization_marker", "package_cache_path", "generated_client_targets", "closure_marker_targets", "closure_rule")) {
+    if ($null -eq $Plan[$field]) {
+      Add-Failure "[FAIL] real-tool execution bridge contract - missing field '$field'"
+    }
+  }
+  if ([string]$Plan.flag -ne "-RealToolExecutionBridge") {
+    Add-Failure "[FAIL] real-tool execution bridge contract - unexpected bridge flag"
+  }
+  if (-not ([string]$Plan.env).StartsWith("CONTROL_PLANE_LEDGER_OPENAPI_")) {
+    Add-Failure "[FAIL] real-tool execution bridge contract - env opt-in is not scoped"
+  }
+  foreach ($command in @([string]$Plan.readiness_command, [string]$Plan.execution_command)) {
+    $safe = Redact-SafeText $command
+    if ($safe -ne $command) {
+      Add-Failure "[FAIL] real-tool execution bridge contract - command needed redaction"
+    }
+    if ($command -match "(?i)Authorization|Cookie|Bearer|secret|credential|api[_-]?key|operation[_-]?key|raw[_-]?metadata|payload|body") {
+      Add-Failure "[FAIL] real-tool execution bridge contract - command contains forbidden material"
+    }
+  }
+  foreach ($target in @($Plan.generated_client_targets + $Plan.closure_marker_targets)) {
+    $safe = Redact-SafeText ([string]$target)
+    if ($safe -ne [string]$target) {
+      Add-Failure "[FAIL] real-tool execution bridge contract - target needed redaction"
+    }
+  }
+}
+
+function Write-RealToolExecutionBridgeMatrix {
+  $plan = Get-RealToolExecutionBridgePlan
+  Assert-RealToolExecutionBridgePlanContract -Plan $plan
+  if ($script:Failures.Count -gt 0) {
+    return
+  }
+
+  Write-SafeHost (
+    "[BRIDGE] {0} flag={1} env={2} readiness='{3}' execute='{4}' materialization_marker='{5}' npm_cache='{6}' generated_targets='{7}' closure_markers='{8}' closure_rule='{9}'" -f `
+      $plan.name,
+      $plan.flag,
+      $plan.env,
+      $plan.readiness_command,
+      $plan.execution_command,
+      $plan.required_materialization_marker,
+      $plan.package_cache_path,
+      (@($plan.generated_client_targets) -join ";"),
+      (@($plan.closure_marker_targets) -join ";"),
+      $plan.closure_rule
+  )
+}
+
+function Invoke-RealToolExecutionBridge {
+  param([switch]$SimulatedReady)
+
+  $ready = if ($SimulatedReady) {
+    Add-RealToolReadinessEvidence -SimulatedCurrent
+  } else {
+    Add-RealToolReadinessEvidence
+  }
+
+  if (-not $ready) {
+    Add-Blocker "[BLOCKED] real-tool execution bridge - materialized package cache or tool readiness failed before real semantic/client-generation execution"
+    return
+  }
+
+  Write-SafeHost "Control Plane ledger adjustment OpenAPI real-tool execution bridge"
+  Write-RealToolExecutionBridgeMatrix
+  Write-SafeHost "[OK] bridge dry-run only; run the execute command in a controlled environment to generate real closure evidence."
 }
 
 function Invoke-LightweightToolVersionProbe {
@@ -1225,7 +1340,7 @@ function Assert-EvidenceReportContract {
     Add-Failure "[FAIL] evidence report contract - missing command_summary"
   } else {
     foreach ($field in @($report.command_summary.PSObject.Properties.Name)) {
-      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "materialize_package_cache", "real_tool_readiness", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
+      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "materialize_package_cache", "real_tool_readiness", "real_tool_execution_bridge", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected command_summary field '$field'"
       }
     }
@@ -3201,6 +3316,13 @@ function Invoke-SelfTest {
     -ExpectedEvidenceClassifications @("blocker") `
     -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild `
+    -Name "simulated real-tool execution bridge ready" `
+    -Arguments @("-RealToolExecutionBridge", "-SimulateRealToolExecutionBridgeReady") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-real-tool-execution-bridge-ready") `
+    -ExpectedExitCode 0 `
+    -ExpectedEvidenceClassifications @("pass") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
     -Name "simulated real-tool closure marker current" `
     -Arguments @("-SimulateClosureMarkerCurrent") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-closure-marker-current") `
@@ -3462,6 +3584,10 @@ if ($SimulateRealToolReadinessStale) {
   [void](Add-RealToolReadinessEvidence -SimulatedStale)
   Exit-WithResult
 }
+if ($SimulateRealToolExecutionBridgeReady) {
+  Invoke-RealToolExecutionBridge -SimulatedReady
+  Exit-WithResult
+}
 if ($SimulateClosureMarkerCurrent) {
   Invoke-SimulatedClosureMarkerCase -Case "current"
 }
@@ -3506,6 +3632,11 @@ if ($MaterializePackageCache) {
 
 if ($RealToolReadiness) {
   [void](Add-RealToolReadinessEvidence)
+  Exit-WithResult
+}
+
+if ($RealToolExecutionBridge) {
+  Invoke-RealToolExecutionBridge
   Exit-WithResult
 }
 
