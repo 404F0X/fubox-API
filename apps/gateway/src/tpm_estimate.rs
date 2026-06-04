@@ -431,6 +431,182 @@ mod tests {
     }
 
     #[test]
+    fn tpm_estimate_mapper_fixture_defines_smoke_handoff_contract() {
+        let fixture = fixture();
+        let guard = &fixture["runtime_source_guard"];
+        let guarded_endpoints = guard["endpoints"]
+            .as_array()
+            .expect("runtime source guard endpoints should be an array");
+        let handoff = &fixture["trusted_signal_smoke_handoff_contract"];
+
+        assert_eq!(
+            handoff["schema"].as_str(),
+            Some("gateway_tpm_trusted_signal_smoke_handoff_v1")
+        );
+        assert_eq!(
+            handoff["current_default_status"].as_str(),
+            Some("fallback_missing_tokenizer")
+        );
+        assert_eq!(
+            handoff["evidence_material"].as_str(),
+            Some("numeric/status/source fields only")
+        );
+
+        let common_required = handoff["common_required_evidence_fields"]
+            .as_array()
+            .expect("common required evidence fields should be an array");
+        let common_forbidden = handoff["common_forbidden_evidence_fields"]
+            .as_array()
+            .expect("common forbidden evidence fields should be an array");
+        let common_closure = handoff["common_live_smoke_closure_conditions"]
+            .as_array()
+            .expect("common live smoke closure conditions should be an array");
+        let endpoint_handoffs = handoff["endpoints"]
+            .as_array()
+            .expect("handoff endpoints should be an array");
+
+        assert_eq!(endpoint_handoffs.len(), guarded_endpoints.len());
+        for required in [
+            "endpoint",
+            "handoff_status",
+            "tpm_estimate.source",
+            "tpm_estimate.required_tokens_i64",
+            "required_capacity.tokens_per_minute",
+            "acquire.dimensions.tpm.required",
+            "db_required_capacity.tokens_per_minute",
+            "trusted_signal.status",
+            "trusted_signal.source_type",
+            "trusted_signal.tokens",
+            "trusted_signal.material_in_output",
+        ] {
+            assert!(
+                common_required
+                    .iter()
+                    .any(|field| field.as_str() == Some(required)),
+                "handoff common evidence should require {required}"
+            );
+        }
+        for forbidden in [
+            "raw_prompt",
+            "raw_input",
+            "request_body",
+            "raw_headers",
+            "authorization",
+            "provider_key",
+            "api_key",
+            "current_window_state",
+        ] {
+            assert!(
+                common_forbidden
+                    .iter()
+                    .any(|field| field.as_str() == Some(forbidden)),
+                "handoff common evidence should forbid {forbidden}"
+            );
+        }
+        for condition in [
+            "trusted_signal.status is wired",
+            "trusted_signal.tokens is a bounded non-negative integer",
+            "trusted_signal.source_type is tokenizer or read_model",
+            "trusted_signal.material_in_output is false",
+            "required_capacity.tokens_per_minute equals tpm_estimate.required_tokens_i64",
+            "db_required_capacity.tokens_per_minute equals required_capacity.tokens_per_minute",
+        ] {
+            assert!(
+                common_closure
+                    .iter()
+                    .any(|field| field.as_str() == Some(condition)),
+                "handoff common closure should require {condition}"
+            );
+        }
+
+        for endpoint in guarded_endpoints
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            let entry = endpoint_handoffs
+                .iter()
+                .find(|entry| entry["endpoint"].as_str() == Some(endpoint))
+                .unwrap_or_else(|| panic!("missing smoke handoff endpoint: {endpoint}"));
+            let allowed_source_types = entry["allowed_source_types"]
+                .as_array()
+                .expect("allowed source types should be an array");
+            let required_fields = entry["required_evidence_fields"]
+                .as_array()
+                .expect("required evidence fields should be an array");
+            let forbidden_fields = entry["forbidden_evidence_fields"]
+                .as_array()
+                .expect("forbidden evidence fields should be an array");
+            let closure_conditions = entry["live_smoke_closure_conditions"]
+                .as_array()
+                .expect("closure conditions should be an array");
+
+            assert_eq!(
+                entry["handoff_status"].as_str(),
+                Some("fallback_missing_tokenizer")
+            );
+            assert_eq!(
+                entry["current_missing_tokenizer_status"].as_bool(),
+                Some(true)
+            );
+            assert!(
+                allowed_source_types
+                    .iter()
+                    .any(|source| source.as_str() == Some("tokenizer"))
+            );
+            assert!(
+                allowed_source_types
+                    .iter()
+                    .any(|source| source.as_str() == Some("read_model"))
+            );
+            assert!(!required_fields.is_empty());
+            assert!(!forbidden_fields.is_empty());
+            assert!(!closure_conditions.is_empty());
+            assert!(
+                required_fields.iter().any(|field| field
+                    .as_str()
+                    .is_some_and(|field| field.starts_with("trusted_signal."))),
+                "{endpoint} handoff must include trusted signal evidence"
+            );
+            assert!(
+                closure_conditions.iter().any(|condition| {
+                    condition
+                        .as_str()
+                        .is_some_and(|condition| condition.contains("before reservation acquire"))
+                }),
+                "{endpoint} handoff must close only when evidence is available before reservation acquire"
+            );
+            assert!(
+                forbidden_fields.iter().any(|field| {
+                    field.as_str().is_some_and(|field| {
+                        field.starts_with("raw_")
+                            || field.ends_with("_text")
+                            || field == "raw_headers"
+                    })
+                }),
+                "{endpoint} handoff must forbid raw material evidence"
+            );
+        }
+
+        let handoff_text = serde_json::to_string(handoff)
+            .expect("smoke handoff contract should serialize")
+            .to_ascii_lowercase();
+        for forbidden in [
+            "sk-live",
+            "bearer ",
+            "provider-secret",
+            "encrypted_secret_value",
+            "raw prompt text",
+            "raw input text",
+            "https://provider.example.test",
+        ] {
+            assert!(
+                !handoff_text.contains(forbidden),
+                "smoke handoff contract leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn tpm_estimate_mapper_maps_endpoint_max_output_signals() {
         let cases = [
             (

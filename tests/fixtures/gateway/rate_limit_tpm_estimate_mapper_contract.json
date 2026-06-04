@@ -159,6 +159,135 @@
       "provider_side_effect_required": false
     }
   ],
+  "trusted_signal_smoke_handoff_contract": {
+    "schema": "gateway_tpm_trusted_signal_smoke_handoff_v1",
+    "current_default_status": "fallback_missing_tokenizer",
+    "evidence_material": "numeric/status/source fields only",
+    "common_required_evidence_fields": [
+      "endpoint",
+      "handoff_status",
+      "tpm_estimate.schema",
+      "tpm_estimate.endpoint",
+      "tpm_estimate.source",
+      "tpm_estimate.required_tokens_i64",
+      "tpm_estimate.used_conservative_fallback",
+      "required_capacity.tokens_per_minute",
+      "acquire.dimensions.tpm.required",
+      "db_required_capacity.tokens_per_minute",
+      "trusted_signal.status",
+      "trusted_signal.source_type",
+      "trusted_signal.tokens",
+      "trusted_signal.material_in_output"
+    ],
+    "common_forbidden_evidence_fields": [
+      "raw_prompt",
+      "raw_input",
+      "request_body",
+      "response_body",
+      "raw_headers",
+      "authorization",
+      "provider_key",
+      "api_key",
+      "current_window_state",
+      "provider_endpoint"
+    ],
+    "common_live_smoke_closure_conditions": [
+      "trusted_signal.status is wired",
+      "trusted_signal.tokens is a bounded non-negative integer",
+      "trusted_signal.source_type is tokenizer or read_model",
+      "trusted_signal.material_in_output is false",
+      "tpm_estimate.used_conservative_fallback is false when the trusted signal is present",
+      "required_capacity.tokens_per_minute equals tpm_estimate.required_tokens_i64",
+      "db_required_capacity.tokens_per_minute equals required_capacity.tokens_per_minute"
+    ],
+    "endpoints": [
+      {
+        "endpoint": "openai_chat",
+        "handoff_status": "fallback_missing_tokenizer",
+        "current_missing_tokenizer_status": true,
+        "future_trusted_signal_kind": "prompt_tokens",
+        "allowed_source_types": ["tokenizer", "read_model"],
+        "required_evidence_fields": [
+          "trusted_signal.prompt_tokens",
+          "tpm_estimate.prompt_tokens",
+          "tpm_estimate.max_completion_tokens"
+        ],
+        "forbidden_evidence_fields": ["message_text", "raw_prompt", "raw_headers"],
+        "live_smoke_closure_conditions": [
+          "trusted prompt token evidence appears before reservation acquire",
+          "acquire TPM required includes trusted prompt tokens plus max output reservation"
+        ]
+      },
+      {
+        "endpoint": "openai_responses",
+        "handoff_status": "fallback_missing_tokenizer",
+        "current_missing_tokenizer_status": true,
+        "future_trusted_signal_kind": "prompt_tokens",
+        "allowed_source_types": ["tokenizer", "read_model"],
+        "required_evidence_fields": [
+          "trusted_signal.prompt_tokens",
+          "tpm_estimate.prompt_tokens",
+          "tpm_estimate.max_completion_tokens"
+        ],
+        "forbidden_evidence_fields": ["response_input_text", "raw_prompt", "raw_headers"],
+        "live_smoke_closure_conditions": [
+          "trusted prompt token evidence appears before reservation acquire",
+          "acquire TPM required includes trusted prompt tokens plus max output reservation"
+        ]
+      },
+      {
+        "endpoint": "openai_embeddings",
+        "handoff_status": "fallback_missing_tokenizer",
+        "current_missing_tokenizer_status": true,
+        "future_trusted_signal_kind": "input_tokens",
+        "allowed_source_types": ["tokenizer", "read_model"],
+        "required_evidence_fields": [
+          "trusted_signal.input_tokens",
+          "tpm_estimate.required_tokens_i64",
+          "required_capacity.tokens_per_minute"
+        ],
+        "forbidden_evidence_fields": ["embedding_text", "raw_input", "raw_headers"],
+        "live_smoke_closure_conditions": [
+          "trusted input token evidence appears before reservation acquire",
+          "acquire TPM required equals trusted input token evidence"
+        ]
+      },
+      {
+        "endpoint": "anthropic_messages",
+        "handoff_status": "fallback_missing_tokenizer",
+        "current_missing_tokenizer_status": true,
+        "future_trusted_signal_kind": "prompt_tokens",
+        "allowed_source_types": ["tokenizer", "read_model"],
+        "required_evidence_fields": [
+          "trusted_signal.prompt_tokens",
+          "tpm_estimate.prompt_tokens",
+          "tpm_estimate.max_completion_tokens"
+        ],
+        "forbidden_evidence_fields": ["message_text", "raw_prompt", "raw_headers"],
+        "live_smoke_closure_conditions": [
+          "trusted prompt token evidence appears before reservation acquire",
+          "acquire TPM required includes trusted prompt tokens plus max output reservation"
+        ]
+      },
+      {
+        "endpoint": "gemini_native",
+        "handoff_status": "fallback_missing_tokenizer",
+        "current_missing_tokenizer_status": true,
+        "future_trusted_signal_kind": "prompt_tokens",
+        "allowed_source_types": ["tokenizer", "read_model"],
+        "required_evidence_fields": [
+          "trusted_signal.prompt_tokens",
+          "tpm_estimate.prompt_tokens",
+          "tpm_estimate.max_completion_tokens"
+        ],
+        "forbidden_evidence_fields": ["gemini_part_text", "raw_prompt", "raw_headers"],
+        "live_smoke_closure_conditions": [
+          "trusted prompt token evidence appears before reservation acquire",
+          "acquire TPM required includes trusted prompt tokens plus max output reservation"
+        ]
+      }
+    ]
+  },
   "endpoint_mappings": [
     {
       "endpoint": "openai_chat",
