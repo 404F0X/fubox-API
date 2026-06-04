@@ -90,6 +90,8 @@ const CONTROL_PLANE_BILLING_LEDGER_WRITER_ADAPTER_BOUNDARY_SCHEMA: &str =
     "control_plane_billing_ledger_writer_adapter_boundary.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA: &str =
     "control_plane_billing_ledger_writer_shadow_invocation.v1";
+const CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA: &str =
+    "control_plane_billing_ledger_writer_cutover_preflight.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -2554,6 +2556,12 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
             "refused_preflight",
             false,
         );
+    let billing_ledger_writer_cutover_preflight =
+        ledger_adjustment_billing_ledger_writer_cutover_preflight(
+            &plan,
+            "disabled",
+            Some("adapter_unavailable"),
+        );
     json!({
         "error": {
             "code": "future_writer_required",
@@ -2565,6 +2573,7 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
             "execute_contract": ledger_adjustment_execute_contract(),
             "billing_ledger_writer_adapter_boundary": billing_ledger_writer_adapter_boundary,
             "billing_ledger_writer_shadow_invocation": billing_ledger_writer_shadow_invocation,
+            "billing_ledger_writer_cutover_preflight": billing_ledger_writer_cutover_preflight,
             "ledger_executor_summary": ledger_adjustment_executor_refusal_summary(
                 operation.as_str(),
                 "refused_preflight",
@@ -2606,6 +2615,7 @@ fn ledger_adjustment_execute_contract() -> Value {
         "billing_ledger_runtime_writer_mapping_contract": ledger_adjustment_billing_runtime_writer_mapping_contract(),
         "billing_ledger_writer_adapter_boundary_contract": ledger_adjustment_billing_ledger_writer_adapter_boundary_contract(),
         "billing_ledger_writer_shadow_invocation_contract": ledger_adjustment_billing_ledger_writer_shadow_invocation_contract(),
+        "billing_ledger_writer_cutover_preflight_contract": ledger_adjustment_billing_ledger_writer_cutover_preflight_contract(),
         "preflight_refusal_summary": ledger_adjustment_executor_refusal_summary(
             "execute_contract",
             "refused_preflight",
@@ -3331,6 +3341,12 @@ fn ledger_adjustment_execute_success_response(
             "applied",
             false,
         );
+    let billing_ledger_writer_cutover_preflight =
+        ledger_adjustment_billing_ledger_writer_cutover_preflight(
+            &validated_plan,
+            "disabled",
+            None,
+        );
     json!({
         "mode": "execute",
         "outcome": "applied",
@@ -3348,6 +3364,7 @@ fn ledger_adjustment_execute_success_response(
         "billing_ledger_runtime_writer_mapping_contract": ledger_adjustment_billing_runtime_writer_mapping_contract(),
         "billing_ledger_writer_adapter_boundary": billing_ledger_writer_adapter_boundary,
         "billing_ledger_writer_shadow_invocation": billing_ledger_writer_shadow_invocation,
+        "billing_ledger_writer_cutover_preflight": billing_ledger_writer_cutover_preflight,
         "transaction_contract": ledger_adjustment_execute_transaction_contract(true),
         "ledger_entry": ledger_adjustment_executed_entry_response(entry),
         "ledger_executor_summary": ledger_adjustment_executor_summary_for_entry_type(
@@ -3376,6 +3393,12 @@ fn ledger_adjustment_execute_idempotent_response(
             "idempotent",
             false,
         );
+    let billing_ledger_writer_cutover_preflight =
+        ledger_adjustment_billing_ledger_writer_cutover_preflight(
+            &validated_plan,
+            "disabled",
+            None,
+        );
     json!({
         "mode": "execute",
         "outcome": "idempotent",
@@ -3392,6 +3415,7 @@ fn ledger_adjustment_execute_idempotent_response(
         "billing_ledger_runtime_writer_mapping_contract": ledger_adjustment_billing_runtime_writer_mapping_contract(),
         "billing_ledger_writer_adapter_boundary": billing_ledger_writer_adapter_boundary,
         "billing_ledger_writer_shadow_invocation": billing_ledger_writer_shadow_invocation,
+        "billing_ledger_writer_cutover_preflight": billing_ledger_writer_cutover_preflight,
         "transaction_contract": ledger_adjustment_execute_transaction_contract(false),
         "ledger_entry": ledger_adjustment_executed_entry_response(entry),
         "ledger_executor_summary": ledger_adjustment_executor_summary_for_entry_type(
@@ -4096,6 +4120,204 @@ fn ledger_adjustment_billing_ledger_writer_shadow_invocation(
             "operation_key_output": "omitted",
             "error_detail_output": "omitted"
         },
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_writer_cutover_preflight_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA,
+        "source": "control_plane_execute_validated_plan",
+        "target": "billing_ledger_runtime_writer_cutover",
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "configuration_summary": {
+            "feature_flag": "billing_ledger_writer_cutover",
+            "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+            "allowed_values": ["disabled", "shadow", "ready"],
+            "env_value_output": "omitted",
+            "raw_env_value_echoed": false,
+            "secret_value_echoed": false
+        },
+        "supported_states": [
+            {
+                "state": "disabled",
+                "source_of_truth": "control_plane_local_sql_writer",
+                "billing_ledger_writer_commit_allowed": false,
+                "shadow_invocation_allowed": false,
+                "cutover_allowed": false
+            },
+            {
+                "state": "shadow",
+                "source_of_truth": "control_plane_local_sql_writer",
+                "billing_ledger_writer_commit_allowed": false,
+                "shadow_invocation_allowed": true,
+                "cutover_allowed": false
+            },
+            {
+                "state": "ready",
+                "source_of_truth": "billing_ledger_writer_after_explicit_cutover",
+                "billing_ledger_writer_commit_allowed": true,
+                "shadow_invocation_allowed": true,
+                "cutover_allowed": true
+            }
+        ],
+        "no_double_write_contract": {
+            "dual_commit_allowed": false,
+            "local_and_billing_ledger_commit_same_request_allowed": false,
+            "cutover_requires_single_active_writer": true,
+            "rollback_to_local_before_billing_commit_allowed": true,
+            "fallback_after_billing_commit_allowed": false
+        },
+        "refusal_mapping_contract": [
+            ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+                "adapter_unavailable"
+            ),
+            ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+                "sqlx_validation_refusal"
+            ),
+            ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+                "row_count_mismatch"
+            )
+        ],
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_writer_cutover_preflight(
+    validated_plan: &Value,
+    cutover_state: &'static str,
+    failure_kind: Option<&'static str>,
+) -> Value {
+    let state = match cutover_state {
+        "shadow" | "ready" => cutover_state,
+        _ => "disabled",
+    };
+    let preflight_failed = failure_kind.is_some();
+    let source_of_truth = match (state, preflight_failed) {
+        ("ready", false) => "billing_ledger_writer_after_explicit_cutover",
+        _ => "control_plane_local_sql_writer",
+    };
+    let billing_ledger_writer_commit_allowed_after_cutover = state == "ready" && !preflight_failed;
+    let shadow_invocation_enabled = state == "shadow" || state == "ready";
+    let target_operation = ledger_adjustment_billing_runtime_operation_mapping(validated_plan);
+    let writer_request = target_operation
+        .get("writer_request")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "variant": "unmapped",
+                "operation_key": "bind_only",
+                "public_operation_key_output": "omitted"
+            })
+        });
+    let refusal_mapping = failure_kind
+        .map(|failure_kind| {
+            ledger_adjustment_billing_ledger_writer_adapter_refusal_boundary(
+                validated_plan,
+                failure_kind,
+            )
+        })
+        .unwrap_or(Value::Null);
+    let local_writer_remains_source_of_truth = state != "ready" || preflight_failed;
+
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA,
+        "source": "control_plane_execute_validated_plan",
+        "target": "billing_ledger_runtime_writer_cutover",
+        "state": state,
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "configuration_summary": {
+            "feature_flag": "billing_ledger_writer_cutover",
+            "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+            "allowed_values": ["disabled", "shadow", "ready"],
+            "effective_value": state,
+            "env_value_output": "omitted",
+            "raw_env_value_echoed": false,
+            "secret_value_echoed": false
+        },
+        "adapter_input": {
+            "source_operation": ledger_adjustment_validated_plan_operation(validated_plan),
+            "source_entry_type": ledger_adjustment_validated_plan_entry_type(validated_plan),
+            "billing_ledger_operation": target_operation
+                .get("billing_ledger_operation")
+                .cloned()
+                .unwrap_or_else(|| json!("unmapped")),
+            "writer_request": writer_request,
+            "operation_key": {
+                "runtime_bind_marker": "operation_key_bind",
+                "public_output": "omitted",
+                "raw_operation_key_echoed": false
+            },
+            "metadata": {
+                "metadata_policy": "bounded_admin_adjustment_metadata_only",
+                "raw_metadata_echoed": false,
+                "credential_material_echoed": false
+            },
+            "dedupe_material_echoed": false
+        },
+        "source_of_truth": source_of_truth,
+        "current_execution_source_of_truth": "control_plane_local_sql_writer",
+        "cutover": {
+            "disabled": state == "disabled",
+            "shadow": state == "shadow",
+            "ready": state == "ready",
+            "shadow_invocation_enabled": shadow_invocation_enabled,
+            "cutover_allowed": state == "ready" && failure_kind.is_none(),
+            "billing_ledger_writer_commit_allowed_after_cutover": billing_ledger_writer_commit_allowed_after_cutover && failure_kind.is_none(),
+            "billing_ledger_writer_commit_allowed_in_this_contract": false,
+            "local_writer_remains_source_of_truth": local_writer_remains_source_of_truth
+        },
+        "no_double_write": {
+            "dual_commit_allowed": false,
+            "local_and_billing_ledger_commit_same_request_allowed": false,
+            "active_writer_before_explicit_cutover": "control_plane_local_sql_writer",
+            "active_writer_after_ready_cutover": if state == "ready" && failure_kind.is_none() {
+                "billing_ledger_runtime_writer"
+            } else {
+                "control_plane_local_sql_writer"
+            },
+            "local_sql_writer_commit_allowed_before_cutover": true,
+            "local_sql_writer_commit_allowed_after_ready_cutover": !(state == "ready" && failure_kind.is_none()),
+            "billing_ledger_writer_commit_allowed_after_ready_cutover": state == "ready" && failure_kind.is_none(),
+            "rollback_to_local_before_billing_commit_allowed": true,
+            "fallback_after_billing_commit_allowed": false
+        },
+        "preflight_checks": {
+            "adapter_contract_present": true,
+            "writer_request_mapping_present": true,
+            "shadow_parity_required_before_ready": state == "shadow" || state == "ready",
+            "response_summary_shape_preserved": true,
+            "audit_summary_shape_preserved": true,
+            "failure_refusal_mapping_present": true,
+            "raw_env_value_echoed": false,
+            "live_db_required_for_this_contract": false
+        },
+        "rollback_to_local_writer": {
+            "on_adapter_unavailable": "refused_preflight",
+            "on_sqlx_validation_refusal": "refused_preflight",
+            "on_row_count_mismatch": "refused_rollback",
+            "summary_shape": BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted",
+            "raw_executor_error_detail_echoed": false
+        },
+        "refusal_mapping": refusal_mapping,
         "safe_output_contract": {
             "operation_key_output": "omitted",
             "operation_key_bind_only": true,
@@ -11154,6 +11376,36 @@ mod tests {
             "execute_contract refusal must not include local success audit summary"
         );
         assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["state"],
+            json!("disabled")
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["source_of_truth"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["configuration_summary"]["env_value_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["no_double_write"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["refusal_mapping"]["adapter_failure"]
+                ["failure_kind"],
+            json!("adapter_unavailable")
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_cutover_preflight"]["refusal_mapping"]["adapter_output"]
+                ["response_executor_summary"],
+            body["data"]["ledger_executor_summary"]
+        );
+        assert_eq!(
             body["data"]["validated_plan"]["refund_remaining_summary"]["remaining_refundable_amount"],
             json!("0.15000000")
         );
@@ -12220,6 +12472,376 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_billing_runtime_cutover_preflight_contract_maps_states_and_refusals_secret_safe()
+     {
+        let request_id = Uuid::from_u128(90);
+        let related_entry =
+            ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let refund_summary = validate_refund_remaining_amount(
+            "0.15000000",
+            &related_entry.amount,
+            "0.10000000",
+            1,
+            "USD",
+        )
+        .expect("refund should fit remaining amount");
+        let adjust_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "-0.10000000",
+            "USD",
+            Some(Uuid::from_u128(20)),
+            Some(Uuid::from_u128(40)),
+            Some(request_id),
+            None,
+            None,
+            false,
+        );
+        let refund_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Refund,
+            "0.15000000",
+            "USD",
+            related_entry.project_id,
+            related_entry.wallet_id,
+            related_entry.request_id,
+            Some(&related_entry),
+            Some(&refund_summary),
+            true,
+        );
+
+        let contract = ledger_adjustment_billing_ledger_writer_cutover_preflight_contract();
+        assert_eq!(
+            contract["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(contract["db_io_performed"], json!(false));
+        assert_eq!(contract["production_writer_replaced"], json!(false));
+        assert_eq!(
+            contract["configuration_summary"]["env_var"],
+            json!("AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE")
+        );
+        assert_eq!(
+            contract["configuration_summary"]["env_value_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            contract["configuration_summary"]["raw_env_value_echoed"],
+            json!(false)
+        );
+        assert_eq!(contract["supported_states"][0]["state"], json!("disabled"));
+        assert_eq!(contract["supported_states"][1]["state"], json!("shadow"));
+        assert_eq!(contract["supported_states"][2]["state"], json!("ready"));
+        assert_eq!(
+            contract["no_double_write_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["no_double_write_contract"]["local_and_billing_ledger_commit_same_request_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["refusal_mapping_contract"][0]["failure_kind"],
+            json!("adapter_unavailable")
+        );
+        assert_eq!(
+            contract["refusal_mapping_contract"][1]["failure_kind"],
+            json!("sqlx_validation_refusal")
+        );
+        assert_eq!(
+            contract["refusal_mapping_contract"][2]["maps_to_summary_outcome"],
+            json!("refused_rollback")
+        );
+
+        for (plan_label, plan, expected_variant) in [
+            (
+                "adjust",
+                &adjust_plan,
+                "ConsistentLedgerWriteRequest::AdminAdjustment",
+            ),
+            (
+                "refund",
+                &refund_plan,
+                "ConsistentLedgerWriteRequest::RefundPartial",
+            ),
+        ] {
+            for (
+                state,
+                expected_source_of_truth,
+                expected_shadow_enabled,
+                expected_cutover_allowed,
+                expected_local_after_cutover,
+                expected_billing_after_cutover,
+            ) in [
+                (
+                    "disabled",
+                    "control_plane_local_sql_writer",
+                    false,
+                    false,
+                    true,
+                    false,
+                ),
+                (
+                    "shadow",
+                    "control_plane_local_sql_writer",
+                    true,
+                    false,
+                    true,
+                    false,
+                ),
+                (
+                    "ready",
+                    "billing_ledger_writer_after_explicit_cutover",
+                    true,
+                    true,
+                    false,
+                    true,
+                ),
+            ] {
+                let preflight =
+                    ledger_adjustment_billing_ledger_writer_cutover_preflight(plan, state, None);
+                let serialized =
+                    serde_json::to_string(&preflight).expect("preflight should serialize");
+
+                assert_eq!(
+                    preflight["schema_version"],
+                    json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA),
+                    "{plan_label} {state} schema"
+                );
+                assert_eq!(
+                    preflight["state"],
+                    json!(state),
+                    "{plan_label} {state} state"
+                );
+                assert_eq!(
+                    preflight["source_of_truth"],
+                    json!(expected_source_of_truth),
+                    "{plan_label} {state} source of truth"
+                );
+                assert_eq!(
+                    preflight["current_execution_source_of_truth"],
+                    json!("control_plane_local_sql_writer"),
+                    "{plan_label} {state} current execution source"
+                );
+                assert_eq!(
+                    preflight["configuration_summary"]["env_value_output"],
+                    json!("omitted"),
+                    "{plan_label} {state} env output"
+                );
+                assert_eq!(
+                    preflight["configuration_summary"]["raw_env_value_echoed"],
+                    json!(false),
+                    "{plan_label} {state} raw env"
+                );
+                assert_eq!(
+                    preflight["adapter_input"]["writer_request"]["variant"],
+                    json!(expected_variant),
+                    "{plan_label} {state} writer request"
+                );
+                assert_eq!(
+                    preflight["adapter_input"]["writer_request"]["operation_key"],
+                    json!("bind_only"),
+                    "{plan_label} {state} operation key"
+                );
+                assert_eq!(
+                    preflight["cutover"]["shadow_invocation_enabled"],
+                    json!(expected_shadow_enabled),
+                    "{plan_label} {state} shadow"
+                );
+                assert_eq!(
+                    preflight["cutover"]["cutover_allowed"],
+                    json!(expected_cutover_allowed),
+                    "{plan_label} {state} cutover"
+                );
+                assert_eq!(
+                    preflight["cutover"]["billing_ledger_writer_commit_allowed_in_this_contract"],
+                    json!(false),
+                    "{plan_label} {state} db-free commit"
+                );
+                assert_eq!(
+                    preflight["no_double_write"]["dual_commit_allowed"],
+                    json!(false),
+                    "{plan_label} {state} dual commit"
+                );
+                assert_eq!(
+                    preflight["no_double_write"]["local_sql_writer_commit_allowed_after_ready_cutover"],
+                    json!(expected_local_after_cutover),
+                    "{plan_label} {state} local after cutover"
+                );
+                assert_eq!(
+                    preflight["no_double_write"]["billing_ledger_writer_commit_allowed_after_ready_cutover"],
+                    json!(expected_billing_after_cutover),
+                    "{plan_label} {state} billing after cutover"
+                );
+                assert_eq!(
+                    preflight["preflight_checks"]["live_db_required_for_this_contract"],
+                    json!(false),
+                    "{plan_label} {state} live db"
+                );
+                assert!(
+                    preflight["refusal_mapping"].is_null(),
+                    "{plan_label} {state} should not include refusal mapping without failure"
+                );
+
+                for forbidden in [
+                    "ledger-idempotency-never-return",
+                    "idempotency_key",
+                    "dedupe_key",
+                    "raw ledger payload",
+                    "Authorization",
+                    "Bearer",
+                    "sk-live",
+                    "raw executor failure detail",
+                    "raw env value",
+                    "raw credential value",
+                    "raw metadata value",
+                ] {
+                    assert!(
+                        !serialized.contains(forbidden),
+                        "{plan_label} {state} cutover preflight must not contain {forbidden}"
+                    );
+                }
+            }
+
+            for (
+                failure_kind,
+                expected_outcome,
+                expected_source_of_truth,
+                expected_rolled_back,
+                expected_row_count_mismatch,
+            ) in [
+                (
+                    "adapter_unavailable",
+                    "refused_preflight",
+                    "control_plane_local_sql_writer",
+                    false,
+                    false,
+                ),
+                (
+                    "sqlx_validation_refusal",
+                    "refused_preflight",
+                    "control_plane_local_sql_writer",
+                    false,
+                    false,
+                ),
+                (
+                    "row_count_mismatch",
+                    "refused_rollback",
+                    "control_plane_local_sql_writer",
+                    true,
+                    true,
+                ),
+            ] {
+                let preflight = ledger_adjustment_billing_ledger_writer_cutover_preflight(
+                    plan,
+                    "ready",
+                    Some(failure_kind),
+                );
+                let expected_mapping =
+                    ledger_adjustment_billing_runtime_writer_mapping(plan, expected_outcome);
+                let serialized =
+                    serde_json::to_string(&preflight).expect("failed preflight should serialize");
+
+                assert_eq!(
+                    preflight["source_of_truth"],
+                    json!(expected_source_of_truth),
+                    "{plan_label} {failure_kind} fallback source"
+                );
+                assert_eq!(
+                    preflight["cutover"]["cutover_allowed"],
+                    json!(false),
+                    "{plan_label} {failure_kind} cutover"
+                );
+                assert_eq!(
+                    preflight["cutover"]["local_writer_remains_source_of_truth"],
+                    json!(true),
+                    "{plan_label} {failure_kind} local source"
+                );
+                assert_eq!(
+                    preflight["no_double_write"]["active_writer_after_ready_cutover"],
+                    json!("control_plane_local_sql_writer"),
+                    "{plan_label} {failure_kind} active writer"
+                );
+                assert_eq!(
+                    preflight["rollback_to_local_writer"]["on_adapter_unavailable"],
+                    json!("refused_preflight"),
+                    "{plan_label} {failure_kind} unavailable mapping"
+                );
+                assert_eq!(
+                    preflight["rollback_to_local_writer"]["on_sqlx_validation_refusal"],
+                    json!("refused_preflight"),
+                    "{plan_label} {failure_kind} sqlx mapping"
+                );
+                assert_eq!(
+                    preflight["rollback_to_local_writer"]["on_row_count_mismatch"],
+                    json!("refused_rollback"),
+                    "{plan_label} {failure_kind} row-count mapping"
+                );
+                assert_eq!(
+                    preflight["refusal_mapping"]["adapter_failure"]["failure_kind"],
+                    json!(failure_kind),
+                    "{plan_label} {failure_kind} failure kind"
+                );
+                assert_eq!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"],
+                    expected_mapping["response_summary"],
+                    "{plan_label} {failure_kind} summary shape"
+                );
+                assert_eq!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"]["rolled_back"],
+                    json!(expected_rolled_back),
+                    "{plan_label} {failure_kind} rollback"
+                );
+                assert_eq!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"]["row_count_mismatch"],
+                    json!(expected_row_count_mismatch),
+                    "{plan_label} {failure_kind} mismatch"
+                );
+                assert_eq!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"]["operation_key_output"],
+                    json!("omitted"),
+                    "{plan_label} {failure_kind} operation key"
+                );
+                assert_eq!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"]["error_detail_output"],
+                    json!("omitted"),
+                    "{plan_label} {failure_kind} error detail"
+                );
+                assert!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"]
+                        .get("error_code")
+                        .is_none(),
+                    "{plan_label} {failure_kind} summary must omit error_code"
+                );
+                assert!(
+                    preflight["refusal_mapping"]["adapter_output"]["response_executor_summary"]
+                        .get("error_category")
+                        .is_none(),
+                    "{plan_label} {failure_kind} summary must omit error_category"
+                );
+
+                for forbidden in [
+                    "ledger-idempotency-never-return",
+                    "idempotency_key",
+                    "dedupe_key",
+                    "raw ledger payload",
+                    "Authorization",
+                    "Bearer",
+                    "sk-live",
+                    "raw executor failure detail",
+                    "postgres://",
+                    "raw env value",
+                    "raw credential value",
+                    "raw metadata value",
+                ] {
+                    assert!(
+                        !serialized.contains(forbidden),
+                        "{plan_label} {failure_kind} failed preflight must not contain {forbidden}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ledger_adjustment_billing_runtime_mapping_summaries_match_response_contract() {
         let request_id = Uuid::from_u128(90);
         let related_entry =
@@ -12507,6 +13129,30 @@ mod tests {
             "disabled applied shadow must not include a shadow audit summary"
         );
         assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["state"],
+            json!("disabled")
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["source_of_truth"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["cutover"]["cutover_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["no_double_write"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert!(
+            response["billing_ledger_writer_cutover_preflight"]["refusal_mapping"].is_null(),
+            "applied disabled cutover preflight should not include refusal mapping"
+        );
+        assert_eq!(
             response["refund_remaining_summary"]["remaining_refundable_amount"],
             json!("0.15000000")
         );
@@ -12705,6 +13351,26 @@ mod tests {
                 ["shadow_audit_executor_summary"]
                 .is_null(),
             "idempotent response must not include shadow audit parity summary"
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["state"],
+            json!("disabled")
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["source_of_truth"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            response["billing_ledger_writer_cutover_preflight"]["no_double_write"]["billing_ledger_writer_commit_allowed_after_ready_cutover"],
+            json!(false)
+        );
+        assert!(
+            response["billing_ledger_writer_cutover_preflight"]["refusal_mapping"].is_null(),
+            "idempotent disabled cutover preflight should not include refusal mapping"
         );
         assert!(
             response.get("audit_log_id").is_none(),
@@ -13075,6 +13741,58 @@ mod tests {
         assert_eq!(
             fixture["billing_ledger_writer_shadow_invocation_contract"]["safe_output_contract"]["operation_key_bind_only"],
             json!(true)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["env_var"],
+            json!("AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["env_value_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["raw_env_value_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["supported_states"][0]["source_of_truth"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["supported_states"][1]["state"],
+            json!("shadow")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["supported_states"][2]["source_of_truth"],
+            json!("billing_ledger_writer_after_explicit_cutover")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["no_double_write_contract"]
+                ["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["refusal_mapping_contract"]
+                [0]["maps_to_summary_outcome"],
+            json!("refused_preflight")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["refusal_mapping_contract"]
+                [1]["failure_kind"],
+            json!("sqlx_validation_refusal")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["refusal_mapping_contract"]
+                [2]["maps_to_summary_outcome"],
+            json!("refused_rollback")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["safe_output_contract"]["raw_executor_error_detail_echoed"],
+            json!(false)
         );
         assert_eq!(
             fixture["execute"]["idempotent_replay_does_not_write_ledger_or_audit"],

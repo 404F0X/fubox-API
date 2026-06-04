@@ -609,6 +609,83 @@
       "raw_executor_error_detail_echoed": false
     }
   },
+  "billing_ledger_writer_cutover_preflight_contract": {
+    "schema_version": "control_plane_billing_ledger_writer_cutover_preflight.v1",
+    "source": "control_plane_execute_validated_plan",
+    "target": "billing_ledger_runtime_writer_cutover",
+    "db_io_performed": false,
+    "production_writer_replaced": false,
+    "configuration_summary": {
+      "feature_flag": "billing_ledger_writer_cutover",
+      "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+      "allowed_values": ["disabled", "shadow", "ready"],
+      "env_value_output": "omitted",
+      "raw_env_value_echoed": false,
+      "secret_value_echoed": false
+    },
+    "supported_states": [
+      {
+        "state": "disabled",
+        "source_of_truth": "control_plane_local_sql_writer",
+        "billing_ledger_writer_commit_allowed": false,
+        "shadow_invocation_allowed": false,
+        "cutover_allowed": false
+      },
+      {
+        "state": "shadow",
+        "source_of_truth": "control_plane_local_sql_writer",
+        "billing_ledger_writer_commit_allowed": false,
+        "shadow_invocation_allowed": true,
+        "cutover_allowed": false
+      },
+      {
+        "state": "ready",
+        "source_of_truth": "billing_ledger_writer_after_explicit_cutover",
+        "billing_ledger_writer_commit_allowed": true,
+        "shadow_invocation_allowed": true,
+        "cutover_allowed": true
+      }
+    ],
+    "no_double_write_contract": {
+      "dual_commit_allowed": false,
+      "local_and_billing_ledger_commit_same_request_allowed": false,
+      "cutover_requires_single_active_writer": true,
+      "rollback_to_local_before_billing_commit_allowed": true,
+      "fallback_after_billing_commit_allowed": false
+    },
+    "refusal_mapping_contract": [
+      {
+        "failure_kind": "adapter_unavailable",
+        "maps_to_summary_outcome": "refused_preflight",
+        "ui_status": "writer_unavailable",
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted"
+      },
+      {
+        "failure_kind": "sqlx_validation_refusal",
+        "maps_to_summary_outcome": "refused_preflight",
+        "ui_status": "writer_preflight_refused",
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted"
+      },
+      {
+        "failure_kind": "row_count_mismatch",
+        "maps_to_summary_outcome": "refused_rollback",
+        "ui_status": "writer_rollback_refused",
+        "row_count_mismatch": true,
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted"
+      }
+    ],
+    "safe_output_contract": {
+      "operation_key_output": "omitted",
+      "operation_key_bind_only": true,
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "raw_executor_error_detail_echoed": false
+    }
+  },
   "future_write_audit_contract": {
     "future_actions": ["ledger.adjust", "ledger.refund"],
     "business_and_success_audit_share_transaction": true,
