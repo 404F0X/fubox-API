@@ -13,6 +13,7 @@ use crate::{
 };
 
 pub const CONSISTENT_LEDGER_WRITER_SCHEMA: &str = "billing_ledger_consistent_writer_plan.v1";
+pub const CONSISTENT_LEDGER_COMMAND_EXECUTOR_SCHEMA: &str = "billing_ledger_command_executor.v1";
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ConsistentLedgerWriterError {
@@ -43,6 +44,8 @@ pub enum ConsistentLedgerWriterError {
     ScaleMismatch { expected: u32, actual: u32 },
     #[error("consistent writer arithmetic overflow")]
     ArithmeticOverflow,
+    #[error("in-memory consistent writer state conflict: {reason}")]
+    InMemoryStateConflict { reason: &'static str },
     #[error(transparent)]
     Ledger(#[from] LedgerContractError),
 }
@@ -198,6 +201,7 @@ impl fmt::Display for ConsistentBudgetDimension {
 pub struct ConsistentLedgerWriterPlan {
     pub schema_version: &'static str,
     pub operation: LedgerOperationKind,
+    #[serde(skip_serializing)]
     pub idempotency_key: String,
     pub outcome: LedgerOperationOutcome,
     pub scope: ConsistentLedgerScope,
@@ -274,6 +278,131 @@ pub struct ConsistentPostgresWriterContract {
     pub safe_output_contract: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerCommandPlan {
+    pub schema_version: &'static str,
+    pub operation: LedgerOperationKind,
+    pub outcome: LedgerOperationOutcome,
+    pub scope: ConsistentLedgerScope,
+    pub operation_key_output: &'static str,
+    pub commands: Vec<ConsistentLedgerBoundedCommand>,
+    pub executor_contract: ConsistentLedgerExecutorContract,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerBoundedCommand {
+    pub order: u16,
+    pub kind: ConsistentLedgerBoundedCommandKind,
+    pub target: &'static str,
+    pub statement_shape: &'static str,
+    pub bounded_by: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ledger_entry_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_ledger_entry_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_type: Option<LedgerEntryType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<LedgerEntryStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<FixedDecimal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_dimension: Option<ConsistentBudgetDimension>,
+    pub operation_key_output: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerBoundedCommandKind {
+    AssertBalanceWindow,
+    AssertBudgetWindow,
+    InsertLedgerEntry,
+    UpdateLedgerStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerExecutorContract {
+    pub trait_name: &'static str,
+    pub mockable: bool,
+    pub postgres_impl_name: &'static str,
+    pub transaction: &'static str,
+    pub command_policy: &'static str,
+    pub output_contract: Vec<&'static str>,
+}
+
+pub trait ConsistentLedgerCommandExecutor {
+    fn execute_consistent_ledger_write(
+        &mut self,
+        request: ConsistentLedgerWriteRequest,
+    ) -> ConsistentLedgerCommandExecution;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerCommandExecution {
+    pub schema_version: &'static str,
+    pub executor: &'static str,
+    pub operation: LedgerOperationKind,
+    pub outcome: ConsistentLedgerCommandExecutionOutcome,
+    pub operation_key_output: &'static str,
+    pub commands: Vec<ConsistentLedgerBoundedCommand>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ConsistentLedgerCommandExecutionError>,
+    pub state_summary: ConsistentLedgerInMemoryStateSummary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerCommandExecutionOutcome {
+    Applied,
+    Idempotent,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerCommandExecutionError {
+    pub code: &'static str,
+    pub category: &'static str,
+    pub detail_output: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerInMemoryStateSummary {
+    pub ledger_entry_count: usize,
+    pub pending_reserve_count: usize,
+    pub confirmed_settle_count: usize,
+    pub confirmed_refund_count: usize,
+    pub reversed_reserve_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InMemoryConsistentLedgerWriter {
+    state: ConsistentLedgerWriterState,
+    next_ledger_entry_id: Uuid,
+}
+
+impl InMemoryConsistentLedgerWriter {
+    pub const fn new(state: ConsistentLedgerWriterState, next_ledger_entry_id: Uuid) -> Self {
+        Self {
+            state,
+            next_ledger_entry_id,
+        }
+    }
+
+    pub const fn state(&self) -> &ConsistentLedgerWriterState {
+        &self.state
+    }
+
+    pub fn into_state(self) -> ConsistentLedgerWriterState {
+        self.state
+    }
+}
+
 pub fn plan_consistent_ledger_write(
     request: ConsistentLedgerWriteRequest,
     state: &ConsistentLedgerWriterState,
@@ -339,6 +468,374 @@ pub fn plan_consistent_ledger_write(
         postgres_writer_contract: postgres_writer_contract(),
         ledger_plan,
     })
+}
+
+pub fn plan_consistent_ledger_write_commands(
+    plan: &ConsistentLedgerWriterPlan,
+) -> ConsistentLedgerCommandPlan {
+    let commands = if matches!(plan.outcome, LedgerOperationOutcome::Idempotent { .. }) {
+        Vec::new()
+    } else {
+        bounded_commands_for_plan(plan)
+    };
+
+    ConsistentLedgerCommandPlan {
+        schema_version: CONSISTENT_LEDGER_COMMAND_EXECUTOR_SCHEMA,
+        operation: plan.operation,
+        outcome: plan.outcome.clone(),
+        scope: plan.scope,
+        operation_key_output: "omitted",
+        commands,
+        executor_contract: executor_contract(),
+    }
+}
+
+impl ConsistentLedgerCommandExecutor for InMemoryConsistentLedgerWriter {
+    fn execute_consistent_ledger_write(
+        &mut self,
+        request: ConsistentLedgerWriteRequest,
+    ) -> ConsistentLedgerCommandExecution {
+        let operation = request.operation();
+        match plan_consistent_ledger_write(request, &self.state) {
+            Ok(plan) => {
+                let command_plan = plan_consistent_ledger_write_commands(&plan);
+                let outcome = match plan.outcome {
+                    LedgerOperationOutcome::Apply => {
+                        if let Err(error) = self.apply_ledger_plan(&plan.ledger_plan) {
+                            return rejected_execution(
+                                operation,
+                                command_plan.commands,
+                                error,
+                                &self.state,
+                            );
+                        }
+                        ConsistentLedgerCommandExecutionOutcome::Applied
+                    }
+                    LedgerOperationOutcome::Idempotent { .. } => {
+                        ConsistentLedgerCommandExecutionOutcome::Idempotent
+                    }
+                };
+
+                ConsistentLedgerCommandExecution {
+                    schema_version: CONSISTENT_LEDGER_COMMAND_EXECUTOR_SCHEMA,
+                    executor: "in_memory_consistent_ledger_writer",
+                    operation,
+                    outcome,
+                    operation_key_output: "omitted",
+                    commands: command_plan.commands,
+                    error: None,
+                    state_summary: state_summary(&self.state),
+                }
+            }
+            Err(error) => rejected_execution(operation, Vec::new(), error, &self.state),
+        }
+    }
+}
+
+impl InMemoryConsistentLedgerWriter {
+    fn apply_ledger_plan(
+        &mut self,
+        plan: &LedgerOperationPlan,
+    ) -> Result<(), ConsistentLedgerWriterError> {
+        for update in &plan.status_updates {
+            let entry = self
+                .state
+                .ledger_entries
+                .iter_mut()
+                .find(|entry| entry.id == update.ledger_entry_id)
+                .ok_or(ConsistentLedgerWriterError::InMemoryStateConflict {
+                    reason: "status_update_target_missing",
+                })?;
+            if entry.status != update.from {
+                return Err(ConsistentLedgerWriterError::InMemoryStateConflict {
+                    reason: "status_update_from_mismatch",
+                });
+            }
+            entry.status = update.to;
+        }
+
+        for draft in &plan.entries {
+            let id = self.take_next_ledger_entry_id()?;
+            self.state.ledger_entries.push(LedgerEntryRecord {
+                id,
+                request_id: draft.request_id,
+                related_ledger_entry_id: draft.related_ledger_entry_id,
+                entry_type: draft.entry_type,
+                amount: draft.amount,
+                currency: draft.currency.clone(),
+                status: draft.status,
+                idempotency_key: draft.idempotency_key.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn take_next_ledger_entry_id(&mut self) -> Result<Uuid, ConsistentLedgerWriterError> {
+        let id = self.next_ledger_entry_id;
+        let next = id
+            .as_u128()
+            .checked_add(1)
+            .ok_or(ConsistentLedgerWriterError::ArithmeticOverflow)?;
+        self.next_ledger_entry_id = Uuid::from_u128(next);
+        Ok(id)
+    }
+}
+
+fn bounded_commands_for_plan(
+    plan: &ConsistentLedgerWriterPlan,
+) -> Vec<ConsistentLedgerBoundedCommand> {
+    let mut commands = Vec::new();
+    let mut order = 1_u16;
+
+    commands.push(balance_assert_command(order, plan));
+    order += 1;
+
+    for budget in &plan.budget_checks {
+        commands.push(budget_assert_command(order, budget));
+        order += 1;
+    }
+
+    for entry in &plan.ledger_plan.entries {
+        commands.push(insert_ledger_command(order, entry));
+        order += 1;
+    }
+
+    for update in &plan.ledger_plan.status_updates {
+        commands.push(status_update_command(order, update.ledger_entry_id));
+        order += 1;
+    }
+
+    commands
+}
+
+fn balance_assert_command(
+    order: u16,
+    plan: &ConsistentLedgerWriterPlan,
+) -> ConsistentLedgerBoundedCommand {
+    ConsistentLedgerBoundedCommand {
+        order,
+        kind: ConsistentLedgerBoundedCommandKind::AssertBalanceWindow,
+        target: "wallet_credit_ledger_window",
+        statement_shape: "assert locked wallet, active grants, and active ledger window covers required debit",
+        bounded_by: vec!["tenant_id", "project_id", "currency"],
+        request_id: None,
+        ledger_entry_id: None,
+        related_ledger_entry_id: None,
+        entry_type: None,
+        status: None,
+        amount: Some(plan.balance_window.required_debit),
+        currency: Some(plan.balance_window.currency.clone()),
+        budget_id: None,
+        budget_dimension: None,
+        operation_key_output: "omitted",
+    }
+}
+
+fn budget_assert_command(
+    order: u16,
+    budget: &ConsistentBudgetCheck,
+) -> ConsistentLedgerBoundedCommand {
+    ConsistentLedgerBoundedCommand {
+        order,
+        kind: ConsistentLedgerBoundedCommandKind::AssertBudgetWindow,
+        target: "budgets",
+        statement_shape: "assert locked budget remaining covers required debit",
+        bounded_by: vec!["tenant_id", "project_id", "virtual_key_id", "currency"],
+        request_id: None,
+        ledger_entry_id: None,
+        related_ledger_entry_id: None,
+        entry_type: None,
+        status: None,
+        amount: Some(budget.required_debit),
+        currency: None,
+        budget_id: Some(budget.budget_id),
+        budget_dimension: Some(budget.dimension),
+        operation_key_output: "omitted",
+    }
+}
+
+fn insert_ledger_command(
+    order: u16,
+    entry: &crate::LedgerEntryDraft,
+) -> ConsistentLedgerBoundedCommand {
+    ConsistentLedgerBoundedCommand {
+        order,
+        kind: ConsistentLedgerBoundedCommandKind::InsertLedgerEntry,
+        target: "ledger_entries",
+        statement_shape: "insert one tenant-scoped ledger row using canonical operation key from the private plan",
+        bounded_by: vec![
+            "tenant_id",
+            "request_id",
+            "related_ledger_entry_id",
+            "operation_key",
+        ],
+        request_id: entry.request_id,
+        ledger_entry_id: None,
+        related_ledger_entry_id: entry.related_ledger_entry_id,
+        entry_type: Some(entry.entry_type),
+        status: Some(entry.status),
+        amount: Some(entry.amount),
+        currency: Some(entry.currency.clone()),
+        budget_id: None,
+        budget_dimension: None,
+        operation_key_output: "omitted",
+    }
+}
+
+fn status_update_command(order: u16, ledger_entry_id: Uuid) -> ConsistentLedgerBoundedCommand {
+    ConsistentLedgerBoundedCommand {
+        order,
+        kind: ConsistentLedgerBoundedCommandKind::UpdateLedgerStatus,
+        target: "ledger_entries",
+        statement_shape: "update one locked ledger row status by ledger_entry_id",
+        bounded_by: vec!["tenant_id", "ledger_entry_id"],
+        request_id: None,
+        ledger_entry_id: Some(ledger_entry_id),
+        related_ledger_entry_id: None,
+        entry_type: None,
+        status: Some(LedgerEntryStatus::Reversed),
+        amount: None,
+        currency: None,
+        budget_id: None,
+        budget_dimension: None,
+        operation_key_output: "omitted",
+    }
+}
+
+fn executor_contract() -> ConsistentLedgerExecutorContract {
+    ConsistentLedgerExecutorContract {
+        trait_name: "ConsistentLedgerCommandExecutor",
+        mockable: true,
+        postgres_impl_name: "PostgresConsistentLedgerCommandExecutor",
+        transaction: "single tenant-scoped transaction with explicit ordered locks",
+        command_policy: "assert locked balance and budget windows before applying bounded ledger writes",
+        output_contract: vec![
+            "operation_key_omitted",
+            "request_material_omitted",
+            "auth_header_omitted",
+            "provider_credential_omitted",
+            "wallet_credential_omitted",
+            "db_url_omitted",
+        ],
+    }
+}
+
+fn rejected_execution(
+    operation: LedgerOperationKind,
+    commands: Vec<ConsistentLedgerBoundedCommand>,
+    error: ConsistentLedgerWriterError,
+    state: &ConsistentLedgerWriterState,
+) -> ConsistentLedgerCommandExecution {
+    ConsistentLedgerCommandExecution {
+        schema_version: CONSISTENT_LEDGER_COMMAND_EXECUTOR_SCHEMA,
+        executor: "in_memory_consistent_ledger_writer",
+        operation,
+        outcome: ConsistentLedgerCommandExecutionOutcome::Rejected,
+        operation_key_output: "omitted",
+        commands,
+        error: Some(ConsistentLedgerCommandExecutionError {
+            code: consistent_writer_error_code(&error),
+            category: consistent_writer_error_category(&error),
+            detail_output: "omitted",
+        }),
+        state_summary: state_summary(state),
+    }
+}
+
+fn state_summary(state: &ConsistentLedgerWriterState) -> ConsistentLedgerInMemoryStateSummary {
+    ConsistentLedgerInMemoryStateSummary {
+        ledger_entry_count: state.ledger_entries.len(),
+        pending_reserve_count: state
+            .ledger_entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == LedgerEntryType::Reserve
+                    && entry.status == LedgerEntryStatus::Pending
+            })
+            .count(),
+        confirmed_settle_count: state
+            .ledger_entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == LedgerEntryType::Settle
+                    && entry.status == LedgerEntryStatus::Confirmed
+            })
+            .count(),
+        confirmed_refund_count: state
+            .ledger_entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == LedgerEntryType::Refund
+                    && entry.status == LedgerEntryStatus::Confirmed
+            })
+            .count(),
+        reversed_reserve_count: state
+            .ledger_entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == LedgerEntryType::Reserve
+                    && entry.status == LedgerEntryStatus::Reversed
+            })
+            .count(),
+    }
+}
+
+fn consistent_writer_error_code(error: &ConsistentLedgerWriterError) -> &'static str {
+    match error {
+        ConsistentLedgerWriterError::WalletRequired => "wallet_required",
+        ConsistentLedgerWriterError::WalletCurrencyMismatch { .. } => "wallet_currency_mismatch",
+        ConsistentLedgerWriterError::InsufficientWalletBalance { .. } => {
+            "insufficient_wallet_balance"
+        }
+        ConsistentLedgerWriterError::InsufficientBudget { .. } => "insufficient_budget",
+        ConsistentLedgerWriterError::ScaleMismatch { .. } => "scale_mismatch",
+        ConsistentLedgerWriterError::ArithmeticOverflow => "arithmetic_overflow",
+        ConsistentLedgerWriterError::InMemoryStateConflict { .. } => "in_memory_state_conflict",
+        ConsistentLedgerWriterError::Ledger(error) => ledger_error_code(error),
+    }
+}
+
+fn consistent_writer_error_category(error: &ConsistentLedgerWriterError) -> &'static str {
+    match error {
+        ConsistentLedgerWriterError::Ledger(_) => "ledger_contract",
+        ConsistentLedgerWriterError::InsufficientWalletBalance { .. }
+        | ConsistentLedgerWriterError::InsufficientBudget { .. } => "balance_contract",
+        ConsistentLedgerWriterError::WalletRequired
+        | ConsistentLedgerWriterError::WalletCurrencyMismatch { .. }
+        | ConsistentLedgerWriterError::ScaleMismatch { .. }
+        | ConsistentLedgerWriterError::ArithmeticOverflow
+        | ConsistentLedgerWriterError::InMemoryStateConflict { .. } => "writer_contract",
+    }
+}
+
+fn ledger_error_code(error: &LedgerContractError) -> &'static str {
+    match error {
+        LedgerContractError::IdempotencyConflict { .. } => "idempotency_conflict",
+        LedgerContractError::RequestAlreadyReserved { .. } => "request_already_reserved",
+        LedgerContractError::RequestAlreadySettled { .. } => "request_already_settled",
+        LedgerContractError::ReserveCurrencyMismatch { .. } => "reserve_currency_mismatch",
+        LedgerContractError::RefundSourceNotFound { .. } => "refund_source_not_found",
+        LedgerContractError::RefundSourceNotConfirmedSettleDebit { .. } => {
+            "refund_source_not_confirmed_settle_debit"
+        }
+        LedgerContractError::RefundCurrencyMismatch { .. } => "refund_currency_mismatch",
+        LedgerContractError::FullRefundAmountNotAllowed => "full_refund_amount_not_allowed",
+        LedgerContractError::PartialRefundAmountRequired => "partial_refund_amount_required",
+        LedgerContractError::PartialRefundOperationIdRequired => {
+            "partial_refund_operation_id_required"
+        }
+        LedgerContractError::PartialRefundConsumesRemaining { .. } => {
+            "partial_refund_consumes_remaining"
+        }
+        LedgerContractError::RefundAmountExceedsRemaining { .. } => {
+            "refund_amount_exceeds_remaining"
+        }
+        LedgerContractError::NonPositiveAmount { .. } => "non_positive_amount",
+        LedgerContractError::InvalidCurrency { .. } => "invalid_currency",
+        LedgerContractError::ScaleMismatch { .. } => "ledger_scale_mismatch",
+        LedgerContractError::ArithmeticOverflow => "ledger_arithmetic_overflow",
+    }
 }
 
 fn plan_inner_ledger_write(

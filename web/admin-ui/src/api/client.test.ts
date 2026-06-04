@@ -179,6 +179,7 @@ describe("api client", () => {
       createProviderKey,
       deleteProviderKey,
       getRequestLogDetail,
+      getRequestPayloadPreview,
       getRequestTraceSummary,
       listAuditLogs,
       listProviderKeys,
@@ -189,6 +190,20 @@ describe("api client", () => {
     const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
       const requestUrl = String(url);
       const method = init?.method ?? "GET";
+
+      if (requestUrl.includes("/admin/request-logs/request-1/payload")) {
+        return jsonResponse({
+          available: true,
+          metadata: { redaction: "applied" },
+          payload_policy_id: "payload-policy-1",
+          payload_stored: true,
+          redacted_request_preview: { messages_count: 2 },
+          redaction_status: "redacted",
+          request_body_hash: "request-body-hash-1",
+          request_id: "request-1",
+          response_body_hash: "response-body-hash-1",
+        });
+      }
 
       if (requestUrl.includes("/admin/request-logs/request-1")) {
         return jsonResponse({
@@ -314,6 +329,13 @@ describe("api client", () => {
         },
       },
     });
+    await expect(getRequestPayloadPreview("request-1")).resolves.toMatchObject({
+      available: true,
+      payload_policy_id: "payload-policy-1",
+      redacted_request_preview: { messages_count: 2 },
+      request_body_hash: "request-body-hash-1",
+      response_body_hash: "response-body-hash-1",
+    });
     await getRequestTraceSummary("trace-1", { limit: 20 });
     await listAuditLogs({
       action: "provider_key.update",
@@ -338,6 +360,7 @@ describe("api client", () => {
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
       "/api/control-plane/admin/request-logs?limit=10&model=gpt-4o-mini&status=succeeded",
       "/api/control-plane/admin/request-logs/request-1",
+      "/api/control-plane/admin/request-logs/request-1/payload",
       "/api/control-plane/admin/traces/trace-1?limit=20",
       "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=actor-1&created_from=2026-06-03T00%3A00%3A00Z&created_to=2026-06-03T23%3A59%3A59Z&limit=25&resource_type=provider_key",
       "/api/control-plane/admin/provider-keys",
@@ -348,7 +371,7 @@ describe("api client", () => {
     ]);
     expect(fetchMock.mock.calls[2][1]).toMatchObject({ method: "GET" });
     expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "GET" });
-    expect(fetchMock.mock.calls[5][1]).toMatchObject({
+    expect(fetchMock.mock.calls[6][1]).toMatchObject({
       body: JSON.stringify({
         channel_id: "channel-1",
         key_alias: "primary",
@@ -358,15 +381,15 @@ describe("api client", () => {
       }),
       method: "POST",
     });
-    expect(fetchMock.mock.calls[6][1]).toMatchObject({
+    expect(fetchMock.mock.calls[7][1]).toMatchObject({
       body: JSON.stringify({ metadata: { region: "eu" }, status: "manual_disabled" }),
       method: "PATCH",
     });
-    expect(fetchMock.mock.calls[7][1]).toMatchObject({
+    expect(fetchMock.mock.calls[8][1]).toMatchObject({
       body: JSON.stringify({ reason: "overview", target_status: "recovery_probe" }),
       method: "POST",
     });
-    expect(fetchMock.mock.calls[8][1]).toMatchObject({ method: "DELETE" });
+    expect(fetchMock.mock.calls[9][1]).toMatchObject({ method: "DELETE" });
   });
 
   it("wraps model association dry-run endpoint", async () => {

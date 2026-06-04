@@ -1594,31 +1594,33 @@ async fn create_model_association(
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
     let association = repository
-        .create_model_association(NewModelAssociation {
-            tenant_id: DEFAULT_TENANT_ID,
-            canonical_model_id: request.canonical_model_id,
-            association_type: non_empty(request.association_type, "association_type")?,
-            channel_id: request.channel_id,
-            channel_tag: request.channel_tag,
-            model_pattern: request.model_pattern,
-            upstream_model_name: request.upstream_model_name,
-            priority: request.priority.unwrap_or(100),
-            conditions: request.conditions.unwrap_or_else(|| json!({})),
-            fallback_allowed: request.fallback_allowed.unwrap_or(true),
-            canary_percent: request.canary_percent.unwrap_or(100.0),
-            status: normalize_enabled_status(request.status.as_deref()),
-        })
+        .create_model_association_with_audit(
+            NewModelAssociation {
+                tenant_id: DEFAULT_TENANT_ID,
+                canonical_model_id: request.canonical_model_id,
+                association_type: non_empty(request.association_type, "association_type")?,
+                channel_id: request.channel_id,
+                channel_tag: request.channel_tag,
+                model_pattern: request.model_pattern,
+                upstream_model_name: request.upstream_model_name,
+                priority: request.priority.unwrap_or(100),
+                conditions: request.conditions.unwrap_or_else(|| json!({})),
+                fallback_allowed: request.fallback_allowed.unwrap_or(true),
+                canary_percent: request.canary_percent.unwrap_or(100.0),
+                status: normalize_enabled_status(request.status.as_deref()),
+            },
+            |after| {
+                new_admin_audit_log(
+                    &session,
+                    "model_association.create",
+                    None,
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            },
+        )
         .await?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "model_association.create",
-        None,
-        &association,
-        json!({}),
-    )
-    .await?;
 
     Ok((StatusCode::CREATED, Json(json!({ "data": association }))).into_response())
 }
@@ -1656,9 +1658,8 @@ async fn patch_model_association(
         .get_model_association(DEFAULT_TENANT_ID, id)
         .await?
         .ok_or_else(|| AdminError::not_found("association"))?;
-    let before = current.clone();
     let association = repository
-        .update_model_association(
+        .update_model_association_with_audit(
             DEFAULT_TENANT_ID,
             id,
             UpdateModelAssociation {
@@ -1679,19 +1680,19 @@ async fn patch_model_association(
                     .map(|status| normalize_enabled_status(Some(&status)))
                     .unwrap_or(current.status),
             },
+            |before, after| {
+                new_admin_audit_log(
+                    &session,
+                    "model_association.update",
+                    Some(before),
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            },
         )
         .await?
         .ok_or_else(|| AdminError::not_found("association"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "model_association.update",
-        Some(&before),
-        &association,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": association })).into_response())
 }
@@ -1702,24 +1703,19 @@ async fn delete_model_association(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let before = repository
-        .get_model_association(DEFAULT_TENANT_ID, id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("association"))?;
     let association = repository
-        .soft_delete_model_association(DEFAULT_TENANT_ID, id)
+        .soft_delete_model_association_with_audit(DEFAULT_TENANT_ID, id, |before, after| {
+            new_admin_audit_log(
+                &session,
+                "model_association.delete",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("association"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "model_association.delete",
-        Some(&before),
-        &association,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": association })).into_response())
 }
@@ -3060,10 +3056,14 @@ fn sanitize_audit_value(value: Value) -> Value {
 
 fn is_sensitive_audit_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase();
+    let compact = normalized.replace(['_', '-', '.'], "");
     is_sensitive_key(&normalized)
         || normalized.contains("password")
         || normalized.contains("authorization")
         || normalized.contains("cookie")
+        || compact.contains("baseurl")
+        || compact.contains("endpoint")
+        || compact.contains("url")
         || matches!(
             normalized.as_str(),
             "headers"
@@ -3311,7 +3311,7 @@ impl AuditResource for ModelAssociation {
     }
 
     fn audit_summary(&self) -> Value {
-        json!({
+        sanitize_audit_value(json!({
             "id": self.id,
             "tenant_id": self.tenant_id,
             "canonical_model_id": self.canonical_model_id,
@@ -3321,11 +3321,11 @@ impl AuditResource for ModelAssociation {
             "model_pattern": self.model_pattern,
             "upstream_model_name": self.upstream_model_name,
             "priority": self.priority,
-            "conditions_keys": object_keys(&self.conditions),
+            "conditions_keys": audit_safe_object_keys(&self.conditions),
             "fallback_allowed": self.fallback_allowed,
             "canary_percent": self.canary_percent,
             "status": self.status,
-        })
+        }))
     }
 }
 
@@ -5523,6 +5523,29 @@ mod tests {
         }
     }
 
+    fn model_association_fixture() -> ModelAssociation {
+        ModelAssociation {
+            id: Uuid::from_u128(601),
+            tenant_id: DEFAULT_TENANT_ID,
+            canonical_model_id: Uuid::from_u128(101),
+            association_type: "explicit_channel".to_string(),
+            channel_id: Some(Uuid::from_u128(401)),
+            channel_tag: Some("primary".to_string()),
+            model_pattern: Some("Bearer never-audit".to_string()),
+            upstream_model_name: Some("sk-live-never-audit".to_string()),
+            priority: 10,
+            conditions: json!({
+                "tier": "prod",
+                "authorization": "Bearer never-audit",
+                "payload": { "prompt": "raw payload never audit" },
+                "raw_headers": { "Cookie": "sid=never-audit" }
+            }),
+            fallback_allowed: true,
+            canary_percent: 100.0,
+            status: "enabled".to_string(),
+        }
+    }
+
     fn route_candidate_fixture(
         channel_id: u128,
         channel_status: &str,
@@ -6896,7 +6919,7 @@ mod tests {
         );
         assert_eq!(
             audit.before_snapshot.as_ref().unwrap()["metadata_keys"],
-            json!(["base_url", "owner"])
+            json!(["owner"])
         );
         assert_eq!(
             audit.after_snapshot.as_ref().unwrap()["metadata_keys"],
@@ -7199,12 +7222,123 @@ mod tests {
     }
 
     #[test]
+    fn model_association_success_audit_shape_is_transactional_and_secret_safe() {
+        let before = model_association_fixture();
+        let mut after = before.clone();
+        after.status = "disabled".to_string();
+        after.upstream_model_name = Some("upstream-gpt".to_string());
+
+        let audit = new_admin_audit_log_from_parts(
+            Uuid::from_u128(701),
+            DEFAULT_TENANT_ID,
+            "model_association.update",
+            Some(&before),
+            &after,
+            json!({ "transactional_audit": true }),
+            None,
+        );
+        let serialized = serde_json::to_string(&audit).expect("audit should serialize");
+
+        assert_eq!(audit.action, "model_association.update");
+        assert_eq!(audit.resource_type, "model_association");
+        assert_eq!(audit.resource_id, Some(after.id));
+        assert_eq!(audit.resource_tenant_id, Some(DEFAULT_TENANT_ID));
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["conditions_keys"],
+            json!(["tier"])
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["model_pattern"],
+            json!("[REDACTED]")
+        );
+        assert_eq!(
+            audit.before_snapshot.as_ref().unwrap()["upstream_model_name"],
+            json!("[REDACTED]")
+        );
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["status"],
+            json!("disabled")
+        );
+        assert_eq!(audit.metadata["transactional_audit"], json!(true));
+        assert!(!serialized.contains("Bearer never-audit"));
+        assert!(!serialized.contains("sk-live-never-audit"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("payload"));
+        assert!(!serialized.contains("raw_headers"));
+        assert!(!serialized.contains("raw payload never audit"));
+        assert!(!serialized.contains("sid=never-audit"));
+        assert!(!serialized.contains("endpoint"));
+        assert!(!serialized.contains("base_url"));
+        assert!(!serialized.contains("fingerprint"));
+    }
+
+    #[test]
+    fn model_association_missing_business_result_does_not_build_success_audit() {
+        fn build_success_audit_for_optional_association(
+            association: Option<&ModelAssociation>,
+        ) -> Option<NewAuditLog> {
+            association.map(|after| {
+                new_admin_audit_log_from_parts(
+                    Uuid::from_u128(701),
+                    DEFAULT_TENANT_ID,
+                    "model_association.update",
+                    None,
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            })
+        }
+
+        let missing = build_success_audit_for_optional_association(None);
+        let present_association = model_association_fixture();
+        let present = build_success_audit_for_optional_association(Some(&present_association));
+
+        assert!(missing.is_none());
+        assert_eq!(
+            present.expect("audit should build").action,
+            "model_association.update"
+        );
+    }
+
+    #[test]
+    fn model_association_admin_writes_use_transactional_success_audit_helpers() {
+        let source = include_str!("admin.rs");
+        let create_section = source
+            .split("async fn create_model_association")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn get_model_association").next())
+            .expect("create_model_association section should be present");
+        let patch_section = source
+            .split("async fn patch_model_association")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn delete_model_association").next())
+            .expect("patch_model_association section should be present");
+        let delete_section = source
+            .split("async fn delete_model_association")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn dry_run_model_association").next())
+            .expect("delete_model_association section should be present");
+
+        assert!(create_section.contains(".create_model_association_with_audit("));
+        assert!(patch_section.contains(".update_model_association_with_audit("));
+        assert!(delete_section.contains(".soft_delete_model_association_with_audit("));
+        assert!(create_section.contains("\"transactional_audit\": true"));
+        assert!(patch_section.contains("\"transactional_audit\": true"));
+        assert!(delete_section.contains("\"transactional_audit\": true"));
+        assert!(!create_section.contains("record_admin_audit("));
+        assert!(!patch_section.contains("record_admin_audit("));
+        assert!(!delete_section.contains("record_admin_audit("));
+    }
+
+    #[test]
     fn audit_log_contract_fixture_captures_transaction_and_safe_metadata() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/audit_log_contract.json"
         ))
         .expect("fixture should be valid json");
-        let serialized = serde_json::to_string(&fixture).expect("fixture should serialize");
+        let serialized_examples =
+            serde_json::to_string(&fixture["examples"]).expect("fixture examples should serialize");
 
         assert_eq!(fixture["todo"], json!("E1-004"));
         assert_eq!(
@@ -7237,6 +7371,9 @@ mod tests {
             "POST /admin/api-key-profiles",
             "PATCH /admin/api-key-profiles/{id}",
             "DELETE /admin/api-key-profiles/{id}",
+            "POST /admin/model-associations",
+            "PATCH /admin/model-associations/{id}",
+            "DELETE /admin/model-associations/{id}",
             "POST /admin/price-versions",
         ] {
             assert!(
@@ -7254,6 +7391,10 @@ mod tests {
         );
         assert_eq!(
             fixture["examples"]["api_key_profile_update_success_audit"]["metadata"]["transactional_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["model_association_update_success_audit"]["metadata"]["transactional_audit"],
             json!(true)
         );
         for snapshot in ["before_snapshot", "after_snapshot"] {
@@ -7317,10 +7458,14 @@ mod tests {
             "fingerprint-never",
             "203.0.113.42",
             "2001:db8",
+            "raw_headers",
+            "base_url",
+            "endpoint",
+            "sid=never-audit",
         ] {
             assert!(
-                !serialized.contains(forbidden),
-                "audit fixture must not contain {forbidden}"
+                !serialized_examples.contains(forbidden),
+                "audit fixture examples must not contain {forbidden}"
             );
         }
     }

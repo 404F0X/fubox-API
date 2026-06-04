@@ -33,8 +33,21 @@ pub use payload_policy::{
     apply_payload_policy_to_json, apply_payload_policy_with_options, payload_sha256_hex,
 };
 pub use prompt_protection::{
-    PromptProtectionAction, PromptProtectionHit, PromptProtectionHitKind, PromptProtectionResult,
-    protect_prompt_json, protect_prompt_payload, protect_prompt_text,
+    ConfiguredPromptProtectionResult, PROMPT_PROTECTION_RULE_SET_SCHEMA, PromptProtectionAction,
+    PromptProtectionConfiguredHit, PromptProtectionConfiguredPatternKind,
+    PromptProtectionConfiguredRule, PromptProtectionConfiguredScope, PromptProtectionHit,
+    PromptProtectionHitKind, PromptProtectionResult, PromptProtectionRuleSet,
+    PromptProtectionRuleSetError, PromptProtectionRuntimeConfig, PromptProtectionRuntimeMode,
+    PromptProtectionRuntimeResult, apply_prompt_protection_rule_set_to_json,
+    apply_prompt_protection_rule_set_to_payload, apply_prompt_protection_rule_set_to_text,
+    apply_prompt_protection_runtime_config_to_json,
+    apply_prompt_protection_runtime_config_to_payload,
+    apply_prompt_protection_runtime_config_to_text, configured_prompt_protection_result_summary,
+    parse_prompt_protection_rule_set, parse_prompt_protection_rule_set_str,
+    parse_prompt_protection_runtime_config, parse_prompt_protection_runtime_config_str,
+    prompt_protection_rule_set_summary, prompt_protection_runtime_config_summary,
+    prompt_protection_runtime_result_summary, protect_prompt_json, protect_prompt_payload,
+    protect_prompt_text,
 };
 
 pub const REDACTED_SECRET: &str = "[REDACTED]";

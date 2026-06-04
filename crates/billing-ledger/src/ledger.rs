@@ -10,7 +10,7 @@ pub enum LedgerContractError {
     NonPositiveAmount { field: &'static str },
     #[error("invalid ledger currency `{currency}`")]
     InvalidCurrency { currency: String },
-    #[error("ledger idempotency key `{key}` already belongs to a different operation")]
+    #[error("ledger idempotency key already belongs to a different operation")]
     IdempotencyConflict { key: String },
     #[error("ledger request `{request_id}` is already reserved")]
     RequestAlreadyReserved { request_id: Uuid },
@@ -109,6 +109,7 @@ pub struct LedgerEntryDraft {
     pub amount: FixedDecimal,
     pub currency: String,
     pub status: LedgerEntryStatus,
+    #[serde(skip_serializing)]
     pub idempotency_key: String,
     pub metadata: LedgerEntryMetadata,
 }
@@ -137,6 +138,7 @@ pub struct LedgerStatusUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerOperationPlan {
     pub operation: LedgerOperationKind,
+    #[serde(skip_serializing)]
     pub idempotency_key: String,
     pub outcome: LedgerOperationOutcome,
     pub entries: Vec<LedgerEntryDraft>,

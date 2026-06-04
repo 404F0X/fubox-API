@@ -810,6 +810,27 @@ h3 {
   font-size: 12px;
 }
 
+.payload-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.payload-preview-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.payload-preview-card h3 {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
 .manual-test-field {
   display: grid;
   gap: 5px;
@@ -1106,6 +1127,7 @@ h3 {
   .form-grid,
   .advanced-json-grid,
   .advanced-json-form-grid,
+  .payload-preview-grid,
   .filter-bar {
     grid-template-columns: repeat(2, minmax(160px, 1fr));
   }
@@ -1142,6 +1164,7 @@ h3 {
   .form-grid,
   .advanced-json-grid,
   .advanced-json-form-grid,
+  .payload-preview-grid,
   .filter-bar,
   .detail-list {
     grid-template-columns: 1fr;

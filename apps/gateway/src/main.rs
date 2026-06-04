@@ -40,8 +40,10 @@ use ai_gateway_observability::{
 };
 use ai_gateway_routing::{
     ChannelHealth, ChannelStatus, HealthImpact, ProviderErrorClassification, ProviderErrorSignal,
-    ProviderTransportErrorKind, RouteCandidate, RouteDecision, RouteDecisionSnapshot, RouteRequest,
-    RouteSelectionContext, classify_provider_error, select_route_with_context,
+    ProviderTransportErrorKind, RateLimitAvailability, RateLimitAvailabilityInput,
+    RateLimitDimension, RateLimitDimensionStatus, RateLimitWindow, RouteCandidate, RouteDecision,
+    RouteDecisionSnapshot, RouteRequest, RouteSelectionContext, classify_provider_error,
+    evaluate_rate_limit_availability, select_route_with_context,
 };
 use axum::{
     Json, Router,
@@ -81,6 +83,10 @@ const AI_TRACE_ID_HEADER: &str = "x-ai-trace-id";
 const AI_TRACE_ID_MAX_LEN: usize = 256;
 const TRACE_AFFINITY_LOOKBACK_SECONDS: i64 = 3_600;
 const GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA: &str = "gateway_trace_affinity_runtime_v1";
+const GATEWAY_RATE_LIMIT_RUNTIME_SCHEMA: &str = "gateway_rate_limit_runtime_v1";
+const GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS: i64 = 1;
+const GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK: i64 = 1;
+const GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY: i64 = 1;
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 const X_REAL_IP_HEADER: &str = "x-real-ip";
 const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64";
@@ -207,10 +213,19 @@ struct GatewayTraceAffinityRuntime {
     previous_success: Option<TraceAffinityPreviousSuccessRoute>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GatewayRateLimitRuntime {
+    candidate_count: usize,
+    unavailable_candidate_count: usize,
+    missing_counter_candidate_count: usize,
+    blocking_dimensions: BTreeSet<&'static str>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct GatewayRouteDecision {
     decision: RouteDecision,
     trace_affinity: GatewayTraceAffinityRuntime,
+    rate_limit: GatewayRateLimitRuntime,
 }
 
 #[derive(Clone)]
@@ -546,6 +561,7 @@ async fn chat_completions(
     let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
         &route_decision.decision.snapshot(),
         &route_decision.trace_affinity,
+        &route_decision.rate_limit,
     );
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
@@ -972,6 +988,7 @@ async fn responses(
     let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
         &route_decision.decision.snapshot(),
         &route_decision.trace_affinity,
+        &route_decision.rate_limit,
     );
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
@@ -1424,6 +1441,7 @@ async fn embeddings(
     let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
         &route_decision.decision.snapshot(),
         &route_decision.trace_affinity,
+        &route_decision.rate_limit,
     );
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
@@ -1861,6 +1879,7 @@ async fn anthropic_messages(
     let route_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
         &route_decision.decision.snapshot(),
         &route_decision.trace_affinity,
+        &route_decision.rate_limit,
     );
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
@@ -2383,6 +2402,7 @@ async fn gemini_generate_content_native_passthrough(
     let route_snapshot = native_route_decision_snapshot_value_with_gateway_trace_affinity(
         &route_decision.decision.snapshot(),
         &route_decision.trace_affinity,
+        &route_decision.rate_limit,
     );
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
@@ -3980,6 +4000,55 @@ impl GatewayTraceAffinityRuntime {
     }
 }
 
+impl GatewayRateLimitRuntime {
+    fn from_routes(routes: &[ResolvedChatRoute]) -> Self {
+        let mut unavailable_candidate_count = 0usize;
+        let mut missing_counter_candidate_count = 0usize;
+        let mut blocking_dimensions = BTreeSet::new();
+
+        for route in routes {
+            let availability = route_rate_limit_availability(route);
+            if !availability.selectable {
+                unavailable_candidate_count = unavailable_candidate_count.saturating_add(1);
+            }
+            if availability
+                .dimensions
+                .iter()
+                .any(|dimension| dimension.status == RateLimitDimensionStatus::WindowMissing)
+            {
+                missing_counter_candidate_count = missing_counter_candidate_count.saturating_add(1);
+            }
+            for dimension in availability.blocking_dimensions {
+                blocking_dimensions.insert(rate_limit_dimension_label(dimension));
+            }
+        }
+
+        Self {
+            candidate_count: routes.len(),
+            unavailable_candidate_count,
+            missing_counter_candidate_count,
+            blocking_dimensions,
+        }
+    }
+
+    fn metadata(&self) -> Value {
+        json!({
+            "schema": GATEWAY_RATE_LIMIT_RUNTIME_SCHEMA,
+            "source": "runtime_window_summary",
+            "candidate_count": self.candidate_count,
+            "unavailable_candidate_count": self.unavailable_candidate_count,
+            "missing_counter_candidate_count": self.missing_counter_candidate_count,
+            "blocking_dimensions": self.blocking_dimensions.iter().copied().collect::<Vec<_>>(),
+            "required_capacity": {
+                "rpm": GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+                "tpm_tokens": GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
+                "concurrency": GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+            },
+            "window_material_in_output": false,
+        })
+    }
+}
+
 fn route_selection_context_for_gateway_trace_affinity(
     request_trace: &GatewayRequestTrace,
     previous_success: Option<&TraceAffinityPreviousSuccessRoute>,
@@ -4055,10 +4124,12 @@ async fn route_decision_with_gateway_trace_affinity(
         route_candidates.iter().map(routing_candidate_from_route),
         context,
     );
+    let rate_limit = GatewayRateLimitRuntime::from_routes(route_candidates);
 
     GatewayRouteDecision {
         decision,
         trace_affinity,
+        rate_limit,
     }
 }
 
@@ -4079,6 +4150,95 @@ fn routing_candidate_from_route(route: &ResolvedChatRoute) -> RouteCandidate {
     )
     .with_status(channel_status_for_routing(&route.channel_status))
     .with_health(channel_health_for_routing(route.channel_health_score))
+    .with_rate_limit_available(route_rate_limit_availability(route).selectable)
+}
+
+fn route_rate_limit_availability(route: &ResolvedChatRoute) -> RateLimitAvailability {
+    evaluate_rate_limit_availability(RateLimitAvailabilityInput::new(
+        route_rate_limit_window(
+            route.provider_key_rpm_limit,
+            window_state_used_for_dimension(
+                &route.provider_key_current_window_state,
+                RateLimitDimension::RequestsPerMinute,
+            ),
+            GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+        ),
+        route_rate_limit_window(
+            route.provider_key_tpm_limit,
+            window_state_used_for_dimension(
+                &route.provider_key_current_window_state,
+                RateLimitDimension::TokensPerMinute,
+            ),
+            GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
+        ),
+        route_rate_limit_window(
+            route.provider_key_concurrency_limit,
+            window_state_used_for_dimension(
+                &route.provider_key_current_window_state,
+                RateLimitDimension::Concurrency,
+            ),
+            GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+        ),
+    ))
+}
+
+fn route_rate_limit_window(
+    limit: Option<i32>,
+    used: Option<i64>,
+    required: i64,
+) -> RateLimitWindow {
+    match (limit, used) {
+        (Some(limit), Some(used)) => RateLimitWindow::limited(i64::from(limit), used, required),
+        (Some(limit), None) => RateLimitWindow::missing(i64::from(limit), required),
+        (None, _) => RateLimitWindow::unlimited(),
+    }
+}
+
+fn window_state_used_for_dimension(state: &Value, dimension: RateLimitDimension) -> Option<i64> {
+    let keys: &[&str] = match dimension {
+        RateLimitDimension::RequestsPerMinute => &[
+            "requests_per_minute_used",
+            "rpm_used",
+            "requests_per_minute",
+            "rpm",
+        ],
+        RateLimitDimension::TokensPerMinute => &[
+            "tokens_per_minute_used",
+            "tpm_used",
+            "tokens_per_minute",
+            "tpm",
+        ],
+        RateLimitDimension::Concurrency => &[
+            "concurrency_used",
+            "active_concurrency",
+            "in_flight",
+            "concurrency",
+        ],
+    };
+
+    keys.iter()
+        .find_map(|key| state.get(*key).and_then(window_state_used_value))
+}
+
+fn window_state_used_value(value: &Value) -> Option<i64> {
+    if let Some(used) = value.as_i64() {
+        return Some(used);
+    }
+    if let Some(used) = value.as_u64() {
+        return i64::try_from(used).ok();
+    }
+    if let Some(used) = value.as_str().and_then(|value| value.trim().parse().ok()) {
+        return Some(used);
+    }
+    value.get("used").and_then(window_state_used_value)
+}
+
+fn rate_limit_dimension_label(dimension: RateLimitDimension) -> &'static str {
+    match dimension {
+        RateLimitDimension::RequestsPerMinute => "rpm",
+        RateLimitDimension::TokensPerMinute => "tpm",
+        RateLimitDimension::Concurrency => "concurrency",
+    }
 }
 
 fn route_priority_for_routing(route: &ResolvedChatRoute) -> i32 {
@@ -4305,9 +4465,11 @@ fn route_decision_snapshot_value(snapshot: &RouteDecisionSnapshot) -> Value {
 fn route_decision_snapshot_value_with_gateway_trace_affinity(
     snapshot: &RouteDecisionSnapshot,
     trace_affinity: &GatewayTraceAffinityRuntime,
+    rate_limit: &GatewayRateLimitRuntime,
 ) -> Value {
     let mut value = route_decision_snapshot_value(snapshot);
     append_gateway_trace_affinity_metadata(&mut value, trace_affinity);
+    append_gateway_rate_limit_metadata(&mut value, rate_limit);
     value
 }
 
@@ -4323,9 +4485,11 @@ fn native_route_decision_snapshot_value(snapshot: &RouteDecisionSnapshot) -> Val
 fn native_route_decision_snapshot_value_with_gateway_trace_affinity(
     snapshot: &RouteDecisionSnapshot,
     trace_affinity: &GatewayTraceAffinityRuntime,
+    rate_limit: &GatewayRateLimitRuntime,
 ) -> Value {
     let mut value = native_route_decision_snapshot_value(snapshot);
     append_gateway_trace_affinity_metadata(&mut value, trace_affinity);
+    append_gateway_rate_limit_metadata(&mut value, rate_limit);
     value
 }
 
@@ -4338,6 +4502,12 @@ fn append_gateway_trace_affinity_metadata(
             "gateway_trace_affinity".to_string(),
             trace_affinity.metadata(),
         );
+    }
+}
+
+fn append_gateway_rate_limit_metadata(value: &mut Value, rate_limit: &GatewayRateLimitRuntime) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("gateway_rate_limit".to_string(), rate_limit.metadata());
     }
 }
 
@@ -6422,7 +6592,27 @@ mod tests {
             channel_priority,
             channel_weight,
             channel_health_score,
+            provider_key_rpm_limit: None,
+            provider_key_tpm_limit: None,
+            provider_key_concurrency_limit: None,
+            provider_key_current_window_state: json!({}),
         }
+    }
+
+    fn test_route_with_rate_limit(
+        channel_id: uuid::Uuid,
+        channel_priority: i32,
+        rpm_limit: Option<i32>,
+        tpm_limit: Option<i32>,
+        concurrency_limit: Option<i32>,
+        current_window_state: Value,
+    ) -> ResolvedChatRoute {
+        let mut route = test_route(channel_id, "enabled", 0, channel_priority, 100, 1.0);
+        route.provider_key_rpm_limit = rpm_limit;
+        route.provider_key_tpm_limit = tpm_limit;
+        route.provider_key_concurrency_limit = concurrency_limit;
+        route.provider_key_current_window_state = current_window_state;
+        route
     }
 
     fn test_previous_success(channel_id: uuid::Uuid) -> TraceAffinityPreviousSuccessRoute {
@@ -8750,6 +8940,230 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_runtime_filters_exceeded_candidates_and_selects_fallback() {
+        let rpm_channel_id = uuid::Uuid::from_u128(1);
+        let tpm_channel_id = uuid::Uuid::from_u128(2);
+        let concurrency_channel_id = uuid::Uuid::from_u128(3);
+        let fallback_channel_id = uuid::Uuid::from_u128(4);
+        let routes = [
+            test_route_with_rate_limit(
+                rpm_channel_id,
+                0,
+                Some(60),
+                None,
+                None,
+                json!({ "rpm_used": 60 }),
+            ),
+            test_route_with_rate_limit(
+                tpm_channel_id,
+                1,
+                None,
+                Some(1_000),
+                None,
+                json!({ "tokens_per_minute": { "used": 1_000 } }),
+            ),
+            test_route_with_rate_limit(
+                concurrency_channel_id,
+                2,
+                None,
+                None,
+                Some(4),
+                json!({ "active_concurrency": 4 }),
+            ),
+            test_route(fallback_channel_id, "enabled", 0, 3, 100, 1.0),
+        ];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            RouteSelectionContext::default(),
+        );
+
+        let expected_fallback_channel_id = fallback_channel_id.to_string();
+        assert_eq!(
+            decision.selected_channel_id.as_deref(),
+            Some(expected_fallback_channel_id.as_str())
+        );
+        for blocked_channel_id in [rpm_channel_id, tpm_channel_id, concurrency_channel_id] {
+            let blocked = decision
+                .candidates
+                .iter()
+                .find(|candidate| candidate.candidate.channel_id == blocked_channel_id.to_string())
+                .expect("blocked candidate should be present");
+            assert_eq!(
+                blocked.filter_reason,
+                Some(CandidateFilterReason::RateLimitExceeded)
+            );
+            assert!(!blocked.candidate.rate_limit_available);
+        }
+
+        let runtime = GatewayRateLimitRuntime::from_routes(&routes);
+        let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &decision.snapshot(),
+            &GatewayTraceAffinityRuntime::from_request_trace(&GatewayRequestTrace {
+                trace_id: None,
+                status: "missing",
+                trace_id_len: None,
+            }),
+            &runtime,
+        );
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit runtime fixture should be valid json");
+
+        assert_eq!(
+            fixture["scenario"],
+            "gateway_rate_limit_runtime_contract_v1"
+        );
+        assert_eq!(
+            snapshot["gateway_rate_limit"]["schema"],
+            GATEWAY_RATE_LIMIT_RUNTIME_SCHEMA
+        );
+        assert_eq!(
+            snapshot["gateway_rate_limit"]["unavailable_candidate_count"],
+            fixture["expected"]["unavailable_candidate_count"]
+        );
+        assert_eq!(
+            snapshot["gateway_rate_limit"]["blocking_dimensions"],
+            fixture["expected"]["blocked_dimensions"]
+        );
+        assert_eq!(
+            snapshot["summary"]["filter_reasons"],
+            json!([
+                "RateLimitExceeded",
+                "RateLimitExceeded",
+                "RateLimitExceeded"
+            ])
+        );
+    }
+
+    #[test]
+    fn rate_limit_runtime_treats_limited_missing_counter_as_unavailable() {
+        let missing_counter_channel_id = uuid::Uuid::from_u128(1);
+        let fallback_channel_id = uuid::Uuid::from_u128(4);
+        let routes = [
+            test_route_with_rate_limit(
+                missing_counter_channel_id,
+                0,
+                Some(60),
+                None,
+                None,
+                json!({}),
+            ),
+            test_route(fallback_channel_id, "enabled", 0, 1, 100, 1.0),
+        ];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+
+        let availability = route_rate_limit_availability(&routes[0]);
+        let rpm = availability
+            .dimensions
+            .iter()
+            .find(|dimension| dimension.dimension == RateLimitDimension::RequestsPerMinute)
+            .expect("rpm dimension should be present");
+        assert_eq!(rpm.status, RateLimitDimensionStatus::WindowMissing);
+        assert!(!rpm.selectable);
+
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            RouteSelectionContext::default(),
+        );
+        let expected_fallback_channel_id = fallback_channel_id.to_string();
+        assert_eq!(
+            decision.selected_channel_id.as_deref(),
+            Some(expected_fallback_channel_id.as_str())
+        );
+        assert_eq!(
+            decision.candidates[0].filter_reason,
+            Some(CandidateFilterReason::RateLimitExceeded)
+        );
+
+        let runtime = GatewayRateLimitRuntime::from_routes(&routes);
+        assert_eq!(runtime.unavailable_candidate_count, 1);
+        assert_eq!(runtime.missing_counter_candidate_count, 1);
+        assert!(runtime.blocking_dimensions.contains("rpm"));
+    }
+
+    #[test]
+    fn rate_limit_runtime_snapshot_is_secret_safe() {
+        let channel_id = uuid::Uuid::from_u128(1);
+        let routes = [test_route_with_rate_limit(
+            channel_id,
+            0,
+            Some(60),
+            None,
+            None,
+            json!({
+                "rpm": {
+                    "used": 60,
+                    "authorization": "Bearer sk-live-secret"
+                },
+                "endpoint": "https://provider.example.test/v1",
+                "payload": "raw request body"
+            }),
+        )];
+        let canonical_model = ResolvedCanonicalModel {
+            id: uuid::Uuid::from_u128(10),
+            model_key: "mock-gpt".to_string(),
+        };
+        let decision = select_route_with_context(
+            route_request_for_selection(
+                "mock-gpt",
+                &canonical_model,
+                "0000000000000000ffffffffffffffffffffffffffffffffffffffffffffffff",
+            ),
+            routes.iter().map(routing_candidate_from_route),
+            RouteSelectionContext::default(),
+        );
+        let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
+            &decision.snapshot(),
+            &GatewayTraceAffinityRuntime::from_request_trace(&GatewayRequestTrace {
+                trace_id: None,
+                status: "missing",
+                trace_id_len: None,
+            }),
+            &GatewayRateLimitRuntime::from_routes(&routes),
+        );
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit runtime fixture should be valid json");
+
+        assert_eq!(
+            snapshot["gateway_rate_limit"]["window_material_in_output"],
+            false
+        );
+        let snapshot_text = snapshot.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden snapshot markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !snapshot_text.contains(marker),
+                "rate-limit snapshot leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
     fn trace_affinity_gateway_runtime_prefers_previous_success_channel() {
         let default_channel_id = uuid::Uuid::from_u128(1);
         let previous_channel_id = uuid::Uuid::from_u128(2);
@@ -8793,6 +9207,7 @@ mod tests {
         let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
             &decision.snapshot(),
             &runtime,
+            &GatewayRateLimitRuntime::from_routes(&routes),
         );
 
         assert_eq!(snapshot["summary"]["trace_affinity_status"], "Applied");
@@ -8862,6 +9277,7 @@ mod tests {
         let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
             &decision.snapshot(),
             &runtime,
+            &GatewayRateLimitRuntime::from_routes(&routes),
         );
 
         assert_eq!(
@@ -8901,6 +9317,7 @@ mod tests {
         let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
             &decision.snapshot(),
             &runtime,
+            &GatewayRateLimitRuntime::from_routes(&routes),
         );
 
         let expected_channel_id = selected_channel_id.to_string();
@@ -8941,6 +9358,7 @@ mod tests {
         let lookup_error_snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
             &lookup_error_decision.snapshot(),
             &lookup_error_runtime,
+            &GatewayRateLimitRuntime::from_routes(&routes),
         );
 
         assert_eq!(
@@ -9020,6 +9438,7 @@ mod tests {
         let snapshot = route_decision_snapshot_value_with_gateway_trace_affinity(
             &decision.snapshot(),
             &runtime,
+            &GatewayRateLimitRuntime::from_routes(&routes),
         );
 
         assert_eq!(

@@ -1,0 +1,73 @@
+{
+  "scenario": "gateway_rate_limit_runtime_contract_v1",
+  "crate": "apps/gateway",
+  "runtime_schema": "gateway_rate_limit_runtime_v1",
+  "read_model": {
+    "source_table": "provider_keys",
+    "selected_fields": [
+      "rpm_limit",
+      "tpm_limit",
+      "concurrency_limit",
+      "current_window_state"
+    ],
+    "bounded_by": "existing per-channel provider key lateral limit 1",
+    "secret_fields_read": false
+  },
+  "window_state_contract": {
+    "accepted_used_keys": {
+      "rpm": [
+        "rpm_used",
+        "requests_per_minute_used",
+        "rpm.used",
+        "requests_per_minute.used"
+      ],
+      "tpm": [
+        "tpm_used",
+        "tokens_per_minute_used",
+        "tpm.used",
+        "tokens_per_minute.used"
+      ],
+      "concurrency": [
+        "concurrency_used",
+        "active_concurrency",
+        "in_flight",
+        "concurrency.used"
+      ]
+    },
+    "missing_limited_counter_status": "WindowMissing",
+    "missing_limited_counter_selectable": false
+  },
+  "expected": {
+    "filter_reason": "RateLimitExceeded",
+    "selected_fallback_channel_id": "00000000-0000-0000-0000-000000000004",
+    "blocked_dimensions": [
+      "concurrency",
+      "rpm",
+      "tpm"
+    ],
+    "unavailable_candidate_count": 3,
+    "missing_counter_candidate_count": 1
+  },
+  "snapshot_contract": {
+    "location": "route_decision_snapshot.gateway_rate_limit",
+    "stores_current_window_state": false,
+    "stores_request_or_response_body": false,
+    "stores_authorization_material": false,
+    "stores_provider_key": false,
+    "stores_raw_endpoint": false,
+    "adds_metrics_labels": false
+  },
+  "forbidden_snapshot_markers": [
+    "sk-live-secret",
+    "authorization",
+    "bearer",
+    "provider_key",
+    "provider key",
+    "current_window_state",
+    "endpoint",
+    "payload",
+    "request_body",
+    "response_body",
+    "raw"
+  ]
+}

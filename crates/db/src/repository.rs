@@ -2484,6 +2484,56 @@ impl DbRepository {
         model_association_from_row(row).map_err(DbError::Query)
     }
 
+    pub async fn create_model_association_with_audit<F>(
+        &self,
+        association: NewModelAssociation,
+        build_audit: F,
+    ) -> Result<ModelAssociation, DbError>
+    where
+        F: FnOnce(&ModelAssociation) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let row = sqlx::query(
+            r#"
+            insert into model_associations (
+              tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+              model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+              canary_percent, status
+            )
+            values (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+              ($11::double precision)::numeric, $12
+            )
+            returning
+              id, tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+              model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+              canary_percent::double precision as canary_percent, status
+            "#,
+        )
+        .bind(association.tenant_id)
+        .bind(association.canonical_model_id)
+        .bind(association.association_type)
+        .bind(association.channel_id)
+        .bind(association.channel_tag)
+        .bind(association.model_pattern)
+        .bind(association.upstream_model_name)
+        .bind(association.priority)
+        .bind(association.conditions)
+        .bind(association.fallback_allowed)
+        .bind(association.canary_percent)
+        .bind(association.status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let association = model_association_from_row(row).map_err(DbError::Query)?;
+        let audit = build_audit(&association);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(association)
+    }
+
     pub async fn list_model_associations_for_model(
         &self,
         tenant_id: Uuid,
@@ -2616,6 +2666,89 @@ impl DbRepository {
             .map_err(DbError::Query)
     }
 
+    pub async fn update_model_association_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        association_id: Uuid,
+        update: UpdateModelAssociation,
+        build_audit: F,
+    ) -> Result<Option<ModelAssociation>, DbError>
+    where
+        F: FnOnce(&ModelAssociation, &ModelAssociation) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+              model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+              canary_percent::double precision as canary_percent, status
+            from model_associations
+            where tenant_id = $1
+              and id = $2
+              and status <> 'deleted'
+              and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(association_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = model_association_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update model_associations
+            set canonical_model_id = $3,
+                association_type = $4,
+                channel_id = $5,
+                channel_tag = $6,
+                model_pattern = $7,
+                upstream_model_name = $8,
+                priority = $9,
+                conditions = $10,
+                fallback_allowed = $11,
+                canary_percent = ($12::double precision)::numeric,
+                status = $13,
+                updated_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+              model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+              canary_percent::double precision as canary_percent, status
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(association_id)
+        .bind(update.canonical_model_id)
+        .bind(update.association_type)
+        .bind(update.channel_id)
+        .bind(update.channel_tag)
+        .bind(update.model_pattern)
+        .bind(update.upstream_model_name)
+        .bind(update.priority)
+        .bind(update.conditions)
+        .bind(update.fallback_allowed)
+        .bind(update.canary_percent)
+        .bind(update.status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = model_association_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
+    }
+
     pub async fn update_model_association_status(
         &self,
         tenant_id: Uuid,
@@ -2670,6 +2803,66 @@ impl DbRepository {
         row.map(model_association_from_row)
             .transpose()
             .map_err(DbError::Query)
+    }
+
+    pub async fn soft_delete_model_association_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        association_id: Uuid,
+        build_audit: F,
+    ) -> Result<Option<ModelAssociation>, DbError>
+    where
+        F: FnOnce(&ModelAssociation, &ModelAssociation) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+              model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+              canary_percent::double precision as canary_percent, status
+            from model_associations
+            where tenant_id = $1
+              and id = $2
+              and status <> 'deleted'
+              and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(association_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = model_association_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update model_associations
+            set status = 'deleted', updated_at = now(), deleted_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+              model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+              canary_percent::double precision as canary_percent, status
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(association_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = model_association_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
     }
 
     pub async fn insert_request_log_started(

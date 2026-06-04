@@ -1,16 +1,26 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   getRequestLogDetail,
+  getRequestPayloadPreview,
   getRequestTraceSummary,
   type JsonValue,
   listRequestLogs,
   type RequestLogDetail,
   type RequestLogListFilters,
+  type RequestPayloadPreview,
   type RequestLogSummary,
   type RequestLedgerSummary,
   type RequestTraceSummary,
 } from "../api/client";
-import { StateChip, errorMessage, isJsonRecord, safeFieldValue, shortId } from "./adminUtils";
+import {
+  StateChip,
+  errorMessage,
+  isJsonRecord,
+  jsonSize,
+  safeFieldValue,
+  sanitizeDisplayJson,
+  shortId,
+} from "./adminUtils";
 import { Eye, RefreshCw, Search } from "./icons";
 
 type FilterState = {
@@ -360,8 +370,8 @@ function RequestLogDetailPanel({
             <dd>{safeFieldValue(log.upstream_model)}</dd>
           </div>
           <div>
-            <dt>Provider key</dt>
-            <dd>{safeShortId(log.provider_key_id)}</dd>
+            <dt>Credential</dt>
+            <dd>{log.provider_key_id ? "configured" : "-"}</dd>
           </div>
           <div>
             <dt>Channel</dt>
@@ -389,6 +399,8 @@ function RequestLogDetailPanel({
       </article>
 
       <RouteTracePanel detail={detail} />
+
+      <PayloadPreviewPanel key={log.id} log={log} />
 
       <LedgerSummaryPanel
         emptyMessage="No ledger entries were linked to this request."
@@ -494,6 +506,97 @@ function RouteTracePanel({ detail }: { detail: RequestLogDetail }) {
   );
 }
 
+type PayloadPreviewStatus = "idle" | "loading" | "loaded" | "forbidden" | "not_implemented" | "unavailable" | "error";
+
+function PayloadPreviewPanel({ log }: { log: RequestLogSummary }) {
+  const [message, setMessage] = useState<string | null>(null);
+  const [preview, setPreview] = useState<RequestPayloadPreview | null>(null);
+  const [status, setStatus] = useState<PayloadPreviewStatus>("idle");
+  const canLoadPayload = Boolean(log.payload_stored);
+  const previewSections = status === "loaded" && preview ? safePayloadPreviewSections(preview) : [];
+
+  async function loadPayloadPreview() {
+    if (!canLoadPayload) {
+      return;
+    }
+
+    setMessage(null);
+    setPreview(null);
+    setStatus("loading");
+
+    try {
+      const nextPreview = await getRequestPayloadPreview(log.id);
+      setPreview(nextPreview);
+      setStatus(nextPreview.available === false ? "unavailable" : "loaded");
+    } catch (requestError) {
+      setPreview(null);
+
+      const statusCode = apiStatusCode(requestError);
+      if (statusCode === 403) {
+        setStatus("forbidden");
+      } else if (statusCode === 404) {
+        setStatus("not_implemented");
+      } else {
+        setMessage(errorMessage(requestError));
+        setStatus("error");
+      }
+    }
+  }
+
+  return (
+    <article className="admin-panel" aria-label="Payload preview">
+      <div className="section-heading">
+        <div>
+          <h2>Payload Preview</h2>
+          <p>{payloadPreviewHeadline(log, status)}</p>
+        </div>
+        <button
+          aria-label={`Load payload preview for ${safeFieldValue(log.id)}`}
+          className="secondary-button"
+          disabled={!canLoadPayload || status === "loading"}
+          onClick={() => void loadPayloadPreview()}
+          type="button"
+        >
+          <Eye aria-hidden="true" size={16} />
+          {status === "loading" ? "Loading" : preview ? "Reload preview" : "Load preview"}
+        </button>
+      </div>
+
+      <dl className="detail-list">
+        {payloadMetadataRows(log, preview).map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {status !== "idle" && status !== "loading" ? (
+        <p className={`form-status ${status === "loaded" ? "form-status--success" : "form-status--error"}`}>
+          {payloadPreviewStatusMessage(status, message)}
+        </p>
+      ) : null}
+
+      {status === "loaded" ? (
+        previewSections.length > 0 ? (
+          <div className="payload-preview-grid">
+            {previewSections.map((section) => (
+              <div className="payload-preview-card" key={section.title}>
+                <h3>
+                  {section.title} ({jsonSize(section.value)} fields)
+                </h3>
+                <pre className="json-preview">{formatJsonPreview(section.value)}</pre>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted-copy">No redacted preview fields were returned. Hash metadata is shown above.</p>
+        )
+      ) : null}
+    </article>
+  );
+}
+
 function summarizeRouteDecisionSnapshot(snapshot: JsonValue) {
   const emptySummary = {
     candidateCount: "-",
@@ -555,6 +658,98 @@ function formatFilterReasons(value: JsonValue | undefined): string {
     .filter((item) => item !== "-");
 
   return reasons.length > 0 ? reasons.join(", ") : "-";
+}
+
+function payloadPreviewHeadline(log: RequestLogSummary, status: PayloadPreviewStatus): string {
+  if (!log.payload_stored) {
+    return "No payload preview was stored for this request.";
+  }
+
+  if (status === "loading") {
+    return "Loading redacted preview metadata.";
+  }
+
+  if (status === "loaded") {
+    return "Redacted preview metadata loaded.";
+  }
+
+  return "Hash metadata is available without loading payload preview.";
+}
+
+function payloadMetadataRows(
+  log: RequestLogSummary,
+  preview: RequestPayloadPreview | null,
+): Array<[string, string]> {
+  return [
+    ["Policy", safeFieldValue(preview?.payload_policy_id ?? log.payload_policy_id)],
+    ["Stored", formatBoolean(preview?.payload_stored ?? log.payload_stored)],
+    ["Redaction", safeFieldValue(preview?.redaction_status ?? log.redaction_status)],
+    ["Request hash", safeFieldValue(preview?.request_body_hash ?? log.request_body_hash)],
+    ["Response hash", safeFieldValue(preview?.response_body_hash ?? log.response_body_hash)],
+  ];
+}
+
+function payloadPreviewStatusMessage(status: PayloadPreviewStatus, message: string | null): string {
+  switch (status) {
+    case "loaded":
+      return "Payload preview loaded.";
+    case "forbidden":
+      return "You do not have permission to load payload previews.";
+    case "not_implemented":
+      return "Payload preview API is not implemented yet.";
+    case "unavailable":
+      return "Payload preview is not available for this request.";
+    case "error":
+      return message ?? "Payload preview request failed.";
+    default:
+      return "";
+  }
+}
+
+function safePayloadPreviewSections(preview: RequestPayloadPreview): Array<{ title: string; value: JsonValue }> {
+  const sections: Array<[string, JsonValue | null | undefined]> = [
+    ["Request metadata", preview.request_metadata],
+    ["Response metadata", preview.response_metadata],
+    ["Request redacted preview", preview.redacted_request_preview],
+    ["Response redacted preview", preview.redacted_response_preview],
+    ["Metadata", preview.metadata],
+  ];
+
+  return sections.flatMap(([title, value]) => {
+    if (value === null || value === undefined) {
+      return [];
+    }
+
+    const safeValue = sanitizeDisplayJson(value);
+    return isEmptyJsonValue(safeValue) ? [] : [{ title, value: safeValue }];
+  });
+}
+
+function isEmptyJsonValue(value: JsonValue): boolean {
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+
+  if (isJsonRecord(value)) {
+    return Object.keys(value).length === 0;
+  }
+
+  return value === null || value === "";
+}
+
+function formatJsonPreview(value: JsonValue): string {
+  const serialized = JSON.stringify(value, null, 2);
+
+  return serialized.length > 2000 ? `${serialized.slice(0, 2000)}\n...` : serialized;
+}
+
+function apiStatusCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("status" in error)) {
+    return undefined;
+  }
+
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
 }
 
 function toListFilters(filters: FilterState): RequestLogListFilters {

@@ -37,10 +37,16 @@ pub use reconciliation::{
     ReconciliationError, ReconciliationIssue, reconcile_billing_usage_ledger,
 };
 pub use writer_contract::{
-    CONSISTENT_LEDGER_WRITER_SCHEMA, ConsistentBudgetCheck, ConsistentBudgetDimension,
-    ConsistentBudgetSnapshot, ConsistentCreditGrantSnapshot, ConsistentLedgerScope,
-    ConsistentLedgerWriteRequest, ConsistentLedgerWriterError, ConsistentLedgerWriterPlan,
-    ConsistentLedgerWriterState, ConsistentPostgresWriterContract, ConsistentWalletCheck,
-    ConsistentWalletSnapshot, ConsistentWriterLockPlan, ConsistentWriterLockStep,
-    ConsistentWriterStateMachine, plan_consistent_ledger_write,
+    CONSISTENT_LEDGER_COMMAND_EXECUTOR_SCHEMA, CONSISTENT_LEDGER_WRITER_SCHEMA,
+    ConsistentBudgetCheck, ConsistentBudgetDimension, ConsistentBudgetSnapshot,
+    ConsistentCreditGrantSnapshot, ConsistentLedgerBoundedCommand,
+    ConsistentLedgerBoundedCommandKind, ConsistentLedgerCommandExecution,
+    ConsistentLedgerCommandExecutionError, ConsistentLedgerCommandExecutionOutcome,
+    ConsistentLedgerCommandExecutor, ConsistentLedgerCommandPlan, ConsistentLedgerExecutorContract,
+    ConsistentLedgerInMemoryStateSummary, ConsistentLedgerScope, ConsistentLedgerWriteRequest,
+    ConsistentLedgerWriterError, ConsistentLedgerWriterPlan, ConsistentLedgerWriterState,
+    ConsistentPostgresWriterContract, ConsistentWalletCheck, ConsistentWalletSnapshot,
+    ConsistentWriterLockPlan, ConsistentWriterLockStep, ConsistentWriterStateMachine,
+    InMemoryConsistentLedgerWriter, plan_consistent_ledger_write,
+    plan_consistent_ledger_write_commands,
 };

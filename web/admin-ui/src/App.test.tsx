@@ -90,7 +90,9 @@ function stubHealthyFetch(roles = ["owner"], options: { recoveryFails?: boolean 
   return fetchMock;
 }
 
-function stubAdminFetch() {
+function stubAdminFetch(
+  options: { payloadPreviewStatus?: "success" | "forbidden" | "notImplemented"; payloadStored?: boolean } = {},
+) {
   let channelCreated = false;
   let associationCreated = false;
   let modelCreated = false;
@@ -115,7 +117,7 @@ function stubAdminFetch() {
     output_tokens: 55,
     partial_sent: false,
     payload_policy_id: "payload-policy-1",
-    payload_stored: true,
+    payload_stored: options.payloadStored ?? true,
     project_id: null,
     protocol_mode: "native",
     provider_key_id: "provider-key-1",
@@ -203,6 +205,42 @@ function stubAdminFetch() {
         selected_score_total: 2144483738,
         trace_affinity_status: "Disabled",
       },
+    },
+  };
+  const payloadPreview = {
+    available: true,
+    metadata: {
+      content_type: "application/json",
+      raw_headers: {
+        cookie: "session hidden",
+      },
+    },
+    omitted_fields: ["payload", "raw_headers"],
+    payload_policy_id: "payload-policy-1",
+    payload_stored: true,
+    redacted_request_preview: {
+      authorization: bearerPlaceholder("payload-preview-hidden"),
+      messages_count: 2,
+      provider_key: "provider-key-secret-hidden",
+      raw_payload: "raw lazy payload hidden",
+      redacted: true,
+    },
+    redacted_response_preview: {
+      body: "raw response body hidden",
+      output_items: 1,
+      token: skPlaceholder("payload-response-hidden"),
+    },
+    redaction_status: "redacted",
+    request_body_hash: "request-preview-hash",
+    request_id: "req_1",
+    request_metadata: {
+      byte_count: 480,
+      media_type: "application/json",
+    },
+    response_body_hash: "response-preview-hash",
+    response_metadata: {
+      byte_count: 128,
+      status: 200,
     },
   };
   const traceFailedRequestLog = {
@@ -639,6 +677,24 @@ function stubAdminFetch() {
 
     if (requestUrl.includes("/admin/traces/trace-1")) {
       return jsonResponse(traceSummary);
+    }
+
+    if (requestUrl.includes("/admin/request-logs/req_1/payload")) {
+      if (options.payloadPreviewStatus === "forbidden") {
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("payload-forbidden-hidden")} ${skPlaceholder("payload-forbidden-hidden")}`,
+          403,
+        );
+      }
+
+      if (options.payloadPreviewStatus === "notImplemented") {
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("payload-not-implemented-hidden")} payload preview missing`,
+          404,
+        );
+      }
+
+      return jsonResponse(payloadPreview);
     }
 
     if (requestUrl.includes("/admin/request-logs/req_1")) {
@@ -1541,7 +1597,7 @@ describe("App", () => {
   });
 
   it("renders request logs and safe request detail fields", async () => {
-    stubAdminFetch();
+    const fetchMock = stubAdminFetch();
 
     const user = await renderSignedInApp();
 
@@ -1567,16 +1623,100 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
     expect(screen.getByText("settle")).toBeInTheDocument();
     expect(screen.getByText("-0.01230000 USD")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Payload Preview" })).toBeInTheDocument();
+    expect(screen.getByText("request-body-hash-hidden")).toBeInTheDocument();
+    expect(screen.getByText("response-body-hash-hidden")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toEqual([]);
     expect(screen.queryByText((content) => content.includes('"strategy": "weighted-fallback"'))).not.toBeInTheDocument();
     expect(screen.queryByText("weighted-fallback")).not.toBeInTheDocument();
     expect(screen.queryByText("payload-123-hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("raw prompt hidden")).not.toBeInTheDocument();
-    expect(screen.queryByText("request-body-hash-hidden")).not.toBeInTheDocument();
+    expect(screen.queryByText("provider-key-1")).not.toBeInTheDocument();
     expect(screen.queryByText("settle:request-1")).not.toBeInTheDocument();
     expect(screen.queryByText("price-version-1")).not.toBeInTheDocument();
     expect(screen.queryByText(skPlaceholder("route-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("route-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("nested-route-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("lazy loads request payload preview only after explicit action and renders safe fields", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+
+    const payloadCalls = () => fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"));
+    expect(payloadCalls()).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Load payload preview for req_1" }));
+
+    await waitFor(() =>
+      expect(payloadCalls()).toEqual(["/api/control-plane/admin/request-logs/req_1/payload"]),
+    );
+    expect(await screen.findByText("Payload preview loaded.")).toBeInTheDocument();
+    expect(screen.getByText("request-preview-hash")).toBeInTheDocument();
+    expect(screen.getByText("response-preview-hash")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("messages_count");
+    expect(document.body.textContent).toContain("byte_count");
+    expect(document.body.textContent).not.toContain("raw lazy payload hidden");
+    expect(document.body.textContent).not.toContain("raw response body hidden");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("payload-preview-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("payload-response-hidden"));
+    expect(document.body.textContent).not.toContain("provider-key-secret-hidden");
+    expect(document.body.textContent).not.toContain("raw_headers");
+  });
+
+  it("shows payload preview permission failures without exposing response secrets", async () => {
+    const fetchMock = stubAdminFetch({ payloadPreviewStatus: "forbidden" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+    await user.click(screen.getByRole("button", { name: "Load payload preview for req_1" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toHaveLength(1),
+    );
+    expect(await screen.findByText("You do not have permission to load payload previews.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("payload-forbidden-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("payload-forbidden-hidden"));
+  });
+
+  it("shows payload preview unimplemented state without exposing response secrets", async () => {
+    const fetchMock = stubAdminFetch({ payloadPreviewStatus: "notImplemented" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+    await user.click(screen.getByRole("button", { name: "Load payload preview for req_1" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toHaveLength(1),
+    );
+    expect(await screen.findByText("Payload preview API is not implemented yet.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("payload-not-implemented-hidden"));
+  });
+
+  it("keeps payload preview action disabled when no payload preview was stored", async () => {
+    const fetchMock = stubAdminFetch({ payloadStored: false });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+
+    const loadButton = screen.getByRole("button", { name: "Load payload preview for req_1" });
+    expect(loadButton).toBeDisabled();
+    expect(screen.getByText("No payload preview was stored for this request.")).toBeInTheDocument();
+    await user.click(loadButton);
+    expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toEqual([]);
   });
 
   it("queries trace summary and renders safe trace request rows", async () => {

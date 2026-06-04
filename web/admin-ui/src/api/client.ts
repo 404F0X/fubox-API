@@ -451,6 +451,22 @@ export type RequestLogDetail = {
   route_decision_snapshot: JsonValue;
 };
 
+export type RequestPayloadPreview = {
+  available?: boolean;
+  metadata?: JsonValue | null;
+  omitted_fields?: string[] | null;
+  payload_policy_id?: string | null;
+  payload_stored?: boolean | null;
+  redacted_request_preview?: JsonValue | null;
+  redacted_response_preview?: JsonValue | null;
+  redaction_status?: string | null;
+  request_body_hash?: string | null;
+  request_id?: string | null;
+  request_metadata?: JsonValue | null;
+  response_body_hash?: string | null;
+  response_metadata?: JsonValue | null;
+};
+
 export type RequestTraceSummaryFilters = {
   limit?: number;
 };
@@ -1090,6 +1106,16 @@ export function getRequestLogDetail(
   options: Omit<JsonRequestOptions, "body" | "method"> = {},
 ): Promise<RequestLogDetail> {
   return apiJson<RequestLogDetail>(`/admin/request-logs/${encodeURIComponent(id)}`, {
+    ...options,
+    method: "GET",
+  });
+}
+
+export function getRequestPayloadPreview(
+  id: string,
+  options: Omit<JsonRequestOptions, "body" | "method"> = {},
+): Promise<RequestPayloadPreview> {
+  return apiJson<RequestPayloadPreview>(`/admin/request-logs/${encodeURIComponent(id)}/payload`, {
     ...options,
     method: "GET",
   });

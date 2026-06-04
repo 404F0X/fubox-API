@@ -1,6 +1,6 @@
 {
   "todo": "E1-004",
-  "scope": "control-plane provider, channel, api_key_profile, provider_key and price_version admin writes plus read-only audit log query API",
+  "scope": "control-plane provider, channel, api_key_profile, model_association, provider_key and price_version admin writes plus read-only audit log query API",
   "transaction_contract": {
     "business_and_audit_share_transaction": true,
     "paths": [
@@ -13,12 +13,15 @@
       "POST /admin/api-key-profiles",
       "PATCH /admin/api-key-profiles/{id}",
       "DELETE /admin/api-key-profiles/{id}",
+      "POST /admin/model-associations",
+      "PATCH /admin/model-associations/{id}",
+      "DELETE /admin/model-associations/{id}",
       "POST /admin/provider-keys",
       "PATCH /admin/provider-keys/{id}",
       "DELETE /admin/provider-keys/{id}",
       "POST /admin/price-versions"
     ],
-    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, api_key_profile, provider_key or price_version write"
+    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, api_key_profile, model_association, provider_key or price_version write"
   },
   "metadata_contract": {
     "raw_request_body_omitted": true,
@@ -74,7 +77,6 @@
         "name": "Provider A",
         "status": "enabled",
         "metadata_keys": [
-          "base_url",
           "owner"
         ]
       },
@@ -85,7 +87,6 @@
         "name": "Provider A",
         "status": "disabled",
         "metadata_keys": [
-          "base_url",
           "owner"
         ]
       },
@@ -198,6 +199,50 @@
         "request_overrides_count": 3,
         "payload_policy_configured": true,
         "status": "inactive"
+      },
+      "metadata": {
+        "transactional_audit": true,
+        "actor_session_id": "00000000-0000-0000-0000-000000000701",
+        "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+        "source": "control_plane_admin"
+      }
+    },
+    "model_association_update_success_audit": {
+      "action": "model_association.update",
+      "resource_type": "model_association",
+      "before_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000601",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000101",
+        "association_type": "explicit_channel",
+        "channel_id": "00000000-0000-0000-0000-000000000401",
+        "channel_tag": "primary",
+        "model_pattern": "gpt-.*",
+        "upstream_model_name": "upstream-gpt",
+        "priority": 10,
+        "conditions_keys": [
+          "tier"
+        ],
+        "fallback_allowed": true,
+        "canary_percent": 100.0,
+        "status": "enabled"
+      },
+      "after_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000601",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "canonical_model_id": "00000000-0000-0000-0000-000000000101",
+        "association_type": "explicit_channel",
+        "channel_id": "00000000-0000-0000-0000-000000000401",
+        "channel_tag": "primary",
+        "model_pattern": "gpt-.*",
+        "upstream_model_name": "upstream-gpt",
+        "priority": 10,
+        "conditions_keys": [
+          "tier"
+        ],
+        "fallback_allowed": true,
+        "canary_percent": 100.0,
+        "status": "disabled"
       },
       "metadata": {
         "transactional_audit": true,

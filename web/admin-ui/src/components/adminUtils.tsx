@@ -214,6 +214,7 @@ function isUnsafeJsonDisplayKey(key: string): boolean {
     normalized.includes("fingerprint") ||
     normalized.includes("password") ||
     normalized.includes("payload") ||
+    normalized.includes("providerkey") ||
     normalized.includes("raw") ||
     normalized.includes("secret") ||
     normalized.includes("token")
@@ -230,6 +231,7 @@ function isSensitiveKey(key: string): boolean {
     normalized.includes("password") ||
     normalized.includes("cookie") ||
     normalized.includes("token") ||
+    normalized.includes("providerkey") ||
     normalized.includes("apikey") ||
     normalized.includes("keyhash") ||
     normalized.includes("encryptedsecret") ||

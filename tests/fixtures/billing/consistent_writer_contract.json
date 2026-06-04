@@ -9,7 +9,11 @@
     "raw_wallet",
     "database_url",
     "payload",
-    "body"
+    "body",
+    "reserve:00000000",
+    "settle:00000000",
+    "refund:00000000",
+    "refund_partial:00000000"
   ],
   "scope": {
     "tenant_id": "00000000-0000-0000-0000-000000000001",

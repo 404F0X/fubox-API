@@ -63,6 +63,10 @@ pub struct ResolvedChatRoute {
     pub channel_priority: i32,
     pub channel_weight: i32,
     pub channel_health_score: f64,
+    pub provider_key_rpm_limit: Option<i32>,
+    pub provider_key_tpm_limit: Option<i32>,
+    pub provider_key_concurrency_limit: Option<i32>,
+    pub provider_key_current_window_state: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -875,6 +879,10 @@ impl GatewayRepository {
               c.model_mappings as channel_model_mappings,
               c.provider_id,
               pk.id as provider_key_id,
+              pk.rpm_limit as provider_key_rpm_limit,
+              pk.tpm_limit as provider_key_tpm_limit,
+              pk.concurrency_limit as provider_key_concurrency_limit,
+              pk.current_window_state as provider_key_current_window_state,
               c.priority as channel_priority,
               c.weight as channel_weight,
               least(c.health_score, pk.health_score)::double precision as channel_health_score
@@ -898,7 +906,11 @@ impl GatewayRepository {
             join lateral (
               select
                 pk.id,
-                pk.health_score
+                pk.health_score,
+                pk.rpm_limit,
+                pk.tpm_limit,
+                pk.concurrency_limit,
+                pk.current_window_state
               from provider_keys pk
               where pk.tenant_id = c.tenant_id
                 and pk.channel_id = c.id
@@ -982,6 +994,13 @@ impl GatewayRepository {
                     provider_id: row.get("provider_id"),
                     channel_id: row.get("channel_id"),
                     provider_key_id: row.get("provider_key_id"),
+                    provider_key_rpm_limit: row.get("provider_key_rpm_limit"),
+                    provider_key_tpm_limit: row.get("provider_key_tpm_limit"),
+                    provider_key_concurrency_limit: row.get("provider_key_concurrency_limit"),
+                    provider_key_current_window_state: row
+                        .try_get::<Json<Value>, _>("provider_key_current_window_state")
+                        .map(|json| json.0)
+                        .unwrap_or_else(|_| json!({})),
                     channel_name: row.get("channel_name"),
                     endpoint: row.get("endpoint"),
                     protocol_mode: row.get("protocol_mode"),
@@ -1838,6 +1857,10 @@ mod tests {
             channel_priority: 2,
             channel_weight: 100,
             channel_health_score: 1.0,
+            provider_key_rpm_limit: None,
+            provider_key_tpm_limit: None,
+            provider_key_concurrency_limit: None,
+            provider_key_current_window_state: json!({}),
         }
     }
 

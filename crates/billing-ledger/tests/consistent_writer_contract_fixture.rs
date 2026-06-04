@@ -421,6 +421,7 @@ fn error_tag(error: &ConsistentLedgerWriterError) -> &'static str {
         ConsistentLedgerWriterError::InsufficientBudget { .. } => "insufficient_budget",
         ConsistentLedgerWriterError::ScaleMismatch { .. } => "scale_mismatch",
         ConsistentLedgerWriterError::ArithmeticOverflow => "arithmetic_overflow",
+        ConsistentLedgerWriterError::InMemoryStateConflict { .. } => "in_memory_state_conflict",
         ConsistentLedgerWriterError::Ledger(error) => ledger_error_tag(error),
     }
 }
