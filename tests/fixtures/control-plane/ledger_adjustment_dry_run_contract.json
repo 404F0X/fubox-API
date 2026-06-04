@@ -259,6 +259,82 @@
       "credential_material_echoed": false
     }
   },
+  "billing_ledger_runtime_writer_mapping_contract": {
+    "schema_version": "control_plane_billing_ledger_runtime_writer_mapping.v1",
+    "source": "control_plane_ledger_adjustment_validated_plan",
+    "target": "billing_ledger_runtime_writer",
+    "db_io_performed": false,
+    "production_writer_replaced": false,
+    "summary_schema_version": "billing_ledger_postgres_executor_summary.v1",
+    "summary_response_field": "ledger_executor_summary",
+    "supported_summary_outcomes": [
+      "applied",
+      "idempotent",
+      "refused_preflight",
+      "refused_rollback"
+    ],
+    "summary_normalization": {
+      "public_executor_name": "control_plane_transactional_admin_ledger_adjustment_writer",
+      "operation_key_output": "omitted",
+      "error_detail_output": "omitted",
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "raw_executor_error_detail_echoed": false
+    },
+    "operation_mapping": [
+      {
+        "control_plane_operation": "refund",
+        "control_plane_entry_type": "refund",
+        "billing_ledger_operation": "refund_partial",
+        "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::RefundPartial",
+        "current_billing_ledger_writer_support": true,
+        "response_summary_operation": "refund",
+        "operation_key_bind": "operation_key_bind",
+        "operation_key_output": "omitted",
+        "dedupe_material_echoed": false
+      },
+      {
+        "control_plane_operation": "adjust",
+        "control_plane_entry_type": "adjust",
+        "billing_ledger_operation": "admin_adjustment_extension_required",
+        "billing_ledger_write_request_variant": "future_admin_adjustment",
+        "current_billing_ledger_writer_support": false,
+        "response_summary_operation": "adjust",
+        "operation_key_bind": "operation_key_bind",
+        "operation_key_output": "omitted",
+        "dedupe_material_echoed": false
+      }
+    ],
+    "summary_field_mapping": [
+      "schema_version",
+      "executor",
+      "operation",
+      "outcome",
+      "operation_key_output",
+      "committed",
+      "rolled_back",
+      "statement_count",
+      "executed_statement_count",
+      "refused_statement_count",
+      "total_rows_affected",
+      "final_statement_order",
+      "final_statement_kind",
+      "error_detail_output",
+      "row_count_mismatch"
+    ],
+    "billing_ledger_optional_summary_fields_omitted_from_control_plane_response": [
+      "error_code",
+      "error_category"
+    ],
+    "safe_output_contract": {
+      "operation_key_output": "omitted",
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "raw_executor_error_detail_echoed": false
+    }
+  },
   "future_write_audit_contract": {
     "future_actions": ["ledger.adjust", "ledger.refund"],
     "business_and_success_audit_share_transaction": true,
