@@ -653,11 +653,12 @@ function LedgerOverviewSection() {
           </div>
         </div>
 
-        <form className="price-version-form" onSubmit={handleDryRun}>
+        <form className="price-version-form" data-testid={executeSmokeSelectors.dryRunForm} onSubmit={handleDryRun}>
           <div className="form-grid">
             <label className="field">
               Operation
               <select
+                data-testid={executeSmokeSelectors.operationInput}
                 value={dryRunForm.operation}
                 onChange={(event) => updateDryRunForm("operation", event.currentTarget.value)}
               >
@@ -668,6 +669,7 @@ function LedgerOverviewSection() {
             <label className="field">
               Amount
               <input
+                data-testid={executeSmokeSelectors.amountInput}
                 value={dryRunForm.amount}
                 onChange={(event) => updateDryRunForm("amount", event.currentTarget.value)}
                 placeholder="0.25000000"
@@ -677,6 +679,7 @@ function LedgerOverviewSection() {
             <label className="field">
               Currency
               <input
+                data-testid={executeSmokeSelectors.currencyInput}
                 value={dryRunForm.currency}
                 onChange={(event) => updateDryRunForm("currency", event.currentTarget.value)}
                 placeholder="USD"
@@ -686,6 +689,7 @@ function LedgerOverviewSection() {
             <label className="field">
               Related ledger entry
               <input
+                data-testid={executeSmokeSelectors.relatedLedgerEntryInput}
                 value={dryRunForm.relatedLedgerEntryId}
                 onChange={(event) => updateDryRunForm("relatedLedgerEntryId", event.currentTarget.value)}
                 placeholder="ledger entry uuid"
@@ -694,6 +698,7 @@ function LedgerOverviewSection() {
             <label className="field">
               Project ID
               <input
+                data-testid={executeSmokeSelectors.projectInput}
                 value={dryRunForm.projectId}
                 onChange={(event) => updateDryRunForm("projectId", event.currentTarget.value)}
                 placeholder="project uuid"
@@ -702,6 +707,7 @@ function LedgerOverviewSection() {
             <label className="field">
               Wallet ID
               <input
+                data-testid={executeSmokeSelectors.walletInput}
                 value={dryRunForm.walletId}
                 onChange={(event) => updateDryRunForm("walletId", event.currentTarget.value)}
                 placeholder="wallet uuid"
@@ -710,6 +716,7 @@ function LedgerOverviewSection() {
             <label className="field">
               Request ID
               <input
+                data-testid={executeSmokeSelectors.requestInput}
                 value={dryRunForm.requestId}
                 onChange={(event) => updateDryRunForm("requestId", event.currentTarget.value)}
                 placeholder="request uuid"
@@ -718,6 +725,7 @@ function LedgerOverviewSection() {
             <label className="field field--wide">
               Reason
               <input
+                data-testid={executeSmokeSelectors.reasonInput}
                 value={dryRunForm.reason}
                 onChange={(event) => updateDryRunForm("reason", event.currentTarget.value)}
                 placeholder="customer credit"
@@ -725,7 +733,12 @@ function LedgerOverviewSection() {
             </label>
           </div>
 
-          <button className="primary-button primary-button--inline" type="submit" disabled={dryRunLoading}>
+          <button
+            className="primary-button primary-button--inline"
+            data-testid={executeSmokeSelectors.dryRunButton}
+            type="submit"
+            disabled={dryRunLoading}
+          >
             <Search aria-hidden="true" size={17} />
             {dryRunLoading ? "Planning" : "Plan dry-run"}
           </button>

@@ -792,8 +792,10 @@ function Assert-UiSmokeHandoffFreshness {
   $source = Get-Content -Path $uiSmokeContractPath -Raw
   foreach ($needle in @(
       "ledgerAdjustmentExecuteBrowserPreflightContract",
+      "ledgerAdjustmentExecuteBrowserActionPlanContract",
       "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
+      "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract"
     )) {
     if (-not $source.Contains($needle)) {
@@ -806,7 +808,16 @@ function Assert-UiSmokeHandoffFreshness {
       "billingExecuteSmokeContract.serializable.json",
       "ledgerExecuteSmokeSerializableHandoffArtifact",
       "browserPreflight",
+      "browserActionPlan",
+      "dry_run_plan_duration_ms",
+      "execute_apply_duration_ms",
+      "idempotent_replay_duration_ms",
+      "refund_refusal_duration_ms",
       "ledger_refresh_duration_ms",
+      "dry_run_plan_duration_ms",
+      "execute_apply_duration_ms",
+      "idempotent_replay_duration_ms",
+      "refund_refusal_duration_ms",
       "service_readiness_duration_ms",
       "admin_ui_reachable",
       "control_plane_health_reachable",
@@ -849,6 +860,107 @@ function Assert-UiSmokeHandoffFreshness {
     if ($marker -notmatch '^[a-z0-9_]+$') {
       throw "UI browser preflight metric marker '$name' must be machine readable"
     }
+  }
+}
+
+function Assert-BrowserActionPlanContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $actionPlan = Get-JsonProperty $Handoff "browserActionPlan" "UI handoff"
+  Assert-Equal (Get-JsonProperty $actionPlan "defaultMode" "UI browser action plan") "dry_run_only" "UI browser action plan default mode"
+  Assert-True ([bool](Get-JsonProperty $actionPlan "usesDataTestIdsOnly" "UI browser action plan")) "UI browser action plan must use data-testid selectors"
+
+  $mutationOptIn = Get-JsonProperty $actionPlan "mutationOptIn" "UI browser action plan"
+  Assert-True ((Get-JsonProperty $mutationOptIn "defaultSubmitsLiveMutation" "UI browser action plan mutation opt-in") -eq $false) "UI browser action plan must not submit live mutation by default"
+  Assert-Equal (Get-JsonProperty $mutationOptIn "env" "UI browser action plan mutation opt-in") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION" "UI browser action plan mutation opt-in env"
+  Assert-Equal (Get-JsonProperty $mutationOptIn "requiredValue" "UI browser action plan mutation opt-in") "1" "UI browser action plan mutation opt-in value"
+
+  $durationMarkers = Get-JsonProperty $actionPlan "durationMarkers" "UI browser action plan"
+  foreach ($name in @("dryRunPlan", "executeApply", "idempotentReplay", "ledgerRefresh", "refundRefusal", "unavailable")) {
+    $marker = [string](Get-JsonProperty $durationMarkers $name "UI browser action plan duration markers")
+    if ($marker -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser action duration marker '$name' must be machine readable"
+    }
+  }
+
+  $failureClassifications = Get-JsonProperty $actionPlan "failureClassifications" "UI browser action plan"
+  foreach ($name in @("forbiddenSensitiveMarkerDetected", "mutationOptInMissing", "selectorUnavailable", "stateMismatch")) {
+    $classification = [string](Get-JsonProperty $failureClassifications $name "UI browser action plan failure classifications")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser action failure classification '$name' must be machine readable"
+    }
+  }
+
+  $selectors = Get-JsonProperty $Handoff "selectors" "UI handoff"
+  $readinessStates = Get-JsonProperty $Handoff "readinessStates" "UI handoff"
+  foreach ($selectorName in @(
+      "dryRunForm",
+      "dryRunButton",
+      "operationInput",
+      "amountInput",
+      "currencyInput",
+      "relatedLedgerEntryInput",
+      "projectInput",
+      "walletInput",
+      "requestInput",
+      "reasonInput",
+      "executeButton",
+      "ledgerRefreshStatus"
+    )) {
+    [void](Get-JsonProperty $selectors $selectorName "UI browser action selectors")
+  }
+
+  $steps = @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")
+  Assert-Equal $steps.Count 5 "UI browser action plan step count"
+  $expectedSteps = @(
+    @{ name = "dry_run_plan"; selector = "dryRunButton"; expectedState = "executePreflight"; submitsLiveMutation = $false },
+    @{ name = "execute_apply"; selector = "executeButton"; expectedState = "appliedRefreshSuccess"; submitsLiveMutation = $true },
+    @{ name = "idempotent_replay"; selector = "executeButton"; expectedState = "idempotentRefreshSuccess"; submitsLiveMutation = $true },
+    @{ name = "refund_refusal"; selector = "executeButton"; expectedState = "blocked"; submitsLiveMutation = $true },
+    @{ name = "ledger_refresh"; selector = "ledgerRefreshStatus"; expectedState = "appliedRefreshSuccess"; submitsLiveMutation = $false }
+  )
+  for ($i = 0; $i -lt $expectedSteps.Count; $i++) {
+    $step = $steps[$i]
+    $expected = $expectedSteps[$i]
+    $context = "UI browser action plan step $($expected.name)"
+    Assert-Equal (Get-JsonProperty $step "name" $context) $expected.name "$context name"
+    Assert-Equal (Get-JsonProperty $step "selector" $context) $expected.selector "$context selector"
+    Assert-Equal (Get-JsonProperty $step "expectedState" $context) $expected.expectedState "$context expected state"
+    Assert-True ([bool](Get-JsonProperty $step "submitsLiveMutation" $context) -eq [bool]$expected.submitsLiveMutation) "$context mutation flag"
+    [void](Get-JsonProperty $selectors $expected.selector "$context selector reference")
+    [void](Get-JsonProperty $readinessStates $expected.expectedState "$context readiness state reference")
+  }
+}
+
+function Write-BrowserActionPlanDryRun {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-BrowserActionPlanContract $Handoff
+  $actionPlan = Get-JsonProperty $Handoff "browserActionPlan" "UI handoff"
+  $durationMarkers = Get-JsonProperty $actionPlan "durationMarkers" "UI browser action plan"
+  $failureClassifications = Get-JsonProperty $actionPlan "failureClassifications" "UI browser action plan"
+  $mutationOptIn = Get-JsonProperty $actionPlan "mutationOptIn" "UI browser action plan"
+  $unavailable = [string](Get-JsonProperty $durationMarkers "unavailable" "UI browser action plan duration markers")
+  $mutationEnabled = [Environment]::GetEnvironmentVariable([string](Get-JsonProperty $mutationOptIn "env" "UI browser action plan mutation opt-in")) -eq [string](Get-JsonProperty $mutationOptIn "requiredValue" "UI browser action plan mutation opt-in")
+  $mutationClassification = "none"
+  if (-not $mutationEnabled) {
+    $mutationClassification = [string](Get-JsonProperty $failureClassifications "mutationOptInMissing" "UI browser action plan failure classifications")
+  }
+
+  Write-SafeHost "Browser ledger execute action plan dry-run:"
+  Write-SafeHost "browser_action_plan_mode=$([string](Get-JsonProperty $actionPlan "defaultMode" "UI browser action plan"))"
+  Write-SafeHost "browser_action_plan_uses_data_testids=true"
+  Write-SafeHost "browser_action_plan_live_mutation_enabled=$(Format-BoolMarker $mutationEnabled)"
+  Write-SafeHost "browser_action_plan_failure_classification=$mutationClassification"
+  Write-SafeHost "$([string](Get-JsonProperty $durationMarkers "dryRunPlan" "UI browser action plan duration markers"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationMarkers "executeApply" "UI browser action plan duration markers"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationMarkers "idempotentReplay" "UI browser action plan duration markers"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationMarkers "refundRefusal" "UI browser action plan duration markers"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationMarkers "ledgerRefresh" "UI browser action plan duration markers"))=$unavailable"
+
+  $steps = @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")
+  foreach ($step in $steps) {
+    Write-SafeHost "browser_action_step=$([string](Get-JsonProperty $step "name" "UI browser action step"));selector=$([string](Get-JsonProperty $step "selector" "UI browser action step"));expected_state=$([string](Get-JsonProperty $step "expectedState" "UI browser action step"));submits_live_mutation=$(Format-BoolMarker ([bool](Get-JsonProperty $step "submitsLiveMutation" "UI browser action step")))"
   }
 }
 
@@ -1296,6 +1408,10 @@ try {
 
   Check "Admin UI ledger execute browser live-smoke harness preflight contract" {
     Assert-BrowserLiveSmokeHarnessPreflight (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  Check "Admin UI ledger execute browser action plan dry-run contract" {
+    Write-BrowserActionPlanDryRun (Read-JsonFile $uiSmokeHandoffPath)
   }
 
   Check "control-plane source contains transactional execute boundary" {

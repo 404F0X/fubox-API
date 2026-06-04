@@ -24,8 +24,12 @@ export const ledgerAdjustmentExecuteLiveSmokeContract = {
     success: "success",
   },
   selectors: {
+    amountInput: "ledger-adjustment-amount-input",
     contractCheckFresh: "ledger-adjustment-contract-check-fresh",
     contractCheckNetworkCall: "ledger-adjustment-contract-check-network-call",
+    currencyInput: "ledger-adjustment-currency-input",
+    dryRunButton: "ledger-adjustment-dry-run-button",
+    dryRunForm: "ledger-adjustment-dry-run-form",
     executeButton: "ledger-adjustment-execute-button",
     executeContractButton: "ledger-adjustment-execute-contract-button",
     executeContractMode: "ledger-adjustment-execute-contract-mode",
@@ -35,8 +39,14 @@ export const ledgerAdjustmentExecuteLiveSmokeContract = {
     executeResultFresh: "ledger-adjustment-execute-result-fresh",
     executeWriteNetworkCall: "ledger-adjustment-execute-write-network-call",
     ledgerRefreshStatus: "ledger-adjustment-ledger-refresh-status",
+    operationInput: "ledger-adjustment-operation-input",
+    projectInput: "ledger-adjustment-project-input",
     readiness: "ledger-adjustment-execute-readiness",
+    reasonInput: "ledger-adjustment-reason-input",
+    relatedLedgerEntryInput: "ledger-adjustment-related-ledger-entry-input",
+    requestInput: "ledger-adjustment-request-input",
     dryRunFresh: "ledger-adjustment-dry-run-fresh",
+    walletInput: "ledger-adjustment-wallet-input",
   },
   statuses: {
     applied: "applied",
@@ -90,7 +100,64 @@ export const ledgerAdjustmentExecuteBrowserPreflightContract = {
   usesDataTestIdsOnly: true,
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserActionPlanContract = {
+  defaultMode: "dry_run_only",
+  durationMarkers: {
+    dryRunPlan: "dry_run_plan_duration_ms",
+    executeApply: "execute_apply_duration_ms",
+    idempotentReplay: "idempotent_replay_duration_ms",
+    ledgerRefresh: "ledger_refresh_duration_ms",
+    refundRefusal: "refund_refusal_duration_ms",
+    unavailable: "unavailable",
+  },
+  failureClassifications: {
+    forbiddenSensitiveMarkerDetected: "forbidden_sensitive_marker_detected",
+    mutationOptInMissing: "mutation_opt_in_missing",
+    selectorUnavailable: "selector_unavailable",
+    stateMismatch: "state_mismatch",
+  },
+  mutationOptIn: {
+    defaultSubmitsLiveMutation: false,
+    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
+    requiredValue: "1",
+  },
+  steps: [
+    {
+      expectedState: "executePreflight",
+      name: "dry_run_plan",
+      selector: "dryRunButton",
+      submitsLiveMutation: false,
+    },
+    {
+      expectedState: "appliedRefreshSuccess",
+      name: "execute_apply",
+      selector: "executeButton",
+      submitsLiveMutation: true,
+    },
+    {
+      expectedState: "idempotentRefreshSuccess",
+      name: "idempotent_replay",
+      selector: "executeButton",
+      submitsLiveMutation: true,
+    },
+    {
+      expectedState: "blocked",
+      name: "refund_refusal",
+      selector: "executeButton",
+      submitsLiveMutation: true,
+    },
+    {
+      expectedState: "appliedRefreshSuccess",
+      name: "ledger_refresh",
+      selector: "ledgerRefreshStatus",
+      submitsLiveMutation: false,
+    },
+  ],
+  usesDataTestIdsOnly: true,
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
+  browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
   forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
   readinessStates: {
