@@ -68,6 +68,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
@@ -87,6 +88,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER=1`
@@ -141,6 +143,11 @@ Expected result:
 - Child case `simulated package download opt-in evidence` returns exit `2` and
   writes bounded package-provenance evidence with `package_download_allowed=true`
   without downloading packages or running validators/generators.
+- Child case `package materialization missing download opt-in` returns exit `2`
+  and writes per-package blocker evidence without downloading packages.
+- Child case `simulated package materialization boundary` returns exit `2` and
+  writes per-package pass/blocker evidence with simulated provenance, including
+  an incomplete-cache refusal.
 - Child case `simulated real-tool execution evidence pass` returns exit `0` and
   writes execution-shaped evidence with real-command fields but simulated
   provenance, so it cannot close the real gap.
@@ -198,6 +205,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateCacheProbe -AllowPackageDownload
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -MaterializePackageCache
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulatePackageMaterializationBoundary -MaterializePackageCache -AllowPackageDownload
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidenceFailure
@@ -223,14 +234,15 @@ evidence commands return `0`, `1`, and `2`. The simulated real execution
 evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
 returns `2`. They prove wrapper failure-path classification, generated-client
 readiness gating, command matrix coverage, cache/tool availability evidence,
-package download opt-in provenance, real-execution evidence shape, bounded
-evidence lifecycle, path/output hardening, preflight/performance evidence
-shape, and redaction only. They do not run Redocly, OpenAPI Generator,
-`openapi-typescript`, generated-client inspection against real generated output,
-download packages, or any live Postgres checks. Do not use simulated passes,
-cache-probe blockers, simulated execution evidence, simulated download opt-in
-evidence, or the matrix dry-run to close the real semantic/client-generation
-gap.
+package download opt-in provenance, package materialization boundary evidence,
+real-execution evidence shape, bounded evidence lifecycle, path/output
+hardening, preflight/performance evidence shape, and redaction only. They do
+not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
+inspection against real generated output, download packages in self-test, or any
+live Postgres checks. Do not use simulated passes, cache-probe blockers,
+simulated execution evidence, simulated download opt-in evidence, simulated
+materialization evidence, or the matrix dry-run to close the real
+semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -296,7 +308,8 @@ bounded fields:
 
 Each evidence record contains:
 
-- `kind`: `semantic_validator` or `client_generation`
+- `kind`: `semantic_validator`, `client_generation`, or
+  `package_materialization`
 - `label`
 - `provenance_mode`: `real` for external validators/client generators or
   `simulated` for self-test fixtures
@@ -316,8 +329,8 @@ Each evidence record contains:
 - `package_download_allowed`
 - `package_probe_duration_ms`: bounded cache/download availability duration
 - `preflight_status`: `passed`, `blocked`, `simulated`, or `not_run`
-- `execution_mode`: `real_tool_execution`, `cache_probe`, `command_matrix`,
-  `simulated`, or `not_run`
+- `execution_mode`: `real_tool_execution`, `package_materialization`,
+  `cache_probe`, `command_matrix`, `simulated`, or `not_run`
 - `real_command_executed`
 - `readiness_marker_status`: `current`, `missing`, `stale`, `pending`, or
   `not_applicable`
@@ -397,6 +410,51 @@ Package cache provisioning/download evidence:
 - npm output tails are bounded and redacted. They must not include package
   tokens, registry credentials, Authorization/Cookie values, bearer tokens, API
   keys, raw operation keys, raw metadata, payload, or body data.
+
+Package materialization executor boundary:
+
+- Package materialization is disabled by default. Default wrapper runs,
+  `-CommandMatrix`, and `-CacheProbe` never materialize packages and never run
+  validators/generators.
+- Materialization requires both explicit opt-ins:
+  `-MaterializePackageCache` and `-AllowPackageDownload`. The equivalent env
+  gates are `CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE=1` and
+  `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`.
+- If `-MaterializePackageCache` is supplied without `-AllowPackageDownload`, the
+  wrapper writes per-package blocker evidence and exits `2`; it does not run
+  `npm cache add`.
+- The materialization package allowlist is fixed to `@redocly/cli`,
+  `@openapitools/openapi-generator-cli`, and `openapi-typescript`. Arbitrary
+  package names are not accepted.
+- The executor writes one `package_materialization` evidence record per package.
+  Each record includes `package`, `package_list`, `package_version`,
+  `package_provenance`, `package_cache_path`, `package_cache_status`,
+  `package_cache_bytes`, `package_download_allowed`,
+  `package_probe_duration_ms`, `duration_ms`, bounded command summary, and a
+  redacted output tail.
+- The npm cache path must remain under repository `.tool-cache` or `.tmp`;
+  repo-external paths, source paths, and `.git` are refused before materializing.
+- After a successful `npm cache add`, the wrapper performs a bounded
+  `npm cache ls <package> --offline` probe. Missing cache entries or incomplete
+  markers are blockers and cannot close readiness.
+- Materialization prepares package cache only. It does not run Redocly, OpenAPI
+  Generator validation, `openapi-typescript`, generated-client inspection, or
+  live Postgres checks, and it cannot close the real semantic/client-generation
+  pass gap.
+- Command summaries and output tails must remain secret-safe. They must not
+  include npm tokens, registry credentials, Authorization/Cookie values, bearer
+  tokens, API keys, raw operation keys, raw metadata, payload, or body data.
+
+Materialization commands:
+
+```powershell
+# Blocker evidence only; no download because the second opt-in is missing.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -MaterializePackageCache
+
+# Real cache materialization boundary. This may download packages, but it still
+# does not run validators/generators.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -MaterializePackageCache -AllowPackageDownload
+```
 
 Real-tool execution evidence:
 
@@ -926,6 +984,10 @@ Record all of the following when closing the semantic/client-generation gap:
 - Package cache provisioning/download evidence: required package list,
   package version/provenance marker, bounded cache path, `package_cache_bytes`,
   `package_download_allowed`, and `package_probe_duration_ms`.
+- Package materialization evidence when used: dual opt-in flags/env, per-package
+  `package_materialization` records, cache bytes before/after summary through
+  `package_cache_bytes`, duration fields, and any blocker reason for missing or
+  incomplete cache entries.
 - Tool preflight status, safe tool path summary, package/cache status, and
   bounded `duration_ms` for each opt-in evidence record.
 - Real execution evidence fields for each opt-in command:

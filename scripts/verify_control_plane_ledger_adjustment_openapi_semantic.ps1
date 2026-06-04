@@ -9,6 +9,7 @@ param(
   [switch]$OpenApiTypescript,
   [switch]$TypescriptFetch,
   [switch]$AllowPackageDownload,
+  [switch]$MaterializePackageCache,
   [switch]$CacheProbe,
   [switch]$CommandMatrix,
   [switch]$Clean,
@@ -28,6 +29,7 @@ param(
   [switch]$SimulateSemanticEvidenceBlocker,
   [switch]$SimulateToolPreflightBlocker,
   [switch]$SimulateCacheProbe,
+  [switch]$SimulatePackageMaterializationBoundary,
   [switch]$SimulateRealExecutionEvidencePass,
   [switch]$SimulateRealExecutionEvidenceFailure,
   [switch]$SimulateRealExecutionEvidenceBlocker
@@ -55,6 +57,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLIENT_GENERATION) { $Clien
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT) { $OpenApiTypescript = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH) { $TypescriptFetch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD) { $AllowPackageDownload = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE) { $MaterializePackageCache = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE) { $CacheProbe = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX) { $CommandMatrix = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLEAN) { $Clean = $true }
@@ -74,6 +77,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER) { $SimulateSemanticEvidenceBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER) { $SimulateToolPreflightBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE) { $SimulateCacheProbe = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY) { $SimulatePackageMaterializationBoundary = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS) { $SimulateRealExecutionEvidencePass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE) { $SimulateRealExecutionEvidenceFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER) { $SimulateRealExecutionEvidenceBlocker = $true }
@@ -98,6 +102,7 @@ if ($CommandMatrix -or $CacheProbe) {
   $OpenApiGeneratorValidate = $false
   $OpenApiTypescript = $false
   $TypescriptFetch = $false
+  $MaterializePackageCache = $false
 }
 
 function Resolve-RepoRelativePath {
@@ -236,6 +241,8 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-generated-client-stale-marker"),
     (Join-Path $TempRoot "self-test-cache-probe"),
     (Join-Path $TempRoot "self-test-package-download-opt-in"),
+    (Join-Path $TempRoot "self-test-package-materialization-missing-download-opt-in"),
+    (Join-Path $TempRoot "self-test-package-materialization-boundary"),
     (Join-Path $TempRoot "self-test-real-execution-pass"),
     (Join-Path $TempRoot "self-test-real-execution-failure"),
     (Join-Path $TempRoot "self-test-real-execution-blocker"),
@@ -367,6 +374,7 @@ function Get-WrapperCommandSummary {
   if ($OpenApiGeneratorValidate) { [void]$requestedChecks.Add("openapi_generator_validate") }
   if ($OpenApiTypescript) { [void]$requestedChecks.Add("openapi_typescript") }
   if ($TypescriptFetch) { [void]$requestedChecks.Add("typescript_fetch") }
+  if ($MaterializePackageCache) { [void]$requestedChecks.Add("package_cache_materialization") }
   if ($requestedChecks.Count -eq 0) { [void]$requestedChecks.Add("lightweight_only") }
 
   $simulatedModes = New-Object System.Collections.Generic.List[string]
@@ -385,6 +393,7 @@ function Get-WrapperCommandSummary {
   if ($SimulateSemanticEvidenceBlocker) { [void]$simulatedModes.Add("semantic_evidence_blocker") }
   if ($SimulateToolPreflightBlocker) { [void]$simulatedModes.Add("tool_preflight_blocker") }
   if ($SimulateCacheProbe) { [void]$simulatedModes.Add("cache_probe") }
+  if ($SimulatePackageMaterializationBoundary) { [void]$simulatedModes.Add("package_materialization_boundary") }
   if ($SimulateRealExecutionEvidencePass) { [void]$simulatedModes.Add("real_execution_evidence_pass") }
   if ($SimulateRealExecutionEvidenceFailure) { [void]$simulatedModes.Add("real_execution_evidence_failure") }
   if ($SimulateRealExecutionEvidenceBlocker) { [void]$simulatedModes.Add("real_execution_evidence_blocker") }
@@ -397,6 +406,7 @@ function Get-WrapperCommandSummary {
     requested_checks = @($requestedChecks.ToArray())
     simulated_modes = @($simulatedModes.ToArray())
     allow_package_download = [bool]$AllowPackageDownload
+    materialize_package_cache = [bool]$MaterializePackageCache
     cache_probe = [bool]$CacheProbe
     command_matrix = [bool]$CommandMatrix
     clean_requested = [bool]$Clean
@@ -523,6 +533,16 @@ function Get-PackageVersionMarker {
     "simulated" { return "simulated" }
     default { return "unavailable" }
   }
+}
+
+function Assert-OpenApiNpmPackageAllowed {
+  param([Parameter(Mandatory = $true)][string]$Package)
+
+  if (-not @((Get-OpenApiNpmPackageList)).Contains($Package)) {
+    Add-Failure "[FAIL] package materialization contract - package '$Package' is not on the OpenAPI allowlist"
+    return $false
+  }
+  return $true
 }
 
 function Get-OpenApiCommandMatrix {
@@ -897,7 +917,7 @@ function Add-EvidenceRecord {
     [int64]$PackageCacheBytes = -1,
     [int64]$PackageProbeDurationMs = 0,
     [int64]$DurationMs = 0,
-    [ValidateSet("real_tool_execution", "cache_probe", "command_matrix", "simulated", "not_run")][string]$ExecutionMode = "not_run",
+    [ValidateSet("real_tool_execution", "package_materialization", "cache_probe", "command_matrix", "simulated", "not_run")][string]$ExecutionMode = "not_run",
     [bool]$RealCommandExecuted = $false,
     [ValidateSet("current", "missing", "stale", "not_applicable", "pending")][string]$ReadinessMarkerStatus = "not_applicable",
     [bool]$ClosureEligible = $false
@@ -1092,7 +1112,7 @@ function Assert-EvidenceReportContract {
     Add-Failure "[FAIL] evidence report contract - missing command_summary"
   } else {
     foreach ($field in @($report.command_summary.PSObject.Properties.Name)) {
-      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
+      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "materialize_package_cache", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected command_summary field '$field'"
       }
     }
@@ -1151,6 +1171,9 @@ function Assert-EvidenceReportContract {
     if (-not @("real", "simulated").Contains([string]$record.provenance_mode)) {
       Add-Failure "[FAIL] evidence report contract - invalid evidence provenance_mode '$($record.provenance_mode)'"
     }
+    if (-not @("semantic_validator", "client_generation", "package_materialization").Contains([string]$record.kind)) {
+      Add-Failure "[FAIL] evidence report contract - invalid evidence kind '$($record.kind)'"
+    }
     if (-not @("pass", "failure", "blocker").Contains([string]$record.classification)) {
       Add-Failure "[FAIL] evidence report contract - invalid classification '$($record.classification)'"
     }
@@ -1163,7 +1186,7 @@ function Assert-EvidenceReportContract {
     if (-not @("passed", "blocked", "simulated", "not_run").Contains([string]$record.preflight_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid preflight_status '$($record.preflight_status)'"
     }
-    if (-not @("real_tool_execution", "cache_probe", "command_matrix", "simulated", "not_run").Contains([string]$record.execution_mode)) {
+    if (-not @("real_tool_execution", "package_materialization", "cache_probe", "command_matrix", "simulated", "not_run").Contains([string]$record.execution_mode)) {
       Add-Failure "[FAIL] evidence report contract - invalid execution_mode '$($record.execution_mode)'"
     }
     if ($null -eq $record.real_command_executed) {
@@ -1189,6 +1212,9 @@ function Assert-EvidenceReportContract {
           Add-Failure "[FAIL] evidence report contract - package_list missing '$packageName'"
         }
       }
+    }
+    if (-not @((Get-OpenApiNpmPackageList)).Contains([string]$record.package)) {
+      Add-Failure "[FAIL] evidence report contract - package '$($record.package)' is not on the OpenAPI allowlist"
     }
     if ([string]::IsNullOrWhiteSpace([string]$record.package_version)) {
       Add-Failure "[FAIL] evidence report contract - missing package_version"
@@ -1394,6 +1420,48 @@ function Invoke-Process {
     $classification = "failure"
   }
   return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = $classification; DurationMs = $durationMs }
+}
+
+function Invoke-MaterializationProcess {
+  param(
+    [Parameter(Mandatory = $true)][string]$Package
+  )
+
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if ($null -eq $npm) {
+    return [pscustomobject]@{
+      ExitCode = 2
+      Output = @("npm not found")
+      Command = "npm cache add $Package --cache $(Format-BoundedPath $NpmCache)"
+      Classification = "blocker"
+      DurationMs = 0
+    }
+  }
+
+  $arguments = @("cache", "add", $Package, "--cache", $NpmCache)
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
+  try {
+    $ErrorActionPreference = "Continue"
+    $output = @(& $npm.Source @arguments 2>&1 | ForEach-Object { [string]$_ })
+  } finally {
+    $timer.Stop()
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+  $exitCode = if ($null -eq $global:LASTEXITCODE) { 0 } else { [int]$global:LASTEXITCODE }
+  $classification = if ($exitCode -eq 0) { "pass" } else { "blocker" }
+  if ($exitCode -eq 0) {
+    Write-SafeHost "[OK] npm package cache materialization $Package"
+  }
+
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output = @($output)
+    Command = "npm cache add $Package --cache $(Format-BoundedPath $NpmCache)"
+    Classification = $classification
+    DurationMs = [int64]$timer.Elapsed.TotalMilliseconds
+  }
 }
 
 function Invoke-ContractGate {
@@ -2336,6 +2404,126 @@ function Add-SimulatedRealExecutionEvidence {
     -ClosureEligible $false
 }
 
+function Add-OpenApiPackageMaterializationEvidence {
+  param([switch]$Simulated)
+
+  $packageList = Get-OpenApiNpmPackageList
+  $toolProbes = @{}
+  if ($Simulated) {
+    $toolProbes["node"] = [pscustomobject]@{ Status = "available"; Version = "v20.0.0-simulated"; ToolPath = "node=simulated"; DurationMs = 1; Output = @("node simulated") }
+    $toolProbes["npm"] = [pscustomobject]@{ Status = "available"; Version = "10.0.0-simulated"; ToolPath = "npm=simulated"; DurationMs = 1; Output = @("npm simulated") }
+  } else {
+    $toolProbes["node"] = Invoke-LightweightToolVersionProbe -Name "node" -Arguments @("--version")
+    $toolProbes["npm"] = Invoke-LightweightToolVersionProbe -Name "npm" -Arguments @("--version")
+  }
+
+  $preflightStatus = Get-ToolProbePreflightStatus -ToolProbes $toolProbes -Names @("node", "npm")
+  $toolPath = Get-ToolProbePathSummary -ToolProbes $toolProbes -Names @("node", "npm")
+  $toolOutput = @(Get-ToolProbeOutput -ToolProbes $toolProbes -Names @("node", "npm"))
+  $toolDurationMs = [int64](($toolProbes.Values | ForEach-Object { [int64]$_.DurationMs } | Measure-Object -Sum).Sum)
+
+  foreach ($package in $packageList) {
+    if (-not (Assert-OpenApiNpmPackageAllowed -Package $package)) {
+      continue
+    }
+
+    $classification = "blocker"
+    $exitCode = 2
+    $command = "npm cache add $package not run"
+    $output = @($toolOutput)
+    $blockerReason = ""
+    $cacheStatus = Get-NpmPackageCacheStatus
+    $packageVersion = Get-PackageVersionMarker -PackageCacheStatus $cacheStatus -ToolVersion ""
+    $packageDurationMs = [int64]0
+    $realCommandExecuted = $false
+
+    if (-not $AllowPackageDownload) {
+      $blockerReason = "package materialization requires both -MaterializePackageCache and -AllowPackageDownload"
+      $output += "package materialization disabled because package download opt-in is missing"
+    } elseif ($preflightStatus -ne "passed") {
+      $blockerReason = "required local npm tooling unavailable before package materialization"
+      $output += "package materialization blocked before npm cache add"
+    } elseif ($Simulated) {
+      $realCommandExecuted = $true
+      $packageDurationMs = 5
+      $command = "npm cache add $package --cache $(Format-BoundedPath $NpmCache)"
+      if ($package -eq "@openapitools/openapi-generator-cli") {
+        $blockerReason = "simulated incomplete package cache marker after materialization"
+        $cacheStatus = "offline_repo_cache_missing"
+        $packageVersion = "unavailable"
+        $output += "simulated incomplete cache marker for package materialization"
+      } else {
+        $classification = "pass"
+        $exitCode = 0
+        $cacheStatus = "offline_repo_cache_present"
+        $packageVersion = "cache_entry_present"
+        $output += "simulated package materialized into cache"
+      }
+    } else {
+      New-Item -ItemType Directory -Force $NpmCache | Out-Null
+      $oldCache = $env:npm_config_cache
+      try {
+        $env:npm_config_cache = $NpmCache
+        $materializeResult = Invoke-MaterializationProcess -Package $package
+        $realCommandExecuted = $true
+        $command = "npm cache add $package --cache $(Format-BoundedPath $NpmCache)"
+        $output = @($toolOutput + $materializeResult.Output)
+        $packageDurationMs = [int64]$materializeResult.DurationMs
+
+        if ($materializeResult.Classification -eq "blocker") {
+          $classification = "blocker"
+          $exitCode = 2
+          $blockerReason = "package materialization was externally blocked"
+        } else {
+          $cacheProbe = Invoke-NpmCachePackageProbe -Package $package
+          $output = @($output + $cacheProbe.Output)
+          $packageDurationMs += [int64]$cacheProbe.DurationMs
+          $cacheStatus = [string]$cacheProbe.Status
+          if ($cacheProbe.Classification -eq "pass") {
+            $classification = "pass"
+            $exitCode = 0
+            $packageVersion = "cache_entry_present"
+          } else {
+            $classification = "blocker"
+            $exitCode = 2
+            $blockerReason = "package cache materialization incomplete after npm cache add"
+          }
+        }
+      } finally {
+        $env:npm_config_cache = $oldCache
+      }
+    }
+
+    if ($classification -eq "blocker") {
+      Add-Blocker "[BLOCKED] package materialization $package - $blockerReason"
+    }
+
+    Add-EvidenceRecord `
+      -Kind "package_materialization" `
+      -Label "package cache materialization $package" `
+      -Tool "npm" `
+      -ToolVersion (Get-ToolProbeVersion -ToolProbes $toolProbes -Name "npm") `
+      -Package $package `
+      -Classification $classification `
+      -ExitCode $exitCode `
+      -Command $command `
+      -Output $output `
+      -BlockerReason $blockerReason `
+      -ProvenanceMode $(if ($Simulated) { "simulated" } else { "real" }) `
+      -ToolPath $toolPath `
+      -PreflightStatus $preflightStatus `
+      -PackageCacheStatus $cacheStatus `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -PackageVersion $packageVersion `
+      -PackageProbeDurationMs $packageDurationMs `
+      -DurationMs ([int64]($toolDurationMs + $packageDurationMs)) `
+      -ExecutionMode "package_materialization" `
+      -RealCommandExecuted $realCommandExecuted `
+      -ReadinessMarkerStatus $(if ($classification -eq "pass") { "current" } else { "missing" }) `
+      -ClosureEligible $false
+  }
+}
+
 function Invoke-Redocly {
   Invoke-NpmTool `
     -Package "@redocly/cli" `
@@ -2553,6 +2741,20 @@ function Invoke-SelfTest {
     -Name "simulated package download opt-in evidence" `
     -Arguments @("-SimulateCacheProbe", "-AllowPackageDownload") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-package-download-opt-in") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("pass", "blocker") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "package materialization missing download opt-in" `
+    -Arguments @("-MaterializePackageCache") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-package-materialization-missing-download-opt-in") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("blocker") `
+    -ExpectedProvenanceMode "real"
+  Invoke-SelfTestChild `
+    -Name "simulated package materialization boundary" `
+    -Arguments @("-SimulatePackageMaterializationBoundary", "-MaterializePackageCache", "-AllowPackageDownload") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-package-materialization-boundary") `
     -ExpectedExitCode 2 `
     -ExpectedEvidenceClassifications @("pass", "blocker") `
     -ExpectedProvenanceMode "simulated"
@@ -2782,6 +2984,10 @@ if ($SimulateCacheProbe) {
   Add-OpenApiCacheProbeEvidence -Simulated
   Exit-WithResult
 }
+if ($SimulatePackageMaterializationBoundary) {
+  Add-OpenApiPackageMaterializationEvidence -Simulated
+  Exit-WithResult
+}
 if ($SimulateRealExecutionEvidencePass) {
   Add-SimulatedRealExecutionEvidence -Classification "pass"
   Exit-WithResult
@@ -2804,6 +3010,11 @@ if ($CommandMatrix) {
 
 if ($CacheProbe) {
   Add-OpenApiCacheProbeEvidence
+  Exit-WithResult
+}
+
+if ($MaterializePackageCache) {
+  Add-OpenApiPackageMaterializationEvidence
   Exit-WithResult
 }
 
