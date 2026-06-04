@@ -40,6 +40,8 @@ pub enum LedgerContractError {
         requested: FixedDecimal,
         remaining: FixedDecimal,
     },
+    #[error("admin ledger adjustment amount must be non-zero")]
+    AdminAdjustmentZeroAmount,
     #[error("ledger refund amount `{requested}` exceeds remaining refundable amount `{remaining}`")]
     RefundAmountExceedsRemaining {
         requested: FixedDecimal,
@@ -57,6 +59,7 @@ pub enum LedgerEntryType {
     Reserve,
     Settle,
     Refund,
+    Adjust,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +77,7 @@ pub enum LedgerOperationKind {
     Settle,
     Refund,
     RefundPartial,
+    AdminAdjustment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +85,13 @@ pub enum LedgerOperationKind {
 pub enum LedgerRefundKind {
     Full,
     Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerAdminAdjustmentKind {
+    Credit,
+    Debit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +134,8 @@ pub struct LedgerEntryMetadata {
     pub related_ledger_entry_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refund_kind: Option<LedgerRefundKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_adjustment_kind: Option<LedgerAdminAdjustmentKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_cache: Option<ExactCacheLedgerMetadata>,
 }
@@ -181,6 +194,15 @@ pub enum RefundLedgerRequest {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminAdjustmentLedgerRequest {
+    pub adjustment_operation_id: Uuid,
+    pub request_id: Option<Uuid>,
+    pub related_ledger_entry_id: Option<Uuid>,
+    pub amount: FixedDecimal,
+    pub currency: String,
+}
+
 pub fn reserve_ledger_idempotency_key(request_id: Uuid) -> String {
     format!("reserve:{request_id}")
 }
@@ -198,6 +220,10 @@ pub fn refund_partial_ledger_idempotency_key(
     refund_operation_id: Uuid,
 ) -> String {
     format!("refund_partial:{related_ledger_entry_id}:{refund_operation_id}")
+}
+
+pub fn admin_adjustment_ledger_idempotency_key(adjustment_operation_id: Uuid) -> String {
+    format!("admin_adjustment:{adjustment_operation_id}")
 }
 
 pub fn plan_ledger_reserve(
@@ -367,6 +393,52 @@ pub fn plan_ledger_refund(
     };
 
     Ok(apply_plan(refund.operation, refund.idempotency_key, draft))
+}
+
+pub fn plan_ledger_admin_adjustment(
+    request: AdminAdjustmentLedgerRequest,
+    existing_entries: &[LedgerEntryRecord],
+) -> Result<LedgerOperationPlan, LedgerContractError> {
+    validate_currency(&request.currency)?;
+    if request.amount.is_zero() {
+        return Err(LedgerContractError::AdminAdjustmentZeroAmount);
+    }
+
+    let idempotency_key = admin_adjustment_ledger_idempotency_key(request.adjustment_operation_id);
+    let adjustment_kind = if request.amount.units() > 0 {
+        LedgerAdminAdjustmentKind::Credit
+    } else {
+        LedgerAdminAdjustmentKind::Debit
+    };
+    let draft = LedgerEntryDraft {
+        request_id: request.request_id,
+        related_ledger_entry_id: request.related_ledger_entry_id,
+        entry_type: LedgerEntryType::Adjust,
+        amount: request.amount,
+        currency: request.currency,
+        status: LedgerEntryStatus::Confirmed,
+        idempotency_key: idempotency_key.clone(),
+        metadata: LedgerEntryMetadata::admin_adjustment(
+            request.request_id,
+            request.related_ledger_entry_id,
+            adjustment_kind,
+        ),
+    };
+
+    if let Some(existing) = find_by_idempotency_key(existing_entries, &idempotency_key) {
+        ensure_existing_matches_draft(existing, &draft)?;
+        return Ok(idempotent_plan(
+            LedgerOperationKind::AdminAdjustment,
+            idempotency_key,
+            existing.id,
+        ));
+    }
+
+    Ok(apply_plan(
+        LedgerOperationKind::AdminAdjustment,
+        idempotency_key,
+        draft,
+    ))
 }
 
 fn apply_plan(
@@ -677,6 +749,7 @@ impl LedgerEntryMetadata {
             request_id: Some(request_id),
             related_ledger_entry_id: None,
             refund_kind: None,
+            admin_adjustment_kind: None,
             exact_cache: None,
         }
     }
@@ -687,6 +760,7 @@ impl LedgerEntryMetadata {
             request_id: Some(request_id),
             related_ledger_entry_id: None,
             refund_kind: None,
+            admin_adjustment_kind: None,
             exact_cache: None,
         }
     }
@@ -700,6 +774,7 @@ impl LedgerEntryMetadata {
             request_id: Some(request_id),
             related_ledger_entry_id: None,
             refund_kind: None,
+            admin_adjustment_kind: None,
             exact_cache: Some(exact_cache),
         }
     }
@@ -713,6 +788,22 @@ impl LedgerEntryMetadata {
             request_id: None,
             related_ledger_entry_id: Some(related_ledger_entry_id),
             refund_kind: Some(refund_kind),
+            admin_adjustment_kind: None,
+            exact_cache: None,
+        }
+    }
+
+    fn admin_adjustment(
+        request_id: Option<Uuid>,
+        related_ledger_entry_id: Option<Uuid>,
+        adjustment_kind: LedgerAdminAdjustmentKind,
+    ) -> Self {
+        Self {
+            operation: LedgerOperationKind::AdminAdjustment,
+            request_id,
+            related_ledger_entry_id,
+            refund_kind: None,
+            admin_adjustment_kind: Some(adjustment_kind),
             exact_cache: None,
         }
     }
@@ -760,6 +851,8 @@ mod tests {
     const SETTLE_ID: Uuid = Uuid::from_u128(31);
     const REFUND_ID: Uuid = Uuid::from_u128(41);
     const REFUND_OPERATION_ID: Uuid = Uuid::from_u128(51);
+    const ADJUSTMENT_ID: Uuid = Uuid::from_u128(61);
+    const RELATED_ADJUSTMENT_ID: Uuid = Uuid::from_u128(71);
 
     #[test]
     fn ledger_reserve_plans_pending_debit_with_canonical_idempotency_key() {
@@ -1081,6 +1174,149 @@ mod tests {
     }
 
     #[test]
+    fn ledger_admin_adjustment_plans_confirmed_credit_and_debit() {
+        let credit = plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: ADJUSTMENT_ID,
+                request_id: Some(REQUEST_ID),
+                related_ledger_entry_id: None,
+                amount: money("0.15000000"),
+                currency: "USD".to_string(),
+            },
+            &[],
+        )
+        .expect("admin credit should plan");
+
+        assert_eq!(credit.operation, LedgerOperationKind::AdminAdjustment);
+        assert_eq!(
+            credit.idempotency_key,
+            format!("admin_adjustment:{ADJUSTMENT_ID}")
+        );
+        assert_eq!(credit.outcome, LedgerOperationOutcome::Apply);
+        assert!(credit.status_updates.is_empty());
+        assert_eq!(credit.entries.len(), 1);
+        assert_eq!(credit.entries[0].entry_type, LedgerEntryType::Adjust);
+        assert_eq!(credit.entries[0].status, LedgerEntryStatus::Confirmed);
+        assert_eq!(credit.entries[0].amount.to_string(), "0.15000000");
+        assert_eq!(credit.entries[0].request_id, Some(REQUEST_ID));
+        assert_eq!(credit.entries[0].related_ledger_entry_id, None);
+        assert_eq!(
+            credit.entries[0].metadata.operation,
+            LedgerOperationKind::AdminAdjustment
+        );
+        assert_eq!(
+            credit.entries[0].metadata.admin_adjustment_kind,
+            Some(LedgerAdminAdjustmentKind::Credit)
+        );
+
+        let debit = plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: RELATED_ADJUSTMENT_ID,
+                request_id: Some(REQUEST_ID),
+                related_ledger_entry_id: Some(SETTLE_ID),
+                amount: money("-0.05000000"),
+                currency: "USD".to_string(),
+            },
+            &[],
+        )
+        .expect("admin debit should plan");
+
+        assert_eq!(debit.operation, LedgerOperationKind::AdminAdjustment);
+        assert_eq!(debit.entries[0].entry_type, LedgerEntryType::Adjust);
+        assert_eq!(debit.entries[0].status, LedgerEntryStatus::Confirmed);
+        assert_eq!(debit.entries[0].amount.to_string(), "-0.05000000");
+        assert_eq!(debit.entries[0].related_ledger_entry_id, Some(SETTLE_ID));
+        assert_eq!(
+            debit.entries[0].metadata.admin_adjustment_kind,
+            Some(LedgerAdminAdjustmentKind::Debit)
+        );
+    }
+
+    #[test]
+    fn ledger_admin_adjustment_replay_and_output_are_secret_safe() {
+        let existing = adjust_record(ADJUSTMENT_ID, "0.15000000", "USD");
+        let replay = plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: ADJUSTMENT_ID,
+                request_id: Some(REQUEST_ID),
+                related_ledger_entry_id: None,
+                amount: money("0.15000000"),
+                currency: "USD".to_string(),
+            },
+            std::slice::from_ref(&existing),
+        )
+        .expect("same admin adjustment should be idempotent");
+
+        assert_eq!(
+            replay.outcome,
+            LedgerOperationOutcome::Idempotent {
+                existing_entry_id: ADJUSTMENT_ID
+            }
+        );
+        assert!(replay.entries.is_empty());
+
+        let conflict = plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: ADJUSTMENT_ID,
+                request_id: Some(REQUEST_ID),
+                related_ledger_entry_id: None,
+                amount: money("0.20000000"),
+                currency: "USD".to_string(),
+            },
+            &[existing],
+        )
+        .expect_err("same operation id with different amount should conflict");
+        assert!(matches!(
+            conflict,
+            LedgerContractError::IdempotencyConflict { .. }
+        ));
+
+        let zero = plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: RELATED_ADJUSTMENT_ID,
+                request_id: Some(REQUEST_ID),
+                related_ledger_entry_id: None,
+                amount: money("0.00000000"),
+                currency: "USD".to_string(),
+            },
+            &[],
+        )
+        .expect_err("zero admin adjustment should be refused");
+        assert_eq!(zero, LedgerContractError::AdminAdjustmentZeroAmount);
+
+        let plan = plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: ADJUSTMENT_ID,
+                request_id: Some(REQUEST_ID),
+                related_ledger_entry_id: Some(SETTLE_ID),
+                amount: money("-0.05000000"),
+                currency: "USD".to_string(),
+            },
+            &[],
+        )
+        .expect("admin debit should plan");
+        let serialized = serde_json::to_string(&plan).expect("plan should serialize");
+        let serialized_metadata =
+            serde_json::to_string(&plan.entries[0].metadata).expect("metadata should serialize");
+
+        assert!(!serialized.contains("admin_adjustment:"));
+        assert!(!serialized.contains("idempotency_key"));
+        assert!(!serialized.contains("operation_key"));
+        assert!(!serialized.contains("dedupe"));
+        assert!(!serialized.contains("Authorization"));
+        assert!(!serialized.contains("credential"));
+        assert!(!serialized.contains("payload"));
+        assert_eq!(
+            serialized_metadata,
+            format!(
+                r#"{{"operation":"admin_adjustment","request_id":"{REQUEST_ID}","related_ledger_entry_id":"{SETTLE_ID}","admin_adjustment_kind":"debit"}}"#
+            )
+        );
+        assert!(!serialized_metadata.contains("raw"));
+        assert!(!serialized_metadata.contains("secret"));
+    }
+
+    #[test]
     fn ledger_metadata_is_contract_safe_and_does_not_carry_payload_secret_or_raw_key() {
         let plan = plan_ledger_settle(
             SettleLedgerRequest {
@@ -1155,6 +1391,19 @@ mod tests {
             currency: currency.to_string(),
             status: LedgerEntryStatus::Confirmed,
             idempotency_key: refund_ledger_idempotency_key(related_ledger_entry_id),
+        }
+    }
+
+    fn adjust_record(id: Uuid, amount: &str, currency: &str) -> LedgerEntryRecord {
+        LedgerEntryRecord {
+            id,
+            request_id: Some(REQUEST_ID),
+            related_ledger_entry_id: None,
+            entry_type: LedgerEntryType::Adjust,
+            amount: money(amount),
+            currency: currency.to_string(),
+            status: LedgerEntryStatus::Confirmed,
+            idempotency_key: admin_adjustment_ledger_idempotency_key(id),
         }
     }
 }

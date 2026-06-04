@@ -1114,6 +1114,7 @@ const fn ledger_entry_type_sql(entry_type: LedgerEntryType) -> &'static str {
         LedgerEntryType::Reserve => "reserve",
         LedgerEntryType::Settle => "settle",
         LedgerEntryType::Refund => "refund",
+        LedgerEntryType::Adjust => "adjust",
     }
 }
 
@@ -1656,6 +1657,33 @@ fn ledger_lock_statement(
                 operation_key_output: "omitted",
             }
         }
+        LedgerOperationKind::AdminAdjustment => ConsistentLedgerPostgresStatement {
+            order,
+            kind: ConsistentLedgerPostgresStatementKind::LockLedgerEntries,
+            target: "ledger_entries",
+            statement_shape: "select id, request_id, related_ledger_entry_id, entry_type, amount, currency, status from ledger_entries where tenant_id = $tenant_id and (request_id = $request_id or related_ledger_entry_id = $related_ledger_entry_id or <private operation key column> = $private_operation_key) order by created_at, id for update",
+            lock_clause: Some("for_update_ordered"),
+            where_bounds: vec![
+                "tenant_id",
+                "request_id",
+                "related_ledger_entry_id",
+                "private_operation_key",
+            ],
+            ordered_by: vec!["created_at", "id"],
+            command_order: None,
+            command_kind: None,
+            row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore,
+            request_id: None,
+            ledger_entry_id: None,
+            related_ledger_entry_id: None,
+            budget_id: None,
+            entry_type: None,
+            amount: None,
+            currency: None,
+            status: None,
+            metadata: None,
+            operation_key_output: "omitted",
+        },
         LedgerOperationKind::Refund | LedgerOperationKind::RefundPartial => {
             ConsistentLedgerPostgresStatement {
                 order,

@@ -322,6 +322,7 @@ fn error_tag(error: &LedgerContractError) -> &'static str {
         LedgerContractError::PartialRefundConsumesRemaining { .. } => {
             "partial_refund_consumes_remaining"
         }
+        LedgerContractError::AdminAdjustmentZeroAmount => "admin_adjustment_zero_amount",
         LedgerContractError::PartialRefundAmountRequired => "partial_refund_amount_required",
         LedgerContractError::PartialRefundOperationIdRequired => {
             "partial_refund_operation_id_required"

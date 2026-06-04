@@ -475,6 +475,7 @@ fn ledger_error_tag(error: &LedgerContractError) -> &'static str {
         LedgerContractError::PartialRefundConsumesRemaining { .. } => {
             "partial_refund_consumes_remaining"
         }
+        LedgerContractError::AdminAdjustmentZeroAmount => "admin_adjustment_zero_amount",
         LedgerContractError::RefundAmountExceedsRemaining { .. } => {
             "refund_amount_exceeds_remaining"
         }

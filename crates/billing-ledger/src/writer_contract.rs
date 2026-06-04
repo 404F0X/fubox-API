@@ -381,6 +381,7 @@ pub struct ConsistentLedgerInMemoryStateSummary {
     pub pending_reserve_count: usize,
     pub confirmed_settle_count: usize,
     pub confirmed_refund_count: usize,
+    pub confirmed_adjustment_count: usize,
     pub reversed_reserve_count: usize,
 }
 
@@ -782,6 +783,14 @@ fn state_summary(state: &ConsistentLedgerWriterState) -> ConsistentLedgerInMemor
                     && entry.status == LedgerEntryStatus::Confirmed
             })
             .count(),
+        confirmed_adjustment_count: state
+            .ledger_entries
+            .iter()
+            .filter(|entry| {
+                entry.entry_type == LedgerEntryType::Adjust
+                    && entry.status == LedgerEntryStatus::Confirmed
+            })
+            .count(),
         reversed_reserve_count: state
             .ledger_entries
             .iter()
@@ -840,6 +849,7 @@ fn ledger_error_code(error: &LedgerContractError) -> &'static str {
         LedgerContractError::PartialRefundConsumesRemaining { .. } => {
             "partial_refund_consumes_remaining"
         }
+        LedgerContractError::AdminAdjustmentZeroAmount => "admin_adjustment_zero_amount",
         LedgerContractError::RefundAmountExceedsRemaining { .. } => {
             "refund_amount_exceeds_remaining"
         }
@@ -971,7 +981,12 @@ fn refund_credit_for_plan(
 ) -> Result<FixedDecimal, ConsistentLedgerWriterError> {
     let zero = zero(scale)?;
     ledger_plan.entries.iter().try_fold(zero, |total, entry| {
-        if entry.entry_type == LedgerEntryType::Refund {
+        if entry.amount.units() > 0
+            && matches!(
+                entry.entry_type,
+                LedgerEntryType::Refund | LedgerEntryType::Adjust
+            )
+        {
             checked_add(total, entry.amount)
         } else {
             Ok(total)
