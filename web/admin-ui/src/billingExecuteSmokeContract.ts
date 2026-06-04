@@ -51,6 +51,17 @@ export const ledgerAdjustmentExecuteLiveSmokeContract = {
 
 export type LedgerAdjustmentExecuteLiveSmokeContract = typeof ledgerAdjustmentExecuteLiveSmokeContract;
 
+export const ledgerAdjustmentExecuteAbsentOptionalMarker = null;
+
+export const ledgerAdjustmentExecuteReadinessMarkerKeys = [
+  "contractCheckNetworkCall",
+  "dryRunFresh",
+  "executeOutcome",
+  "executeResultFresh",
+  "executeWriteNetworkCall",
+  "ledgerRefreshStatus",
+] as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
   readinessStates: {
@@ -84,10 +95,10 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: undefined,
-        executeResultFresh: undefined,
+        executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+        executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
         executeWriteNetworkCall: true,
-        ledgerRefreshStatus: undefined,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
       },
     },
     contractBlocked: {
@@ -96,10 +107,10 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: true,
         dryRunFresh: true,
-        executeOutcome: undefined,
-        executeResultFresh: undefined,
+        executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+        executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
         executeWriteNetworkCall: false,
-        ledgerRefreshStatus: undefined,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
       },
     },
     dryRunRequired: {
@@ -108,10 +119,10 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: false,
-        executeOutcome: undefined,
-        executeResultFresh: undefined,
+        executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+        executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
         executeWriteNetworkCall: false,
-        ledgerRefreshStatus: undefined,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
       },
     },
     executePreflight: {
@@ -120,10 +131,10 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: undefined,
-        executeResultFresh: undefined,
+        executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+        executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
         executeWriteNetworkCall: false,
-        ledgerRefreshStatus: undefined,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
       },
     },
     failed: {
@@ -132,10 +143,10 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: undefined,
-        executeResultFresh: undefined,
+        executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+        executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
         executeWriteNetworkCall: true,
-        ledgerRefreshStatus: undefined,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
       },
     },
     idempotentRefreshError: {
@@ -168,13 +179,14 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: false,
-        executeOutcome: undefined,
-        executeResultFresh: undefined,
+        executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+        executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
         executeWriteNetworkCall: false,
-        ledgerRefreshStatus: undefined,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
       },
     },
   },
+  readinessMarkerKeys: ledgerAdjustmentExecuteReadinessMarkerKeys,
   scriptUsage: {
     assertNoForbiddenMarkersInDocument: true,
     readStatusFromReadinessRegion: true,
@@ -187,3 +199,15 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
 } as const;
 
 export type LedgerAdjustmentExecuteLiveSmokeHandoff = typeof ledgerAdjustmentExecuteLiveSmokeHandoff;
+
+export const ledgerAdjustmentExecuteLiveSmokeSerializableHandoff = {
+  ...ledgerAdjustmentExecuteLiveSmokeHandoff,
+  serialization: {
+    absentOptionalMarker: ledgerAdjustmentExecuteAbsentOptionalMarker,
+    format: "json",
+    requiredReadinessMarkerKeys: ledgerAdjustmentExecuteReadinessMarkerKeys,
+  },
+} as const;
+
+export type LedgerAdjustmentExecuteLiveSmokeSerializableHandoff =
+  typeof ledgerAdjustmentExecuteLiveSmokeSerializableHandoff;

@@ -3,14 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import {
+  ledgerAdjustmentExecuteAbsentOptionalMarker,
   ledgerAdjustmentExecuteLiveSmokeContract,
   ledgerAdjustmentExecuteLiveSmokeHandoff,
+  ledgerAdjustmentExecuteLiveSmokeSerializableHandoff,
 } from "./billingExecuteSmokeContract";
 
 vi.setConfig({ testTimeout: 15000 });
 
 const ledgerExecuteSmoke = ledgerAdjustmentExecuteLiveSmokeContract;
 const ledgerExecuteSmokeHandoff = ledgerAdjustmentExecuteLiveSmokeHandoff;
+const ledgerExecuteSmokeSerializableHandoff = ledgerAdjustmentExecuteLiveSmokeSerializableHandoff;
 
 const AUTH_HEADER_NAME = ["Author", "ization"].join("");
 const BEARER_SCHEME = ["Bear", "er"].join("");
@@ -2806,6 +2809,10 @@ describe("App", () => {
     );
   });
 
+  function normalizeAbsentSmokeMarker<T>(value: T | null): T | undefined {
+    return value === ledgerAdjustmentExecuteAbsentOptionalMarker ? undefined : value;
+  }
+
   function expectLedgerBackendSmokeReadiness({
     contractCheckNetworkCall = false,
     dryRunFresh,
@@ -2837,9 +2844,9 @@ describe("App", () => {
       expect(expectedHandoffState.markers.contractCheckNetworkCall).toBe(contractCheckNetworkCall);
       expect(expectedHandoffState.markers.dryRunFresh).toBe(dryRunFresh);
       expect(expectedHandoffState.markers.executeWriteNetworkCall).toBe(executeWriteNetworkCall);
-      expect(expectedHandoffState.markers.executeResultFresh).toBe(executeResultFresh);
-      expect(expectedHandoffState.markers.executeOutcome).toBe(executeOutcome);
-      expect(expectedHandoffState.markers.ledgerRefreshStatus).toBe(ledgerRefreshStatus);
+      expect(normalizeAbsentSmokeMarker(expectedHandoffState.markers.executeResultFresh)).toBe(executeResultFresh);
+      expect(normalizeAbsentSmokeMarker(expectedHandoffState.markers.executeOutcome)).toBe(executeOutcome);
+      expect(normalizeAbsentSmokeMarker(expectedHandoffState.markers.ledgerRefreshStatus)).toBe(ledgerRefreshStatus);
     }
 
     expect(screen.getByTestId(selectors.executeContractMode)).toHaveTextContent(`${markers.executeContractMode}=true`);
@@ -2932,7 +2939,8 @@ describe("App", () => {
   });
 
   it("exports the ledger execute live-smoke handoff for scripts", () => {
-    const { forbiddenSensitiveMarkers, readinessStates, scriptUsage, selectors, statusMarkers } = ledgerExecuteSmokeHandoff;
+    const { forbiddenSensitiveMarkers, readinessMarkerKeys, readinessStates, scriptUsage, selectors, statusMarkers } =
+      ledgerExecuteSmokeHandoff;
 
     expect(selectors).toBe(ledgerExecuteSmoke.selectors);
     expect(statusMarkers).toBe(ledgerExecuteSmoke.markers);
@@ -2944,6 +2952,14 @@ describe("App", () => {
       statusMarkersSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
       useDataTestIdsOnly: true,
     });
+    expect(readinessMarkerKeys).toEqual([
+      "contractCheckNetworkCall",
+      "dryRunFresh",
+      "executeOutcome",
+      "executeResultFresh",
+      "executeWriteNetworkCall",
+      "ledgerRefreshStatus",
+    ]);
     expect(readinessStates).toMatchObject({
       appliedRefreshError: {
         executeButtonEnabled: true,
@@ -2975,10 +2991,10 @@ describe("App", () => {
         markers: {
           contractCheckNetworkCall: false,
           dryRunFresh: true,
-          executeOutcome: undefined,
-          executeResultFresh: undefined,
+          executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+          executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
           executeWriteNetworkCall: true,
-          ledgerRefreshStatus: undefined,
+          ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
         },
       },
       contractBlocked: {
@@ -2987,10 +3003,10 @@ describe("App", () => {
         markers: {
           contractCheckNetworkCall: true,
           dryRunFresh: true,
-          executeOutcome: undefined,
-          executeResultFresh: undefined,
+          executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+          executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
           executeWriteNetworkCall: false,
-          ledgerRefreshStatus: undefined,
+          ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
         },
       },
       dryRunRequired: {
@@ -2999,10 +3015,10 @@ describe("App", () => {
         markers: {
           contractCheckNetworkCall: false,
           dryRunFresh: false,
-          executeOutcome: undefined,
-          executeResultFresh: undefined,
+          executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+          executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
           executeWriteNetworkCall: false,
-          ledgerRefreshStatus: undefined,
+          ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
         },
       },
       executePreflight: {
@@ -3011,10 +3027,10 @@ describe("App", () => {
         markers: {
           contractCheckNetworkCall: false,
           dryRunFresh: true,
-          executeOutcome: undefined,
-          executeResultFresh: undefined,
+          executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+          executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
           executeWriteNetworkCall: false,
-          ledgerRefreshStatus: undefined,
+          ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
         },
       },
       failed: {
@@ -3023,10 +3039,10 @@ describe("App", () => {
         markers: {
           contractCheckNetworkCall: false,
           dryRunFresh: true,
-          executeOutcome: undefined,
-          executeResultFresh: undefined,
+          executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+          executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
           executeWriteNetworkCall: true,
-          ledgerRefreshStatus: undefined,
+          ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
         },
       },
       idempotentRefreshError: {
@@ -3059,14 +3075,63 @@ describe("App", () => {
         markers: {
           contractCheckNetworkCall: false,
           dryRunFresh: false,
-          executeOutcome: undefined,
-          executeResultFresh: undefined,
+          executeOutcome: ledgerAdjustmentExecuteAbsentOptionalMarker,
+          executeResultFresh: ledgerAdjustmentExecuteAbsentOptionalMarker,
           executeWriteNetworkCall: false,
-          ledgerRefreshStatus: undefined,
+          ledgerRefreshStatus: ledgerAdjustmentExecuteAbsentOptionalMarker,
         },
       },
     });
     expect(new Set(Object.keys(readinessStates)).size).toBe(Object.keys(readinessStates).length);
+  });
+
+  it("exports a JSON-serializable ledger execute live-smoke handoff", () => {
+    const handoff = ledgerExecuteSmokeSerializableHandoff;
+    const serialized = JSON.stringify(handoff);
+    expect(serialized).toBeDefined();
+    const serializedHandoff = serialized ?? "";
+    const parsed = JSON.parse(serializedHandoff);
+
+    expect(serializedHandoff).not.toContain("undefined");
+    expect(parsed).toEqual(handoff);
+    expect(parsed.selectors).toEqual(ledgerExecuteSmoke.selectors);
+    expect(parsed.statusMarkers).toEqual(ledgerExecuteSmoke.markers);
+    expect(parsed.forbiddenSensitiveMarkers).toEqual(ledgerExecuteSmoke.forbiddenSensitiveMarkers);
+    expect(parsed.readinessStates).toEqual(ledgerExecuteSmokeHandoff.readinessStates);
+    expect(parsed.readinessMarkerKeys).toEqual(ledgerExecuteSmokeHandoff.readinessMarkerKeys);
+    expect(parsed.serialization).toEqual({
+      absentOptionalMarker: ledgerAdjustmentExecuteAbsentOptionalMarker,
+      format: "json",
+      requiredReadinessMarkerKeys: ledgerExecuteSmokeHandoff.readinessMarkerKeys,
+    });
+
+    const expectedMarkerKeys = [...handoff.serialization.requiredReadinessMarkerKeys].sort();
+    for (const state of Object.values(parsed.readinessStates) as Array<{
+      markers: Record<string, unknown>;
+    }>) {
+      expect(Object.keys(state.markers).sort()).toEqual(expectedMarkerKeys);
+      expect(Object.values(state.markers)).not.toContain(undefined);
+    }
+
+    expect(parsed.readinessStates.blocked.markers.executeOutcome).toBeNull();
+    expect(parsed.readinessStates.blocked.markers.executeResultFresh).toBeNull();
+    expect(parsed.readinessStates.blocked.markers.ledgerRefreshStatus).toBeNull();
+    expect(parsed.readinessStates.contractBlocked.markers.executeOutcome).toBeNull();
+    expect(parsed.readinessStates.dryRunRequired.markers.executeResultFresh).toBeNull();
+    expect(parsed.readinessStates.executePreflight.markers.ledgerRefreshStatus).toBeNull();
+    expect(parsed.readinessStates.failed.markers.executeOutcome).toBeNull();
+    expect(parsed.readinessStates.stalePlan.markers.ledgerRefreshStatus).toBeNull();
+
+    const assertNoFunctionValues = (value: unknown): void => {
+      if (value && typeof value === "object") {
+        for (const nestedValue of Object.values(value as Record<string, unknown>)) {
+          assertNoFunctionValues(nestedValue);
+        }
+        return;
+      }
+      expect(typeof value).not.toBe("function");
+    };
+    assertNoFunctionValues(handoff);
   });
 
   it("runs ledger adjustment dry-run and renders the plan-only contract with execute readiness", async () => {
