@@ -57,6 +57,15 @@
     "success_audit_only_after_ledger_write": true,
     "audit_insert_failure_rolls_back_ledger_write": true,
     "refusal_does_not_build_success_audit": true,
+    "ledger_executor_summary_contract": {
+      "schema_version": "billing_ledger_postgres_executor_summary.v1",
+      "response_field": "ledger_executor_summary",
+      "operation_key_output": "omitted",
+      "error_detail_output": "omitted",
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false
+    },
     "transaction_contract": {
       "future_isolation": "read_committed_or_stronger",
       "begin_before_locking": true,
@@ -159,6 +168,15 @@
       "ledger_snapshots_echoed": false,
       "raw_metadata_echoed": false,
       "request_material_echoed": false,
+      "credential_material_echoed": false
+    },
+    "ledger_executor_summary_contract": {
+      "schema_version": "billing_ledger_postgres_executor_summary.v1",
+      "response_field": "ledger_executor_summary",
+      "operation_key_output": "omitted",
+      "error_detail_output": "omitted",
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
       "credential_material_echoed": false
     }
   },
@@ -331,6 +349,15 @@
             "server_generated_dedupe_material": true,
             "dedupe_material_echoed": false,
             "audit_snapshot_policy": "bounded public ids and amounts only",
+            "ledger_executor_summary_contract": {
+              "schema_version": "billing_ledger_postgres_executor_summary.v1",
+              "response_field": "ledger_executor_summary",
+              "operation_key_output": "omitted",
+              "error_detail_output": "omitted",
+              "dedupe_material_echoed": false,
+              "raw_metadata_echoed": false,
+              "credential_material_echoed": false
+            },
             "transaction_contract": {
               "future_isolation": "read_committed_or_stronger",
               "begin_before_locking": true,
@@ -425,6 +452,38 @@
           "refusal_does_not_build_success_audit": true,
           "dedupe_material_echoed": false,
           "dedupe_public_output": "omitted",
+          "ledger_executor_summary_contract": {
+            "schema_version": "billing_ledger_postgres_executor_summary.v1",
+            "response_field": "ledger_executor_summary",
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false
+          },
+          "ledger_executor_summary": {
+            "schema_version": "billing_ledger_postgres_executor_summary.v1",
+            "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
+            "operation": "refund",
+            "outcome": "applied",
+            "operation_key_output": "omitted",
+            "committed": true,
+            "rolled_back": false,
+            "statement_count": 1,
+            "executed_statement_count": 1,
+            "refused_statement_count": 0,
+            "total_rows_affected": 1,
+            "final_statement_order": 1,
+            "final_statement_kind": "insert_ledger_entry",
+            "error_detail_output": "omitted",
+            "row_count_mismatch": false,
+            "dedupe_material_echoed": false,
+            "omitted_material": [
+              "dedupe material",
+              "raw metadata",
+              "credential material"
+            ]
+          },
           "audit_log_id": "00000000-0000-0000-0000-000000000093",
           "transaction_contract": {
             "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
@@ -524,6 +583,38 @@
           "refusal_does_not_build_success_audit": true,
           "dedupe_material_echoed": false,
           "dedupe_public_output": "omitted",
+          "ledger_executor_summary_contract": {
+            "schema_version": "billing_ledger_postgres_executor_summary.v1",
+            "response_field": "ledger_executor_summary",
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false
+          },
+          "ledger_executor_summary": {
+            "schema_version": "billing_ledger_postgres_executor_summary.v1",
+            "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
+            "operation": "adjust",
+            "outcome": "idempotent",
+            "operation_key_output": "omitted",
+            "committed": true,
+            "rolled_back": false,
+            "statement_count": 0,
+            "executed_statement_count": 0,
+            "refused_statement_count": 0,
+            "total_rows_affected": 0,
+            "final_statement_order": null,
+            "final_statement_kind": null,
+            "error_detail_output": "omitted",
+            "row_count_mismatch": false,
+            "dedupe_material_echoed": false,
+            "omitted_material": [
+              "dedupe material",
+              "raw metadata",
+              "credential material"
+            ]
+          },
           "transaction_contract": {
             "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
             "write_performed": false,
