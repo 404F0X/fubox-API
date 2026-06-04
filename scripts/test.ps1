@@ -1,4 +1,20 @@
+param(
+  [switch]$GatewayRateLimitReservationSmokeOnly,
+  [switch]$GatewayRateLimitReservationSmokePreflight,
+  [switch]$GatewayRateLimitReservationSmokeLive
+)
+
 $ErrorActionPreference = "Stop"
+
+function Test-TruthyEnv {
+  param([AllowNull()][string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return $false
+  }
+
+  return @("1", "true", "yes", "on").Contains($Value.Trim().ToLowerInvariant())
+}
 
 function Invoke-CheckedScript {
   param(
@@ -17,6 +33,51 @@ function Invoke-CheckedScript {
   if ($null -ne $exitCode -and $exitCode -ne 0) { exit $exitCode }
 }
 
+function Get-GatewayRateLimitReservationSmokeParameters {
+  if ($GatewayRateLimitReservationSmokeLive) {
+    return @{}
+  }
+
+  if ($GatewayRateLimitReservationSmokePreflight) {
+    return @{ PreflightOnly = $true }
+  }
+
+  return @{ DryRun = $true }
+}
+
+function Invoke-GatewayRateLimitReservationSmoke {
+  $mode = "dry-run"
+  if ($GatewayRateLimitReservationSmokeLive) {
+    $mode = "live"
+  } elseif ($GatewayRateLimitReservationSmokePreflight) {
+    $mode = "preflight"
+  }
+
+  Write-Host "Gateway rate-limit reservation smoke mode: $mode"
+  Invoke-CheckedScript `
+    -Path "$PSScriptRoot\verify_gateway_rate_limit_reservation_smoke.ps1" `
+    -Parameters (Get-GatewayRateLimitReservationSmokeParameters)
+}
+
+if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_ONLY) {
+  $GatewayRateLimitReservationSmokeOnly = $true
+}
+if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_PREFLIGHT) {
+  $GatewayRateLimitReservationSmokePreflight = $true
+}
+if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_LIVE) {
+  $GatewayRateLimitReservationSmokeLive = $true
+}
+
+if ($GatewayRateLimitReservationSmokePreflight -and $GatewayRateLimitReservationSmokeLive) {
+  throw "Use either -GatewayRateLimitReservationSmokePreflight or -GatewayRateLimitReservationSmokeLive, not both."
+}
+
+if ($GatewayRateLimitReservationSmokeOnly) {
+  Invoke-GatewayRateLimitReservationSmoke
+  exit 0
+}
+
 Invoke-CheckedScript -Path "$PSScriptRoot\test_adapter_conformance_ci_contract.ps1"
 Invoke-CheckedScript -Path "$PSScriptRoot\adapter_conformance.ps1" -Parameters @{ Strict = $true }
 
@@ -29,6 +90,7 @@ Invoke-CheckedScript -Path "$PSScriptRoot\verify_gateway_profile_smoke.ps1" -Par
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_gateway_streaming_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_gateway_retry_fallback_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_provider_key_runtime_smoke.ps1" -Parameters @{ DryRun = $true }
+Invoke-GatewayRateLimitReservationSmoke
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_compose_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-CheckedScript -Path "$PSScriptRoot\test_supply_chain_scan.ps1"
 Invoke-CheckedScript -Path "$PSScriptRoot\test_supply_chain_artifacts.ps1"

@@ -540,6 +540,7 @@ function Invoke-SmokeCheck {
   $commands = New-Object System.Collections.Generic.List[object]
 
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_compose_smoke.ps1" -Arguments @("-DryRun")))
+  [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_gateway_rate_limit_reservation_smoke.ps1" -Arguments @("-DryRun")))
 
   $missingSdkTools = New-Object System.Collections.Generic.List[string]
   if (-not (Test-ToolAvailable "node")) {
@@ -549,7 +550,7 @@ function Invoke-SmokeCheck {
     [void]$missingSdkTools.Add("npm")
   }
 
-  $notes = @("smoke gate always runs compose dry-run checks; SDK dry-run runs when node and npm are available.")
+  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks; SDK dry-run runs when node and npm are available.")
   if ($RunRuntimeSmoke) {
     $notes += "runtime smoke was requested explicitly."
   }
@@ -588,10 +589,11 @@ function Invoke-SmokeCheck {
     [void]$warnings.Add("local warning: docker not found; runtime compose smoke skipped. Default smoke gate remains dry-run only.")
   } elseif ($RunRuntimeSmoke) {
     [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_compose_smoke.ps1"))
+    [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_gateway_rate_limit_reservation_smoke.ps1"))
     [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_sdk_smoke.ps1" -Arguments @("-SkipInstall", "-AllowStreamingSkip")))
   }
 
-  $notes += "pass -RunRuntimeSmoke only after the local compose stack is up."
+  $notes += "pass -RunRuntimeSmoke only after the local compose stack is up; gateway rate-limit reservation live smoke also requires seeded Postgres, Gateway, and mock-provider."
 
   return New-CommandsCheckResult `
     -Id "smoke" `
