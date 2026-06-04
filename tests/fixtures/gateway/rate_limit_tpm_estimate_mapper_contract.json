@@ -1294,6 +1294,133 @@
       "maybe"
     ]
   },
+  "trusted_numeric_source_streaming_provider_closure_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_streaming_closure_v1",
+    "implementation_status": "non-stream and streaming paths consume the same GatewayTpmEstimatePlan trusted provider safe summary before reservation acquire",
+    "covered_endpoints": [
+      {
+        "endpoint": "openai_chat",
+        "streaming_supported": true,
+        "streaming_context": "StreamingChatContext"
+      },
+      {
+        "endpoint": "openai_responses",
+        "streaming_supported": true,
+        "streaming_context": "StreamingResponsesContext"
+      },
+      {
+        "endpoint": "anthropic_messages",
+        "streaming_supported": true,
+        "streaming_context": "StreamingAnthropicMessagesContext"
+      },
+      {
+        "endpoint": "gemini_native",
+        "streaming_supported": true,
+        "streaming_context": "StreamingGeminiGenerateContentContext"
+      }
+    ],
+    "shared_plan_required": true,
+    "streaming_context_field": "rate_limit_tpm_estimate",
+    "reservation_acquire_helper": "gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate)",
+    "safe_evidence_fields": [
+      "tpm_estimate.trusted_source_provider.status",
+      "tpm_estimate.trusted_source_provider.source_type",
+      "tpm_estimate.trusted_source_provider.token_kind",
+      "tpm_estimate.trusted_source_provider.tokens",
+      "tpm_estimate.trusted_source_provider.provider_invoked",
+      "tpm_estimate.trusted_source_provider.fallback_required",
+      "tpm_estimate.trusted_source_provider.estimate_duration_ms",
+      "tpm_estimate.trusted_source_provider.estimate_duration_marker",
+      "tpm_estimate.trusted_source_provider.source_marker",
+      "tpm_estimate.trusted_source_provider.token_count_marker",
+      "tpm_estimate.trusted_source_implementation_slot.status",
+      "tpm_estimate.trusted_source_implementation_slot.source_type",
+      "tpm_estimate.trusted_source_implementation_slot.provider_invocation_allowed",
+      "tpm_estimate.trusted_source_implementation_slot.fallback_required",
+      "rate_limit_reservation.required_capacity.tokens_per_minute",
+      "rate_limit_reservation.acquire.dimensions.tpm.required",
+      "rate_limit_reservation.db_required_capacity.tokens_per_minute"
+    ],
+    "capacity_alignment_required": true,
+    "ordering_contract": [
+      "prompt-protection allow",
+      "trusted numeric provider safe summary",
+      "TPM estimate",
+      "streaming context handoff",
+      "rate-limit reservation acquire",
+      "provider side effect"
+    ],
+    "implementation_slot_contract": {
+      "schema": "gateway_tpm_trusted_numeric_source_implementation_slot_v1",
+      "helper": "gateway_trusted_numeric_source_implementation_slot",
+      "states": [
+        {
+          "name": "disabled_default",
+          "status": "disabled",
+          "provider_invocation_allowed": false,
+          "fallback_required": true
+        },
+        {
+          "name": "enabled_provider_unavailable",
+          "status": "blocked",
+          "provider_invocation_allowed": false,
+          "fallback_required": true
+        },
+        {
+          "name": "enabled_provider_attached",
+          "status": "ready",
+          "provider_invocation_allowed": true,
+          "fallback_required": false
+        },
+        {
+          "name": "read_model_provider_attached",
+          "status": "ready",
+          "source_type": "read_model",
+          "provider_invocation_allowed": true,
+          "fallback_required": false
+        }
+      ],
+      "safe_summary_fields": [
+        "trusted_source_implementation_slot.schema",
+        "trusted_source_implementation_slot.status",
+        "trusted_source_implementation_slot.source_type",
+        "trusted_source_implementation_slot.config_enabled",
+        "trusted_source_implementation_slot.provider_available",
+        "trusted_source_implementation_slot.provider_attached",
+        "trusted_source_implementation_slot.provider_invocation_allowed",
+        "trusted_source_implementation_slot.fallback_required",
+        "trusted_source_implementation_slot.availability_marker",
+        "trusted_source_implementation_slot.estimate_duration_marker",
+        "trusted_source_implementation_slot.source_marker",
+        "trusted_source_implementation_slot.token_count_marker",
+        "trusted_source_implementation_slot.material_in_output",
+        "trusted_source_implementation_slot.provider_side_effect_required"
+      ]
+    },
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\"",
+      "maybe"
+    ]
+  },
   "trusted_numeric_source_production_provider_wiring_attempt_contract": {
     "schema": "gateway_tpm_trusted_numeric_source_production_provider_wiring_attempt_v1",
     "implementation_status": "explicit env opt-in can invoke an env-backed replaceable trusted numeric provider; default request path remains conservative fallback",
@@ -1315,6 +1442,14 @@
       "tokens": 321,
       "raw_prompt_estimation_allowed": false
     },
+    "read_model_ready_behavior": {
+      "provider_invoked": true,
+      "source_type": "read_model",
+      "token_kind": "input_tokens",
+      "tokens": 222,
+      "estimate_source": "total_tokens",
+      "raw_input_estimation_allowed": false
+    },
     "fallback_behavior": {
       "invalid_or_missing_numeric_source": "conservative_fallback",
       "request_continues": true,
@@ -1331,7 +1466,13 @@
       "tpm_estimate.trusted_source_provider.source_marker",
       "tpm_estimate.trusted_source_provider.token_count_marker",
       "tpm_estimate.trusted_source_provider.material_in_output",
-      "tpm_estimate.trusted_source_provider.provider_side_effect_required"
+      "tpm_estimate.trusted_source_provider.provider_side_effect_required",
+      "tpm_estimate.trusted_source_implementation_slot.status",
+      "tpm_estimate.trusted_source_implementation_slot.source_type",
+      "tpm_estimate.trusted_source_implementation_slot.provider_available",
+      "tpm_estimate.trusted_source_implementation_slot.provider_attached",
+      "tpm_estimate.trusted_source_implementation_slot.provider_invocation_allowed",
+      "tpm_estimate.trusted_source_implementation_slot.fallback_required"
     ],
     "forbidden_output_markers": [
       "sk-live",

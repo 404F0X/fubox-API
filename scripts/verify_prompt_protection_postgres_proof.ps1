@@ -6,11 +6,17 @@ param(
   [string]$DatabaseUrl = "",
   [string]$EvidenceReportPath = "",
   [string]$CleanupEvidenceReportPath = "",
+  [string]$AdminUiBaseUrl = "",
+  [string]$AdminSessionToken = "",
+  [string]$ControlPlaneBaseUrl = "http://127.0.0.1:8081",
+  [string]$AdminEmail = "admin@example.com",
+  [string]$AdminPassword = "local-password",
   [int]$TimeoutSeconds = 12,
   [int]$DbPollSeconds = 12,
   [switch]$Live,
   [switch]$ContractOnly,
   [switch]$PreflightOnly,
+  [switch]$BrowserAuditDetailAttempt,
   [switch]$SkipComposePs,
   [switch]$SkipMockProviderHealth,
   [switch]$SelfTestExitSemantics,
@@ -32,6 +38,8 @@ $script:Blockers = @()
 $script:RunId = "pp-proof-" + ([guid]::NewGuid().ToString("N"))
 $script:TrackedCases = @()
 $script:CaseReportByName = @{}
+$script:BrowserAuditDetailAttemptReport = $null
+$script:AuditLogsMutationRowAttemptReport = $null
 
 function Test-TruthyEnv {
   param([AllowNull()][string]$Value)
@@ -51,10 +59,17 @@ if ($env:DATABASE_URL) { $DatabaseUrl = $env:DATABASE_URL }
 if ((-not $DatabaseUrl) -and $env:POSTGRES_URL) { $DatabaseUrl = $env:POSTGRES_URL }
 if ($env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH) { $EvidenceReportPath = $env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH }
 if ($env:PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_PATH) { $CleanupEvidenceReportPath = $env:PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_PATH }
+if ($env:ADMIN_UI_BASE_URL) { $AdminUiBaseUrl = $env:ADMIN_UI_BASE_URL }
+if ($env:PROMPT_PROTECTION_ADMIN_SESSION_TOKEN) { $AdminSessionToken = $env:PROMPT_PROTECTION_ADMIN_SESSION_TOKEN }
+if ((-not $AdminSessionToken) -and $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $AdminSessionToken = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN }
+if ($env:CONTROL_PLANE_BASE_URL) { $ControlPlaneBaseUrl = $env:CONTROL_PLANE_BASE_URL }
+if ($env:CONTROL_PLANE_ADMIN_EMAIL) { $AdminEmail = $env:CONTROL_PLANE_ADMIN_EMAIL }
+if ($env:CONTROL_PLANE_ADMIN_PASSWORD) { $AdminPassword = $env:CONTROL_PLANE_ADMIN_PASSWORD }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) { $Live = $true }
 if (Test-TruthyEnv $env:E13_PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) { $Live = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_CONTRACT_ONLY) { $ContractOnly = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_PREFLIGHT_ONLY) { $PreflightOnly = $true }
+if (Test-TruthyEnv $env:PROMPT_PROTECTION_BROWSER_AUDIT_DETAIL_ATTEMPT) { $BrowserAuditDetailAttempt = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_COMPOSE_PS) { $SkipComposePs = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_MOCK_PROVIDER_HEALTH) { $SkipMockProviderHealth = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_DRY_RUN) { $CleanupEvidenceReportDryRun = $true }
@@ -71,7 +86,7 @@ function Redact-SecretLikeString {
   }
 
   $redacted = [string]$Text
-  foreach ($knownSecret in @($GatewayAuthToken, $DatabaseUrl)) {
+  foreach ($knownSecret in @($GatewayAuthToken, $DatabaseUrl, $AdminSessionToken, $AdminPassword)) {
     if (-not [string]::IsNullOrEmpty($knownSecret)) {
       $redacted = $redacted.Replace([string]$knownSecret, "[REDACTED]")
     }
@@ -138,6 +153,307 @@ function Check-LivePrecondition {
   } catch {
     Add-Blocker "[BLOCKED] $Name - $($_.Exception.Message)"
   }
+}
+
+function New-BrowserAuditDetailAttemptReport {
+  param(
+    [string]$Classification = "",
+    [string]$BlockerReason = ""
+  )
+
+  $requested = [bool]$BrowserAuditDetailAttempt
+  $adminUiConfigured = -not [string]::IsNullOrWhiteSpace($AdminUiBaseUrl)
+  $sessionConfigured = -not [string]::IsNullOrWhiteSpace($AdminSessionToken)
+  $effectiveClassification = [string]$Classification
+  if ([string]::IsNullOrWhiteSpace($effectiveClassification)) {
+    $effectiveClassification = if ($requested) { "blocker" } else { "not_requested" }
+  }
+  $effectiveReason = [string]$BlockerReason
+  if ([string]::IsNullOrWhiteSpace($effectiveReason)) {
+    if (-not $requested) {
+      $effectiveReason = "not_requested"
+    } elseif (-not $adminUiConfigured -and -not $sessionConfigured) {
+      $effectiveReason = "admin_ui_base_url_and_admin_session_handoff_missing"
+    } elseif (-not $adminUiConfigured) {
+      $effectiveReason = "admin_ui_base_url_missing"
+    } elseif (-not $sessionConfigured) {
+      $effectiveReason = "admin_session_handoff_missing"
+    } else {
+      $effectiveReason = "browser_readback_required"
+    }
+  }
+
+  return [ordered]@{
+    schema = "prompt_protection_browser_audit_detail_attempt_v1"
+    requested = $requested
+    classification = $effectiveClassification
+    browser_e2e_passed = $false
+    blocker_reason = $effectiveReason
+    admin_ui_base_url_env = "ADMIN_UI_BASE_URL"
+    admin_ui_base_url_configured = $adminUiConfigured
+    admin_session_token_env = "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN"
+    fallback_admin_session_token_env = "CONTROL_PLANE_ADMIN_SESSION_TOKEN"
+    admin_session_token_configured = $sessionConfigured
+    admin_session_header = "X-Admin-Session"
+    required_readback = @(
+      "current_provenance",
+      "duration_available",
+      "latency_envelope",
+      "provider_attempts_count=0",
+      "request_log_hash_only",
+      "stale_replay_refusal"
+    )
+    stale_refusal_required = $true
+    reproducible_command = "set ADMIN_UI_BASE_URL and PROMPT_PROTECTION_ADMIN_SESSION_TOKEN or CONTROL_PLANE_ADMIN_SESSION_TOKEN, then rerun verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath <safe .tmp json> -BrowserAuditDetailAttempt"
+    raw_values_omitted = $true
+    token_value_omitted = $true
+    cookie_value_omitted = $true
+    raw_report_path_omitted = $true
+  }
+}
+
+function New-AuditLogsMutationRowAttemptReport {
+  param(
+    [string]$Classification = "",
+    [string]$BlockerReason = "",
+    [int]$ObservedRowCount = 0,
+    [int]$PromptProtectionRowCount = 0
+  )
+
+  $requested = [bool]$BrowserAuditDetailAttempt
+  $effectiveClassification = [string]$Classification
+  if ([string]::IsNullOrWhiteSpace($effectiveClassification)) {
+    $effectiveClassification = if ($requested) { "blocker" } else { "not_requested" }
+  }
+  $effectiveReason = [string]$BlockerReason
+  if ([string]::IsNullOrWhiteSpace($effectiveReason)) {
+    $effectiveReason = if ($requested) { "prompt_protection_audit_log_row_missing" } else { "not_requested" }
+  }
+
+  return [ordered]@{
+    schema = "prompt_protection_audit_logs_mutation_row_attempt_v1"
+    requested = $requested
+    classification = $effectiveClassification
+    blocker_reason = $effectiveReason
+    admin_api_endpoint = "GET /admin/audit-logs"
+    observed_row_count = [int]$ObservedRowCount
+    prompt_protection_row_count = [int]$PromptProtectionRowCount
+    matching_rule = "audit row metadata/before/after contains prompt_protection evidence readback or closure gate"
+    closure_requires = @(
+      "admin_session_handoff",
+      "audit_logs_tab_readable",
+      "prompt_protection_audit_row_present",
+      "request_trace_detail_readback_passed",
+      "secret_safe_omission"
+    )
+    raw_values_omitted = $true
+    token_value_omitted = $true
+    cookie_value_omitted = $true
+    raw_report_path_omitted = $true
+  }
+}
+
+function Get-BrowserAuditDetailAttemptReport {
+  if ($null -ne $script:BrowserAuditDetailAttemptReport) {
+    return $script:BrowserAuditDetailAttemptReport
+  }
+
+  return New-BrowserAuditDetailAttemptReport
+}
+
+function Get-AuditLogsMutationRowAttemptReport {
+  if ($null -ne $script:AuditLogsMutationRowAttemptReport) {
+    return $script:AuditLogsMutationRowAttemptReport
+  }
+
+  return New-AuditLogsMutationRowAttemptReport
+}
+
+function Invoke-ControlPlaneAdminSessionHandoff {
+  if (-not [string]::IsNullOrWhiteSpace($AdminSessionToken)) {
+    return $true
+  }
+  if ([string]::IsNullOrWhiteSpace($ControlPlaneBaseUrl) -or
+      [string]::IsNullOrWhiteSpace($AdminEmail) -or
+      [string]::IsNullOrWhiteSpace($AdminPassword)) {
+    return $false
+  }
+
+  $client = $null
+  $request = $null
+  $response = $null
+  try {
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds([Math]::Max(3, [Math]::Min($TimeoutSeconds, 20)))
+    $loginUrl = Join-Url $ControlPlaneBaseUrl "/admin/auth/login"
+    $body = @{
+      email = $AdminEmail
+      password = $AdminPassword
+    } | ConvertTo-Json -Depth 8 -Compress
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, $loginUrl)
+    $request.Content = [System.Net.Http.StringContent]::new($body, [System.Text.Encoding]::UTF8, "application/json")
+    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    if ([int]$response.StatusCode -eq 401 -or [int]$response.StatusCode -eq 403) {
+      return $false
+    }
+    if (-not $response.IsSuccessStatusCode) {
+      return $false
+    }
+    Assert-NoForbiddenMarkers $content "admin session handoff login response"
+    $payload = $content | ConvertFrom-Json
+    $token = [string]$payload.data.session_token_once
+    if ([string]::IsNullOrWhiteSpace($token)) {
+      return $false
+    }
+    $script:AdminSessionToken = $token
+    $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN = $token
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($null -ne $response) { $response.Dispose() }
+    if ($null -ne $request) { $request.Dispose() }
+    if ($null -ne $client) { $client.Dispose() }
+  }
+}
+
+function Invoke-ControlPlaneAdminGet {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $client = $null
+  $request = $null
+  $response = $null
+  try {
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds([Math]::Max(3, [Math]::Min($TimeoutSeconds, 20)))
+    $url = Join-Url $ControlPlaneBaseUrl $Path
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $url)
+    [void]$request.Headers.TryAddWithoutValidation("X-Admin-Session", $AdminSessionToken)
+    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    $content = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    Assert-NoForbiddenMarkers $content "control-plane admin GET response"
+    return [PSCustomObject]@{
+      StatusCode = [int]$response.StatusCode
+      Content = [string]$content
+    }
+  } finally {
+    if ($null -ne $response) { $response.Dispose() }
+    if ($null -ne $request) { $request.Dispose() }
+    if ($null -ne $client) { $client.Dispose() }
+  }
+}
+
+function Test-AuditLogHasPromptProtectionEvidence {
+  param([Parameter(Mandatory = $true)]$AuditLog)
+
+  $json = $AuditLog | ConvertTo-Json -Depth 32 -Compress
+  Assert-NoForbiddenMarkers $json "audit log prompt protection row candidate"
+  return (
+    $json.Contains("prompt_protection_evidence_readback_v1") -or
+    $json.Contains("prompt_protection_audit_closure_gate_v1") -or
+    $json.Contains("prompt_protection_postgres_proof_evidence_report.v1") -or
+    $json.Contains("prompt_protection_browser_audit_detail_attempt_v1")
+  )
+}
+
+function Invoke-AuditLogsMutationRowAttempt {
+  if (-not $BrowserAuditDetailAttempt) {
+    $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "not_requested" -BlockerReason "not_requested"
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace($AdminSessionToken)) {
+    $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "blocker" -BlockerReason "admin_session_handoff_missing"
+    return
+  }
+
+  try {
+    $response = Invoke-ControlPlaneAdminGet -Path "/admin/audit-logs?limit=25"
+    if ($response.StatusCode -eq 401 -or $response.StatusCode -eq 403) {
+      $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "blocker" -BlockerReason "admin_session_rejected"
+      Add-Blocker "[BLOCKED] prompt protection audit logs mutation row - admin_session_rejected"
+      return
+    }
+    if ($response.StatusCode -ne 200) {
+      $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "blocker" -BlockerReason "audit_logs_api_unreachable"
+      Add-Blocker "[BLOCKED] prompt protection audit logs mutation row - audit_logs_api_unreachable"
+      return
+    }
+
+    $payload = $response.Content | ConvertFrom-Json
+    $rows = @($payload.data)
+    $matched = @($rows | Where-Object { Test-AuditLogHasPromptProtectionEvidence $_ })
+    if ($matched.Count -lt 1) {
+      $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport `
+        -Classification "blocker" `
+        -BlockerReason "prompt_protection_audit_log_row_missing" `
+        -ObservedRowCount $rows.Count `
+        -PromptProtectionRowCount 0
+      Add-Blocker "[BLOCKED] prompt protection audit logs mutation row - prompt_protection_audit_log_row_missing; request/trace readback exists but Audit Logs tab has no matching prompt-protection audit row"
+      return
+    }
+
+    $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport `
+      -Classification "pass" `
+      -BlockerReason "none" `
+      -ObservedRowCount $rows.Count `
+      -PromptProtectionRowCount $matched.Count
+    Write-SafeHost "[OK] prompt protection audit logs mutation row found with secret-safe evidence."
+  } catch {
+    $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "blocker" -BlockerReason "audit_logs_api_unreadable"
+    Add-Blocker "[BLOCKED] prompt protection audit logs mutation row - audit_logs_api_unreadable"
+  }
+}
+
+function Invoke-BrowserAuditDetailAttemptPreflight {
+  if (-not $BrowserAuditDetailAttempt) {
+    $script:BrowserAuditDetailAttemptReport = New-BrowserAuditDetailAttemptReport -Classification "not_requested" -BlockerReason "not_requested"
+    return
+  }
+
+  [void](Invoke-ControlPlaneAdminSessionHandoff)
+
+  $adminUiConfigured = -not [string]::IsNullOrWhiteSpace($AdminUiBaseUrl)
+  $sessionConfigured = -not [string]::IsNullOrWhiteSpace($AdminSessionToken)
+  if (-not $adminUiConfigured -or -not $sessionConfigured) {
+    $reason = if (-not $adminUiConfigured -and -not $sessionConfigured) {
+      "admin_ui_base_url_and_admin_session_handoff_missing"
+    } elseif (-not $adminUiConfigured) {
+      "admin_ui_base_url_missing"
+    } else {
+      "admin_session_handoff_missing"
+    }
+    $script:BrowserAuditDetailAttemptReport = New-BrowserAuditDetailAttemptReport -Classification "blocker" -BlockerReason $reason
+    Add-Blocker "[BLOCKED] browser audit detail/readback - $reason; configure ADMIN_UI_BASE_URL and PROMPT_PROTECTION_ADMIN_SESSION_TOKEN or CONTROL_PLANE_ADMIN_SESSION_TOKEN, then rerun -BrowserAuditDetailAttempt"
+    return
+  }
+
+  try {
+    $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $AdminUiBaseUrl)
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds([Math]::Max(3, [Math]::Min($TimeoutSeconds, 20)))
+    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    if (-not $response.IsSuccessStatusCode) {
+      $script:BrowserAuditDetailAttemptReport = New-BrowserAuditDetailAttemptReport -Classification "blocker" -BlockerReason "admin_ui_unreachable"
+      Add-Blocker "[BLOCKED] browser audit detail/readback - admin_ui_unreachable; ensure ADMIN_UI_BASE_URL serves the Admin UI before rerun"
+      return
+    }
+  } catch {
+    $script:BrowserAuditDetailAttemptReport = New-BrowserAuditDetailAttemptReport -Classification "blocker" -BlockerReason "admin_ui_unreachable"
+    Add-Blocker "[BLOCKED] browser audit detail/readback - admin_ui_unreachable; ensure ADMIN_UI_BASE_URL serves the Admin UI before rerun"
+    return
+  } finally {
+    if ($null -ne $client) {
+      $client.Dispose()
+    }
+    if ($null -ne $request) {
+      $request.Dispose()
+    }
+  }
+
+  $script:BrowserAuditDetailAttemptReport = New-BrowserAuditDetailAttemptReport -Classification "ready_for_browser_readback" -BlockerReason "none"
+  Write-SafeHost "[OK] browser audit detail/readback handoff configured; use the Admin UI browser session to verify audit detail/readback."
+  Invoke-AuditLogsMutationRowAttempt
 }
 
 function Exit-WithEvidenceStatus {
@@ -229,6 +545,13 @@ function Invoke-EvidenceReportContractSelfTest {
   $previousContractOnly = $script:ContractOnly
   $previousSimulateLivePreflightBlocker = $script:SimulateLivePreflightBlocker
   $previousSimulateEvidenceMismatch = $script:SimulateEvidenceMismatch
+  $previousBrowserAuditDetailAttempt = $script:BrowserAuditDetailAttempt
+  $previousBrowserAuditDetailAttemptReport = $script:BrowserAuditDetailAttemptReport
+  $previousAuditLogsMutationRowAttemptReport = $script:AuditLogsMutationRowAttemptReport
+  $previousAdminUiBaseUrl = $script:AdminUiBaseUrl
+  $previousAdminSessionToken = $script:AdminSessionToken
+  $previousControlPlaneBaseUrl = $script:ControlPlaneBaseUrl
+  $previousAdminPassword = $script:AdminPassword
   $previousBlockers = $script:Blockers
   $previousFailures = $script:Failures
   $previousCaseReportByName = $script:CaseReportByName
@@ -255,6 +578,9 @@ function Invoke-EvidenceReportContractSelfTest {
     $script:ContractOnly = $false
     $script:SimulateLivePreflightBlocker = $false
     $script:SimulateEvidenceMismatch = $false
+    $script:BrowserAuditDetailAttempt = $false
+    $script:BrowserAuditDetailAttemptReport = $null
+    $script:AuditLogsMutationRowAttemptReport = $null
     $passed = New-EvidenceReport -Status "passed" -ExitCode 0 -ReportMode "live" -ProvenanceKind "live"
     Assert-EvidenceReportContract -Report $passed -ExpectedStatus "passed" -ExpectedExitCode 0 -ExpectedMode "live" -ExpectedProvenanceKind "live" -RequirePassedEndpoints
     if ($passed.freshness.live_evidence_closure_eligible -ne $true) {
@@ -269,6 +595,36 @@ function Invoke-EvidenceReportContractSelfTest {
     if ($passed.audit_handoff_bridge.closure_gate.closure_eligible -ne $true) {
       throw "live passed audit bridge was not closure eligible"
     }
+    if ([string]$passed.audit_handoff_bridge.browser_audit_detail_attempt.classification -ne "not_requested") {
+      throw "live passed browser audit attempt should default to not_requested"
+    }
+    if ([string]$passed.audit_handoff_bridge.audit_logs_mutation_row_attempt.classification -ne "not_requested") {
+      throw "live passed audit logs mutation row attempt should default to not_requested"
+    }
+
+    $script:BrowserAuditDetailAttempt = $true
+    $script:AdminUiBaseUrl = ""
+    $script:AdminSessionToken = ""
+    $script:ControlPlaneBaseUrl = ""
+    $script:AdminPassword = ""
+    $script:BrowserAuditDetailAttemptReport = $null
+    $script:AuditLogsMutationRowAttemptReport = $null
+    Invoke-BrowserAuditDetailAttemptPreflight
+    $browserBlocked = New-EvidenceReport -Status "blocked" -ExitCode 2 -ReportMode "live" -ProvenanceKind "live"
+    Assert-EvidenceReportContract -Report $browserBlocked -ExpectedStatus "blocked" -ExpectedExitCode 2 -ExpectedMode "live" -ExpectedProvenanceKind "live"
+    if ([string]$browserBlocked.audit_handoff_bridge.browser_audit_detail_attempt.classification -ne "blocker") {
+      throw "browser audit detail attempt was not blocker classified"
+    }
+    if ([string]$browserBlocked.audit_handoff_bridge.browser_audit_detail_attempt.blocker_reason -ne "admin_ui_base_url_and_admin_session_handoff_missing") {
+      throw "browser audit detail attempt blocker reason mismatch"
+    }
+    if ([string]$browserBlocked.audit_handoff_bridge.audit_logs_mutation_row_attempt.classification -ne "blocker") {
+      throw "audit logs mutation row attempt was not blocker classified"
+    }
+    $script:Blockers = @()
+    $script:BrowserAuditDetailAttempt = $false
+    $script:BrowserAuditDetailAttemptReport = $null
+    $script:AuditLogsMutationRowAttemptReport = $null
 
     $script:Failures = @("[FAIL] simulated live evidence mismatch - provider_attempts_count expected 0, got 1")
     $liveFailed = New-EvidenceReport -Status "failed" -ExitCode 1 -ReportMode "live" -ProvenanceKind "live"
@@ -371,6 +727,13 @@ function Invoke-EvidenceReportContractSelfTest {
     $script:ContractOnly = $previousContractOnly
     $script:SimulateLivePreflightBlocker = $previousSimulateLivePreflightBlocker
     $script:SimulateEvidenceMismatch = $previousSimulateEvidenceMismatch
+    $script:BrowserAuditDetailAttempt = $previousBrowserAuditDetailAttempt
+    $script:BrowserAuditDetailAttemptReport = $previousBrowserAuditDetailAttemptReport
+    $script:AuditLogsMutationRowAttemptReport = $previousAuditLogsMutationRowAttemptReport
+    $script:AdminUiBaseUrl = $previousAdminUiBaseUrl
+    $script:AdminSessionToken = $previousAdminSessionToken
+    $script:ControlPlaneBaseUrl = $previousControlPlaneBaseUrl
+    $script:AdminPassword = $previousAdminPassword
     $script:Blockers = $previousBlockers
     $script:Failures = $previousFailures
     $script:CaseReportByName = $previousCaseReportByName
@@ -1518,6 +1881,8 @@ function New-AuditHandoffBridge {
       raw_report_path_omitted = $true
       command_values_omitted = $true
     }
+    browser_audit_detail_attempt = Get-BrowserAuditDetailAttemptReport
+    audit_logs_mutation_row_attempt = Get-AuditLogsMutationRowAttemptReport
     closure_gate = [ordered]@{
       schema = "prompt_protection_audit_closure_gate_v1"
       classification = [string]$classification
@@ -2007,6 +2372,43 @@ function Assert-EvidenceReportContract {
   if ($Report.audit_handoff_bridge.audit_import_command.raw_report_path_omitted -ne $true) {
     throw "audit handoff bridge raw path omission mismatch"
   }
+  if ($null -eq $Report.audit_handoff_bridge.browser_audit_detail_attempt) {
+    throw "audit handoff bridge browser audit detail attempt missing"
+  }
+  if ([string]$Report.audit_handoff_bridge.browser_audit_detail_attempt.schema -ne "prompt_protection_browser_audit_detail_attempt_v1") {
+    throw "audit handoff bridge browser audit detail attempt schema mismatch"
+  }
+  if (@("not_requested", "blocker", "ready_for_browser_readback") -notcontains [string]$Report.audit_handoff_bridge.browser_audit_detail_attempt.classification) {
+    throw "audit handoff bridge browser audit detail attempt classification mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.browser_audit_detail_attempt.admin_session_header -ne "X-Admin-Session") {
+    throw "audit handoff bridge browser audit detail attempt session header mismatch"
+  }
+  if ($Report.audit_handoff_bridge.browser_audit_detail_attempt.token_value_omitted -ne $true -or
+      $Report.audit_handoff_bridge.browser_audit_detail_attempt.cookie_value_omitted -ne $true -or
+      $Report.audit_handoff_bridge.browser_audit_detail_attempt.raw_report_path_omitted -ne $true) {
+    throw "audit handoff bridge browser audit detail attempt omission mismatch"
+  }
+  if (@($Report.audit_handoff_bridge.browser_audit_detail_attempt.required_readback).Count -lt 6) {
+    throw "audit handoff bridge browser audit detail attempt required readback mismatch"
+  }
+  if ($null -eq $Report.audit_handoff_bridge.audit_logs_mutation_row_attempt) {
+    throw "audit handoff bridge audit logs mutation row attempt missing"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_logs_mutation_row_attempt.schema -ne "prompt_protection_audit_logs_mutation_row_attempt_v1") {
+    throw "audit handoff bridge audit logs mutation row attempt schema mismatch"
+  }
+  if (@("not_requested", "blocker", "pass") -notcontains [string]$Report.audit_handoff_bridge.audit_logs_mutation_row_attempt.classification) {
+    throw "audit handoff bridge audit logs mutation row attempt classification mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_logs_mutation_row_attempt.admin_api_endpoint -ne "GET /admin/audit-logs") {
+    throw "audit handoff bridge audit logs mutation row endpoint mismatch"
+  }
+  if ($Report.audit_handoff_bridge.audit_logs_mutation_row_attempt.token_value_omitted -ne $true -or
+      $Report.audit_handoff_bridge.audit_logs_mutation_row_attempt.cookie_value_omitted -ne $true -or
+      $Report.audit_handoff_bridge.audit_logs_mutation_row_attempt.raw_report_path_omitted -ne $true) {
+    throw "audit handoff bridge audit logs mutation row omission mismatch"
+  }
   if ([string]$Report.audit_handoff_bridge.closure_gate.schema -ne "prompt_protection_audit_closure_gate_v1") {
     throw "audit handoff bridge closure gate schema mismatch"
   }
@@ -2222,7 +2624,13 @@ function Assert-RunbookContract {
       "duration_available=false",
       ".git paths are not allowed",
       "report_status",
-      "report_exit_code"
+      "report_exit_code",
+      "Browser Admin UI audit-detail E2E",
+      "prompt_protection_browser_audit_detail_attempt_v1",
+      "prompt_protection_audit_logs_mutation_row_attempt_v1",
+      "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN",
+      "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+      "X-Admin-Session"
     )) {
     if (-not $runbook.Contains($needle)) {
       throw "runbook missing '$needle'"
@@ -2282,7 +2690,16 @@ function Assert-ScriptContract {
       "Assert-EvidenceReportContract",
       "request_log_hash_only_fields",
       "provider_key_upstream_not_called_fields",
-      "secret_safe_omission_fields"
+      "secret_safe_omission_fields",
+      "BrowserAuditDetailAttempt",
+      "PROMPT_PROTECTION_BROWSER_AUDIT_DETAIL_ATTEMPT",
+      "prompt_protection_browser_audit_detail_attempt_v1",
+      "prompt_protection_audit_logs_mutation_row_attempt_v1",
+      "Invoke-AuditLogsMutationRowAttempt",
+      "prompt_protection_audit_log_row_missing",
+      "Invoke-BrowserAuditDetailAttemptPreflight",
+      "Invoke-ControlPlaneAdminSessionHandoff",
+      "ready_for_browser_readback"
     )) {
     if (-not $source.Contains($needle)) {
       throw "script missing '$needle'"
@@ -2554,6 +2971,8 @@ function Invoke-LiveProof {
   Exit-WithEvidenceStatus
 
   if ($PreflightOnly) {
+    Invoke-BrowserAuditDetailAttemptPreflight
+    Exit-WithEvidenceStatus
     if (-not (Write-EvidenceReportIfRequested -Status "preflight_passed" -ExitCode 0)) {
       Add-Failure "[FAIL] evidence report write - report could not be written"
       Exit-WithEvidenceStatus
@@ -2667,6 +3086,7 @@ function Invoke-LiveProof {
     }
   }
 
+  Invoke-BrowserAuditDetailAttemptPreflight
   Exit-WithEvidenceStatus
 
   if (-not (Write-EvidenceReportIfRequested -Status "passed" -ExitCode 0)) {

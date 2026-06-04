@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ai_gateway
       POSTGRES_DB: ai_gateway
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ../../db:/app/db:ro
@@ -15,7 +15,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
 
   mock-provider:
     build:

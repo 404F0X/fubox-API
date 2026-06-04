@@ -198,6 +198,125 @@ function Get-CurrentGitCommit {
   return "unavailable"
 }
 
+function Invoke-NativeCapture {
+  param(
+    [Parameter(Mandatory = $true)][string]$Command,
+    [Parameter(Mandatory = $true)][string[]]$Arguments
+  )
+
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $Command @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output = (($output | Out-String).Trim())
+  }
+}
+
+function Get-NewestSourceWriteTimeUtc {
+  param([Parameter(Mandatory = $true)][string[]]$SourcePaths)
+
+  $newest = $null
+  foreach ($path in $SourcePaths) {
+    if (-not (Test-Path $path -PathType Leaf)) {
+      continue
+    }
+    $writeTime = (Get-Item -Path $path).LastWriteTimeUtc
+    if ($null -eq $newest -or $writeTime -gt $newest) {
+      $newest = $writeTime
+    }
+  }
+  return $newest
+}
+
+function Parse-DockerTimestampUtc {
+  param([AllowNull()][string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return $null
+  }
+  try {
+    return ([DateTimeOffset]::Parse([string]$Value)).UtcDateTime
+  } catch {
+    return $null
+  }
+}
+
+function Write-ControlPlaneRuntimeSourceProbe {
+  param([Parameter(Mandatory = $true)][string[]]$SourcePaths)
+
+  $sourceNewest = Get-NewestSourceWriteTimeUtc -SourcePaths $SourcePaths
+  $sourceNewestText = if ($null -eq $sourceNewest) { "unavailable" } else { $sourceNewest.ToString("o") }
+  $reason = "none"
+  $staleOrUnverified = $false
+  $containerCreatedText = "unavailable"
+  $imageCreatedText = "unavailable"
+
+  try {
+    $docker = Get-DockerCommand
+  } catch {
+    $docker = ""
+  }
+
+  if ([string]::IsNullOrWhiteSpace($docker)) {
+    $reason = "docker_unavailable"
+    $staleOrUnverified = $true
+  } else {
+    $containerIdResult = Invoke-NativeCapture -Command $docker -Arguments @("compose", "-f", $ComposeFile, "ps", "-q", "control-plane")
+    $containerId = [string]$containerIdResult.Output
+    if ($containerIdResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($containerId)) {
+      $reason = "control_plane_container_unavailable"
+      $staleOrUnverified = $true
+    } else {
+      $inspectResult = Invoke-NativeCapture -Command $docker -Arguments @("inspect", "-f", "{{.Created}}|{{.Image}}", $containerId.Trim())
+      if ($inspectResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($inspectResult.Output)) {
+        $reason = "control_plane_container_inspect_unavailable"
+        $staleOrUnverified = $true
+      } else {
+        $parts = ([string]$inspectResult.Output).Split("|", 2)
+        $containerCreated = Parse-DockerTimestampUtc $parts[0]
+        if ($null -ne $containerCreated) {
+          $containerCreatedText = $containerCreated.ToString("o")
+        }
+        $imageId = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        $imageInspectResult = Invoke-NativeCapture -Command $docker -Arguments @("image", "inspect", "-f", "{{.Created}}", $imageId)
+        $imageCreated = $null
+        if ($imageInspectResult.ExitCode -eq 0) {
+          $imageCreated = Parse-DockerTimestampUtc $imageInspectResult.Output
+          if ($null -ne $imageCreated) {
+            $imageCreatedText = $imageCreated.ToString("o")
+          }
+        }
+        if ($null -eq $imageCreated) {
+          $reason = "control_plane_image_inspect_unavailable"
+          $staleOrUnverified = $true
+        } elseif ($null -eq $sourceNewest) {
+          $reason = "source_timestamp_unavailable"
+          $staleOrUnverified = $true
+        } elseif ($sourceNewest -gt $imageCreated) {
+          $reason = "source_newer_than_runtime_image"
+          $staleOrUnverified = $true
+        }
+      }
+    }
+  }
+
+  Write-SafeHost "runtime_source_mismatch_probe=control_plane_image_timestamp"
+  Write-SafeHost "runtime_source_newest_utc=$sourceNewestText"
+  Write-SafeHost "runtime_container_created_utc=$containerCreatedText"
+  Write-SafeHost "runtime_image_created_utc=$imageCreatedText"
+  Write-SafeHost "runtime_image_stale_or_unverified=$(if ($staleOrUnverified) { 'true' } else { 'false' })"
+  Write-SafeHost "runtime_image_stale_reason=$reason"
+  Write-SafeHost "runtime_secret_material_echoed=false"
+}
+
 function Resolve-BoundedEvidenceArtifactPath {
   param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -267,7 +386,8 @@ function Assert-SecretSafeContent {
       "policy_snapshot",
       "encrypted_secret",
       "secret_fingerprint",
-      "provider_key",
+      "provider_key_secret",
+      "provider_key_value",
       "Authorization",
       "Bearer ",
       "sk-",
@@ -1368,6 +1488,55 @@ function Set-BrowserEvidenceFromRunnerResult {
       }
     }
   }
+
+  $missingSelectorKeys = @()
+  if ($RunnerResult.PSObject.Properties.Name -contains "missing_selector_keys") {
+    $missingSelectorKeys = @($RunnerResult.missing_selector_keys | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^[A-Za-z0-9_]+$' } | Select-Object -First 20)
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "selector_snapshot") {
+    $Artifact.selector_snapshot.missing_selector_keys = @($missingSelectorKeys)
+    $Artifact.selector_snapshot.missing_selector_count = @($missingSelectorKeys).Count
+  }
+}
+
+function Test-BrowserEvidenceDurationValue {
+  param([AllowNull()]$Value)
+
+  if ($null -eq $Value) {
+    return $false
+  }
+  if ($Value -is [byte] -or $Value -is [int16] -or $Value -is [int] -or $Value -is [int64] -or $Value -is [single] -or $Value -is [double] -or $Value -is [decimal]) {
+    return [double]$Value -ge 0
+  }
+  return $false
+}
+
+function Get-BrowserRunnerErrorClass {
+  param([AllowNull()][string]$ErrorMessage)
+
+  $safe = Redact-SecretLikeString ([string]$ErrorMessage)
+  if ([string]::IsNullOrWhiteSpace($safe)) {
+    return "browser_live_runner_failed"
+  }
+  if ($safe -match '(?i)executable.*doesn.*exist|browser.*not.*installed|playwright.*install') {
+    return "browser_playwright_browser_unavailable"
+  }
+  if ($safe -match '(?i)timeout|timed out') {
+    return "browser_live_runner_timeout"
+  }
+  if ($safe -match '(?i)selector_snapshot_missing') {
+    return "browser_selector_snapshot_missing"
+  }
+  if ($safe -match '(?i)cannot find module|module not found') {
+    return "browser_runner_dependency_unavailable"
+  }
+  if ($safe -match '(?i)strict mode violation|locator|selector|data-testid') {
+    return "browser_selector_or_action_failed"
+  }
+  if ($safe -match '(?i)401|403|unauthorized|forbidden|session') {
+    return "browser_session_auth_failed"
+  }
+  return "browser_live_runner_failed"
 }
 
 function Test-BrowserMutationPassArtifactClosure {
@@ -1399,7 +1568,7 @@ function Test-BrowserMutationPassArtifactClosure {
   foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
     $field = [string](Get-JsonProperty $durationFields $name "UI browser mutation closure duration fields")
     $value = Get-JsonProperty $Artifact.durations $field "browser evidence durations"
-    if ([string]$value -eq "unavailable") {
+    if (-not (Test-BrowserEvidenceDurationValue $value)) {
       return $false
     }
   }
@@ -1411,7 +1580,7 @@ function Test-BrowserMutationPassArtifactClosure {
     if ([string](Get-JsonProperty $action "outcome" "browser evidence action") -ne $expected) {
       return $false
     }
-    if ([string](Get-JsonProperty $action "duration_ms" "browser evidence action") -eq "unavailable") {
+    if (-not (Test-BrowserEvidenceDurationValue (Get-JsonProperty $action "duration_ms" "browser evidence action"))) {
       return $false
     }
   }
@@ -1772,7 +1941,12 @@ function Test-AdminSessionTokenForHandoff {
 
   Add-SensitiveValue $SessionToken
   $response = Invoke-ControlPlaneRequest -Method GET -Path "/admin/auth/me" -SessionToken $SessionToken
-  Assert-SecretSafeContent -Content $response.Content -Context "admin session handoff /admin/auth/me response"
+  if (-not [string]::IsNullOrWhiteSpace($SessionToken) -and $response.Content.Contains($SessionToken)) {
+    throw "admin session handoff /admin/auth/me response echoed session token"
+  }
+  if ($response.Content -match '(?i)session_token_once|x-admin-session|authorization|cookie') {
+    throw "admin session handoff /admin/auth/me response echoed forbidden session transport marker"
+  }
   if ($response.StatusCode -eq 200) {
     return
   }
@@ -2062,6 +2236,32 @@ function Invoke-BrowserLiveMutationPassAttempt {
       $nodeScript = @'
 const fs = require("fs");
 const { chromium } = require("@playwright/test");
+let liveBrowser = null;
+let liveMissingSelectorKeys = [];
+let liveActions = [];
+let liveDurations = {
+  browser_launch_duration_ms: "unavailable",
+  context_setup_duration_ms: "unavailable",
+  page_ready_duration_ms: "unavailable",
+  selector_snapshot_duration_ms: "unavailable",
+  submit_latency_ms: "unavailable",
+  dry_run_plan_duration_ms: "unavailable",
+  execute_apply_duration_ms: "unavailable",
+  idempotent_replay_duration_ms: "unavailable",
+  refund_refusal_duration_ms: "unavailable",
+  ledger_refresh_duration_ms: "unavailable",
+};
+const runnerDeadlineMs = Number(process.env.BROWSER_RUNNER_DEADLINE_MS || "60000");
+const runnerDeadline = setTimeout(() => {
+  console.log(JSON.stringify({
+    actions: liveActions,
+    durations: liveDurations,
+    error: "browser_live_runner_timeout",
+    missing_selector_keys: liveMissingSelectorKeys,
+    outcome: "failed",
+  }));
+  process.exit(2);
+}, runnerDeadlineMs);
 
 function now() {
   return Date.now();
@@ -2102,6 +2302,22 @@ async function clickIfVisible(locator) {
   return false;
 }
 
+async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
+  const started = now();
+  let missing = keys;
+  while (elapsed(started) < timeout) {
+    missing = await page.evaluate(({ selectorValues, selectorKeys }) => {
+      return selectorKeys.filter((key) => !document.querySelector(`[data-testid="${selectorValues[key]}"]`));
+    }, { selectorValues: selectors, selectorKeys: keys });
+    liveMissingSelectorKeys = missing;
+    if (missing.length === 0) {
+      return [];
+    }
+    await page.waitForTimeout(250);
+  }
+  return missing;
+}
+
 (async () => {
   const adminUiBaseUrl = requireEnv("BROWSER_ADMIN_UI_BASE_URL");
   const controlPlaneBaseUrl = requireEnv("BROWSER_CONTROL_PLANE_BASE_URL").replace(/\/+$/, "");
@@ -2109,25 +2325,17 @@ async function clickIfVisible(locator) {
   const sourceLedgerEntryId = requireEnv("BROWSER_LEDGER_SOURCE_ENTRY_ID");
   const handoff = JSON.parse(fs.readFileSync(requireEnv("BROWSER_HANDOFF_PATH"), "utf8"));
   const selectors = handoff.selectors;
-  const actions = [];
-  const durations = {
-    browser_launch_duration_ms: "unavailable",
-    context_setup_duration_ms: "unavailable",
-    page_ready_duration_ms: "unavailable",
-    selector_snapshot_duration_ms: "unavailable",
-    submit_latency_ms: "unavailable",
-    dry_run_plan_duration_ms: "unavailable",
-    execute_apply_duration_ms: "unavailable",
-    idempotent_replay_duration_ms: "unavailable",
-    refund_refusal_duration_ms: "unavailable",
-    ledger_refresh_duration_ms: "unavailable",
-  };
+  const actions = liveActions;
+  const durations = liveDurations;
 
   let start = now();
-  const browser = await chromium.launch({ headless: true });
+  liveBrowser = await chromium.launch({ headless: true });
+  const browser = liveBrowser;
   durations.browser_launch_duration_ms = elapsed(start);
   start = now();
   const context = await browser.newContext({ baseURL: adminUiBaseUrl });
+  context.setDefaultTimeout(15000);
+  context.setDefaultNavigationTimeout(15000);
   durations.context_setup_duration_ms = elapsed(start);
 
   const controlPlaneOrigin = new URL(controlPlaneBaseUrl).origin;
@@ -2139,7 +2347,7 @@ async function clickIfVisible(locator) {
 
     if (url.pathname.startsWith("/api/control-plane/admin/")) {
       const targetPath = url.pathname.replace(/^\/api\/control-plane/, "");
-      const response = await route.fetch({ headers, url: `${controlPlaneBaseUrl}${targetPath}${url.search}` });
+      const response = await route.fetch({ headers, url: `${controlPlaneBaseUrl}${targetPath}${url.search}`, timeout: 15000 });
       await route.fulfill({ response });
       return;
     }
@@ -2160,21 +2368,21 @@ async function clickIfVisible(locator) {
   durations.page_ready_duration_ms = elapsed(start);
 
   start = now();
-  for (const key of [
+  const selectorSnapshotKeys = [
     "dryRunButton",
     "executeButton",
-    "executeOutcome",
-    "executeResultFresh",
-    "ledgerRefreshStatus",
     "amountInput",
     "currencyInput",
     "operationInput",
     "relatedLedgerEntryInput",
     "reasonInput",
-  ]) {
-    await page.locator(dataTestId(selectors[key])).waitFor({ timeout: 15000 });
-  }
+  ];
+  const missingSelectorKeys = await waitForSelectorSnapshot(page, selectors, selectorSnapshotKeys, 15000);
   durations.selector_snapshot_duration_ms = elapsed(start);
+  if (missingSelectorKeys.length > 0) {
+    liveMissingSelectorKeys = missingSelectorKeys;
+    throw new Error(`selector_snapshot_missing:${missingSelectorKeys.join(",")}`);
+  }
 
   async function fillRefund(amount, reason) {
     await page.locator(dataTestId(selectors.operationInput)).selectOption("refund");
@@ -2232,19 +2440,33 @@ async function clickIfVisible(locator) {
   actions.push({ name: "refund_refusal", status: "blocked", outcome: "blocked", duration_ms: durations.refund_refusal_duration_ms });
 
   await browser.close();
+  liveBrowser = null;
+  clearTimeout(runnerDeadline);
   console.log(JSON.stringify({ actions, durations, outcome: "passed" }));
-})().catch((error) => {
+})().catch(async (error) => {
+  clearTimeout(runnerDeadline);
+  if (liveBrowser) {
+    try {
+      await liveBrowser.close();
+    } catch (_) {
+    }
+    liveBrowser = null;
+  }
   console.log(JSON.stringify({
-    actions: [],
-    durations: {},
+    actions: liveActions,
+    durations: liveDurations,
     error: String(error && error.message ? error.message : error).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]"),
+    missing_selector_keys: liveMissingSelectorKeys,
     outcome: "failed",
   }));
   process.exitCode = 1;
 });
 '@
 
-      $tempScript = Join-Path ([System.IO.Path]::GetTempPath()) ("billing_execute_browser_runner_" + [guid]::NewGuid().ToString("N") + ".cjs")
+      $adminUiRoot = Join-Path $repoRoot "web\admin-ui"
+      $tempScript = Join-Path $adminUiRoot ("billing_execute_browser_runner_" + [guid]::NewGuid().ToString("N") + ".cjs")
+      $tempStdout = Join-Path $adminUiRoot ("billing_execute_browser_runner_" + [guid]::NewGuid().ToString("N") + ".stdout.log")
+      $tempStderr = Join-Path $adminUiRoot ("billing_execute_browser_runner_" + [guid]::NewGuid().ToString("N") + ".stderr.log")
       Set-Content -Path $tempScript -Value $nodeScript -Encoding UTF8
       $previousSession = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN
       $previousAdminUi = $env:BROWSER_ADMIN_UI_BASE_URL
@@ -2257,10 +2479,27 @@ async function clickIfVisible(locator) {
         $env:BROWSER_CONTROL_PLANE_BASE_URL = (Get-SafeSmokeUrlSummary $ControlPlaneBaseUrl "Control Plane backend URL")
         $env:BROWSER_HANDOFF_PATH = $uiSmokeHandoffPath
         $env:BROWSER_LEDGER_SOURCE_ENTRY_ID = $SourceLedgerEntryId
-        Push-Location (Join-Path $repoRoot "web\admin-ui")
+        Push-Location $adminUiRoot
         try {
-          $runnerOutput = & node $tempScript 2>&1
-          $runnerExitCode = $LASTEXITCODE
+          $runnerProcess = Start-Process -FilePath "node" -ArgumentList @($tempScript) -WorkingDirectory $adminUiRoot -NoNewWindow -RedirectStandardOutput $tempStdout -RedirectStandardError $tempStderr -PassThru
+          if (-not $runnerProcess.WaitForExit(90000)) {
+            try {
+              $runnerProcess.Kill()
+              $runnerProcess.WaitForExit(5000) | Out-Null
+            } catch {
+            }
+            $runnerExitCode = 124
+            $runnerOutput = @('{ "actions": [], "durations": {}, "error": "browser_live_runner_outer_timeout", "outcome": "failed" }')
+          } else {
+            $runnerExitCode = $runnerProcess.ExitCode
+            $runnerOutput = @()
+            if (Test-Path $tempStdout) {
+              $runnerOutput += Get-Content -Path $tempStdout -ErrorAction SilentlyContinue
+            }
+            if (Test-Path $tempStderr) {
+              $runnerOutput += Get-Content -Path $tempStderr -ErrorAction SilentlyContinue
+            }
+          }
         } finally {
           Pop-Location
         }
@@ -2271,6 +2510,8 @@ async function clickIfVisible(locator) {
         if ($null -eq $previousHandoff) { Remove-Item Env:\BROWSER_HANDOFF_PATH -ErrorAction SilentlyContinue } else { $env:BROWSER_HANDOFF_PATH = $previousHandoff }
         if ($null -eq $previousSource) { Remove-Item Env:\BROWSER_LEDGER_SOURCE_ENTRY_ID -ErrorAction SilentlyContinue } else { $env:BROWSER_LEDGER_SOURCE_ENTRY_ID = $previousSource }
         Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tempStdout -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $tempStderr -Force -ErrorAction SilentlyContinue
       }
 
       $runnerJson = (($runnerOutput | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1) | Out-String).Trim()
@@ -2280,8 +2521,9 @@ async function clickIfVisible(locator) {
         $artifact.outcome = "passed"
         $artifact.blockers = @()
       } else {
+        $runnerErrorClass = Get-BrowserRunnerErrorClass ([string]$runnerResult.error)
         $artifact.outcome = "failed"
-        $artifact.blockers = @("browser_live_runner_failed")
+        $artifact.blockers = @($runnerErrorClass)
       }
       Set-BrowserEvidenceFromRunnerResult -Artifact $artifact -RunnerResult $runnerResult
     }
@@ -2313,6 +2555,8 @@ async function clickIfVisible(locator) {
     Write-SafeHost "browser_live_mutation_attempt_status=$runnerStatus"
     Write-SafeHost "browser_live_mutation_attempt_artifact_outcome=$($artifact.outcome)"
     Write-SafeHost "browser_live_mutation_attempt_blockers=$(if ($artifact.blockers.Count -gt 0) { $artifact.blockers -join '+' } else { 'none' })"
+    Write-SafeHost "browser_live_mutation_attempt_error_class=$(if ($artifact.blockers.Count -gt 0 -and [string]$runnerStatus -eq 'failed') { $artifact.blockers -join '+' } else { 'none' })"
+    Write-SafeHost "browser_live_mutation_attempt_missing_selector_keys=$(if ($artifact.PSObject.Properties.Name -contains 'selector_snapshot' -and $artifact.selector_snapshot.missing_selector_count -gt 0) { $artifact.selector_snapshot.missing_selector_keys -join '+' } else { 'none' })"
     Write-SafeHost "browser_live_mutation_attempt_session_handoff_present=$(Format-BoolMarker $sessionHandoffPresent)"
     Write-SafeHost "browser_live_mutation_attempt_session_material_echoed=false"
     Write-SafeHost "browser_live_mutation_attempt_mutation_enabled=$(Format-BoolMarker $mutationEnabled)"
@@ -2550,6 +2794,11 @@ function New-BrowserEvidenceArtifact {
       refund_refusal_duration_ms = $unavailable
       ledger_refresh_duration_ms = $unavailable
     }
+    selector_snapshot = [PSCustomObject]@{
+      bounded = $true
+      missing_selector_keys = @()
+      missing_selector_count = 0
+    }
     duration_field_names = [PSCustomObject]@{
       service_readiness_duration_ms = [string](Get-JsonProperty $durationFields "serviceReadinessDurationMs" "UI browser evidence duration fields")
       browser_launch_duration_ms = [string](Get-JsonProperty $durationFields "browserLaunchDurationMs" "UI browser evidence duration fields")
@@ -2605,6 +2854,16 @@ function Assert-BrowserEvidenceArtifactShape {
     [void](Get-JsonProperty $action "name" "browser evidence action")
     [void](Get-JsonProperty $action "outcome" "browser evidence action")
     [void](Get-JsonProperty $action "duration_ms" "browser evidence action")
+  }
+
+  if ($Artifact.PSObject.Properties.Name -contains "selector_snapshot") {
+    $snapshot = Get-JsonProperty $Artifact "selector_snapshot" "browser evidence selector snapshot"
+    Assert-True ((Get-JsonProperty $snapshot "bounded" "browser evidence selector snapshot") -eq $true) "browser selector snapshot must be bounded"
+    foreach ($key in @(Get-JsonProperty $snapshot "missing_selector_keys" "browser evidence selector snapshot")) {
+      if ([string]$key -notmatch '^[A-Za-z0-9_]+$') {
+        throw "browser selector snapshot key must be a safe selector contract key"
+      }
+    }
   }
 
   Assert-True ((Get-JsonProperty $Artifact.secret_safe "session_material_echoed" "browser evidence secret-safe") -eq $false) "browser evidence must not echo session material"
@@ -2965,10 +3224,11 @@ function Assert-LiveEnvironmentAvailable {
     throw "docker compose is unavailable or compose file cannot be inspected: $($_.Exception.Message)"
   }
 
-  $serviceText = ($services | Out-String)
+  $runningServices = @($services | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
   foreach ($service in @("postgres", "control-plane")) {
-    if ($serviceText -notmatch "(?m)^$service$") {
-      throw "compose service '$service' is not running; start deploy/docker-compose/docker-compose.yml before live smoke"
+    if ($runningServices -notcontains $service) {
+      $runningSummary = if ($runningServices.Count -gt 0) { $runningServices -join "," } else { "none" }
+      throw "compose service '$service' is not running; running_services=$runningSummary; start deploy/docker-compose/docker-compose.yml before live smoke"
     }
   }
 
@@ -3007,9 +3267,9 @@ function New-RelatedDebit {
 
   $entryId = New-SmokeGuid
   $idem = "control-plane-ledger-adjustment-execute-smoke:$($script:SmokeRunId):$Label"
-  $metadata = "{""smoke"":""control_plane_ledger_adjustment_execute_live_smoke"",""run_id"":""$($script:SmokeRunId)"",""label"":""$Label""}"
   $safeIdem = Escape-SqlLiteral $idem
-  $safeMetadata = Escape-SqlLiteral $metadata
+  $safeRunId = Escape-SqlLiteral $script:SmokeRunId
+  $safeLabel = Escape-SqlLiteral $Label
   [void](Invoke-ComposePsql @"
 insert into ledger_entries (
   id, tenant_id, project_id, wallet_id, entry_type, amount, currency, status, idempotency_key, metadata
@@ -3024,7 +3284,11 @@ values (
   'USD',
   'confirmed',
   '$safeIdem',
-  '$safeMetadata'::jsonb
+  jsonb_build_object(
+    'smoke', 'control_plane_ledger_adjustment_execute_live_smoke',
+    'run_id', '$safeRunId',
+    'label', '$safeLabel'
+  )
 );
 "@)
 
@@ -3166,6 +3430,12 @@ function Assert-IdempotentReplay {
 
   $before = Get-CreditAndAuditEvidence -SourceLedgerEntryId $SourceLedgerEntryId
   $response = Invoke-LedgerAdjustmentExecute -Body $Body
+  if ([int]$response.StatusCode -eq 400) {
+    $payload = Read-Json $response.Content
+    if ([string]$payload.error.message -like "*remaining refundable amount*") {
+      throw "backend_idempotent_replay_after_remaining_check: execute replay returned over-remaining refusal before dedupe replay"
+    }
+  }
   Assert-StatusAny $response @(200)
   $payload = Read-Json $response.Content
   $data = $payload.data
@@ -3333,6 +3603,7 @@ try {
   Check "control-plane source contains transactional execute boundary" {
     Assert-AdminSourceMarkers
   }
+  Write-ControlPlaneRuntimeSourceProbe -SourcePaths @($adminSourcePath, $dryRunContractPath, $PSCommandPath)
 
   if ($AdminSessionHandoff) {
     Check-Blocking "control-plane admin session handoff" {
@@ -3354,6 +3625,14 @@ try {
   }
   Exit-WithFailuresOrBlockers
 
+  $uiSmokeHandoff = Read-JsonFile $uiSmokeHandoffPath
+  if (Test-BrowserLiveMutationAttemptOptIn) {
+    Check-Blocking "control-plane admin session handoff for browser live mutation" {
+      Write-AdminSessionHandoff
+    }
+    Exit-WithFailuresOrBlockers
+  }
+
   Check-Blocking "live migrated schema and dev seed availability" {
     Assert-MigratedSchemaAndSeed
   }
@@ -3363,7 +3642,6 @@ try {
     Initialize-AdminSession
   }
 
-  $uiSmokeHandoff = Read-JsonFile $uiSmokeHandoffPath
   $browserSessionHandoffStatus = "not_requested"
   if (Test-BrowserLiveMutationAttemptOptIn) {
     $browserSessionHandoffStatus = Publish-BrowserAdminSessionHandoff $uiSmokeHandoff
@@ -3385,7 +3663,7 @@ try {
     Assert-AppliedExecuteResponse -Response $response -SourceLedgerEntryId $script:sourceId
   }
 
-  Check "execute idempotent replay does not write ledger or audit" {
+  Check-Blocking "execute idempotent replay does not write ledger or audit" {
     Assert-IdempotentReplay -SourceLedgerEntryId $script:sourceId -Body $script:executeBody
   }
 

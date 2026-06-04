@@ -32,6 +32,12 @@ set email = 'admin@example.com',
 where tenant_id = '00000000-0000-0000-0000-000000000001'
   and id = '00000000-0000-0000-0000-0000000000a1';
 
+update team_members
+set role = 'owner'
+where tenant_id = '00000000-0000-0000-0000-000000000001'
+  and team_id = '00000000-0000-0000-0000-000000000010'
+  and user_id = '00000000-0000-0000-0000-0000000000a1';
+
 insert into team_members (tenant_id, team_id, user_id, role)
 select
   '00000000-0000-0000-0000-000000000001',
@@ -44,8 +50,19 @@ where exists (
   where tenant_id = '00000000-0000-0000-0000-000000000001'
     and id = '00000000-0000-0000-0000-000000000010'
 )
-on conflict (tenant_id, team_id, user_id) do update
-set role = excluded.role;
+and not exists (
+  select 1
+  from team_members
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and team_id = '00000000-0000-0000-0000-000000000010'
+    and user_id = '00000000-0000-0000-0000-0000000000a1'
+);
+
+update project_members
+set role = 'owner'
+where tenant_id = '00000000-0000-0000-0000-000000000001'
+  and project_id = '00000000-0000-0000-0000-000000000020'
+  and user_id = '00000000-0000-0000-0000-0000000000a1';
 
 insert into project_members (tenant_id, project_id, user_id, role)
 select
@@ -59,5 +76,10 @@ where exists (
   where tenant_id = '00000000-0000-0000-0000-000000000001'
     and id = '00000000-0000-0000-0000-000000000020'
 )
-on conflict (tenant_id, project_id, user_id) do update
-set role = excluded.role;
+and not exists (
+  select 1
+  from project_members
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and project_id = '00000000-0000-0000-0000-000000000020'
+    and user_id = '00000000-0000-0000-0000-0000000000a1'
+);

@@ -10,8 +10,10 @@ param(
   [string]$ViewerDeniedEndpointPath = "/admin/providers/00000000-0000-0000-0000-000000000000",
   [ValidateSet("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")]
   [string]$ViewerDeniedEndpointMethod = "PATCH",
+  [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [int]$TimeoutSeconds = 8,
   [switch]$StrictViewerRbacDenied,
+  [switch]$RepairDevAdminSessionPrereqs,
   [switch]$DryRun
 )
 
@@ -20,10 +22,13 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $fixturePath = Join-Path $repoRoot "tests\fixtures\control-plane\admin_auth_smoke.json"
 $devAdminSeedPath = Join-Path $repoRoot "db\dev-seeds\0001_dev_admin_seed.sql"
+$devSmokeSeedReconcilePath = Join-Path $repoRoot "db\dev-seeds\0003_dev_smoke_seed_reconcile.sql"
+$sessionMigrationPath = Join-Path $repoRoot "db\migrations\0005_e1_e2_e3_e10_integrity_hardening.sql"
 $authSourcePath = Join-Path $repoRoot "apps\control-plane\src\auth.rs"
 $rbacSourcePath = Join-Path $repoRoot "apps\control-plane\src\rbac.rs"
 
 $script:Failures = @()
+$script:Blockers = @()
 $script:Pending = @()
 $script:SensitiveValues = @()
 $script:Fixture = $null
@@ -48,7 +53,9 @@ if ($env:CONTROL_PLANE_VIEWER_EMAIL) { $ViewerEmail = $env:CONTROL_PLANE_VIEWER_
 if ($env:CONTROL_PLANE_VIEWER_PASSWORD) { $ViewerPassword = $env:CONTROL_PLANE_VIEWER_PASSWORD }
 if ($env:CONTROL_PLANE_VIEWER_DENIED_PATH) { $ViewerDeniedEndpointPath = $env:CONTROL_PLANE_VIEWER_DENIED_PATH }
 if ($env:CONTROL_PLANE_VIEWER_DENIED_METHOD) { $ViewerDeniedEndpointMethod = $env:CONTROL_PLANE_VIEWER_DENIED_METHOD.ToUpperInvariant() }
+if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if (Test-TruthyEnv $env:STRICT_CONTROL_PLANE_VIEWER_RBAC) { $StrictViewerRbacDenied = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_AUTH_SMOKE_REPAIR_DEV_ADMIN_SESSION_PREREQS) { $RepairDevAdminSessionPrereqs = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_AUTH_SMOKE_DRY_RUN) { $DryRun = $true }
 
 Add-Type -AssemblyName System.Net.Http
@@ -114,6 +121,14 @@ function Add-Failure {
   Write-Host $safe
 }
 
+function Add-Blocker {
+  param([Parameter(Mandatory = $true)][string]$Message)
+
+  $safe = Redact-SecretLikeString $Message
+  $script:Blockers += $safe
+  Write-SafeHost "[BLOCKED] $safe"
+}
+
 function Add-Pending {
   param([Parameter(Mandatory = $true)][string]$Message)
 
@@ -133,6 +148,40 @@ function Check {
     Write-Host "[OK] $Name"
   } catch {
     Add-Failure "[FAIL] $Name - $($_.Exception.Message)"
+  }
+}
+
+function Check-Blocking {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][scriptblock]$Action
+  )
+
+  try {
+    & $Action
+    Write-Host "[OK] $Name"
+  } catch {
+    Add-Blocker "$Name - $($_.Exception.Message)"
+  }
+}
+
+function Exit-WithFailuresOrBlockers {
+  if ($script:Failures.Count -gt 0) {
+    Write-SafeHost ""
+    Write-SafeHost "Control Plane admin auth smoke failed:"
+    foreach ($failure in $script:Failures) {
+      Write-SafeHost $failure
+    }
+    exit 1
+  }
+
+  if ($script:Blockers.Count -gt 0) {
+    Write-SafeHost ""
+    Write-SafeHost "Control Plane admin auth smoke is externally blocked:"
+    foreach ($blocker in $script:Blockers) {
+      Write-SafeHost $blocker
+    }
+    exit 2
   }
 }
 
@@ -226,6 +275,324 @@ function Invoke-ApiRequest {
     if ($response) { $response.Dispose() }
     $request.Dispose()
     $client.Dispose()
+  }
+}
+
+function Get-DockerCommand {
+  $docker = Get-Command docker -ErrorAction SilentlyContinue
+  if (-not $docker) {
+    throw "docker CLI is unavailable; cannot inspect compose auth prerequisites"
+  }
+  return $docker.Source
+}
+
+function Invoke-NativeCapture {
+  param(
+    [Parameter(Mandatory = $true)][string]$Command,
+    [Parameter(Mandatory = $true)][string[]]$Arguments
+  )
+
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $Command @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output = (($output | Out-String).Trim())
+  }
+}
+
+function Get-NewestSourceWriteTimeUtc {
+  param([Parameter(Mandatory = $true)][string[]]$SourcePaths)
+
+  $newest = $null
+  foreach ($path in $SourcePaths) {
+    if (-not (Test-Path $path -PathType Leaf)) {
+      continue
+    }
+    $writeTime = (Get-Item -Path $path).LastWriteTimeUtc
+    if ($null -eq $newest -or $writeTime -gt $newest) {
+      $newest = $writeTime
+    }
+  }
+  return $newest
+}
+
+function Parse-DockerTimestampUtc {
+  param([AllowNull()][string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return $null
+  }
+  try {
+    return ([DateTimeOffset]::Parse([string]$Value)).UtcDateTime
+  } catch {
+    return $null
+  }
+}
+
+function Write-ControlPlaneRuntimeSourceProbe {
+  param([Parameter(Mandatory = $true)][string[]]$SourcePaths)
+
+  $sourceNewest = Get-NewestSourceWriteTimeUtc -SourcePaths $SourcePaths
+  $sourceNewestText = if ($null -eq $sourceNewest) { "unavailable" } else { $sourceNewest.ToString("o") }
+  $reason = "none"
+  $staleOrUnverified = $false
+  $containerCreatedText = "unavailable"
+  $imageCreatedText = "unavailable"
+
+  $docker = Get-Command docker -ErrorAction SilentlyContinue
+  if (-not $docker) {
+    $reason = "docker_unavailable"
+    $staleOrUnverified = $true
+  } else {
+    $containerIdResult = Invoke-NativeCapture -Command $docker.Source -Arguments @("compose", "-f", $ComposeFile, "ps", "-q", "control-plane")
+    $containerId = [string]$containerIdResult.Output
+    if ($containerIdResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($containerId)) {
+      $reason = "control_plane_container_unavailable"
+      $staleOrUnverified = $true
+    } else {
+      $inspectResult = Invoke-NativeCapture -Command $docker.Source -Arguments @("inspect", "-f", "{{.Created}}|{{.Image}}", $containerId.Trim())
+      if ($inspectResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($inspectResult.Output)) {
+        $reason = "control_plane_container_inspect_unavailable"
+        $staleOrUnverified = $true
+      } else {
+        $parts = ([string]$inspectResult.Output).Split("|", 2)
+        $containerCreated = Parse-DockerTimestampUtc $parts[0]
+        if ($null -ne $containerCreated) {
+          $containerCreatedText = $containerCreated.ToString("o")
+        }
+        $imageId = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        $imageInspectResult = Invoke-NativeCapture -Command $docker.Source -Arguments @("image", "inspect", "-f", "{{.Created}}", $imageId)
+        $imageCreated = $null
+        if ($imageInspectResult.ExitCode -eq 0) {
+          $imageCreated = Parse-DockerTimestampUtc $imageInspectResult.Output
+          if ($null -ne $imageCreated) {
+            $imageCreatedText = $imageCreated.ToString("o")
+          }
+        }
+        if ($null -eq $imageCreated) {
+          $reason = "control_plane_image_inspect_unavailable"
+          $staleOrUnverified = $true
+        } elseif ($null -eq $sourceNewest) {
+          $reason = "source_timestamp_unavailable"
+          $staleOrUnverified = $true
+        } elseif ($sourceNewest -gt $imageCreated) {
+          $reason = "source_newer_than_runtime_image"
+          $staleOrUnverified = $true
+        }
+      }
+    }
+  }
+
+  Write-SafeHost "runtime_source_mismatch_probe=control_plane_image_timestamp"
+  Write-SafeHost "runtime_source_newest_utc=$sourceNewestText"
+  Write-SafeHost "runtime_container_created_utc=$containerCreatedText"
+  Write-SafeHost "runtime_image_created_utc=$imageCreatedText"
+  Write-SafeHost "runtime_image_stale_or_unverified=$(if ($staleOrUnverified) { 'true' } else { 'false' })"
+  Write-SafeHost "runtime_image_stale_reason=$reason"
+  Write-SafeHost "runtime_secret_material_echoed=false"
+}
+
+function Invoke-ComposePsql {
+  param([Parameter(Mandatory = $true)][string]$Sql)
+
+  $docker = Get-DockerCommand
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $docker compose -f $ComposeFile exec -T postgres psql `
+      -U ai_gateway `
+      -d ai_gateway `
+      -tA `
+      -v ON_ERROR_STOP=1 `
+      -c $Sql 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+  if ($exitCode -ne 0) {
+    throw "compose postgres psql failed: $(Redact-SecretLikeString (($output | Out-String).Trim()))"
+  }
+
+  return (($output | Out-String).Trim())
+}
+
+function Get-ComposeDbSqlPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $dbRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "db")).TrimEnd("\", "/")
+  $dbPrefix = $dbRoot + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $fullPath.StartsWith($dbPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "repair SQL path must stay inside repository db directory"
+  }
+
+  $relative = $fullPath.Substring($dbPrefix.Length).TrimStart("\", "/")
+  if ([string]::IsNullOrWhiteSpace($relative) -or $relative.Contains("..")) {
+    throw "repair SQL path has an unsafe relative component"
+  }
+
+  return "/app/db/$($relative -replace '\\', '/')"
+}
+
+function Invoke-ComposePsqlFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $fullPath = [System.IO.Path]::GetFullPath($Path)
+  $repoPrefix = ([string]$repoRoot).TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+  if (-not $fullPath.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "repair SQL path must stay inside repository"
+  }
+  $allowed = @(
+    [System.IO.Path]::GetFullPath($sessionMigrationPath),
+    [System.IO.Path]::GetFullPath($devAdminSeedPath),
+    [System.IO.Path]::GetFullPath($devSmokeSeedReconcilePath)
+  )
+  if ($allowed -notcontains $fullPath) {
+    throw "repair SQL path is not in the auth prereq allowlist"
+  }
+  if (-not (Test-Path $fullPath -PathType Leaf)) {
+    throw "repair SQL file is missing: $fullPath"
+  }
+
+  $docker = Get-DockerCommand
+  $containerPath = Get-ComposeDbSqlPath -Path $fullPath
+  $global:LASTEXITCODE = 0
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $docker compose -f $ComposeFile exec -T postgres psql `
+      -U ai_gateway `
+      -d ai_gateway `
+      -v ON_ERROR_STOP=1 `
+      -f $containerPath 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+  if ($exitCode -ne 0) {
+    throw "compose postgres repair failed for $([IO.Path]::GetFileName($fullPath)): $(Redact-SecretLikeString (($output | Out-String).Trim()))"
+  }
+}
+
+function Get-AuthPrereqStatus {
+  $json = Invoke-ComposePsql @"
+select json_build_object(
+  'user_sessions_table', to_regclass('public.user_sessions') is not null,
+  'admin_user_count', (
+    select count(*) from users
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and lower(email) = lower('admin@example.com')
+  ),
+  'admin_active_count', (
+    select count(*) from users
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and lower(email) = lower('admin@example.com')
+      and status = 'active'
+      and deleted_at is null
+  ),
+  'admin_dev_seed_count', (
+    select count(*) from users
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and lower(email) = lower('admin@example.com')
+      and metadata->>'dev_seed' = 'true'
+  ),
+  'admin_password_hash_present', (
+    select coalesce(bool_or(password_hash is not null), false) from users
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and lower(email) = lower('admin@example.com')
+  ),
+  'admin_password_hash_algorithm', (
+    select coalesce(max(split_part(password_hash, '$', 1)), 'missing') from users
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and lower(email) = lower('admin@example.com')
+  ),
+  'team_owner_count', (
+    select count(*) from team_members
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and team_id = '00000000-0000-0000-0000-000000000010'
+      and user_id = '00000000-0000-0000-0000-0000000000a1'
+      and role = 'owner'
+  ),
+  'project_owner_count', (
+    select count(*) from project_members
+    where tenant_id = '00000000-0000-0000-0000-000000000001'
+      and project_id = '00000000-0000-0000-0000-000000000020'
+      and user_id = '00000000-0000-0000-0000-0000000000a1'
+      and role = 'owner'
+  )
+);
+"@
+  return Read-Json $json
+}
+
+function Get-AuthPrereqMissingReasons {
+  param([Parameter(Mandatory = $true)]$Status)
+
+  $missing = @()
+  if ($Status.user_sessions_table -ne $true) { $missing += "user_sessions_migration_missing" }
+  if ([int]$Status.admin_user_count -lt 1) { $missing += "dev_admin_user_missing" }
+  if ([int]$Status.admin_active_count -lt 1) { $missing += "dev_admin_user_not_active" }
+  if ([int]$Status.admin_dev_seed_count -lt 1) { $missing += "dev_admin_seed_marker_missing" }
+  if ($Status.admin_password_hash_present -ne $true) { $missing += "dev_admin_password_hash_missing" }
+  if ([string]$Status.admin_password_hash_algorithm -ne "pbkdf2-sha256") { $missing += "dev_admin_password_hash_algorithm_mismatch" }
+  if ([int]$Status.team_owner_count -lt 1) { $missing += "dev_admin_team_owner_missing" }
+  if ([int]$Status.project_owner_count -lt 1) { $missing += "dev_admin_project_owner_missing" }
+  return @($missing)
+}
+
+function Write-AuthPrereqStatus {
+  param(
+    [Parameter(Mandatory = $true)]$Status,
+    [string[]]$Missing = @()
+  )
+
+  Write-SafeHost "auth_prereq_user_sessions_table=$(if ($Status.user_sessions_table -eq $true) { 'present' } else { 'missing' })"
+  Write-SafeHost "auth_prereq_admin_user_count=$([int]$Status.admin_user_count)"
+  Write-SafeHost "auth_prereq_admin_active_count=$([int]$Status.admin_active_count)"
+  Write-SafeHost "auth_prereq_admin_dev_seed_count=$([int]$Status.admin_dev_seed_count)"
+  Write-SafeHost "auth_prereq_admin_password_hash_present=$(if ($Status.admin_password_hash_present -eq $true) { 'true' } else { 'false' })"
+  Write-SafeHost "auth_prereq_admin_password_hash_algorithm=$([string]$Status.admin_password_hash_algorithm)"
+  Write-SafeHost "auth_prereq_team_owner_count=$([int]$Status.team_owner_count)"
+  Write-SafeHost "auth_prereq_project_owner_count=$([int]$Status.project_owner_count)"
+  Write-SafeHost "auth_prereq_missing=$(if ($Missing.Count -eq 0) { 'none' } else { $Missing -join '+' })"
+  Write-SafeHost "auth_prereq_secret_material_echoed=false"
+}
+
+function Repair-DevAdminSessionPrereqs {
+  Write-SafeHost "auth_prereq_repair_mode=bounded_allowlist"
+  foreach ($path in @($sessionMigrationPath, $devAdminSeedPath, $devSmokeSeedReconcilePath)) {
+    Write-SafeHost "auth_prereq_repair_apply=$([IO.Path]::GetFileName($path))"
+    Invoke-ComposePsqlFile -Path $path
+  }
+}
+
+function Assert-OrRepairAuthPrereqs {
+  $status = Get-AuthPrereqStatus
+  $missing = @(Get-AuthPrereqMissingReasons -Status $status)
+  Write-AuthPrereqStatus -Status $status -Missing $missing
+  if ($missing.Count -eq 0) {
+    return
+  }
+
+  if (-not $RepairDevAdminSessionPrereqs) {
+    throw "auth prerequisites missing: $($missing -join '+'); rerun with -RepairDevAdminSessionPrereqs or CONTROL_PLANE_AUTH_SMOKE_REPAIR_DEV_ADMIN_SESSION_PREREQS=1 to apply db/migrations/0005_e1_e2_e3_e10_integrity_hardening.sql and bounded dev admin seeds"
+  }
+
+  Repair-DevAdminSessionPrereqs
+  $after = Get-AuthPrereqStatus
+  $afterMissing = @(Get-AuthPrereqMissingReasons -Status $after)
+  Write-AuthPrereqStatus -Status $after -Missing $afterMissing
+  if ($afterMissing.Count -gt 0) {
+    throw "auth prerequisites still missing after repair: $($afterMissing -join '+')"
   }
 }
 
@@ -415,17 +782,80 @@ function Assert-FixtureEndpointIntent {
   if ($Fixture.protected_no_session.expected_status -ne 401) {
     throw "fixture protected_no_session expected_status must be 401"
   }
+  if ($Fixture.dev_admin_session_prereqs.diagnostic_default -ne $true) {
+    throw "fixture dev_admin_session_prereqs must keep diagnostic default enabled"
+  }
+  if ($Fixture.dev_admin_session_prereqs.repair_flag -ne "-RepairDevAdminSessionPrereqs") {
+    throw "fixture dev admin repair flag drifted"
+  }
+  if ($Fixture.dev_admin_session_prereqs.repair_env -ne "CONTROL_PLANE_AUTH_SMOKE_REPAIR_DEV_ADMIN_SESSION_PREREQS") {
+    throw "fixture dev admin repair env drifted"
+  }
+  if ($Fixture.dev_admin_session_prereqs.blocked_exit_code -ne 2) {
+    throw "fixture dev admin missing prereq blocked exit code must be 2"
+  }
+  foreach ($marker in @("user_sessions_migration_missing", "dev_admin_user_missing", "dev_admin_team_owner_missing", "dev_admin_project_owner_missing")) {
+    if (@($Fixture.dev_admin_session_prereqs.missing_markers) -notcontains $marker) {
+      throw "fixture dev admin missing marker '$marker' is absent"
+    }
+  }
+  foreach ($name in @("session_token_echoed", "cookie_echoed", "password_hash_echoed")) {
+    if ($Fixture.dev_admin_session_prereqs.secret_safe_output.$name -ne $false) {
+      throw "fixture dev admin secret-safe output '$name' must be false"
+    }
+  }
+  if ($Fixture.runtime_source_mismatch_diagnostic.diagnostic_default -ne $true) {
+    throw "fixture runtime source mismatch diagnostic must run by default"
+  }
+  if ($Fixture.runtime_source_mismatch_diagnostic.does_not_trigger_build -ne $true) {
+    throw "fixture runtime source mismatch diagnostic must not trigger builds"
+  }
+  if ($Fixture.runtime_source_mismatch_diagnostic.non_blocking_marker -ne "runtime_image_stale_or_unverified") {
+    throw "fixture runtime source mismatch marker drifted"
+  }
+  if ($Fixture.runtime_source_mismatch_diagnostic.probe -ne "control_plane_image_timestamp") {
+    throw "fixture runtime source mismatch probe drifted"
+  }
+  foreach ($reason in @("source_newer_than_runtime_image", "control_plane_container_unavailable", "control_plane_image_inspect_unavailable", "docker_unavailable", "source_timestamp_unavailable")) {
+    if (@($Fixture.runtime_source_mismatch_diagnostic.stale_or_unverified_reasons) -notcontains $reason) {
+      throw "fixture runtime source mismatch reason '$reason' is absent"
+    }
+  }
+  foreach ($name in @("token_echoed", "cookie_echoed", "dsn_echoed")) {
+    if ($Fixture.runtime_source_mismatch_diagnostic.secret_safe_output.$name -ne $false) {
+      throw "fixture runtime source mismatch secret-safe output '$name' must be false"
+    }
+  }
 }
 
 function Assert-DevAdminSeedIntent {
   if (-not (Test-Path $devAdminSeedPath)) {
     throw "missing db\dev-seeds\0001_dev_admin_seed.sql"
   }
+  if (-not (Test-Path $devSmokeSeedReconcilePath)) {
+    throw "missing db\dev-seeds\0003_dev_smoke_seed_reconcile.sql"
+  }
+  if (-not (Test-Path $sessionMigrationPath)) {
+    throw "missing db\migrations\0005_e1_e2_e3_e10_integrity_hardening.sql"
+  }
+
+  $sessionMigration = Get-Content -Path $sessionMigrationPath -Raw
+  foreach ($needle in @(
+      "create table if not exists user_sessions",
+      "token_lookup_prefix",
+      "token_hash",
+      "expires_at"
+    )) {
+    if (-not $sessionMigration.Contains($needle)) {
+      throw "session migration is missing expected auth session marker '$needle'"
+    }
+  }
 
   $seed = Get-Content -Path $devAdminSeedPath -Raw
   foreach ($needle in @(
       "admin@example.com",
       "pbkdf2-sha256",
+      "09d4ad00a3fbf85ac4bebe70a5a4598357f830d572331c94000d9d898062deb8",
       '"dev_seed": true',
       "insert into team_members",
       "insert into project_members",
@@ -433,6 +863,21 @@ function Assert-DevAdminSeedIntent {
     )) {
     if (-not $seed.Contains($needle)) {
       throw "dev admin seed is missing expected marker '$needle'"
+    }
+  }
+
+  $reconcileSeed = Get-Content -Path $devSmokeSeedReconcilePath -Raw
+  foreach ($needle in @(
+      "insert into team_members",
+      "insert into project_members",
+      "update team_members",
+      "update project_members",
+      "'00000000-0000-0000-0000-0000000000a1'",
+      "and not exists",
+      "'owner'"
+    )) {
+    if (-not $reconcileSeed.Contains($needle)) {
+      throw "dev smoke seed reconcile is missing admin membership repair marker '$needle'"
     }
   }
 }
@@ -523,6 +968,12 @@ try {
     Write-SafeHost ""
     Write-SafeHost "Control Plane admin auth smoke dry-run passed; runtime requests were not sent."
   } else {
+    Check-Blocking "compose dev admin/session prerequisites" {
+      Assert-OrRepairAuthPrereqs
+    }
+    Exit-WithFailuresOrBlockers
+    Write-ControlPlaneRuntimeSourceProbe -SourcePaths @($authSourcePath, $rbacSourcePath, $PSCommandPath)
+
     Check "protected admin endpoint rejects missing session" {
       $response = Invoke-ApiRequest -Method $ProtectedEndpointMethod -Uri (Join-Url $ControlPlaneBaseUrl $ProtectedEndpointPath)
       Assert-StatusAny $response @(401)
@@ -596,14 +1047,7 @@ try {
   Pop-Location
 }
 
-if ($script:Failures.Count -gt 0) {
-  Write-SafeHost ""
-  Write-SafeHost "Control Plane admin auth smoke failed:"
-  foreach ($failure in $script:Failures) {
-    Write-SafeHost $failure
-  }
-  exit 1
-}
+Exit-WithFailuresOrBlockers
 
 Write-SafeHost ""
 if ($script:Pending.Count -gt 0) {

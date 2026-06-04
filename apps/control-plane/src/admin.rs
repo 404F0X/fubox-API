@@ -118,6 +118,10 @@ const CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_READBACK_GATE_SCHEMA: &str =
     "control_plane_billing_ledger_live_probe_measurement_readback_gate.v1";
 const CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF_SCHEMA: &str =
     "control_plane_billing_ledger_shadow_commit_handoff.v1";
+const CONTROL_PLANE_BILLING_LEDGER_PRODUCTION_CUTOVER_ACCEPTANCE_GATE_SCHEMA: &str =
+    "control_plane_billing_ledger_production_cutover_acceptance_gate.v1";
+const CONTROL_PLANE_BILLING_LEDGER_RUNTIME_EVIDENCE_TRUST_GATE_SCHEMA: &str =
+    "control_plane_billing_ledger_runtime_evidence_trust_gate.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -2805,6 +2809,22 @@ async fn execute_ledger_adjustment(
         return Err(AdminError::not_found("wallet"));
     }
 
+    if let Some(existing_entry) =
+        get_ledger_adjustment_dedupe_entry_for_update_tx(&mut tx, &dedupe_key).await?
+    {
+        tx.commit()
+            .await
+            .map_err(|error| AdminError::from(DbError::Query(error)))?;
+        return Ok(Json(json!({
+            "data": ledger_adjustment_execute_idempotent_response(
+                &existing_entry,
+                validated_plan,
+                None,
+            )
+        }))
+        .into_response());
+    }
+
     let refund_remaining_summary = match operation {
         LedgerAdjustmentOperation::Refund => {
             let related_entry = related_ledger_entry
@@ -2826,22 +2846,6 @@ async fn execute_ledger_adjustment(
         }
         LedgerAdjustmentOperation::Adjust => None,
     };
-
-    if let Some(existing_entry) =
-        get_ledger_adjustment_dedupe_entry_for_update_tx(&mut tx, &dedupe_key).await?
-    {
-        tx.commit()
-            .await
-            .map_err(|error| AdminError::from(DbError::Query(error)))?;
-        return Ok(Json(json!({
-            "data": ledger_adjustment_execute_idempotent_response(
-                &existing_entry,
-                validated_plan,
-                refund_remaining_summary.as_ref(),
-            )
-        }))
-        .into_response());
-    }
 
     let metadata = ledger_adjustment_execute_metadata(
         operation,
@@ -4338,6 +4342,8 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
         "live_probe_executor_boundary_contract": ledger_adjustment_billing_ledger_live_probe_executor_boundary_contract(),
         "live_probe_measurement_readback_gate_contract": ledger_adjustment_billing_ledger_live_probe_measurement_readback_gate_contract(),
         "shadow_commit_handoff_contract": ledger_adjustment_billing_ledger_shadow_commit_handoff_contract(),
+        "production_cutover_acceptance_gate_contract": ledger_adjustment_billing_ledger_production_cutover_acceptance_gate_contract(),
+        "runtime_evidence_trust_gate_contract": ledger_adjustment_billing_ledger_runtime_evidence_trust_gate_contract(),
         "safe_output_contract": {
             "env_value_output": "omitted",
             "database_url_output": "omitted",
@@ -4387,6 +4393,132 @@ fn ledger_adjustment_billing_ledger_shadow_commit_handoff_contract() -> Value {
             "row_count_summary": "actual_expected_rows_from_rollback_probe_gate",
             "transaction_timing_summary": "per_step_duration_ms_from_rollback_probe_gate",
             "production_cutover_blocker": "source_of_truth_switch_not_requested"
+        },
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
+            "operation_key_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_production_cutover_acceptance_gate_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_PRODUCTION_CUTOVER_ACCEPTANCE_GATE_SCHEMA,
+        "source": "billing_ledger_runtime_writer_shadow_commit_handoff",
+        "target": "production_billing_ledger_writer_cutover_acceptance",
+        "default_accepted": false,
+        "explicit_flag": "-AcceptProductionCutover",
+        "explicit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_PRODUCTION_CUTOVER_ACCEPTED",
+        "required_inputs": {
+            "live_commit_proof_flag": "-LiveCommitProof",
+            "live_commit_proof_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_COMMIT_PROOF_AVAILABLE",
+            "rollback_plan_ack_flag": "-AcknowledgeRollbackPlan",
+            "rollback_plan_ack_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_PLAN_ACKNOWLEDGED",
+            "shadow_commit_handoff_pass_required": true,
+            "rollback_only_probe_pass_required": true
+        },
+        "source_of_truth_switch_performed_by_this_script": false,
+        "source_of_truth_switch_execution": "separate_explicit_cutover_step_required",
+        "commit_eligibility_contract": {
+            "accepted_marker_required": true,
+            "live_commit_proof_required": true,
+            "rollback_plan_required": true,
+            "no_dual_commit_required": true,
+            "row_count_summary_required": true,
+            "transaction_timing_summary_required": true
+        },
+        "rollback_plan": {
+            "local_writer_fallback": "control_plane_local_sql_writer",
+            "fallback_after_billing_commit_allowed": false,
+            "rollback_command": {
+                "script": "scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1",
+                "flags": [
+                    "-Live",
+                    "-LiveExecutionProbe",
+                    "-RunLiveDbExecutorProbe",
+                    "-ExecuteRollbackOnlyLiveProbe",
+                    "-AttemptRealLiveDbProbe",
+                    "-WriteProbeArtifact",
+                    "-ReadProbeArtifact"
+                ],
+                "database_url_output": "presence_marker_only",
+                "env_value_output": "omitted"
+            }
+        },
+        "no_double_write_contract": {
+            "dual_commit_allowed": false,
+            "local_and_billing_ledger_commit_same_request_allowed": false,
+            "dual_commit_observed_failure": true
+        },
+        "blocker_codes": [
+            "production_cutover_acceptance_missing",
+            "shadow_commit_handoff_not_passed",
+            "live_commit_proof_missing",
+            "rollback_plan_not_acknowledged",
+            "rollback_plan_not_proven"
+        ],
+        "fail_codes": [
+            "no_dual_commit_contract_failed",
+            "row_count_mismatch",
+            "commit_observed",
+            "dual_commit_observed",
+            "unsafe_output_detected"
+        ],
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
+            "operation_key_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_runtime_evidence_trust_gate_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_RUNTIME_EVIDENCE_TRUST_GATE_SCHEMA,
+        "source": "billing_ledger_runtime_writer_readiness_evidence",
+        "target": "production_cutover_runtime_evidence_trust",
+        "docker_build_performed": false,
+        "container_inspection_required": false,
+        "container_runtime_commit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_CONTAINER_COMMIT",
+        "classification_values": [
+            "source_level_pass",
+            "container_runtime_current",
+            "container_runtime_stale",
+            "rollback_only_live_probe_only"
+        ],
+        "source_level_evidence": {
+            "current_commit_output": "short_commit_marker",
+            "can_prove_container_runtime": false,
+            "can_substitute_production_cutover": false
+        },
+        "container_runtime_evidence": {
+            "commit_marker_output": "presence_and_match_only",
+            "stale_marker_classification": "container_runtime_stale",
+            "missing_marker_classification": "source_level_pass",
+            "raw_env_value_echoed": false
+        },
+        "rollback_only_live_probe_evidence": {
+            "classification": "rollback_only_live_probe_only",
+            "can_substitute_production_cutover": false,
+            "row_count_timing_required": true
+        },
+        "production_cutover_acceptance_requirement": {
+            "container_runtime_current_required": true,
+            "source_level_pass_is_insufficient": true,
+            "rollback_only_live_probe_is_insufficient": true
         },
         "safe_output_contract": {
             "database_url_output": "omitted",
@@ -15864,6 +15996,69 @@ mod tests {
             json!("per_step_duration_ms_from_rollback_probe_gate")
         );
         assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_PRODUCTION_CUTOVER_ACCEPTANCE_GATE_SCHEMA)
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["default_accepted"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["explicit_flag"],
+            json!("-AcceptProductionCutover")
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["source_of_truth_switch_performed_by_this_script"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["required_inputs"]["live_commit_proof_flag"],
+            json!("-LiveCommitProof")
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["rollback_plan"]["rollback_command"]
+                ["flags"][4],
+            json!("-AttemptRealLiveDbProbe")
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["no_double_write_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["production_cutover_acceptance_gate_contract"]["safe_output_contract"]["raw_executor_error_detail_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_evidence_trust_gate_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_RUNTIME_EVIDENCE_TRUST_GATE_SCHEMA)
+        );
+        assert_eq!(
+            contract["runtime_evidence_trust_gate_contract"]["docker_build_performed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_evidence_trust_gate_contract"]["container_runtime_commit_env_var"],
+            json!("AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_CONTAINER_COMMIT")
+        );
+        assert_eq!(
+            contract["runtime_evidence_trust_gate_contract"]["classification_values"],
+            json!([
+                "source_level_pass",
+                "container_runtime_current",
+                "container_runtime_stale",
+                "rollback_only_live_probe_only"
+            ])
+        );
+        assert_eq!(
+            contract["runtime_evidence_trust_gate_contract"]["rollback_only_live_probe_evidence"]["can_substitute_production_cutover"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_evidence_trust_gate_contract"]["production_cutover_acceptance_requirement"]
+                ["container_runtime_current_required"],
+            json!(true)
+        );
+        assert_eq!(
             contract["live_probe_executor_boundary_contract"]["safe_output_contract"]["raw_database_url_echoed"],
             json!(false)
         );
@@ -16583,6 +16778,26 @@ mod tests {
         assert!(source.contains("where tenant_id = $1"));
         assert!(source.contains("related_ledger_entry_id = $2"));
         assert!(source.contains("currency = $3"));
+    }
+
+    #[test]
+    fn ledger_adjustment_execute_checks_dedupe_before_refund_remaining_validation() {
+        let source = include_str!("admin.rs");
+        let execute_start = source
+            .find("async fn execute_ledger_adjustment(")
+            .expect("execute_ledger_adjustment should exist");
+        let execute_source = &source[execute_start..];
+        let dedupe_lookup = execute_source
+            .find("get_ledger_adjustment_dedupe_entry_for_update_tx")
+            .expect("execute path should check dedupe entry");
+        let refund_remaining_validation = execute_source
+            .find("validate_refund_remaining_amount(")
+            .expect("execute path should validate refund remaining amount");
+
+        assert!(
+            dedupe_lookup < refund_remaining_validation,
+            "idempotent replay must return the existing dedupe entry before refund remaining validation can reject an already-applied refund"
+        );
     }
 
     #[test]

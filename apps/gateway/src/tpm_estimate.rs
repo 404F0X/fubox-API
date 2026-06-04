@@ -25,6 +25,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA: &s
     "gateway_tpm_trusted_numeric_source_production_wiring_guard_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_provider_boundary_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_IMPLEMENTATION_SLOT_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_implementation_slot_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA: &str =
@@ -618,6 +620,23 @@ impl GatewayTrustedNumericSourceProviderReadinessStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceImplementationSlotStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceImplementationSlotStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GatewayTrustedNumericSourceReadiness {
     pub(crate) status: GatewayTrustedNumericSourceReadinessStatus,
     pub(crate) tokenizer_status: GatewayTrustedNumericSourceProviderReadinessStatus,
@@ -919,6 +938,58 @@ pub(crate) struct GatewayTrustedNumericSourceProviderSummary {
     pub(crate) clamped_to_i64_max: bool,
     pub(crate) estimate_duration_ms: u64,
     pub(crate) error_reason: Option<&'static str>,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceImplementationSlot {
+    pub(crate) status: GatewayTrustedNumericSourceImplementationSlotStatus,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) config_enabled: bool,
+    pub(crate) provider_available: bool,
+    pub(crate) provider_attached: bool,
+    pub(crate) provider_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceImplementationSlot {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceImplementationSlotSummary {
+        GatewayTrustedNumericSourceImplementationSlotSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_IMPLEMENTATION_SLOT_SCHEMA,
+            status: self.status.as_str(),
+            source_type: self.source_type.as_str(),
+            config_enabled: self.config_enabled,
+            provider_available: self.provider_available,
+            provider_attached: self.provider_attached,
+            provider_invocation_allowed: self.provider_invocation_allowed,
+            fallback_required: self.fallback_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            material_in_output: self.material_in_output,
+            provider_side_effect_required: self.provider_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceImplementationSlotSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) config_enabled: bool,
+    pub(crate) provider_available: bool,
+    pub(crate) provider_attached: bool,
+    pub(crate) provider_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
     pub(crate) material_in_output: bool,
     pub(crate) provider_side_effect_required: bool,
 }
@@ -2033,6 +2104,34 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
     }
 }
 
+pub(crate) fn gateway_trusted_numeric_source_implementation_slot(
+    source_type: GatewayTrustedNumericSourceType,
+    config_enabled: bool,
+    provider_available: bool,
+    provider_attached: bool,
+) -> GatewayTrustedNumericSourceImplementationSlot {
+    let status = if !config_enabled {
+        GatewayTrustedNumericSourceImplementationSlotStatus::Disabled
+    } else if provider_available && provider_attached {
+        GatewayTrustedNumericSourceImplementationSlotStatus::Ready
+    } else {
+        GatewayTrustedNumericSourceImplementationSlotStatus::Blocked
+    };
+    let ready = status == GatewayTrustedNumericSourceImplementationSlotStatus::Ready;
+
+    GatewayTrustedNumericSourceImplementationSlot {
+        status,
+        source_type,
+        config_enabled,
+        provider_available,
+        provider_attached,
+        provider_invocation_allowed: ready,
+        fallback_required: !ready,
+        material_in_output: false,
+        provider_side_effect_required: false,
+    }
+}
+
 pub(crate) fn gateway_trusted_numeric_source_provider_availability(
     evidence: &GatewayTrustedNumericSourceProviderEvidence,
 ) -> GatewayTrustedNumericSourceAvailability {
@@ -2905,6 +3004,8 @@ pub(crate) struct GatewayTpmEstimatePlan {
     pub(crate) input: RateLimitTpmEstimateInput,
     pub(crate) estimate: RateLimitTpmReservationEstimate,
     pub(crate) trusted_source_provider: Option<GatewayTrustedNumericSourceProviderSummary>,
+    pub(crate) trusted_source_implementation_slot:
+        Option<GatewayTrustedNumericSourceImplementationSlotSummary>,
 }
 
 impl GatewayTpmEstimatePlan {
@@ -2924,6 +3025,7 @@ impl GatewayTpmEstimatePlan {
             sanitized_negative_estimate: self.estimate.sanitized_negative_estimate,
             clamped_to_i64_max: self.estimate.clamped_to_i64_max,
             trusted_source_provider: self.trusted_source_provider.clone(),
+            trusted_source_implementation_slot: self.trusted_source_implementation_slot.clone(),
         }
     }
 
@@ -2932,6 +3034,14 @@ impl GatewayTpmEstimatePlan {
         provider: GatewayTrustedNumericSourceProviderSummary,
     ) -> Self {
         self.trusted_source_provider = Some(provider);
+        self
+    }
+
+    pub(crate) fn with_trusted_source_implementation_slot(
+        mut self,
+        slot: GatewayTrustedNumericSourceImplementationSlotSummary,
+    ) -> Self {
+        self.trusted_source_implementation_slot = Some(slot);
         self
     }
 }
@@ -2952,6 +3062,8 @@ pub(crate) struct GatewayTpmEstimateSummary {
     pub(crate) sanitized_negative_estimate: bool,
     pub(crate) clamped_to_i64_max: bool,
     pub(crate) trusted_source_provider: Option<GatewayTrustedNumericSourceProviderSummary>,
+    pub(crate) trusted_source_implementation_slot:
+        Option<GatewayTrustedNumericSourceImplementationSlotSummary>,
 }
 
 pub(crate) fn gateway_tpm_estimate_for_request(
@@ -2974,6 +3086,7 @@ pub(crate) fn gateway_tpm_estimate_for_request(
         input,
         estimate,
         trusted_source_provider: None,
+        trusted_source_implementation_slot: None,
     }
 }
 
@@ -5959,6 +6072,122 @@ mod tests {
                     .iter()
                     .any(|state| state["name"].as_str() == Some(required_state)),
                 "provider boundary contract missing state: {required_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_implementation_slot_is_secret_safe() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["implementation_slot_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_IMPLEMENTATION_SLOT_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_implementation_slot")
+        );
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("implementation slot states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing implementation slot state: {name}"))
+        }
+
+        fn assert_slot(
+            summary: &GatewayTrustedNumericSourceImplementationSlotSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_IMPLEMENTATION_SLOT_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.provider_invocation_allowed,
+                expected["provider_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert!(!summary.material_in_output);
+            assert!(!summary.provider_side_effect_required);
+        }
+
+        let disabled = gateway_trusted_numeric_source_implementation_slot(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            false,
+            false,
+            false,
+        );
+        let blocked = gateway_trusted_numeric_source_implementation_slot(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            true,
+            false,
+            false,
+        );
+        let ready = gateway_trusted_numeric_source_implementation_slot(
+            GatewayTrustedNumericSourceType::ReadModel,
+            true,
+            true,
+            true,
+        );
+
+        assert_slot(
+            &disabled.safe_summary(),
+            state(contract, "disabled_default"),
+        );
+        assert_slot(
+            &blocked.safe_summary(),
+            state(contract, "enabled_provider_unavailable"),
+        );
+        assert_slot(
+            &ready.safe_summary(),
+            state(contract, "enabled_provider_attached"),
+        );
+        assert_eq!(ready.safe_summary().source_type, "read_model");
+
+        let serialized = serde_json::to_string(&json!({
+            "trusted_source_implementation_slot": [
+                disabled.safe_summary(),
+                blocked.safe_summary(),
+                ready.safe_summary()
+            ]
+        }))
+        .expect("implementation slot summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "implementation slot summary leaked forbidden marker: {forbidden}"
             );
         }
     }

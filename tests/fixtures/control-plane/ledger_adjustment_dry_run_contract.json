@@ -1375,6 +1375,126 @@
           "raw_executor_error_detail_echoed": false
         }
       },
+      "production_cutover_acceptance_gate_contract": {
+        "schema_version": "control_plane_billing_ledger_production_cutover_acceptance_gate.v1",
+        "source": "billing_ledger_runtime_writer_shadow_commit_handoff",
+        "target": "production_billing_ledger_writer_cutover_acceptance",
+        "default_accepted": false,
+        "explicit_flag": "-AcceptProductionCutover",
+        "explicit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_PRODUCTION_CUTOVER_ACCEPTED",
+        "required_inputs": {
+          "live_commit_proof_flag": "-LiveCommitProof",
+          "live_commit_proof_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_COMMIT_PROOF_AVAILABLE",
+          "rollback_plan_ack_flag": "-AcknowledgeRollbackPlan",
+          "rollback_plan_ack_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_PLAN_ACKNOWLEDGED",
+          "shadow_commit_handoff_pass_required": true,
+          "rollback_only_probe_pass_required": true
+        },
+        "source_of_truth_switch_performed_by_this_script": false,
+        "source_of_truth_switch_execution": "separate_explicit_cutover_step_required",
+        "commit_eligibility_contract": {
+          "accepted_marker_required": true,
+          "live_commit_proof_required": true,
+          "rollback_plan_required": true,
+          "no_dual_commit_required": true,
+          "row_count_summary_required": true,
+          "transaction_timing_summary_required": true
+        },
+        "rollback_plan": {
+          "local_writer_fallback": "control_plane_local_sql_writer",
+          "fallback_after_billing_commit_allowed": false,
+          "rollback_command": {
+            "script": "scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1",
+            "flags": [
+              "-Live",
+              "-LiveExecutionProbe",
+              "-RunLiveDbExecutorProbe",
+              "-ExecuteRollbackOnlyLiveProbe",
+              "-AttemptRealLiveDbProbe",
+              "-WriteProbeArtifact",
+              "-ReadProbeArtifact"
+            ],
+            "database_url_output": "presence_marker_only",
+            "env_value_output": "omitted"
+          }
+        },
+        "no_double_write_contract": {
+          "dual_commit_allowed": false,
+          "local_and_billing_ledger_commit_same_request_allowed": false,
+          "dual_commit_observed_failure": true
+        },
+        "blocker_codes": [
+          "production_cutover_acceptance_missing",
+          "shadow_commit_handoff_not_passed",
+          "live_commit_proof_missing",
+          "rollback_plan_not_acknowledged",
+          "rollback_plan_not_proven"
+        ],
+        "fail_codes": [
+          "no_dual_commit_contract_failed",
+          "row_count_mismatch",
+          "commit_observed",
+          "dual_commit_observed",
+          "unsafe_output_detected"
+        ],
+        "safe_output_contract": {
+          "database_url_output": "omitted",
+          "env_value_output": "omitted",
+          "operation_key_output": "omitted",
+          "dedupe_material_echoed": false,
+          "raw_env_value_echoed": false,
+          "raw_database_url_echoed": false,
+          "raw_metadata_echoed": false,
+          "credential_material_echoed": false,
+          "raw_executor_error_detail_echoed": false
+        }
+      },
+      "runtime_evidence_trust_gate_contract": {
+        "schema_version": "control_plane_billing_ledger_runtime_evidence_trust_gate.v1",
+        "source": "billing_ledger_runtime_writer_readiness_evidence",
+        "target": "production_cutover_runtime_evidence_trust",
+        "docker_build_performed": false,
+        "container_inspection_required": false,
+        "container_runtime_commit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_CONTAINER_COMMIT",
+        "classification_values": [
+          "source_level_pass",
+          "container_runtime_current",
+          "container_runtime_stale",
+          "rollback_only_live_probe_only"
+        ],
+        "source_level_evidence": {
+          "current_commit_output": "short_commit_marker",
+          "can_prove_container_runtime": false,
+          "can_substitute_production_cutover": false
+        },
+        "container_runtime_evidence": {
+          "commit_marker_output": "presence_and_match_only",
+          "stale_marker_classification": "container_runtime_stale",
+          "missing_marker_classification": "source_level_pass",
+          "raw_env_value_echoed": false
+        },
+        "rollback_only_live_probe_evidence": {
+          "classification": "rollback_only_live_probe_only",
+          "can_substitute_production_cutover": false,
+          "row_count_timing_required": true
+        },
+        "production_cutover_acceptance_requirement": {
+          "container_runtime_current_required": true,
+          "source_level_pass_is_insufficient": true,
+          "rollback_only_live_probe_is_insufficient": true
+        },
+        "safe_output_contract": {
+          "database_url_output": "omitted",
+          "env_value_output": "omitted",
+          "operation_key_output": "omitted",
+          "dedupe_material_echoed": false,
+          "raw_env_value_echoed": false,
+          "raw_database_url_echoed": false,
+          "raw_metadata_echoed": false,
+          "credential_material_echoed": false,
+          "raw_executor_error_detail_echoed": false
+        }
+      },
       "safe_output_contract": {
         "env_value_output": "omitted",
         "database_url_output": "omitted",

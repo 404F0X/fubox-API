@@ -163,6 +163,22 @@ Live proof plus Admin UI/audit handoff attempt:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath .tmp\prompt-protection-postgres-proof\s30-live-attempt-report.json
 ```
 
+Real browser Admin UI audit detail/readback attempt:
+
+```powershell
+$env:ADMIN_UI_BASE_URL = "http://127.0.0.1:5173"
+$env:CONTROL_PLANE_ADMIN_SESSION_TOKEN = "<session-token-from-secure-handoff>"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath .tmp\prompt-protection-postgres-proof\s33-browser-audit-detail-report.json -BrowserAuditDetailAttempt
+```
+
+If `CONTROL_PLANE_ADMIN_SESSION_TOKEN` or
+`PROMPT_PROTECTION_ADMIN_SESSION_TOKEN` is not already present, the proof script
+may use the dev admin login seed to create a one-time session handoff for the
+current process. The token value is never printed or written to the evidence
+report. Without `ADMIN_UI_BASE_URL` or a valid admin session handoff, the browser
+attempt records `browser_audit_detail_attempt.classification=blocker` and exits
+with external blocker semantics; it must not be treated as a browser pass.
+
 Expected pass evidence, when Gateway/Postgres/mock-provider/session are ready:
 
 - Script exit `0`.
@@ -198,6 +214,18 @@ Expected pass evidence, when Gateway/Postgres/mock-provider/session are ready:
   availability, latency envelope eligibility, `providerAttempts=0`, stale/replay
   refusal behavior, and omission of raw report path, command, DSN, token/header,
   provider secret, raw prompt, and raw body.
+- The browser attempt report field uses
+  `prompt_protection_browser_audit_detail_attempt_v1`. A real browser pass still
+  requires browser/session readback of the Admin UI detail; the script only
+  records handoff readiness or a bounded blocker and never writes token, Cookie,
+  raw report path, raw command, DSN, provider secret, raw prompt, or raw body.
+- Audit Logs mutation-row evidence is tracked separately as
+  `prompt_protection_audit_logs_mutation_row_attempt_v1`. A pass requires the
+  Admin UI Audit Logs tab/API to expose a matching prompt-protection closure or
+  readback row. If Request/Trace detail readback passes but `/admin/audit-logs`
+  has no matching prompt-protection audit row, the script records
+  `blocker_reason=prompt_protection_audit_log_row_missing`; that is a precise
+  audit-surface blocker, not proof of an unsafe Gateway side effect.
 
 Expected blocker evidence, when Gateway/Postgres/mock-provider/session are not
 ready:

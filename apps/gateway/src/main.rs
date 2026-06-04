@@ -97,6 +97,7 @@ use tpm_estimate::{
     GatewayTrustedNumericTokenKind, gateway_tpm_estimate_for_request,
     gateway_tpm_estimate_for_request_body, gateway_tpm_signals_from_trusted_numeric_source,
     gateway_trusted_numeric_source_env_config_read,
+    gateway_trusted_numeric_source_implementation_slot,
     gateway_trusted_numeric_source_provider_availability,
     gateway_trusted_numeric_source_provider_boundary,
 };
@@ -5771,6 +5772,16 @@ fn gateway_tpm_estimate_for_runtime_request(
             GatewayTrustedNumericTokenKind::PromptTokens,
         )
     };
+    let provider_available = match source_type {
+        GatewayTrustedNumericSourceType::Tokenizer => tokenizer_available,
+        GatewayTrustedNumericSourceType::ReadModel => read_model_available,
+    };
+    let slot = gateway_trusted_numeric_source_implementation_slot(
+        source_type,
+        env_config.runtime_config.adapter_invocation_allowed,
+        provider_available,
+        true,
+    );
     let provider = EnvTrustedNumericSourceProvider {
         tokenizer_prompt_tokens: tokenizer_tokens,
         read_model_input_tokens: read_model_tokens,
@@ -5778,7 +5789,7 @@ fn gateway_tpm_estimate_for_runtime_request(
     let provider_input =
         GatewayTrustedNumericSourceProviderInput::new(endpoint, source_type, token_kind);
     let provider_evidence = gateway_trusted_numeric_source_provider_boundary(
-        env_config.runtime_config.adapter_invocation_allowed,
+        slot.provider_invocation_allowed,
         provider_input,
         Some(&provider),
     );
@@ -5790,6 +5801,7 @@ fn gateway_tpm_estimate_for_runtime_request(
 
     gateway_tpm_estimate_for_request(endpoint, request_body, signals)
         .with_trusted_source_provider(provider_evidence.safe_summary())
+        .with_trusted_source_implementation_slot(slot.safe_summary())
 }
 
 fn env_trusted_numeric_token_value(name: &str) -> Option<i128> {
@@ -13977,6 +13989,13 @@ mod tests {
             .trusted_source_provider
             .as_ref()
             .expect("trusted runtime should carry provider evidence");
+        let trusted_slot = trusted_summary
+            .trusted_source_implementation_slot
+            .as_ref()
+            .expect("trusted runtime should carry implementation slot evidence");
+        assert_eq!(trusted_slot.status, "ready");
+        assert_eq!(trusted_slot.source_type, "tokenizer");
+        assert!(trusted_slot.provider_invocation_allowed);
         assert_eq!(trusted_provider.status, "available");
         assert_eq!(trusted_provider.source_type, "tokenizer");
         assert_eq!(trusted_provider.token_kind, "prompt_tokens");
@@ -13989,7 +14008,42 @@ mod tests {
         );
         assert_eq!(trusted_plan.estimate.required_tokens_i64(), 400);
 
+        remove_env(GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV);
+        remove_env(GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV);
+        set_env(GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV, "true");
+        set_env(GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV, "222");
+        let read_model_plan = gateway_tpm_estimate_for_runtime_request(
+            GatewayTpmEstimateEndpoint::OpenAiResponses,
+            &json!({ "stream": true, "max_output_tokens": 79 }),
+        );
+        let read_model_summary = read_model_plan.safe_summary();
+        let read_model_provider = read_model_summary
+            .trusted_source_provider
+            .as_ref()
+            .expect("read-model runtime should carry provider evidence");
+        let read_model_slot = read_model_summary
+            .trusted_source_implementation_slot
+            .as_ref()
+            .expect("read-model runtime should carry implementation slot evidence");
+        assert_eq!(read_model_slot.status, "ready");
+        assert_eq!(read_model_slot.source_type, "read_model");
+        assert!(read_model_slot.provider_invocation_allowed);
+        assert_eq!(read_model_provider.status, "available");
+        assert_eq!(read_model_provider.source_type, "read_model");
+        assert_eq!(read_model_provider.token_kind, "input_tokens");
+        assert_eq!(read_model_provider.tokens, Some(222));
+        assert!(read_model_provider.provider_invoked);
+        assert!(!read_model_provider.fallback_required);
+        assert_eq!(
+            read_model_plan.estimate.source,
+            ai_gateway_routing::RateLimitTpmEstimateSource::TotalTokens
+        );
+        assert_eq!(read_model_plan.estimate.required_tokens_i64(), 222);
+
         set_env(GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV, "-7");
+        remove_env(GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV);
+        remove_env(GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV);
+        set_env(GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV, "true");
         let invalid_plan = gateway_tpm_estimate_for_runtime_request(
             GatewayTpmEstimateEndpoint::OpenAiChat,
             &request,
@@ -14021,6 +14075,7 @@ mod tests {
         let serialized = serde_json::to_string(&json!({
             "default": default_summary,
             "trusted": trusted_summary,
+            "read_model": read_model_summary,
             "invalid": invalid_summary,
         }))
         .expect("trusted provider runtime summaries should serialize")
@@ -14034,6 +14089,274 @@ mod tests {
             assert!(
                 !serialized.contains(&forbidden.to_ascii_lowercase()),
                 "trusted provider runtime summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_tpm_estimate_streaming_consumes_trusted_provider_safe_summary() {
+        let main_source = include_str!("main.rs");
+        let streaming_source = include_str!("streaming.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_streaming_closure_v1")
+        );
+        assert_eq!(contract["shared_plan_required"].as_bool(), Some(true));
+        assert_eq!(
+            contract["streaming_context_field"].as_str(),
+            Some("rate_limit_tpm_estimate")
+        );
+        assert_eq!(
+            contract["reservation_acquire_helper"].as_str(),
+            Some("gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate)")
+        );
+
+        for field in [
+            "tpm_estimate.trusted_source_provider.status",
+            "tpm_estimate.trusted_source_provider.tokens",
+            "tpm_estimate.trusted_source_provider.estimate_duration_ms",
+            "tpm_estimate.trusted_source_provider.estimate_duration_marker",
+            "tpm_estimate.trusted_source_provider.source_marker",
+            "tpm_estimate.trusted_source_provider.token_count_marker",
+            "tpm_estimate.trusted_source_implementation_slot.status",
+            "tpm_estimate.trusted_source_implementation_slot.provider_invocation_allowed",
+            "rate_limit_reservation.required_capacity.tokens_per_minute",
+            "rate_limit_reservation.acquire.dimensions.tpm.required",
+            "rate_limit_reservation.db_required_capacity.tokens_per_minute",
+        ] {
+            assert!(
+                contract["safe_evidence_fields"]
+                    .as_array()
+                    .expect("streaming safe evidence fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "streaming provider closure contract should include {field}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker, streaming_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(",
+                "streaming::chat_completions_streaming(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(",
+                "streaming::responses_streaming(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(",
+                "streaming::anthropic_messages_streaming(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request(",
+                "streaming::gemini_generate_content_streaming(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(section, estimate_marker, streaming_marker, section_name);
+            assert!(
+                section.contains("rate_limit_tpm_estimate: Some(&rate_limit_tpm_estimate),"),
+                "{section_name} streaming context should receive the same trusted provider TPM plan"
+            );
+        }
+
+        for (streaming_section, section_name) in [
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn chat_completions_streaming(",
+                    "pub(crate) async fn responses_streaming(",
+                ),
+                "chat completions streaming",
+            ),
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn responses_streaming(",
+                    "pub(crate) async fn anthropic_messages_streaming(",
+                ),
+                "responses streaming",
+            ),
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn anthropic_messages_streaming(",
+                    "pub(crate) async fn gemini_generate_content_streaming(",
+                ),
+                "anthropic messages streaming",
+            ),
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn gemini_generate_content_streaming(",
+                    "fn openai_stream_usage_from_value",
+                ),
+                "gemini native streaming",
+            ),
+        ] {
+            assert_marker_before(
+                streaming_section,
+                "pre_authorize_before_provider_attempt(",
+                "gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate)",
+                section_name,
+            );
+            assert_marker_before(
+                streaming_section,
+                "gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate)",
+                "create_provider_attempt_started(",
+                section_name,
+            );
+        }
+
+        struct Provider;
+
+        impl GatewayTrustedNumericSourceProvider for Provider {
+            fn trusted_numeric_tokens(
+                &self,
+                input: GatewayTrustedNumericSourceProviderInput,
+            ) -> GatewayTrustedNumericSourceProviderOutput {
+                assert_eq!(
+                    input.source_type,
+                    GatewayTrustedNumericSourceType::Tokenizer
+                );
+                assert_eq!(
+                    input.token_kind,
+                    GatewayTrustedNumericTokenKind::PromptTokens
+                );
+                GatewayTrustedNumericSourceProviderOutput::new(Some(321))
+            }
+        }
+
+        fn streaming_plan(
+            endpoint: GatewayTpmEstimateEndpoint,
+            request: &serde_json::Value,
+        ) -> GatewayTpmEstimateSummary {
+            let provider = Provider;
+            let provider_evidence = gateway_trusted_numeric_source_provider_boundary(
+                true,
+                GatewayTrustedNumericSourceProviderInput::new(
+                    endpoint,
+                    GatewayTrustedNumericSourceType::Tokenizer,
+                    GatewayTrustedNumericTokenKind::PromptTokens,
+                ),
+                Some(&provider),
+            );
+            let availability =
+                gateway_trusted_numeric_source_provider_availability(&provider_evidence);
+            gateway_tpm_estimate_for_request(
+                endpoint,
+                request,
+                gateway_tpm_signals_from_trusted_numeric_source(
+                    &availability,
+                    GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                ),
+            )
+            .with_trusted_source_provider(provider_evidence.safe_summary())
+            .with_trusted_source_implementation_slot(
+                gateway_trusted_numeric_source_implementation_slot(
+                    GatewayTrustedNumericSourceType::Tokenizer,
+                    true,
+                    true,
+                    true,
+                )
+                .safe_summary(),
+            )
+            .safe_summary()
+        }
+
+        let summaries = [
+            streaming_plan(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &json!({ "stream": true, "max_completion_tokens": 79 }),
+            ),
+            streaming_plan(
+                GatewayTpmEstimateEndpoint::OpenAiResponses,
+                &json!({ "stream": true, "max_output_tokens": 79 }),
+            ),
+            streaming_plan(
+                GatewayTpmEstimateEndpoint::AnthropicMessages,
+                &json!({ "stream": true, "max_tokens": 79 }),
+            ),
+            streaming_plan(
+                GatewayTpmEstimateEndpoint::GeminiNative,
+                &json!({ "generationConfig": { "maxOutputTokens": 79 } }),
+            ),
+        ];
+        for summary in &summaries {
+            let provider = summary
+                .trusted_source_provider
+                .as_ref()
+                .expect("streaming runtime estimate should carry trusted provider summary");
+            let slot = summary
+                .trusted_source_implementation_slot
+                .as_ref()
+                .expect("streaming runtime estimate should carry implementation slot summary");
+            assert_eq!(slot.status, "ready");
+            assert_eq!(slot.source_type, "tokenizer");
+            assert!(slot.provider_invocation_allowed);
+            assert_eq!(provider.status, "available");
+            assert_eq!(provider.source_type, "tokenizer");
+            assert_eq!(provider.token_kind, "prompt_tokens");
+            assert_eq!(provider.tokens, Some(321));
+            assert_eq!(
+                provider.estimate_duration_marker,
+                "gateway_tpm_trusted_numeric_source_estimate_duration_ms"
+            );
+            assert_eq!(
+                provider.source_marker,
+                "gateway_tpm_trusted_numeric_source_type"
+            );
+            assert_eq!(
+                provider.token_count_marker,
+                "gateway_tpm_trusted_numeric_source_token_count"
+            );
+            assert!(!provider.material_in_output);
+            assert!(!provider.provider_side_effect_required);
+            assert_eq!(summary.required_tokens_i64, 400);
+        }
+
+        let serialized = serde_json::to_string(&json!({ "streaming": summaries }))
+            .expect("streaming TPM estimate summaries should serialize")
+            .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "streaming trusted provider summary leaked forbidden marker: {forbidden}"
             );
         }
     }

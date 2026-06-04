@@ -112,6 +112,47 @@
     "expected_status": 401,
     "expected_error_code": "unauthorized"
   },
+  "dev_admin_session_prereqs": {
+    "diagnostic_default": true,
+    "repair_flag": "-RepairDevAdminSessionPrereqs",
+    "repair_env": "CONTROL_PLANE_AUTH_SMOKE_REPAIR_DEV_ADMIN_SESSION_PREREQS",
+    "blocked_exit_code": 2,
+    "required_tables": ["user_sessions"],
+    "required_seed_files": [
+      "db/dev-seeds/0001_dev_admin_seed.sql",
+      "db/dev-seeds/0003_dev_smoke_seed_reconcile.sql"
+    ],
+    "required_migration": "db/migrations/0005_e1_e2_e3_e10_integrity_hardening.sql",
+    "missing_markers": [
+      "user_sessions_migration_missing",
+      "dev_admin_user_missing",
+      "dev_admin_team_owner_missing",
+      "dev_admin_project_owner_missing"
+    ],
+    "secret_safe_output": {
+      "session_token_echoed": false,
+      "cookie_echoed": false,
+      "password_hash_echoed": false
+    }
+  },
+  "runtime_source_mismatch_diagnostic": {
+    "diagnostic_default": true,
+    "does_not_trigger_build": true,
+    "non_blocking_marker": "runtime_image_stale_or_unverified",
+    "probe": "control_plane_image_timestamp",
+    "stale_or_unverified_reasons": [
+      "source_newer_than_runtime_image",
+      "control_plane_container_unavailable",
+      "control_plane_image_inspect_unavailable",
+      "docker_unavailable",
+      "source_timestamp_unavailable"
+    ],
+    "secret_safe_output": {
+      "token_echoed": false,
+      "cookie_echoed": false,
+      "dsn_echoed": false
+    }
+  },
   "optional_role_denials": [
     {
       "name": "viewer_provider_write_denied",

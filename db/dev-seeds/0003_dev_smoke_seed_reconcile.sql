@@ -89,6 +89,74 @@ where not exists (
 )
 on conflict do nothing;
 
+update team_members
+set role = 'owner'
+where tenant_id = '00000000-0000-0000-0000-000000000001'
+  and team_id = '00000000-0000-0000-0000-000000000010'
+  and user_id = '00000000-0000-0000-0000-0000000000a1';
+
+insert into team_members (tenant_id, team_id, user_id, role)
+select
+  '00000000-0000-0000-0000-000000000001',
+  '00000000-0000-0000-0000-000000000010',
+  '00000000-0000-0000-0000-0000000000a1',
+  'owner'
+where exists (
+  select 1
+  from teams
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and id = '00000000-0000-0000-0000-000000000010'
+)
+and exists (
+  select 1
+  from users
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and id = '00000000-0000-0000-0000-0000000000a1'
+    and status = 'active'
+    and deleted_at is null
+)
+and not exists (
+  select 1
+  from team_members
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and team_id = '00000000-0000-0000-0000-000000000010'
+    and user_id = '00000000-0000-0000-0000-0000000000a1'
+);
+
+update project_members
+set role = 'owner'
+where tenant_id = '00000000-0000-0000-0000-000000000001'
+  and project_id = '00000000-0000-0000-0000-000000000020'
+  and user_id = '00000000-0000-0000-0000-0000000000a1';
+
+insert into project_members (tenant_id, project_id, user_id, role)
+select
+  '00000000-0000-0000-0000-000000000001',
+  '00000000-0000-0000-0000-000000000020',
+  '00000000-0000-0000-0000-0000000000a1',
+  'owner'
+where exists (
+  select 1
+  from projects
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and id = '00000000-0000-0000-0000-000000000020'
+)
+and exists (
+  select 1
+  from users
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and id = '00000000-0000-0000-0000-0000000000a1'
+    and status = 'active'
+    and deleted_at is null
+)
+and not exists (
+  select 1
+  from project_members
+  where tenant_id = '00000000-0000-0000-0000-000000000001'
+    and project_id = '00000000-0000-0000-0000-000000000020'
+    and user_id = '00000000-0000-0000-0000-0000000000a1'
+);
+
 update payload_policies
 set name = 'Default Metadata Only',
     mode = 'metadata_only',
