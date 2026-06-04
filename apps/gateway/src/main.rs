@@ -90,7 +90,8 @@ use tower_http::{
 };
 use tpm_estimate::{
     GatewayTpmEstimateEndpoint, GatewayTpmEstimatePlan, GatewayTpmEstimateSignals,
-    GatewayTpmEstimateSummary, gateway_tpm_estimate_for_request_body,
+    GatewayTpmEstimateSummary, gateway_tpm_estimate_for_request,
+    gateway_tpm_estimate_for_request_body,
 };
 
 const GATEWAY_ROUTE_POLICY_VERSION: &str = "gateway_db_route_v1";
@@ -2789,6 +2790,14 @@ async fn anthropic_messages(
         return error.into_response();
     }
 
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+        GatewayTpmEstimateEndpoint::AnthropicMessages,
+        &body,
+        GatewayTpmEstimateSignals::missing_tokenizer(
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+        ),
+    );
+
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &request.model)
         .await
@@ -2910,6 +2919,7 @@ async fn anthropic_messages(
                 native_http: &state.native_http,
                 stream_idle_timeout: state.stream_idle_timeout,
                 route_snapshot,
+                rate_limit_tpm_estimate: Some(&rate_limit_tpm_estimate),
             },
         )
         .await;
@@ -2933,7 +2943,8 @@ async fn anthropic_messages(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate));
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
             repository,
@@ -3620,6 +3631,14 @@ async fn gemini_generate_content_native_passthrough(
         return error.into_response();
     }
 
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(
+        GatewayTpmEstimateEndpoint::GeminiNative,
+        &parsed_body.value,
+        GatewayTpmEstimateSignals::missing_tokenizer(
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+        ),
+    );
+
     let native_streaming_requested = native_path.action
         == NativeGeminiAction::StreamGenerateContent
         || parsed_body.stream
@@ -3750,6 +3769,7 @@ async fn gemini_generate_content_native_passthrough(
                 stream_idle_timeout: state.stream_idle_timeout,
                 route_snapshot,
                 inbound_content_type,
+                rate_limit_tpm_estimate: Some(&rate_limit_tpm_estimate),
             },
         )
         .await;
@@ -3773,7 +3793,8 @@ async fn gemini_generate_content_native_passthrough(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate));
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
             repository,
@@ -13408,7 +13429,7 @@ mod tests {
         let main_source = include_str!("main.rs");
         let streaming_source = include_str!("streaming.rs");
 
-        for (section, section_name, rejection_marker) in [
+        for (section, section_name, rejection_marker, estimate_marker) in [
             (
                 source_section(
                     main_source,
@@ -13417,31 +13438,44 @@ mod tests {
                 ),
                 "chat completions",
                 "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
             ),
             (
                 source_section(main_source, "async fn responses(", "async fn embeddings("),
                 "responses",
                 "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
             ),
         ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
             assert_marker_before(
                 section,
-                rejection_marker,
-                "gateway_tpm_estimate_for_request_body(",
-                section_name,
-            );
-            assert_marker_before(
-                section,
-                "gateway_tpm_estimate_for_request_body(",
+                estimate_marker,
                 "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
                 section_name,
             );
 
-            let rejection_section = source_section(
-                section,
-                rejection_marker,
-                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
-            );
+            let rejection_section = source_section(section, rejection_marker, estimate_marker);
             assert!(rejection_section.contains("return error.into_response();"));
             assert!(!rejection_section.contains("gateway_rate_limit_reservation_for_attempt("));
             assert!(!rejection_section.contains("create_provider_attempt_started("));
@@ -13464,6 +13498,22 @@ mod tests {
                     "pub(crate) async fn anthropic_messages_streaming(",
                 ),
                 "responses streaming",
+            ),
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn anthropic_messages_streaming(",
+                    "pub(crate) async fn gemini_generate_content_streaming(",
+                ),
+                "anthropic messages streaming",
+            ),
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn gemini_generate_content_streaming(",
+                    "#[derive(Debug, Clone)]\nstruct StreamLogContext",
+                ),
+                "gemini native streaming",
             ),
         ] {
             assert!(section.contains("rate_limit_tpm_estimate"));
@@ -13609,6 +13659,153 @@ mod tests {
         assert_eq!(metadata["tpm_estimate"]["source"], bridge["partial_source"]);
         assert_eq!(metadata["tpm_estimate"]["max_completion_tokens"], 300);
         assert_eq!(acquire_tpm["required"], json!(expected_required));
+    }
+
+    #[test]
+    fn rate_limit_reservation_native_tpm_estimates_feed_plan_metadata_and_db_capacity() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(154),
+            0,
+            Some(60),
+            Some(10_000),
+            Some(8),
+            json!({
+                "rpm": { "used": 10 },
+                "tokens_per_minute": { "used": 100 },
+                "concurrency": { "used": 1 },
+                "authorization": "Bearer sk-live-secret",
+                "payload": "raw request body"
+            }),
+        );
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+        let bridge = &fixture["tpm_estimate_bridge"];
+
+        let anthropic_estimate = gateway_tpm_estimate_for_request_body(
+            GatewayTpmEstimateEndpoint::AnthropicMessages,
+            br#"{
+                "model": "claude-mock",
+                "messages": [{ "role": "user", "content": "sk-live-secret raw prompt" }],
+                "max_tokens": 512
+            }"#,
+            GatewayTpmEstimateSignals::missing_tokenizer(
+                GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+            ),
+        );
+        let anthropic_reservation =
+            gateway_rate_limit_reservation_for_attempt(&route, Some(&anthropic_estimate));
+        let anthropic_metadata = anthropic_reservation.metadata("completed");
+        let anthropic_expected = bridge["anthropic_messages_partial_required_tokens"]
+            .as_i64()
+            .expect("expected Anthropic TPM required tokens");
+        let anthropic_acquire_tpm =
+            rate_limit_reservation_dimension(&anthropic_metadata, "acquire", "tpm");
+        let anthropic_finalize_tpm =
+            rate_limit_reservation_dimension(&anthropic_metadata, "finalize", "tpm");
+        let anthropic_db_required =
+            gateway_rate_limit_required_capacity_for_db(anthropic_reservation.required_capacity);
+
+        assert!(anthropic_reservation.acquired());
+        assert_eq!(
+            anthropic_estimate.estimate.required_tokens_i64(),
+            anthropic_expected
+        );
+        assert_eq!(
+            anthropic_reservation.required_capacity.tokens_per_minute,
+            anthropic_expected
+        );
+        assert_eq!(anthropic_db_required.tokens_per_minute, anthropic_expected);
+        assert_eq!(
+            anthropic_metadata["tpm_estimate"]["endpoint"],
+            "anthropic_messages"
+        );
+        assert_eq!(
+            anthropic_metadata["tpm_estimate"]["source"],
+            bridge["partial_source"]
+        );
+        assert_eq!(
+            anthropic_metadata["tpm_estimate"]["max_completion_tokens"],
+            512
+        );
+        assert_eq!(anthropic_acquire_tpm["required"], json!(anthropic_expected));
+        assert_eq!(
+            anthropic_finalize_tpm["required"],
+            json!(anthropic_expected)
+        );
+
+        let gemini_body = json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{ "text": "sk-live-secret raw prompt" }]
+                }
+            ],
+            "generationConfig": { "maxOutputTokens": 256 }
+        });
+        let gemini_estimate = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::GeminiNative,
+            &gemini_body,
+            GatewayTpmEstimateSignals::missing_tokenizer(
+                GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+            ),
+        );
+        let gemini_reservation =
+            gateway_rate_limit_reservation_for_attempt(&route, Some(&gemini_estimate));
+        let gemini_metadata = gemini_reservation.metadata("completed");
+        let gemini_expected = bridge["gemini_native_partial_required_tokens"]
+            .as_i64()
+            .expect("expected Gemini TPM required tokens");
+        let gemini_acquire_tpm =
+            rate_limit_reservation_dimension(&gemini_metadata, "acquire", "tpm");
+        let gemini_finalize_tpm =
+            rate_limit_reservation_dimension(&gemini_metadata, "finalize", "tpm");
+        let gemini_db_required =
+            gateway_rate_limit_required_capacity_for_db(gemini_reservation.required_capacity);
+
+        assert!(gemini_reservation.acquired());
+        assert_eq!(
+            gemini_estimate.estimate.required_tokens_i64(),
+            gemini_expected
+        );
+        assert_eq!(
+            gemini_reservation.required_capacity.tokens_per_minute,
+            gemini_expected
+        );
+        assert_eq!(gemini_db_required.tokens_per_minute, gemini_expected);
+        assert_eq!(gemini_metadata["tpm_estimate"]["endpoint"], "gemini_native");
+        assert_eq!(
+            gemini_metadata["tpm_estimate"]["source"],
+            bridge["partial_source"]
+        );
+        assert_eq!(
+            gemini_metadata["tpm_estimate"]["max_completion_tokens"],
+            256
+        );
+        assert_eq!(gemini_acquire_tpm["required"], json!(gemini_expected));
+        assert_eq!(gemini_finalize_tpm["required"], json!(gemini_expected));
+
+        let combined_metadata =
+            format!("{anthropic_metadata}{gemini_metadata}").to_ascii_lowercase();
+        for marker in [
+            "sk-live-secret",
+            "raw prompt",
+            "authorization",
+            "bearer",
+            "payload",
+            "request_body",
+            "current_window_state",
+            "\"messages\"",
+            "\"contents\"",
+            "\"parts\"",
+            "\"text\"",
+        ] {
+            assert!(
+                !combined_metadata.contains(marker),
+                "native TPM reservation bridge leaked forbidden marker: {marker}"
+            );
+        }
     }
 
     #[test]

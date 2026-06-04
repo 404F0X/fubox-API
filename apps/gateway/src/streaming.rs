@@ -103,6 +103,7 @@ pub(crate) struct StreamingAnthropicMessagesContext<'a> {
     pub(crate) native_http: &'a reqwest::Client,
     pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
+    pub(crate) rate_limit_tpm_estimate: Option<&'a GatewayTpmEstimatePlan>,
 }
 
 pub(crate) struct StreamingGeminiGenerateContentContext<'a> {
@@ -117,6 +118,7 @@ pub(crate) struct StreamingGeminiGenerateContentContext<'a> {
     pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
     pub(crate) inbound_content_type: Option<String>,
+    pub(crate) rate_limit_tpm_estimate: Option<&'a GatewayTpmEstimatePlan>,
 }
 
 pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>) -> Response {
@@ -787,6 +789,7 @@ pub(crate) async fn anthropic_messages_streaming(
         native_http,
         stream_idle_timeout,
         route_snapshot,
+        rate_limit_tpm_estimate,
     } = context;
 
     debug_assert!(request.is_streaming());
@@ -810,7 +813,8 @@ pub(crate) async fn anthropic_messages_streaming(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
             repository,
@@ -1151,6 +1155,7 @@ pub(crate) async fn gemini_generate_content_streaming(
         stream_idle_timeout,
         route_snapshot,
         inbound_content_type,
+        rate_limit_tpm_estimate,
     } = context;
 
     let mut fallback_events = Vec::new();
@@ -1171,7 +1176,8 @@ pub(crate) async fn gemini_generate_content_streaming(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
             repository,
