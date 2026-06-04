@@ -1512,7 +1512,7 @@ paths:
       tags: [Ledger]
       summary: Dry-run ledger adjustment or refund plan
       operationId: dryRunLedgerAdjustment
-      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Future execute semantics require the ledger write and success audit to share one database transaction.
+      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. Refund plans validate the related confirmed debit and same-tenant, same-source, same-currency confirmed refund/adjust credits before accepting the requested amount. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Future execute semantics require the ledger write and success audit to share one database transaction.
       requestBody:
         required: true
         content:
@@ -5485,6 +5485,7 @@ components:
         - request_log_write
         - audit_log_write
         - tenant_id
+        - refund_remaining_summary
         - planned_ledger_entry
         - validation
         - future_write_contract
@@ -5523,6 +5524,10 @@ components:
         related_ledger_entry:
           oneOf:
             - $ref: '#/components/schemas/LedgerAdjustmentRelatedEntry'
+            - type: 'null'
+        refund_remaining_summary:
+          oneOf:
+            - $ref: '#/components/schemas/LedgerRefundRemainingSummary'
             - type: 'null'
         planned_ledger_entry:
           $ref: '#/components/schemas/LedgerAdjustmentPlannedEntry'
@@ -5594,16 +5599,66 @@ components:
           type: string
         metadata_policy:
           type: string
+    LedgerRefundRemainingSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - source_debit_amount
+        - confirmed_credit_amount
+        - requested_refund_amount
+        - remaining_refundable_amount
+        - currency
+        - confirmed_credit_count
+        - tenant_bounded
+        - source_entry_bounded
+        - currency_bounded
+        - confirmed_only
+        - credit_entry_types
+      properties:
+        source_debit_amount:
+          type: string
+          description: Absolute amount of the related confirmed debit.
+        confirmed_credit_amount:
+          type: string
+          description: Same-tenant, same-source, same-currency confirmed refund/adjust credits already applied.
+        requested_refund_amount:
+          type: string
+        remaining_refundable_amount:
+          type: string
+        currency:
+          type: string
+        confirmed_credit_count:
+          type: integer
+          format: int64
+        tenant_bounded:
+          type: boolean
+          const: true
+        source_entry_bounded:
+          type: boolean
+          const: true
+        currency_bounded:
+          type: boolean
+          const: true
+        confirmed_only:
+          type: boolean
+          const: true
+        credit_entry_types:
+          type: array
+          items:
+            type: string
+            enum: [refund, adjust]
     LedgerAdjustmentValidation:
       type: object
       additionalProperties: false
-      required: [amount_checked, currency_checked, related_ledger_entry_checked, reason_provided, sensitive_material_policy]
+      required: [amount_checked, currency_checked, related_ledger_entry_checked, refund_remaining_checked, reason_provided, sensitive_material_policy]
       properties:
         amount_checked:
           type: boolean
         currency_checked:
           type: boolean
         related_ledger_entry_checked:
+          type: boolean
+        refund_remaining_checked:
           type: boolean
         reason_provided:
           type: boolean

@@ -114,7 +114,11 @@ function stubHealthyFetch(
 }
 
 function stubAdminFetch(
-  options: { payloadPreviewStatus?: "success" | "forbidden" | "notImplemented"; payloadStored?: boolean } = {},
+  options: {
+    ledgerAdjustmentDryRunFails?: boolean;
+    payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
+    payloadStored?: boolean;
+  } = {},
 ) {
   let channelCreated = false;
   let associationCreated = false;
@@ -543,6 +547,74 @@ function stubAdminFetch(
     virtual_key_id: null,
     wallet_id: "wallet-1",
   };
+  const ledgerAdjustmentDryRunPlan = {
+    audit_log_write: false,
+    future_write_contract: {
+      audit_action: "ledger.refund",
+      audit_insert_failure_rolls_back_ledger_write: true,
+      audit_snapshot_policy: "bounded public ids and amounts only",
+      business_and_success_audit_share_transaction: true,
+      ledger_write: false,
+      omitted_material_policy: "no raw request, raw ledger snapshot, raw metadata, or credential material",
+      refusal_does_not_build_success_audit: true,
+      success_audit_only_after_ledger_write: true,
+      upstream_call: false,
+    },
+    ledger_write: false,
+    omitted_material: ["dedupe material", "ledger snapshots", "raw metadata"],
+    operation: "refund",
+    plan_only: true,
+    planned_ledger_entry: {
+      amount: "0.25000000",
+      currency: "USD",
+      dedupe_policy: "server_generated_on_execute",
+      entry_type: "refund",
+      metadata_policy: "bounded_admin_adjustment_metadata_only",
+      project_id: "00000000-0000-0000-0000-000000000020",
+      related_ledger_entry_id: "00000000-0000-0000-0000-000000000091",
+      request_id: "00000000-0000-0000-0000-000000000090",
+      status: "planned",
+      wallet_id: "00000000-0000-0000-0000-000000000040",
+    },
+    project_id: "00000000-0000-0000-0000-000000000020",
+    related_ledger_entry: {
+      amount: "-0.25000000",
+      currency: "USD",
+      entry_type: "settle",
+      id: "00000000-0000-0000-0000-000000000091",
+      project_id: "00000000-0000-0000-0000-000000000020",
+      related_ledger_entry_id: null,
+      request_id: "00000000-0000-0000-0000-000000000090",
+      status: "confirmed",
+      wallet_id: "00000000-0000-0000-0000-000000000040",
+    },
+    refund_remaining_summary: {
+      confirmed_credit_amount: "0.10000000",
+      confirmed_credit_count: 1,
+      confirmed_only: true,
+      credit_entry_types: ["refund", "adjust"],
+      currency: "USD",
+      currency_bounded: true,
+      remaining_refundable_amount: "0.15000000",
+      requested_refund_amount: "0.15000000",
+      source_debit_amount: "0.25000000",
+      source_entry_bounded: true,
+      tenant_bounded: true,
+    },
+    request_id: "00000000-0000-0000-0000-000000000090",
+    request_log_write: false,
+    tenant_id: "00000000-0000-0000-0000-000000000001",
+    upstream_call: false,
+    validation: {
+      amount_checked: true,
+      currency_checked: true,
+      refund_remaining_checked: true,
+      reason_provided: true,
+      related_ledger_entry_checked: true,
+      sensitive_material_policy: "rejected_by_schema",
+    },
+    wallet_id: "00000000-0000-0000-0000-000000000040",
+  };
   const reconciliationReport = {
     discrepancies: [
       {
@@ -894,6 +966,33 @@ function stubAdminFetch(
 
     if (requestUrl.includes("/admin/billing/reconciliation")) {
       return jsonResponse(reconciliationReport);
+    }
+
+    if (requestUrl.includes("/admin/ledger/adjustments/dry-run") && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+
+      if (options.ledgerAdjustmentDryRunFails) {
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-adjust-hidden")} ${skPlaceholder(
+            "ledger-adjust-hidden",
+          )} idempotency_key raw metadata`,
+          400,
+        );
+      }
+
+      return jsonResponse({
+        ...ledgerAdjustmentDryRunPlan,
+        operation: body.operation ?? ledgerAdjustmentDryRunPlan.operation,
+        planned_ledger_entry: {
+          ...ledgerAdjustmentDryRunPlan.planned_ledger_entry,
+          amount: body.amount ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.amount,
+          currency: body.currency ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.currency,
+          related_ledger_entry_id:
+            body.related_ledger_entry_id ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.related_ledger_entry_id,
+          request_id: body.request_id ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.request_id,
+        },
+        request_id: body.request_id ?? ledgerAdjustmentDryRunPlan.request_id,
+      });
     }
 
     if (requestUrl.includes("/admin/price-versions") && method === "POST") {
@@ -2130,6 +2229,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Usage Snapshot" })).toBeInTheDocument();
     expect(screen.queryByText(skPlaceholder("ledger-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("ledger-hidden"))).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("settle:request-1");
 
     await user.click(screen.getByRole("tab", { name: "Reconciliation" }));
 
@@ -2163,6 +2263,84 @@ describe("App", () => {
         "/api/control-plane/admin/billing/reconciliation?day=2026-06-02&limit=5",
       ),
     );
+  });
+
+  it("runs ledger adjustment dry-run and renders the plan-only contract without execute actions", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunPanel = within(dryRunRegion);
+
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
+    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
+    await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
+    await user.type(dryRunPanel.getByLabelText("Reason"), "customer credit");
+    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+
+    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Plan Flags" })).toBeInTheDocument();
+    expect(screen.getByText("plan_only=true")).toBeInTheDocument();
+    expect(screen.getByText("ledger_write=false")).toBeInTheDocument();
+    expect(screen.getByText("request_log_write=false")).toBeInTheDocument();
+    expect(screen.getByText("audit_log_write=false")).toBeInTheDocument();
+    expect(screen.getByText("upstream_call=false")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Planned Ledger Entry" })).toBeInTheDocument();
+    expect(screen.getAllByText("0.25000000 USD").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("server_generated_on_execute")).toBeInTheDocument();
+    expect(screen.getByText("bounded_admin_adjustment_metadata_only")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Related Entry Summary" })).toBeInTheDocument();
+    expect(screen.getByText("-0.25000000 USD")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Refund Remaining" })).toBeInTheDocument();
+    expect(screen.getAllByText("0.15000000 USD").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("refund, adjust")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Future Audit / Write Contract" })).toBeInTheDocument();
+    expect(screen.getByText("ledger.refund")).toBeInTheDocument();
+    expect(screen.getByText("bounded public ids and amounts only")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /execute/i })).not.toBeInTheDocument();
+
+    const dryRunCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
+    );
+    expect(String(dryRunCall?.[0])).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(JSON.parse(String(dryRunCall?.[1]?.body))).toEqual({
+      amount: "0.25000000",
+      currency: "USD",
+      operation: "refund",
+      reason: "customer credit",
+      related_ledger_entry_id: "00000000-0000-0000-0000-000000000091",
+      request_id: "00000000-0000-0000-0000-000000000090",
+    });
+    expect(document.body.textContent).not.toContain("idempotency_key");
+    expect(document.body.textContent).not.toContain("raw metadata");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+  });
+
+  it("redacts ledger adjustment dry-run errors without retaining secret material", async () => {
+    stubAdminFetch({ ledgerAdjustmentDryRunFails: true });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunPanel = within(dryRunRegion);
+
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
+    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
+    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+
+    expect(await screen.findByText("Request failed.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-adjust-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-adjust-hidden"));
+    expect(document.body.textContent).not.toContain("idempotency_key");
+    expect(document.body.textContent).not.toContain("raw metadata");
   });
 
   it("creates a price version, sends safe pricing rules, and refreshes the list", async () => {

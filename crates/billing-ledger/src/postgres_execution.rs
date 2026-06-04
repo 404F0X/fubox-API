@@ -10,6 +10,8 @@ use crate::{
 pub const CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA: &str =
     "billing_ledger_postgres_execution_plan.v1";
 pub const CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA: &str = "billing_ledger_postgres_executor.v1";
+pub const CONSISTENT_LEDGER_POSTGRES_SQLX_ADAPTER_SCHEMA: &str =
+    "billing_ledger_postgres_sqlx_adapter_contract.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConsistentLedgerPostgresExecutionPlan {
@@ -35,6 +37,86 @@ pub struct ConsistentLedgerPostgresExecutorResult {
     pub statement_results: Vec<ConsistentLedgerPostgresStatementResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ConsistentLedgerPostgresExecutorError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresSqlxAdapterContract {
+    pub schema_version: &'static str,
+    pub adapter_name: &'static str,
+    pub dependency_strategy: &'static str,
+    pub sqlx_dependency_declared: bool,
+    pub future_feature_gate: &'static str,
+    pub db_io_implemented: bool,
+    pub transaction_lifecycle: Vec<ConsistentLedgerPostgresSqlxTransactionStep>,
+    pub row_count_enforcement: &'static str,
+    pub operation_key_bind_contract: &'static str,
+    pub db_error_mapping_contract: &'static str,
+    pub statements: Vec<ConsistentLedgerPostgresSqlxStatementContract>,
+    pub safe_output_contract: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresSqlxTransactionStep {
+    pub order: u8,
+    pub method: &'static str,
+    pub contract: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresSqlxStatementContract {
+    pub order: u16,
+    pub kind: ConsistentLedgerPostgresStatementKind,
+    pub target: &'static str,
+    pub row_count_expectation: ConsistentLedgerPostgresRowCountExpectation,
+    pub bounded_by: Vec<&'static str>,
+    pub bind_markers: Vec<ConsistentLedgerPostgresSqlxBindMarker>,
+    pub operation_key_output: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerPostgresSqlxBindMarker {
+    TenantId,
+    ProjectId,
+    VirtualKeyId,
+    WalletId,
+    Currency,
+    Now,
+    RequestId,
+    SourceLedgerEntryId,
+    RelatedLedgerEntryId,
+    LedgerEntryId,
+    BudgetId,
+    RequiredDebit,
+    AvailableBeforeWrite,
+    EntryType,
+    Amount,
+    Status,
+    FromStatus,
+    ToStatus,
+    Metadata,
+    OperationKeyBind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsistentLedgerPostgresDbErrorInput {
+    pub kind: ConsistentLedgerPostgresDbErrorKind,
+    pub statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+    pub private_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerPostgresDbErrorKind {
+    UniqueViolation,
+    ForeignKeyViolation,
+    CheckViolation,
+    NotNullViolation,
+    SerializationFailure,
+    DeadlockDetected,
+    Timeout,
+    Connection,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +179,14 @@ impl ConsistentLedgerPostgresExecutorError {
         Self {
             code: code.into(),
             category: "row_count_enforcement".to_string(),
+            detail_output: "omitted",
+        }
+    }
+
+    pub fn db_error(code: impl Into<String>, category: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            category: category.into(),
             detail_output: "omitted",
         }
     }
@@ -288,6 +378,203 @@ where
         ConsistentLedgerPostgresExecutorOutcome::Applied
     };
     executor_result(plan, outcome, true, false, statement_results, None)
+}
+
+pub fn plan_consistent_ledger_postgres_sqlx_adapter_contract(
+    plan: &ConsistentLedgerPostgresExecutionPlan,
+) -> ConsistentLedgerPostgresSqlxAdapterContract {
+    ConsistentLedgerPostgresSqlxAdapterContract {
+        schema_version: CONSISTENT_LEDGER_POSTGRES_SQLX_ADAPTER_SCHEMA,
+        adapter_name: "SqlxConsistentLedgerPostgresTransactionExecutor",
+        dependency_strategy: "contract_only_no_sqlx_dependency_in_this_crate_slice",
+        sqlx_dependency_declared: false,
+        future_feature_gate: "billing-ledger-postgres-sqlx",
+        db_io_implemented: false,
+        transaction_lifecycle: vec![
+            ConsistentLedgerPostgresSqlxTransactionStep {
+                order: 1,
+                method: "begin_transaction",
+                contract: "begin one postgres transaction before executing any statement",
+            },
+            ConsistentLedgerPostgresSqlxTransactionStep {
+                order: 2,
+                method: "execute_statement",
+                contract: "bind statement parameters only; operation key value is never logged or serialized",
+            },
+            ConsistentLedgerPostgresSqlxTransactionStep {
+                order: 3,
+                method: "commit_transaction",
+                contract: "commit only after outer executor row-count enforcement accepts all statement results",
+            },
+            ConsistentLedgerPostgresSqlxTransactionStep {
+                order: 4,
+                method: "rollback_transaction",
+                contract: "rollback on DB error, statement refusal, or outer row-count enforcement failure",
+            },
+        ],
+        row_count_enforcement: "outer execute_consistent_ledger_postgres_plan validates row_count_expectation after adapter returns rows_affected",
+        operation_key_bind_contract: "adapter receives operation key only as a private bind value; public contract exposes only operation_key_bind marker",
+        db_error_mapping_contract: "adapter maps postgres/sqlx errors to stable code/category and omits DB messages, private bind values, DSNs, request material, and credentials",
+        statements: plan
+            .sql_statements
+            .iter()
+            .map(sqlx_statement_contract)
+            .collect(),
+        safe_output_contract: vec![
+            "operation_key_bind_marker_only",
+            "operation_key_value_omitted",
+            "auth_header_omitted",
+            "provider_credential_omitted",
+            "wallet_credential_omitted",
+            "db_url_omitted",
+            "request_material_omitted",
+        ],
+    }
+}
+
+pub fn map_consistent_ledger_postgres_db_error(
+    error: ConsistentLedgerPostgresDbErrorInput,
+) -> ConsistentLedgerPostgresExecutorError {
+    match error.kind {
+        ConsistentLedgerPostgresDbErrorKind::UniqueViolation => {
+            ConsistentLedgerPostgresExecutorError::db_error(
+                "db_unique_constraint_violation",
+                "db_constraint",
+            )
+        }
+        ConsistentLedgerPostgresDbErrorKind::ForeignKeyViolation => {
+            ConsistentLedgerPostgresExecutorError::db_error(
+                "db_foreign_key_violation",
+                "db_constraint",
+            )
+        }
+        ConsistentLedgerPostgresDbErrorKind::CheckViolation => {
+            ConsistentLedgerPostgresExecutorError::db_error(
+                "db_check_constraint_violation",
+                "db_constraint",
+            )
+        }
+        ConsistentLedgerPostgresDbErrorKind::NotNullViolation => {
+            ConsistentLedgerPostgresExecutorError::db_error(
+                "db_not_null_violation",
+                "db_constraint",
+            )
+        }
+        ConsistentLedgerPostgresDbErrorKind::SerializationFailure => {
+            ConsistentLedgerPostgresExecutorError::db_error(
+                "db_serialization_failure",
+                "db_transaction",
+            )
+        }
+        ConsistentLedgerPostgresDbErrorKind::DeadlockDetected => {
+            ConsistentLedgerPostgresExecutorError::db_error(
+                "db_deadlock_detected",
+                "db_transaction",
+            )
+        }
+        ConsistentLedgerPostgresDbErrorKind::Timeout => {
+            ConsistentLedgerPostgresExecutorError::db_error("db_timeout", "db_transaction")
+        }
+        ConsistentLedgerPostgresDbErrorKind::Connection => {
+            ConsistentLedgerPostgresExecutorError::db_error("db_connection_error", "db_connection")
+        }
+        ConsistentLedgerPostgresDbErrorKind::Unknown => {
+            ConsistentLedgerPostgresExecutorError::db_error("db_error", "db_unknown")
+        }
+    }
+}
+
+fn sqlx_statement_contract(
+    statement: &ConsistentLedgerPostgresStatement,
+) -> ConsistentLedgerPostgresSqlxStatementContract {
+    ConsistentLedgerPostgresSqlxStatementContract {
+        order: statement.order,
+        kind: statement.kind,
+        target: statement.target,
+        row_count_expectation: statement.row_count_expectation,
+        bounded_by: statement
+            .where_bounds
+            .iter()
+            .map(|bound| {
+                if *bound == "private_operation_key" {
+                    "operation_key_bind"
+                } else {
+                    *bound
+                }
+            })
+            .collect(),
+        bind_markers: sqlx_bind_markers_for_statement(statement.kind),
+        operation_key_output: if statement
+            .where_bounds
+            .iter()
+            .any(|bound| *bound == "private_operation_key")
+        {
+            "bind_marker_only"
+        } else {
+            "not_required"
+        },
+    }
+}
+
+fn sqlx_bind_markers_for_statement(
+    kind: ConsistentLedgerPostgresStatementKind,
+) -> Vec<ConsistentLedgerPostgresSqlxBindMarker> {
+    match kind {
+        ConsistentLedgerPostgresStatementKind::LockWallet => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::ProjectId,
+            ConsistentLedgerPostgresSqlxBindMarker::Currency,
+        ],
+        ConsistentLedgerPostgresStatementKind::LockCreditGrants => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::WalletId,
+            ConsistentLedgerPostgresSqlxBindMarker::Currency,
+            ConsistentLedgerPostgresSqlxBindMarker::Now,
+        ],
+        ConsistentLedgerPostgresStatementKind::LockBudgets => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::ProjectId,
+            ConsistentLedgerPostgresSqlxBindMarker::VirtualKeyId,
+            ConsistentLedgerPostgresSqlxBindMarker::Currency,
+        ],
+        ConsistentLedgerPostgresStatementKind::LockLedgerEntries => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::RequestId,
+            ConsistentLedgerPostgresSqlxBindMarker::SourceLedgerEntryId,
+            ConsistentLedgerPostgresSqlxBindMarker::RelatedLedgerEntryId,
+            ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind,
+        ],
+        ConsistentLedgerPostgresStatementKind::AssertBalanceWindow => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::Currency,
+            ConsistentLedgerPostgresSqlxBindMarker::AvailableBeforeWrite,
+            ConsistentLedgerPostgresSqlxBindMarker::RequiredDebit,
+        ],
+        ConsistentLedgerPostgresStatementKind::AssertBudgetWindow => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::BudgetId,
+            ConsistentLedgerPostgresSqlxBindMarker::Currency,
+            ConsistentLedgerPostgresSqlxBindMarker::RequiredDebit,
+        ],
+        ConsistentLedgerPostgresStatementKind::InsertLedgerEntry => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::ProjectId,
+            ConsistentLedgerPostgresSqlxBindMarker::VirtualKeyId,
+            ConsistentLedgerPostgresSqlxBindMarker::RequestId,
+            ConsistentLedgerPostgresSqlxBindMarker::RelatedLedgerEntryId,
+            ConsistentLedgerPostgresSqlxBindMarker::EntryType,
+            ConsistentLedgerPostgresSqlxBindMarker::Amount,
+            ConsistentLedgerPostgresSqlxBindMarker::Currency,
+            ConsistentLedgerPostgresSqlxBindMarker::Status,
+            ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind,
+            ConsistentLedgerPostgresSqlxBindMarker::Metadata,
+        ],
+        ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus => vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::LedgerEntryId,
+            ConsistentLedgerPostgresSqlxBindMarker::FromStatus,
+            ConsistentLedgerPostgresSqlxBindMarker::ToStatus,
+        ],
+    }
 }
 
 fn executor_result(

@@ -1,0 +1,249 @@
+{
+  "scenario": "provider_key_rate_limit_reservation_persistence_contract",
+  "crate": "ai-gateway-db",
+  "function": "build_provider_key_rate_limit_reservation_persistence_plan",
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "provider_key_id": "00000000-0000-0000-0000-000000000002",
+    "channel_id": "00000000-0000-0000-0000-000000000003",
+    "rpm_limit": 60,
+    "tpm_limit": 1000,
+    "concurrency_limit": 4,
+    "required": {
+      "requests_per_minute": 1,
+      "tokens_per_minute": 128,
+      "concurrency": 1
+    },
+    "current_window_state": {
+      "rpm": {
+        "used": 10
+      },
+      "tpm": {
+        "used": 250
+      },
+      "concurrency": {
+        "used": 1
+      },
+      "authorization": "Bearer sk-live-secret",
+      "endpoint": "https://provider.example.test/v1",
+      "payload": "raw request body"
+    }
+  },
+  "expected_plan_summary": {
+    "schema": "provider_key_rate_limit_reservation_persistence_v1",
+    "operation": "Acquire",
+    "status": "SqlReady",
+    "refusal_reason": null,
+    "sql_name": "PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL",
+    "source_table": "provider_keys",
+    "scope_index": "provider_keys_tenant_id_id_channel_scope",
+    "scope_columns": [
+      "tenant_id",
+      "provider_key_id",
+      "channel_id"
+    ],
+    "tenant_scoped": true,
+    "provider_key_scoped": true,
+    "channel_scoped": true,
+    "row_lock": true,
+    "bounded_rows": 1,
+    "bind_count": 6,
+    "current_window_state_material_in_output": false,
+    "counter_updates_planned": 3,
+    "dimensions": [
+      {
+        "dimension": "RequestsPerMinute",
+        "status": "WindowReady",
+        "limit": 60,
+        "used_before": 10,
+        "required": 1,
+        "used_after": 11,
+        "counter_update": "Increment",
+        "window_present": true,
+        "saturated_release": false
+      },
+      {
+        "dimension": "TokensPerMinute",
+        "status": "WindowReady",
+        "limit": 1000,
+        "used_before": 250,
+        "required": 128,
+        "used_after": 378,
+        "counter_update": "Increment",
+        "window_present": true,
+        "saturated_release": false
+      },
+      {
+        "dimension": "Concurrency",
+        "status": "WindowReady",
+        "limit": 4,
+        "used_before": 1,
+        "required": 1,
+        "used_after": 2,
+        "counter_update": "Increment",
+        "window_present": true,
+        "saturated_release": false
+      }
+    ],
+    "output_fields": [
+      "provider_key_id",
+      "channel_id",
+      "rpm_used",
+      "tpm_used",
+      "concurrency_used"
+    ],
+    "omitted_fields": [
+      "raw_window_state_material",
+      "provider_credential_material",
+      "secret_fingerprint_material",
+      "request_content_material",
+      "response_content_material",
+      "upstream_location_material",
+      "metadata_material"
+    ]
+  },
+  "expected_sql_fragments": {
+    "acquire": [
+      "from provider_keys",
+      "where tenant_id = $1",
+      "and id = $2",
+      "and channel_id = $3",
+      "and deleted_at is null",
+      "for update",
+      "and rpm_used + $4::bigint <= rpm_limit",
+      "and tpm_used + $5::bigint <= tpm_limit",
+      "and concurrency_used + $6::bigint <= concurrency_limit",
+      "jsonb_set(pk.current_window_state, '{rpm,used}'",
+      "to_jsonb(eligible.rpm_used + $4::bigint)",
+      "returning"
+    ],
+    "release": [
+      "from provider_keys",
+      "where tenant_id = $1",
+      "and id = $2",
+      "and channel_id = $3",
+      "and $7::boolean = true",
+      "for update",
+      "greatest(eligible.rpm_used - $4::bigint, 0)",
+      "greatest(eligible.tpm_used - $5::bigint, 0)",
+      "greatest(eligible.concurrency_used - $6::bigint, 0)",
+      "returning"
+    ]
+  },
+  "disallowed_sql_fragments": [
+    "select *",
+    "encrypted_secret",
+    "secret_fingerprint",
+    "authorization",
+    "provider_key_secret",
+    "payload",
+    "request_body",
+    "response_body",
+    "endpoint",
+    "metadata"
+  ],
+  "refusal_cases": [
+    {
+      "name": "over_limit",
+      "rpm_limit": 60,
+      "tpm_limit": 1000,
+      "concurrency_limit": 4,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 128,
+        "concurrency": 1
+      },
+      "current_window_state": {
+        "rpm": {
+          "used": 60
+        },
+        "tpm": {
+          "used": 250
+        },
+        "concurrency": {
+          "used": 1
+        }
+      },
+      "expected_refusal_reason": "OverLimit"
+    },
+    {
+      "name": "missing_limited_window",
+      "rpm_limit": 60,
+      "tpm_limit": null,
+      "concurrency_limit": null,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 1,
+        "concurrency": 1
+      },
+      "current_window_state": {},
+      "expected_refusal_reason": "MissingWindow"
+    },
+    {
+      "name": "invalid_window_counter",
+      "rpm_limit": 60,
+      "tpm_limit": null,
+      "concurrency_limit": null,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 1,
+        "concurrency": 1
+      },
+      "current_window_state": {
+        "rpm": {
+          "used": "not-a-number"
+        }
+      },
+      "expected_refusal_reason": "InvalidWindow"
+    },
+    {
+      "name": "invalid_limit",
+      "rpm_limit": 0,
+      "tpm_limit": null,
+      "concurrency_limit": null,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 1,
+        "concurrency": 1
+      },
+      "current_window_state": {
+        "rpm": {
+          "used": 0
+        }
+      },
+      "expected_refusal_reason": "InvalidLimit"
+    },
+    {
+      "name": "invalid_required",
+      "rpm_limit": 60,
+      "tpm_limit": null,
+      "concurrency_limit": null,
+      "required": {
+        "requests_per_minute": -1,
+        "tokens_per_minute": 1,
+        "concurrency": 1
+      },
+      "current_window_state": {
+        "rpm": {
+          "used": 0
+        }
+      },
+      "expected_refusal_reason": "InvalidRequired"
+    }
+  ],
+  "safety_contract": {
+    "bounded_rows_max": 1,
+    "scope": [
+      "tenant_id",
+      "provider_key_id",
+      "channel_id"
+    ],
+    "uses_row_lock": true,
+    "acquire_over_limit_refuses_before_update": true,
+    "release_requires_acquired_marker": true,
+    "release_saturates_at_zero": true,
+    "raw_current_window_state_in_summary": false,
+    "raw_payload_or_secret_output": false,
+    "gateway_runtime_mutation": false
+  }
+}

@@ -28,8 +28,9 @@ use ai_gateway_billing_ledger::{
     extract_runtime_token_usage_from_value, pre_authorize, rate_usage_from_json,
 };
 use ai_gateway_config::{
-    AppConfig, ProviderEndpointPolicy, ProviderEndpointValidationError, ip_allowlist_contains,
-    provider_endpoint_resolved_ip_allowed, validate_provider_endpoint,
+    AppConfig, ConfigError, PromptProtectionConfig, ProviderEndpointPolicy,
+    ProviderEndpointValidationError, ip_allowlist_contains, provider_endpoint_resolved_ip_allowed,
+    validate_provider_endpoint,
 };
 use ai_gateway_observability::{
     PayloadPolicyDecision, PayloadStorageMode, PromptProtectionAction, PromptProtectionHitKind,
@@ -300,7 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let config = AppConfig::load_from_env()?;
     config.validate()?;
-    let prompt_protection_config = prompt_protection_runtime_config_from_env()?;
+    let prompt_protection_config = prompt_protection_runtime_config_from_env(&config)?;
 
     let listen =
         std::env::var("AI_GATEWAY_LISTEN").unwrap_or_else(|_| config.server.listen.clone());
@@ -4142,12 +4143,28 @@ fn route_snapshot_for_model_not_found(auth: &AuthContext, requested_model: &str)
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum GatewayPromptProtectionConfigError {
     TooLong,
     InvalidMode,
+    InvalidYaml(ConfigError),
     InvalidRuleSet(PromptProtectionRuleSetError),
 }
+
+impl PartialEq for GatewayPromptProtectionConfigError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::TooLong, Self::TooLong) | (Self::InvalidMode, Self::InvalidMode) => true,
+            (Self::InvalidYaml(left), Self::InvalidYaml(right)) => {
+                left.to_string() == right.to_string()
+            }
+            (Self::InvalidRuleSet(left), Self::InvalidRuleSet(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for GatewayPromptProtectionConfigError {}
 
 impl fmt::Display for GatewayPromptProtectionConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -4159,6 +4176,10 @@ impl fmt::Display for GatewayPromptProtectionConfigError {
             Self::InvalidMode => write!(
                 formatter,
                 "prompt protection runtime config validation failed: code=invalid_mode"
+            ),
+            Self::InvalidYaml(error) => write!(
+                formatter,
+                "prompt protection runtime config validation failed: source=yaml, {error}"
             ),
             Self::InvalidRuleSet(error) => write!(
                 formatter,
@@ -4173,20 +4194,27 @@ impl fmt::Display for GatewayPromptProtectionConfigError {
 impl std::error::Error for GatewayPromptProtectionConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::InvalidYaml(error) => Some(error),
             Self::InvalidRuleSet(error) => Some(error),
             Self::TooLong | Self::InvalidMode => None,
         }
     }
 }
 
-fn prompt_protection_runtime_config_from_env()
--> Result<PromptProtectionRuntimeConfig, GatewayPromptProtectionConfigError> {
+fn prompt_protection_runtime_config_from_env(
+    config: &AppConfig,
+) -> Result<PromptProtectionRuntimeConfig, GatewayPromptProtectionConfigError> {
     let legacy_mode = env::var(PROMPT_PROTECTION_POLICY_ENV).ok();
     let json_config = env::var(PROMPT_PROTECTION_CONFIG_ENV).ok();
-    prompt_protection_runtime_config_from_sources(legacy_mode.as_deref(), json_config.as_deref())
+    prompt_protection_runtime_config_from_sources(
+        Some(&config.security.prompt_protection),
+        legacy_mode.as_deref(),
+        json_config.as_deref(),
+    )
 }
 
 fn prompt_protection_runtime_config_from_sources(
+    yaml_config: Option<&PromptProtectionConfig>,
     legacy_mode: Option<&str>,
     json_config: Option<&str>,
 ) -> Result<PromptProtectionRuntimeConfig, GatewayPromptProtectionConfigError> {
@@ -4198,10 +4226,27 @@ fn prompt_protection_runtime_config_from_sources(
             .map_err(GatewayPromptProtectionConfigError::InvalidRuleSet);
     }
 
+    if let Some(yaml_config) =
+        yaml_config.filter(|config| *config != &PromptProtectionConfig::default())
+    {
+        return yaml_config
+            .to_runtime_config()
+            .map_err(GatewayPromptProtectionConfigError::InvalidYaml);
+    }
+
     let mode = legacy_mode
         .map(prompt_protection_runtime_mode_from_legacy_config_value)
         .transpose()?
         .unwrap_or(PromptProtectionRuntimeMode::Enforce);
+
+    if legacy_mode.is_none() {
+        if let Some(yaml_config) = yaml_config {
+            return yaml_config
+                .to_runtime_config()
+                .map_err(GatewayPromptProtectionConfigError::InvalidYaml);
+        }
+    }
+
     Ok(default_prompt_protection_runtime_config(mode))
 }
 
@@ -8490,11 +8535,18 @@ mod tests {
 
     #[test]
     fn prompt_protection_config_defaults_to_enforce_and_parses_legacy_switches() {
-        let default_config = prompt_protection_runtime_config_from_sources(None, None)
+        let default_config = prompt_protection_runtime_config_from_sources(None, None, None)
             .expect("default prompt protection config");
         assert_eq!(default_config.mode, PromptProtectionRuntimeMode::Enforce);
         assert!(default_config.default_rules_enabled);
         assert!(default_config.custom_rule_set.rules.is_empty());
+
+        let default_yaml = PromptProtectionConfig::default();
+        let legacy_config =
+            prompt_protection_runtime_config_from_sources(Some(&default_yaml), Some("audit"), None)
+                .expect("legacy mode should apply with default YAML config");
+        assert_eq!(legacy_config.mode, PromptProtectionRuntimeMode::Audit);
+        assert!(legacy_config.custom_rule_set.rules.is_empty());
 
         assert_eq!(
             prompt_protection_runtime_mode_from_legacy_config_value("").expect("empty legacy mode"),
@@ -8518,6 +8570,35 @@ mod tests {
     }
 
     #[test]
+    fn prompt_protection_config_uses_yaml_config_before_legacy_mode() {
+        let yaml_config = PromptProtectionConfig {
+            mode: "audit".to_string(),
+            default_rules: true,
+            custom_rules: vec![json!({
+                "name": "gateway_yaml_ticket_reject",
+                "action": "reject",
+                "scope": "messages",
+                "pattern": { "type": "regex", "value": "ticket-[0-9]{4}" }
+            })],
+            ..PromptProtectionConfig::default()
+        };
+        let config = prompt_protection_runtime_config_from_sources(
+            Some(&yaml_config),
+            Some("disabled"),
+            None,
+        )
+        .expect("YAML prompt protection config");
+
+        assert_eq!(config.mode, PromptProtectionRuntimeMode::Audit);
+        assert!(config.default_rules_enabled);
+        assert_eq!(config.custom_rule_set.rules.len(), 1);
+        assert_eq!(
+            config.custom_rule_set.rules[0].name,
+            "gateway_yaml_ticket_reject"
+        );
+    }
+
+    #[test]
     fn prompt_protection_config_parses_custom_json_once_at_boundary() {
         let json_config = r#"{
             "schema": "prompt_protection_rules_v1",
@@ -8530,9 +8611,12 @@ mod tests {
                 "pattern": { "type": "regex", "value": "ticket-[0-9]{4}" }
             }]
         }"#;
-        let config =
-            prompt_protection_runtime_config_from_sources(Some("disabled"), Some(json_config))
-                .expect("custom prompt protection config");
+        let config = prompt_protection_runtime_config_from_sources(
+            None,
+            Some("disabled"),
+            Some(json_config),
+        )
+        .expect("custom prompt protection config");
 
         assert_eq!(config.mode, PromptProtectionRuntimeMode::Enforce);
         assert!(config.default_rules_enabled);
@@ -8541,6 +8625,37 @@ mod tests {
             config.custom_rule_set.rules[0].name,
             "gateway_ticket_reject"
         );
+    }
+
+    #[test]
+    fn prompt_protection_env_json_overrides_yaml_config() {
+        let yaml_config = PromptProtectionConfig {
+            mode: "audit".to_string(),
+            default_rules: true,
+            custom_rules: vec![json!({
+                "name": "gateway_yaml_ticket_reject",
+                "action": "reject",
+                "scope": "messages",
+                "pattern": { "type": "regex", "value": "ticket-[0-9]{4}" }
+            })],
+            ..PromptProtectionConfig::default()
+        };
+        let env_json = r#"{
+            "schema": "prompt_protection_rules_v1",
+            "mode": "disabled",
+            "default_rules": false,
+            "custom_rules": []
+        }"#;
+        let config = prompt_protection_runtime_config_from_sources(
+            Some(&yaml_config),
+            Some("enforce"),
+            Some(env_json),
+        )
+        .expect("env JSON should override YAML prompt protection config");
+
+        assert_eq!(config.mode, PromptProtectionRuntimeMode::Disabled);
+        assert!(!config.default_rules_enabled);
+        assert!(config.custom_rule_set.rules.is_empty());
     }
 
     #[test]
@@ -8559,7 +8674,7 @@ mod tests {
             }]
         }"#;
         let error =
-            prompt_protection_runtime_config_from_sources(None, Some(secret_pattern_config))
+            prompt_protection_runtime_config_from_sources(None, None, Some(secret_pattern_config))
                 .expect_err("secret-like prompt protection config must fail");
         let error_text = error.to_string();
 
@@ -8568,9 +8683,35 @@ mod tests {
         assert!(!error_text.contains("Authorization: Bearer"));
 
         let long_config = "x".repeat(MAX_PROMPT_PROTECTION_CONFIG_JSON_BYTES + 1);
-        let error = prompt_protection_runtime_config_from_sources(None, Some(&long_config))
+        let error = prompt_protection_runtime_config_from_sources(None, None, Some(&long_config))
             .expect_err("oversized prompt protection config must fail");
         assert_eq!(error, GatewayPromptProtectionConfigError::TooLong);
+    }
+
+    #[test]
+    fn prompt_protection_yaml_config_error_is_secret_safe() {
+        let yaml_config = PromptProtectionConfig {
+            mode: "enforce".to_string(),
+            default_rules: true,
+            custom_rules: vec![json!({
+                "name": "gateway_header_marker",
+                "action": "reject",
+                "scope": "messages",
+                "pattern": {
+                    "type": "contains",
+                    "value": "Authorization: Bearer sk-live-secret"
+                }
+            })],
+            ..PromptProtectionConfig::default()
+        };
+        let error = prompt_protection_runtime_config_from_sources(Some(&yaml_config), None, None)
+            .expect_err("secret-like YAML prompt protection config must fail");
+        let error_text = error.to_string();
+
+        assert!(error_text.contains("source=yaml"));
+        assert!(error_text.contains("secret_like_pattern_value"));
+        assert!(!error_text.contains("sk-live-secret"));
+        assert!(!error_text.contains("Authorization: Bearer"));
     }
 
     #[test]
@@ -8654,6 +8795,7 @@ mod tests {
     fn prompt_protection_custom_regex_rules_reject_with_secret_safe_summary() {
         let config = prompt_protection_runtime_config_from_sources(
             None,
+            None,
             Some(
                 r#"{
                     "schema": "prompt_protection_rules_v1",
@@ -8719,6 +8861,7 @@ mod tests {
     fn prompt_protection_audit_mode_custom_regex_summary_is_secret_safe() {
         let config = prompt_protection_runtime_config_from_sources(
             None,
+            None,
             Some(
                 r#"{
                     "schema": "prompt_protection_rules_v1",
@@ -8770,6 +8913,7 @@ mod tests {
     #[test]
     fn prompt_protection_disabled_config_skips_default_and_custom_scans() {
         let config = prompt_protection_runtime_config_from_sources(
+            None,
             None,
             Some(
                 r#"{
@@ -8910,6 +9054,26 @@ mod tests {
             "bounded_no_per_request_regex"
         );
         assert_eq!(
+            fixture["runtime_policy"]["yaml_config_path"],
+            "security.prompt_protection"
+        );
+        assert_eq!(
+            fixture["runtime_policy"]["source_precedence"][0],
+            PROMPT_PROTECTION_CONFIG_ENV
+        );
+        assert_eq!(
+            fixture["runtime_policy"]["source_precedence"][1],
+            "security.prompt_protection"
+        );
+        assert_eq!(
+            fixture["runtime_policy"]["source_precedence"][2],
+            PROMPT_PROTECTION_POLICY_ENV
+        );
+        assert_eq!(
+            fixture["runtime_policy"]["legacy_mode_env_scope"],
+            "fallback_only_when_yaml_config_is_default_and_json_env_is_absent"
+        );
+        assert_eq!(
             fixture["runtime_policy"]["config_parse_boundary"],
             "startup"
         );
@@ -8950,7 +9114,7 @@ mod tests {
 
         assert_marker_before(
             main_source,
-            "prompt_protection_runtime_config_from_env()?",
+            "prompt_protection_runtime_config_from_env(&config)?",
             "Router::new()",
             "prompt_protection_config_parse_boundary",
         );

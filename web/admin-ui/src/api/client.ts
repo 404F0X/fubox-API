@@ -811,6 +811,96 @@ export type LedgerEntryListFilters = {
   wallet_id?: string;
 };
 
+export type LedgerAdjustmentOperation = "adjust" | "refund";
+
+export type LedgerAdjustmentDryRunRequest = {
+  amount: string;
+  currency: string;
+  operation: LedgerAdjustmentOperation;
+  project_id?: string;
+  reason?: string;
+  related_ledger_entry_id?: string;
+  request_id?: string;
+  wallet_id?: string;
+};
+
+export type LedgerAdjustmentRelatedEntrySummary = {
+  amount: string;
+  currency: string;
+  entry_type: LedgerEntryType;
+  id: string;
+  project_id?: string | null;
+  related_ledger_entry_id?: string | null;
+  request_id?: string | null;
+  status: LedgerEntryStatus;
+  wallet_id?: string | null;
+};
+
+export type LedgerAdjustmentPlannedEntry = {
+  amount: string;
+  currency: string;
+  dedupe_policy: string;
+  entry_type: LedgerEntryType;
+  metadata_policy: string;
+  project_id?: string | null;
+  related_ledger_entry_id?: string | null;
+  request_id?: string | null;
+  status: "planned" | string;
+  wallet_id?: string | null;
+};
+
+export type LedgerAdjustmentDryRunValidation = {
+  amount_checked: boolean;
+  currency_checked: boolean;
+  refund_remaining_checked: boolean;
+  reason_provided: boolean;
+  related_ledger_entry_checked: boolean;
+  sensitive_material_policy: string;
+};
+
+export type LedgerRefundRemainingSummary = {
+  confirmed_credit_amount: string;
+  confirmed_credit_count: number;
+  confirmed_only: boolean;
+  credit_entry_types: string[];
+  currency: string;
+  currency_bounded: boolean;
+  remaining_refundable_amount: string;
+  requested_refund_amount: string;
+  source_debit_amount: string;
+  source_entry_bounded: boolean;
+  tenant_bounded: boolean;
+};
+
+export type LedgerAdjustmentFutureWriteContract = {
+  audit_action: string;
+  audit_insert_failure_rolls_back_ledger_write: boolean;
+  audit_snapshot_policy: string;
+  business_and_success_audit_share_transaction: boolean;
+  ledger_write: false;
+  refusal_does_not_build_success_audit: boolean;
+  success_audit_only_after_ledger_write: boolean;
+  upstream_call: false;
+};
+
+export type LedgerAdjustmentDryRunResponse = {
+  audit_log_write: false;
+  future_write_contract: LedgerAdjustmentFutureWriteContract;
+  ledger_write: false;
+  operation: LedgerAdjustmentOperation;
+  plan_only: true;
+  planned_ledger_entry: LedgerAdjustmentPlannedEntry;
+  project_id?: string | null;
+  related_ledger_entry?: LedgerAdjustmentRelatedEntrySummary | null;
+  refund_remaining_summary?: LedgerRefundRemainingSummary | null;
+  request_id?: string | null;
+  request_log_write: false;
+  tenant_id: string;
+  upstream_call: false;
+  validation: LedgerAdjustmentDryRunValidation;
+  wallet_id?: string | null;
+};
+
 export type BillingReconciliationReportFilters = {
   day?: string;
   limit?: number;
@@ -1505,6 +1595,17 @@ export function listLedgerEntries(
   return apiJson<LedgerEntry[]>(`/admin/ledger/entries${queryString(filters)}`, {
     ...options,
     method: "GET",
+  });
+}
+
+export function dryRunLedgerAdjustment(
+  request: LedgerAdjustmentDryRunRequest,
+  options: Omit<JsonRequestOptions, "body" | "method"> = {},
+): Promise<LedgerAdjustmentDryRunResponse> {
+  return apiJson<LedgerAdjustmentDryRunResponse>("/admin/ledger/adjustments/dry-run", {
+    ...options,
+    body: request,
+    method: "POST",
   });
 }
 

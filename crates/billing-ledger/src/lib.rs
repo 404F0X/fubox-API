@@ -24,14 +24,19 @@ pub use ledger::{
 };
 pub use postgres_execution::{
     CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA, CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA,
-    ConsistentLedgerPostgresBoundaryContract, ConsistentLedgerPostgresExecutionPlan,
-    ConsistentLedgerPostgresExecutorError, ConsistentLedgerPostgresExecutorOutcome,
-    ConsistentLedgerPostgresExecutorResult, ConsistentLedgerPostgresRowCountExpectation,
-    ConsistentLedgerPostgresStatement, ConsistentLedgerPostgresStatementKind,
-    ConsistentLedgerPostgresStatementOutcome, ConsistentLedgerPostgresStatementResult,
-    ConsistentLedgerPostgresTransactionExecutor, ConsistentLedgerPostgresTransactionStep,
-    ConsistentLedgerPostgresTransactionStepKind, execute_consistent_ledger_postgres_plan,
+    CONSISTENT_LEDGER_POSTGRES_SQLX_ADAPTER_SCHEMA, ConsistentLedgerPostgresBoundaryContract,
+    ConsistentLedgerPostgresDbErrorInput, ConsistentLedgerPostgresDbErrorKind,
+    ConsistentLedgerPostgresExecutionPlan, ConsistentLedgerPostgresExecutorError,
+    ConsistentLedgerPostgresExecutorOutcome, ConsistentLedgerPostgresExecutorResult,
+    ConsistentLedgerPostgresRowCountExpectation, ConsistentLedgerPostgresSqlxAdapterContract,
+    ConsistentLedgerPostgresSqlxBindMarker, ConsistentLedgerPostgresSqlxStatementContract,
+    ConsistentLedgerPostgresSqlxTransactionStep, ConsistentLedgerPostgresStatement,
+    ConsistentLedgerPostgresStatementKind, ConsistentLedgerPostgresStatementOutcome,
+    ConsistentLedgerPostgresStatementResult, ConsistentLedgerPostgresTransactionExecutor,
+    ConsistentLedgerPostgresTransactionStep, ConsistentLedgerPostgresTransactionStepKind,
+    execute_consistent_ledger_postgres_plan, map_consistent_ledger_postgres_db_error,
     plan_consistent_ledger_postgres_execution,
+    plan_consistent_ledger_postgres_sqlx_adapter_contract,
 };
 pub use pre_authorize::{
     PreAuthorizeBalance, PreAuthorizeBudget, PreAuthorizeDecision, PreAuthorizeEstimate,

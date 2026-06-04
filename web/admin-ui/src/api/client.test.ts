@@ -915,6 +915,103 @@ describe("api client", () => {
     expect(fetchMock.mock.calls[4][1]?.body).toBeUndefined();
   });
 
+  it("wraps ledger adjustment dry-run as a plan-only same-origin post", async () => {
+    const { dryRunLedgerAdjustment } = await loadClient();
+    const dryRunPlan = {
+      audit_log_write: false,
+      future_write_contract: {
+        audit_action: "ledger.refund",
+        audit_insert_failure_rolls_back_ledger_write: true,
+        audit_snapshot_policy: "bounded public ids and amounts only",
+        business_and_success_audit_share_transaction: true,
+        ledger_write: false,
+        refusal_does_not_build_success_audit: true,
+        success_audit_only_after_ledger_write: true,
+        upstream_call: false,
+      },
+      ledger_write: false,
+      operation: "refund",
+      plan_only: true,
+      planned_ledger_entry: {
+        amount: "0.25000000",
+        currency: "USD",
+        dedupe_policy: "server_generated_on_execute",
+        entry_type: "refund",
+        metadata_policy: "bounded_admin_adjustment_metadata_only",
+        project_id: "project-1",
+        related_ledger_entry_id: "ledger-entry-1",
+        request_id: "request-1",
+        status: "planned",
+        wallet_id: "wallet-1",
+      },
+      project_id: "project-1",
+      related_ledger_entry: {
+        amount: "-0.25000000",
+        currency: "USD",
+        entry_type: "settle",
+        id: "ledger-entry-1",
+        project_id: "project-1",
+        related_ledger_entry_id: null,
+        request_id: "request-1",
+        status: "confirmed",
+        wallet_id: "wallet-1",
+      },
+      refund_remaining_summary: {
+        confirmed_credit_amount: "0.10000000",
+        confirmed_credit_count: 1,
+        confirmed_only: true,
+        credit_entry_types: ["refund", "adjust"],
+        currency: "USD",
+        currency_bounded: true,
+        remaining_refundable_amount: "0.15000000",
+        requested_refund_amount: "0.15000000",
+        source_debit_amount: "0.25000000",
+        source_entry_bounded: true,
+        tenant_bounded: true,
+      },
+      request_id: "request-1",
+      request_log_write: false,
+      tenant_id: "tenant-1",
+      upstream_call: false,
+      validation: {
+        amount_checked: true,
+        currency_checked: true,
+        refund_remaining_checked: true,
+        reason_provided: true,
+        related_ledger_entry_checked: true,
+        sensitive_material_policy: "rejected_by_schema",
+      },
+      wallet_id: "wallet-1",
+    };
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse(dryRunPlan));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      dryRunLedgerAdjustment({
+        amount: "0.25000000",
+        currency: "USD",
+        operation: "refund",
+        reason: "customer credit",
+        related_ledger_entry_id: "ledger-entry-1",
+        request_id: "request-1",
+      }),
+    ).resolves.toEqual(dryRunPlan);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(init).toMatchObject({ credentials: "include", method: "POST" });
+    expect(init.body).toBe(
+      JSON.stringify({
+        amount: "0.25000000",
+        currency: "USD",
+        operation: "refund",
+        reason: "customer credit",
+        related_ledger_entry_id: "ledger-entry-1",
+        request_id: "request-1",
+      }),
+    );
+  });
+
   it("loads the current admin session through cookie credentials without fallback headers", async () => {
     const { ADMIN_SESSION_HEADER, getAdminMe } = await loadClient();
     const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) =>

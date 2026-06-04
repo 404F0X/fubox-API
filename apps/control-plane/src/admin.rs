@@ -60,6 +60,7 @@ const BILLING_READ_MAX_LIMIT: i64 = 500;
 const RECONCILIATION_DEFAULT_DISCREPANCY_LIMIT: usize = 50;
 const RECONCILIATION_MAX_DISCREPANCY_LIMIT: usize = 500;
 const LEDGER_ADJUSTMENT_REASON_MAX_BYTES: usize = 256;
+const LEDGER_AMOUNT_SCALE: u32 = 8;
 const PRICE_VERSION_DEFAULT_MONEY_SCALE: u32 = 8;
 const PRICE_VERSION_MAX_MONEY_SCALE: u32 = 18;
 const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64";
@@ -70,6 +71,18 @@ const ROUTE_PRIORITY_ASSOCIATION_MULTIPLIER: i32 = 1_000_000;
 const HEALTH_SUMMARY_RECENT_SAMPLE_LIMIT: i64 = REQUEST_LOG_MAX_LIMIT;
 const HEALTH_SUMMARY_DEFAULT_WINDOW_MINUTES: i64 = 60;
 const HEALTH_SUMMARY_MAX_WINDOW_MINUTES: i64 = 24 * 60;
+const LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL: &str = r#"
+select
+  coalesce(sum(amount), 0)::text as confirmed_credit_amount,
+  count(*)::bigint as confirmed_credit_count
+from ledger_entries
+where tenant_id = $1
+  and related_ledger_entry_id = $2
+  and currency = $3
+  and status = 'confirmed'
+  and entry_type in ('refund', 'adjust')
+  and amount > 0
+"#;
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -2527,6 +2540,7 @@ async fn build_ledger_adjustment_dry_run_plan(
                 request.wallet_id,
                 request.request_id,
                 None,
+                None,
                 reason_provided,
             ));
         }
@@ -2540,6 +2554,21 @@ async fn build_ledger_adjustment_dry_run_plan(
         request.wallet_id,
         request.request_id,
     )?;
+    let refund_remaining_summary = match operation {
+        LedgerAdjustmentOperation::Refund => {
+            let confirmed_credit_summary =
+                get_confirmed_refund_credit_summary(repository, related_ledger_entry.id, &currency)
+                    .await?;
+            Some(validate_refund_remaining_amount(
+                &amount,
+                &related_ledger_entry.amount,
+                &confirmed_credit_summary.confirmed_credit_amount,
+                confirmed_credit_summary.confirmed_credit_count,
+                &currency,
+            )?)
+        }
+        LedgerAdjustmentOperation::Adjust => None,
+    };
 
     Ok(ledger_adjustment_dry_run_response(
         operation,
@@ -2549,6 +2578,7 @@ async fn build_ledger_adjustment_dry_run_plan(
         request.wallet_id.or(related_ledger_entry.wallet_id),
         request.request_id.or(related_ledger_entry.request_id),
         Some(&related_ledger_entry),
+        refund_remaining_summary.as_ref(),
         reason_provided,
     ))
 }
@@ -2579,6 +2609,45 @@ async fn get_ledger_entry_for_adjustment_plan(
         .map_err(|error| AdminError::from(DbError::Query(error)))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfirmedRefundCreditSummary {
+    confirmed_credit_amount: String,
+    confirmed_credit_count: i64,
+}
+
+async fn get_confirmed_refund_credit_summary(
+    repository: &DbRepository,
+    related_ledger_entry_id: Uuid,
+    currency: &str,
+) -> Result<ConfirmedRefundCreditSummary, AdminError> {
+    let row = sqlx::query(LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL)
+        .bind(DEFAULT_TENANT_ID)
+        .bind(related_ledger_entry_id)
+        .bind(currency)
+        .fetch_one(repository.pool())
+        .await
+        .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    Ok(ConfirmedRefundCreditSummary {
+        confirmed_credit_amount: row
+            .try_get("confirmed_credit_amount")
+            .map_err(|error| AdminError::from(DbError::Query(error)))?,
+        confirmed_credit_count: row
+            .try_get("confirmed_credit_count")
+            .map_err(|error| AdminError::from(DbError::Query(error)))?,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RefundRemainingSummary {
+    source_debit_amount: String,
+    confirmed_credit_amount: String,
+    requested_refund_amount: String,
+    remaining_refundable_amount: String,
+    currency: String,
+    confirmed_credit_count: i64,
+}
+
 fn ledger_adjustment_dry_run_response(
     operation: LedgerAdjustmentOperation,
     amount: &str,
@@ -2587,6 +2656,7 @@ fn ledger_adjustment_dry_run_response(
     wallet_id: Option<Uuid>,
     request_id: Option<Uuid>,
     related_ledger_entry: Option<&LedgerEntry>,
+    refund_remaining_summary: Option<&RefundRemainingSummary>,
     reason_provided: bool,
 ) -> Value {
     json!({
@@ -2601,6 +2671,7 @@ fn ledger_adjustment_dry_run_response(
         "wallet_id": wallet_id,
         "request_id": request_id,
         "related_ledger_entry": related_ledger_entry.map(ledger_adjustment_related_entry_summary),
+        "refund_remaining_summary": refund_remaining_summary.map(refund_remaining_summary_response),
         "planned_ledger_entry": {
             "entry_type": operation.planned_entry_type(),
             "amount": amount,
@@ -2617,6 +2688,7 @@ fn ledger_adjustment_dry_run_response(
             "amount_checked": true,
             "currency_checked": true,
             "related_ledger_entry_checked": related_ledger_entry.is_some(),
+            "refund_remaining_checked": refund_remaining_summary.is_some(),
             "reason_provided": reason_provided,
             "sensitive_material_policy": "rejected_by_schema"
         },
@@ -2652,6 +2724,22 @@ fn ledger_adjustment_related_entry_summary(entry: &LedgerEntry) -> Value {
         "amount": entry.amount,
         "currency": entry.currency,
         "status": entry.status
+    })
+}
+
+fn refund_remaining_summary_response(summary: &RefundRemainingSummary) -> Value {
+    json!({
+        "source_debit_amount": summary.source_debit_amount,
+        "confirmed_credit_amount": summary.confirmed_credit_amount,
+        "requested_refund_amount": summary.requested_refund_amount,
+        "remaining_refundable_amount": summary.remaining_refundable_amount,
+        "currency": summary.currency,
+        "confirmed_credit_count": summary.confirmed_credit_count,
+        "tenant_bounded": true,
+        "source_entry_bounded": true,
+        "currency_bounded": true,
+        "confirmed_only": true,
+        "credit_entry_types": ["refund", "adjust"]
     })
 }
 
@@ -2877,6 +2965,91 @@ fn decimal_amount_is_zero(value: &str) -> bool {
         .chars()
         .filter(|ch| *ch != '.')
         .all(|ch| ch == '0')
+}
+
+fn decimal_amount_units(value: &str, scale: u32) -> Result<i128, AdminError> {
+    validate_decimal_amount_string("amount", value, scale)?;
+    let negative = value.starts_with('-');
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let scale_factor = 10_i128.pow(scale);
+    let whole_units = whole
+        .parse::<i128>()
+        .map_err(|_| AdminError::bad_request("amount must be a decimal string"))?
+        .checked_mul(scale_factor)
+        .ok_or_else(|| AdminError::bad_request("amount is too large"))?;
+    let mut fraction_string = fraction.to_string();
+    while fraction_string.len() < scale as usize {
+        fraction_string.push('0');
+    }
+    let fraction_units = if fraction_string.is_empty() {
+        0
+    } else {
+        fraction_string
+            .parse::<i128>()
+            .map_err(|_| AdminError::bad_request("amount must be a decimal string"))?
+    };
+    let units = whole_units
+        .checked_add(fraction_units)
+        .ok_or_else(|| AdminError::bad_request("amount is too large"))?;
+
+    Ok(if negative { -units } else { units })
+}
+
+fn format_decimal_units(units: i128, scale: u32) -> String {
+    let negative = units < 0;
+    let absolute = units.abs();
+    let scale_factor = 10_i128.pow(scale);
+    let whole = absolute / scale_factor;
+    let fraction = absolute % scale_factor;
+    let sign = if negative { "-" } else { "" };
+
+    format!("{sign}{whole}.{fraction:0width$}", width = scale as usize)
+}
+
+fn validate_refund_remaining_amount(
+    requested_refund_amount: &str,
+    source_debit_amount: &str,
+    confirmed_credit_amount: &str,
+    confirmed_credit_count: i64,
+    currency: &str,
+) -> Result<RefundRemainingSummary, AdminError> {
+    let requested_units = decimal_amount_units(requested_refund_amount, LEDGER_AMOUNT_SCALE)?;
+    let source_units = decimal_amount_units(source_debit_amount, LEDGER_AMOUNT_SCALE)?;
+    let confirmed_credit_units =
+        decimal_amount_units(confirmed_credit_amount, LEDGER_AMOUNT_SCALE)?;
+    if requested_units <= 0 {
+        return Err(AdminError::bad_request(
+            "refund amount must be a positive credit amount",
+        ));
+    }
+    if source_units >= 0 {
+        return Err(AdminError::bad_request(
+            "refund related ledger entry must be a confirmed debit",
+        ));
+    }
+    if confirmed_credit_units < 0 {
+        return Err(AdminError::bad_request(
+            "confirmed refund credit amount must not be negative",
+        ));
+    }
+
+    let source_debit_units = source_units.abs();
+    let remaining_units = (source_debit_units - confirmed_credit_units).max(0);
+    if requested_units > remaining_units {
+        return Err(AdminError::bad_request(
+            "refund amount exceeds remaining refundable amount",
+        ));
+    }
+
+    Ok(RefundRemainingSummary {
+        source_debit_amount: format_decimal_units(source_debit_units, LEDGER_AMOUNT_SCALE),
+        confirmed_credit_amount: format_decimal_units(confirmed_credit_units, LEDGER_AMOUNT_SCALE),
+        requested_refund_amount: format_decimal_units(requested_units, LEDGER_AMOUNT_SCALE),
+        remaining_refundable_amount: format_decimal_units(remaining_units, LEDGER_AMOUNT_SCALE),
+        currency: currency.to_string(),
+        confirmed_credit_count,
+    })
 }
 
 fn validate_related_ledger_entry_for_adjustment_plan(
@@ -8810,14 +8983,23 @@ mod tests {
         let request_id = Uuid::from_u128(90);
         let related_entry =
             ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let refund_summary = validate_refund_remaining_amount(
+            "0.15000000",
+            &related_entry.amount,
+            "0.10000000",
+            1,
+            "USD",
+        )
+        .expect("refund should fit remaining amount");
         let response = ledger_adjustment_dry_run_response(
             LedgerAdjustmentOperation::Refund,
-            "0.25000000",
+            "0.15000000",
             "USD",
             related_entry.project_id,
             related_entry.wallet_id,
             related_entry.request_id,
             Some(&related_entry),
+            Some(&refund_summary),
             true,
         );
         let serialized = serde_json::to_string(&response).expect("response should serialize");
@@ -8830,6 +9012,14 @@ mod tests {
         assert_eq!(
             response["planned_ledger_entry"]["entry_type"],
             json!("refund")
+        );
+        assert_eq!(
+            response["refund_remaining_summary"]["remaining_refundable_amount"],
+            json!("0.15000000")
+        );
+        assert_eq!(
+            response["refund_remaining_summary"]["confirmed_credit_count"],
+            json!(1)
         );
         assert_eq!(
             response["future_write_contract"]["business_and_success_audit_share_transaction"],
@@ -8899,6 +9089,43 @@ mod tests {
             ))
             .is_err()
         );
+        let remaining =
+            validate_refund_remaining_amount("0.15000000", "-0.25000000", "0.10000000", 2, "USD")
+                .expect("requested refund should fit remaining amount");
+        assert_eq!(remaining.source_debit_amount, "0.25000000");
+        assert_eq!(remaining.confirmed_credit_amount, "0.10000000");
+        assert_eq!(remaining.requested_refund_amount, "0.15000000");
+        assert_eq!(remaining.remaining_refundable_amount, "0.15000000");
+        assert_eq!(remaining.confirmed_credit_count, 2);
+        assert!(
+            validate_refund_remaining_amount("0.15000001", "-0.25000000", "0.10000000", 2, "USD")
+                .is_err()
+        );
+        assert!(
+            validate_refund_remaining_amount("0.01000000", "-0.25000000", "0.25000000", 1, "USD")
+                .is_err()
+        );
+        assert!(
+            validate_refund_remaining_amount("0.01000000", "-0.25000000", "0.26000000", 2, "USD")
+                .is_err()
+        );
+        assert!(
+            LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL.contains("where tenant_id = $1"),
+            "refund credit SQL must stay tenant bounded"
+        );
+        assert!(
+            LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL.contains("related_ledger_entry_id = $2"),
+            "refund credit SQL must stay source-entry bounded"
+        );
+        assert!(
+            LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL.contains("currency = $3"),
+            "refund credit SQL must stay currency bounded"
+        );
+        assert!(LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL.contains("status = 'confirmed'"));
+        assert!(
+            LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL.contains("entry_type in ('refund', 'adjust')")
+        );
+        assert!(LEDGER_REFUND_CONFIRMED_CREDIT_SUM_SQL.contains("amount > 0"));
 
         for field in [
             "idempotency_key",
@@ -8950,6 +9177,26 @@ mod tests {
             json!(true)
         );
         assert_eq!(
+            fixture["request_contract"]["refund_remaining_amount_checked"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["request_contract"]["refund_confirmed_credit_sum_sql_tenant_bounded"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["refund_remaining_contract"]["reject_when_requested_amount_exceeds_remaining"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["refund"]["response"]["data"]["refund_remaining_summary"]["remaining_refundable_amount"],
+            json!("0.15000000")
+        );
+        assert_eq!(
+            fixture["examples"]["refund"]["response"]["data"]["refund_remaining_summary"]["confirmed_credit_amount"],
+            json!("0.10000000")
+        );
+        assert_eq!(
             fixture["future_write_audit_contract"]["business_and_success_audit_share_transaction"],
             json!(true)
         );
@@ -8960,6 +9207,7 @@ mod tests {
         assert!(openapi.contains("/admin/ledger/adjustments/dry-run"));
         assert!(openapi.contains("LedgerAdjustmentDryRunRequest"));
         assert!(openapi.contains("LedgerAdjustmentDryRunEnvelope"));
+        assert!(openapi.contains("LedgerRefundRemainingSummary"));
 
         for forbidden in [
             "usage_snapshot",

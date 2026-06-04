@@ -7,11 +7,14 @@ import {
   type CreatePriceVersionRequest,
   type JsonObject,
   type LedgerEntry,
+  type LedgerAdjustmentDryRunRequest,
+  type LedgerAdjustmentDryRunResponse,
   type LedgerEntryListFilters,
   type PriceVersion,
   type PriceVersionListFilters,
   type PriceVersionStatus,
   createPriceVersion,
+  dryRunLedgerAdjustment,
   getBillingReconciliationReport,
   listLedgerEntries,
   listPriceVersions,
@@ -57,6 +60,17 @@ type LedgerFilterState = {
   walletId: string;
 };
 
+type LedgerAdjustmentDryRunForm = {
+  amount: string;
+  currency: string;
+  operation: string;
+  projectId: string;
+  reason: string;
+  relatedLedgerEntryId: string;
+  requestId: string;
+  walletId: string;
+};
+
 type ReconciliationFilterState = {
   day: string;
   limit: string;
@@ -92,6 +106,17 @@ const defaultPriceVersionCreateForm: PriceVersionCreateForm = {
 const defaultLedgerFilters: LedgerFilterState = {
   limit: "25",
   projectId: "",
+  requestId: "",
+  walletId: "",
+};
+
+const defaultLedgerAdjustmentDryRunForm: LedgerAdjustmentDryRunForm = {
+  amount: "",
+  currency: "USD",
+  operation: "refund",
+  projectId: "",
+  reason: "",
+  relatedLedgerEntryId: "",
   requestId: "",
   walletId: "",
 };
@@ -442,6 +467,10 @@ function PriceVersionsSection() {
 }
 
 function LedgerOverviewSection() {
+  const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [dryRunForm, setDryRunForm] = useState<LedgerAdjustmentDryRunForm>(defaultLedgerAdjustmentDryRunForm);
+  const [dryRunLoading, setDryRunLoading] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<LedgerAdjustmentDryRunResponse | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<LedgerFilterState>(defaultLedgerFilters);
@@ -470,12 +499,123 @@ function LedgerOverviewSection() {
     void loadEntries(filters);
   }
 
+  function updateDryRunForm(field: keyof LedgerAdjustmentDryRunForm, value: string) {
+    setDryRunForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function handleDryRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setDryRunError(null);
+    setDryRunResult(null);
+    setDryRunLoading(true);
+
+    try {
+      const result = await dryRunLedgerAdjustment(toLedgerAdjustmentDryRunRequest(dryRunForm));
+      setDryRunResult(result);
+    } catch (requestError) {
+      setDryRunError(requestError instanceof LedgerAdjustmentFormError ? requestError.message : errorMessage(requestError));
+    } finally {
+      setDryRunLoading(false);
+    }
+  }
+
   useEffect(() => {
     void loadEntries(defaultLedgerFilters);
   }, []);
 
   return (
     <>
+      <section className="admin-panel" aria-label="Ledger adjustment dry-run">
+        <div className="section-heading">
+          <div>
+            <h2>Adjustment / Refund Dry-Run</h2>
+            <p>Plan an adjustment or refund entry without executing ledger, request log, audit, or upstream writes.</p>
+          </div>
+        </div>
+
+        <form className="price-version-form" onSubmit={handleDryRun}>
+          <div className="form-grid">
+            <label className="field">
+              Operation
+              <select
+                value={dryRunForm.operation}
+                onChange={(event) => updateDryRunForm("operation", event.currentTarget.value)}
+              >
+                <option value="refund">Refund</option>
+                <option value="adjust">Adjust</option>
+              </select>
+            </label>
+            <label className="field">
+              Amount
+              <input
+                value={dryRunForm.amount}
+                onChange={(event) => updateDryRunForm("amount", event.currentTarget.value)}
+                placeholder="0.25000000"
+                required
+              />
+            </label>
+            <label className="field">
+              Currency
+              <input
+                value={dryRunForm.currency}
+                onChange={(event) => updateDryRunForm("currency", event.currentTarget.value)}
+                placeholder="USD"
+                required
+              />
+            </label>
+            <label className="field">
+              Related ledger entry
+              <input
+                value={dryRunForm.relatedLedgerEntryId}
+                onChange={(event) => updateDryRunForm("relatedLedgerEntryId", event.currentTarget.value)}
+                placeholder="ledger entry uuid"
+              />
+            </label>
+            <label className="field">
+              Project ID
+              <input
+                value={dryRunForm.projectId}
+                onChange={(event) => updateDryRunForm("projectId", event.currentTarget.value)}
+                placeholder="project uuid"
+              />
+            </label>
+            <label className="field">
+              Wallet ID
+              <input
+                value={dryRunForm.walletId}
+                onChange={(event) => updateDryRunForm("walletId", event.currentTarget.value)}
+                placeholder="wallet uuid"
+              />
+            </label>
+            <label className="field">
+              Request ID
+              <input
+                value={dryRunForm.requestId}
+                onChange={(event) => updateDryRunForm("requestId", event.currentTarget.value)}
+                placeholder="request uuid"
+              />
+            </label>
+            <label className="field field--wide">
+              Reason
+              <input
+                value={dryRunForm.reason}
+                onChange={(event) => updateDryRunForm("reason", event.currentTarget.value)}
+                placeholder="customer credit"
+              />
+            </label>
+          </div>
+
+          <button className="primary-button primary-button--inline" type="submit" disabled={dryRunLoading}>
+            <Search aria-hidden="true" size={17} />
+            {dryRunLoading ? "Planning" : "Plan dry-run"}
+          </button>
+        </form>
+
+        {dryRunError ? <p className="form-status form-status--error">{dryRunError}</p> : null}
+      </section>
+
+      {dryRunResult ? <LedgerAdjustmentDryRunResult result={dryRunResult} /> : null}
+
       <section className="admin-panel" aria-label="Ledger filters">
         <div className="section-heading">
           <div>
@@ -601,6 +741,138 @@ function LedgerOverviewSection() {
 
       {selectedEntry ? <LedgerEntryDetail entry={selectedEntry} /> : null}
     </>
+  );
+}
+
+function LedgerAdjustmentDryRunResult({ result }: { result: LedgerAdjustmentDryRunResponse }) {
+  const plannedEntry = result.planned_ledger_entry;
+  const relatedEntry = result.related_ledger_entry;
+  const futureContract = result.future_write_contract;
+
+  return (
+    <section className="detail-grid" aria-label="Ledger adjustment dry-run result">
+      <article className="admin-panel">
+        <div className="section-heading">
+          <div>
+            <h2>Plan Flags</h2>
+            <p>{formatStatus(result.operation)} dry-run returned a plan-only response.</p>
+          </div>
+          <StateChip status={plannedEntry.status} />
+        </div>
+        <div className="manual-test-flags" aria-label="Plan-only flags">
+          <span>plan_only={String(result.plan_only)}</span>
+          <span>ledger_write={String(result.ledger_write)}</span>
+          <span>request_log_write={String(result.request_log_write)}</span>
+          <span>audit_log_write={String(result.audit_log_write)}</span>
+          <span>upstream_call={String(result.upstream_call)}</span>
+        </div>
+        <Fields
+          items={[
+            ["Tenant", shortId(result.tenant_id)],
+            ["Project", shortId(result.project_id)],
+            ["Wallet", shortId(result.wallet_id)],
+            ["Request", shortId(result.request_id)],
+            ["Amount checked", String(result.validation.amount_checked)],
+            ["Currency checked", String(result.validation.currency_checked)],
+            ["Related checked", String(result.validation.related_ledger_entry_checked)],
+            ["Refund remaining checked", String(result.validation.refund_remaining_checked)],
+            ["Reason provided", String(result.validation.reason_provided)],
+            ["Sensitive material", result.validation.sensitive_material_policy],
+          ]}
+        />
+      </article>
+
+      <article className="admin-panel">
+        <div className="section-heading">
+          <div>
+            <h2>Planned Ledger Entry</h2>
+            <p>No ledger entry is written from this screen.</p>
+          </div>
+          <StateChip status={plannedEntry.entry_type} />
+        </div>
+        <Fields
+          items={[
+            ["Type", formatStatus(plannedEntry.entry_type)],
+            ["Amount", `${plannedEntry.amount} ${plannedEntry.currency}`],
+            ["Status", plannedEntry.status],
+            ["Project", shortId(plannedEntry.project_id)],
+            ["Wallet", shortId(plannedEntry.wallet_id)],
+            ["Request", shortId(plannedEntry.request_id)],
+            ["Related entry", shortId(plannedEntry.related_ledger_entry_id)],
+            ["Dedupe policy", plannedEntry.dedupe_policy],
+            ["Metadata policy", plannedEntry.metadata_policy],
+          ]}
+        />
+      </article>
+
+      <article className="admin-panel">
+        <h2>Related Entry Summary</h2>
+        {relatedEntry ? (
+          <Fields
+            items={[
+              ["Entry", shortId(relatedEntry.id)],
+              ["Type", formatStatus(relatedEntry.entry_type)],
+              ["Amount", `${relatedEntry.amount} ${relatedEntry.currency}`],
+              ["Status", relatedEntry.status],
+              ["Project", shortId(relatedEntry.project_id)],
+              ["Wallet", shortId(relatedEntry.wallet_id)],
+              ["Request", shortId(relatedEntry.request_id)],
+              ["Related entry", shortId(relatedEntry.related_ledger_entry_id)],
+            ]}
+          />
+        ) : (
+          <p className="muted-copy">No related entry summary returned for this adjustment plan.</p>
+        )}
+      </article>
+
+      {result.refund_remaining_summary ? (
+        <article className="admin-panel">
+          <h2>Refund Remaining</h2>
+          <Fields
+            items={[
+              [
+                "Remaining",
+                `${result.refund_remaining_summary.remaining_refundable_amount} ${result.refund_remaining_summary.currency}`,
+              ],
+              [
+                "Requested",
+                `${result.refund_remaining_summary.requested_refund_amount} ${result.refund_remaining_summary.currency}`,
+              ],
+              [
+                "Source debit",
+                `${result.refund_remaining_summary.source_debit_amount} ${result.refund_remaining_summary.currency}`,
+              ],
+              [
+                "Confirmed credits",
+                `${result.refund_remaining_summary.confirmed_credit_amount} ${result.refund_remaining_summary.currency}`,
+              ],
+              ["Confirmed credit count", String(result.refund_remaining_summary.confirmed_credit_count)],
+              ["Tenant bounded", String(result.refund_remaining_summary.tenant_bounded)],
+              ["Source bounded", String(result.refund_remaining_summary.source_entry_bounded)],
+              ["Currency bounded", String(result.refund_remaining_summary.currency_bounded)],
+              ["Confirmed only", String(result.refund_remaining_summary.confirmed_only)],
+              ["Credit entry types", result.refund_remaining_summary.credit_entry_types.join(", ")],
+            ]}
+          />
+        </article>
+      ) : null}
+
+      <article className="admin-panel">
+        <h2>Future Audit / Write Contract</h2>
+        <Fields
+          items={[
+            ["Audit action", futureContract.audit_action],
+            ["Ledger write", String(futureContract.ledger_write)],
+            ["Upstream call", String(futureContract.upstream_call)],
+            ["Audit snapshot", futureContract.audit_snapshot_policy],
+            ["Shared transaction", String(futureContract.business_and_success_audit_share_transaction)],
+            ["Success audit timing", String(futureContract.success_audit_only_after_ledger_write)],
+            ["Audit rollback", String(futureContract.audit_insert_failure_rolls_back_ledger_write)],
+            ["Refusal audit", String(futureContract.refusal_does_not_build_success_audit)],
+          ]}
+        />
+      </article>
+    </section>
   );
 }
 
@@ -958,7 +1230,6 @@ function LedgerEntryDetail({ entry }: { entry: LedgerEntry }) {
             ["Request", shortId(entry.request_id)],
             ["Price version", shortId(entry.price_version_id)],
             ["Related entry", shortId(entry.related_ledger_entry_id)],
-            ["Idempotency", entry.idempotency_key],
           ]}
         />
       </article>
@@ -971,11 +1242,6 @@ function LedgerEntryDetail({ entry }: { entry: LedgerEntry }) {
       <article className="admin-panel">
         <h2>Policy Snapshot</h2>
         <JsonBlock value={sanitizeSecretJson(entry.policy_snapshot)} />
-      </article>
-
-      <article className="admin-panel">
-        <h2>Metadata</h2>
-        <JsonBlock value={sanitizeSecretJson(entry.metadata)} />
       </article>
     </section>
   );
@@ -1005,6 +1271,13 @@ class PriceVersionFormError extends Error {
   ) {
     super(message);
     this.name = "PriceVersionFormError";
+  }
+}
+
+class LedgerAdjustmentFormError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LedgerAdjustmentFormError";
   }
 }
 
@@ -1051,6 +1324,36 @@ function toLedgerFilters(filters: LedgerFilterState): LedgerEntryListFilters {
   };
 }
 
+function toLedgerAdjustmentDryRunRequest(form: LedgerAdjustmentDryRunForm): LedgerAdjustmentDryRunRequest {
+  const operation = form.operation === "adjust" || form.operation === "refund" ? form.operation : null;
+  const reason = optionalString(form.reason);
+
+  if (!operation) {
+    throw new LedgerAdjustmentFormError("Operation must be adjust or refund.");
+  }
+
+  if (reason && (isSensitiveDisplayText(reason) || containsUnsafeReasonText(reason))) {
+    throw new LedgerAdjustmentFormError(
+      "Reason cannot contain credentials, tokens, keys, raw request material, or payload/body text.",
+    );
+  }
+
+  if (reason && reason.length > 256) {
+    throw new LedgerAdjustmentFormError("Reason must be 256 characters or fewer.");
+  }
+
+  return {
+    amount: requiredAdjustmentString(form.amount, "Amount"),
+    currency: requiredAdjustmentString(form.currency, "Currency").toUpperCase(),
+    operation,
+    project_id: optionalString(form.projectId),
+    reason,
+    related_ledger_entry_id: optionalString(form.relatedLedgerEntryId),
+    request_id: optionalString(form.requestId),
+    wallet_id: optionalString(form.walletId),
+  };
+}
+
 function toReconciliationFilters(filters: ReconciliationFilterState): BillingReconciliationReportFilters {
   return {
     day: optionalIsoDay(filters.day),
@@ -1072,6 +1375,22 @@ function requiredString(value: string, label: string): string {
   }
 
   return trimmed;
+}
+
+function requiredAdjustmentString(value: string, label: string): string {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    throw new LedgerAdjustmentFormError(`${label} is required.`);
+  }
+
+  return trimmed;
+}
+
+function containsUnsafeReasonText(value: string): boolean {
+  return /\b(?:payload|body|raw[_\s-]?(?:headers|metadata|request|payload)|authorization|cookie|provider[_\s-]?key)\b/i.test(
+    value,
+  );
 }
 
 function optionalIsoDay(value: string): string | undefined {

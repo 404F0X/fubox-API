@@ -9,6 +9,14 @@
   "runtime_policy": {
     "env": "AI_GATEWAY_PROMPT_PROTECTION",
     "config_json_env": "AI_GATEWAY_PROMPT_PROTECTION_CONFIG_JSON",
+    "yaml_config_path": "security.prompt_protection",
+    "source_precedence": [
+      "AI_GATEWAY_PROMPT_PROTECTION_CONFIG_JSON",
+      "security.prompt_protection",
+      "AI_GATEWAY_PROMPT_PROTECTION",
+      "default"
+    ],
+    "legacy_mode_env_scope": "fallback_only_when_yaml_config_is_default_and_json_env_is_absent",
     "default": "enforce",
     "modes": ["enforce", "audit", "disabled"],
     "rule_matching": "bounded_no_per_request_regex",

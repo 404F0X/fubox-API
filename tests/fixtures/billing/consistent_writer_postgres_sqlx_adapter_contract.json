@@ -1,0 +1,88 @@
+{
+  "contract": "billing_ledger_postgres_sqlx_adapter_contract_v1",
+  "source_fixture": "consistent_writer_executor_contract.json",
+  "source_case": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "api_key",
+    "provider_key",
+    "raw_key",
+    "raw_wallet",
+    "database_url",
+    "postgres://",
+    "payload",
+    "body",
+    "idempotency_key",
+    "private_operation_key",
+    "private operation key",
+    "reserve:00000000",
+    "settle:00000000",
+    "refund_partial:00000000"
+  ],
+  "expected": {
+    "schema_version": "billing_ledger_postgres_sqlx_adapter_contract.v1",
+    "sqlx_dependency_declared": false,
+    "db_io_implemented": false,
+    "future_feature_gate": "billing-ledger-postgres-sqlx",
+    "transaction_methods": ["begin_transaction", "execute_statement", "commit_transaction", "rollback_transaction"],
+    "operation_key_bind_marker": "operation_key_bind",
+    "required_statement_count": 9
+  },
+  "db_error_cases": [
+    {
+      "kind": "unique_violation",
+      "private_detail": "duplicate operation key reserve:00000000-0000-0000-0000-000000000111 postgres://user:pass@db",
+      "expected_code": "db_unique_constraint_violation",
+      "expected_category": "db_constraint"
+    },
+    {
+      "kind": "foreign_key_violation",
+      "private_detail": "raw wallet credential failed FK",
+      "expected_code": "db_foreign_key_violation",
+      "expected_category": "db_constraint"
+    },
+    {
+      "kind": "check_violation",
+      "private_detail": "payload body had invalid debit amount",
+      "expected_code": "db_check_constraint_violation",
+      "expected_category": "db_constraint"
+    },
+    {
+      "kind": "not_null_violation",
+      "private_detail": "Authorization Bearer provider_key missing field",
+      "expected_code": "db_not_null_violation",
+      "expected_category": "db_constraint"
+    },
+    {
+      "kind": "serialization_failure",
+      "private_detail": "serializable conflict around operation key reserve:00000000",
+      "expected_code": "db_serialization_failure",
+      "expected_category": "db_transaction"
+    },
+    {
+      "kind": "deadlock_detected",
+      "private_detail": "deadlock details include database_url and tenant rows",
+      "expected_code": "db_deadlock_detected",
+      "expected_category": "db_transaction"
+    },
+    {
+      "kind": "timeout",
+      "private_detail": "timeout while binding raw_key",
+      "expected_code": "db_timeout",
+      "expected_category": "db_transaction"
+    },
+    {
+      "kind": "connection",
+      "private_detail": "postgres://user:secret@db connection refused",
+      "expected_code": "db_connection_error",
+      "expected_category": "db_connection"
+    },
+    {
+      "kind": "unknown",
+      "private_detail": "unknown provider_key payload body",
+      "expected_code": "db_error",
+      "expected_category": "db_unknown"
+    }
+  ]
+}
