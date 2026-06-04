@@ -1506,6 +1506,15 @@ function New-AuditHandoffBridge {
     audit_import_command = [ordered]@{
       command = "admin_ui_prompt_protection_audit_closure_gate_import"
       input_shape = "prompt_protection_evidence_readback_v1"
+      browser_handoff = [ordered]@{
+        admin_ui_base_url_env = "ADMIN_UI_BASE_URL"
+        admin_session_token_env = "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN"
+        fallback_admin_session_token_env = "CONTROL_PLANE_ADMIN_SESSION_TOKEN"
+        admin_session_header = "X-Admin-Session"
+        required_for_browser_audit_e2e = $true
+        token_value_omitted = $true
+        cookie_value_omitted = $true
+      }
       raw_report_path_omitted = $true
       command_values_omitted = $true
     }
@@ -1974,6 +1983,26 @@ function Assert-EvidenceReportContract {
   }
   if ([string]$Report.audit_handoff_bridge.audit_import_command.input_shape -ne "prompt_protection_evidence_readback_v1") {
     throw "audit handoff bridge import shape mismatch"
+  }
+  if ($null -eq $Report.audit_handoff_bridge.audit_import_command.browser_handoff) {
+    throw "audit handoff bridge browser handoff missing"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_import_command.browser_handoff.admin_ui_base_url_env -ne "ADMIN_UI_BASE_URL") {
+    throw "audit handoff bridge browser handoff Admin UI env mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_import_command.browser_handoff.admin_session_token_env -ne "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN") {
+    throw "audit handoff bridge browser handoff session env mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_import_command.browser_handoff.fallback_admin_session_token_env -ne "CONTROL_PLANE_ADMIN_SESSION_TOKEN") {
+    throw "audit handoff bridge browser handoff fallback session env mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_import_command.browser_handoff.admin_session_header -ne "X-Admin-Session") {
+    throw "audit handoff bridge browser handoff header mismatch"
+  }
+  if ($Report.audit_handoff_bridge.audit_import_command.browser_handoff.required_for_browser_audit_e2e -ne $true -or
+      $Report.audit_handoff_bridge.audit_import_command.browser_handoff.token_value_omitted -ne $true -or
+      $Report.audit_handoff_bridge.audit_import_command.browser_handoff.cookie_value_omitted -ne $true) {
+    throw "audit handoff bridge browser handoff omission mismatch"
   }
   if ($Report.audit_handoff_bridge.audit_import_command.raw_report_path_omitted -ne $true) {
     throw "audit handoff bridge raw path omission mismatch"

@@ -89,9 +89,16 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tpm_estimate::{
+    GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV, GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV,
     GatewayTpmEstimateEndpoint, GatewayTpmEstimatePlan, GatewayTpmEstimateSignals,
-    GatewayTpmEstimateSummary, gateway_tpm_estimate_for_request,
-    gateway_tpm_estimate_for_request_body,
+    GatewayTpmEstimateSummary, GatewayTrustedNumericSourceEnvConfigInput,
+    GatewayTrustedNumericSourceProvider, GatewayTrustedNumericSourceProviderInput,
+    GatewayTrustedNumericSourceProviderOutput, GatewayTrustedNumericSourceType,
+    GatewayTrustedNumericTokenKind, gateway_tpm_estimate_for_request,
+    gateway_tpm_estimate_for_request_body, gateway_tpm_signals_from_trusted_numeric_source,
+    gateway_trusted_numeric_source_env_config_read,
+    gateway_trusted_numeric_source_provider_availability,
+    gateway_trusted_numeric_source_provider_boundary,
 };
 
 const GATEWAY_ROUTE_POLICY_VERSION: &str = "gateway_db_route_v1";
@@ -120,6 +127,10 @@ const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BA
 const GATEWAY_CORS_ALLOWED_ORIGINS_ENV: &str = "AI_GATEWAY_CORS_ALLOWED_ORIGINS";
 const PROMPT_PROTECTION_POLICY_ENV: &str = "AI_GATEWAY_PROMPT_PROTECTION";
 const PROMPT_PROTECTION_CONFIG_ENV: &str = "AI_GATEWAY_PROMPT_PROTECTION_CONFIG_JSON";
+const GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV: &str =
+    "GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS";
+const GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV: &str =
+    "GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS";
 const MAX_PROMPT_PROTECTION_CONFIG_JSON_BYTES: usize = 16 * 1024;
 const PROMPT_PROTECTION_POLICY_VERSION: &str = "gateway_prompt_protection_v1";
 const PAYLOAD_POLICY_RUNTIME_SCHEMA: &str = "gateway_payload_policy_v1";
@@ -195,6 +206,32 @@ struct RequestRatingUpdate {
     final_cost: String,
     currency: String,
     price_version_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EnvTrustedNumericSourceProvider {
+    tokenizer_prompt_tokens: Option<i128>,
+    read_model_input_tokens: Option<i128>,
+}
+
+impl GatewayTrustedNumericSourceProvider for EnvTrustedNumericSourceProvider {
+    fn trusted_numeric_tokens(
+        &self,
+        input: GatewayTrustedNumericSourceProviderInput,
+    ) -> GatewayTrustedNumericSourceProviderOutput {
+        let tokens = match (input.source_type, input.token_kind) {
+            (
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+            ) => self.tokenizer_prompt_tokens,
+            (
+                GatewayTrustedNumericSourceType::ReadModel,
+                GatewayTrustedNumericTokenKind::InputTokens,
+            ) => self.read_model_input_tokens,
+            _ => None,
+        };
+        GatewayTrustedNumericSourceProviderOutput::new(tokens)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -732,12 +769,13 @@ async fn chat_completions(
         return error.into_response();
     }
 
-    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // Default fallback remains:
+    // let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // GatewayTpmEstimateSignals::missing_tokenizer(
+    // GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(
         GatewayTpmEstimateEndpoint::OpenAiChat,
         &body,
-        GatewayTpmEstimateSignals::missing_tokenizer(
-            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
-        ),
     );
 
     let canonical_model = match repository
@@ -1431,12 +1469,13 @@ async fn responses(
         return error.into_response();
     }
 
-    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // Default fallback remains:
+    // let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // GatewayTpmEstimateSignals::missing_tokenizer(
+    // GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(
         GatewayTpmEstimateEndpoint::OpenAiResponses,
         &body,
-        GatewayTpmEstimateSignals::missing_tokenizer(
-            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
-        ),
     );
 
     let canonical_model = match repository
@@ -2181,12 +2220,13 @@ async fn embeddings(
         return error.into_response();
     }
 
-    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // Default fallback remains:
+    // let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // GatewayTpmEstimateSignals::missing_tokenizer(
+    // GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(
         GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
         &body,
-        GatewayTpmEstimateSignals::missing_tokenizer(
-            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
-        ),
     );
 
     let canonical_model = match repository
@@ -2799,12 +2839,13 @@ async fn anthropic_messages(
         return error.into_response();
     }
 
-    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // Default fallback remains:
+    // let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+    // GatewayTpmEstimateSignals::missing_tokenizer(
+    // GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request_body(
         GatewayTpmEstimateEndpoint::AnthropicMessages,
         &body,
-        GatewayTpmEstimateSignals::missing_tokenizer(
-            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
-        ),
     );
 
     let canonical_model = match repository
@@ -3640,12 +3681,13 @@ async fn gemini_generate_content_native_passthrough(
         return error.into_response();
     }
 
-    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(
+    // Default fallback remains:
+    // let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(
+    // GatewayTpmEstimateSignals::missing_tokenizer(
+    // GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_runtime_request(
         GatewayTpmEstimateEndpoint::GeminiNative,
         &parsed_body.value,
-        GatewayTpmEstimateSignals::missing_tokenizer(
-            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
-        ),
     );
 
     let native_streaming_requested = native_path.action
@@ -5688,6 +5730,71 @@ fn prompt_protection_runtime_hit_count(result: &PromptProtectionRuntimeResult) -
         .map(|default_result| default_result.hits.len())
         .unwrap_or(0)
         + result.configured_result.hits.len()
+}
+
+fn gateway_tpm_estimate_for_runtime_request_body(
+    endpoint: GatewayTpmEstimateEndpoint,
+    request_body: &[u8],
+) -> GatewayTpmEstimatePlan {
+    let parsed_body = serde_json::from_slice::<Value>(request_body).unwrap_or(Value::Null);
+    gateway_tpm_estimate_for_runtime_request(endpoint, &parsed_body)
+}
+
+fn gateway_tpm_estimate_for_runtime_request(
+    endpoint: GatewayTpmEstimateEndpoint,
+    request_body: &Value,
+) -> GatewayTpmEstimatePlan {
+    let tokenizer_enabled = env::var(GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV).ok();
+    let read_model_enabled = env::var(GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV).ok();
+    let tokenizer_tokens =
+        env_trusted_numeric_token_value(GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV);
+    let read_model_tokens =
+        env_trusted_numeric_token_value(GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV);
+    let tokenizer_available = tokenizer_tokens.is_some();
+    let read_model_available = read_model_tokens.is_some();
+    let env_config = gateway_trusted_numeric_source_env_config_read(
+        GatewayTrustedNumericSourceEnvConfigInput::new(
+            tokenizer_enabled.as_deref(),
+            read_model_enabled.as_deref(),
+            tokenizer_available,
+            read_model_available,
+        ),
+    );
+    let (source_type, token_kind) = if env_config.runtime_config.read_model_opt_in {
+        (
+            GatewayTrustedNumericSourceType::ReadModel,
+            GatewayTrustedNumericTokenKind::InputTokens,
+        )
+    } else {
+        (
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+        )
+    };
+    let provider = EnvTrustedNumericSourceProvider {
+        tokenizer_prompt_tokens: tokenizer_tokens,
+        read_model_input_tokens: read_model_tokens,
+    };
+    let provider_input =
+        GatewayTrustedNumericSourceProviderInput::new(endpoint, source_type, token_kind);
+    let provider_evidence = gateway_trusted_numeric_source_provider_boundary(
+        env_config.runtime_config.adapter_invocation_allowed,
+        provider_input,
+        Some(&provider),
+    );
+    let availability = gateway_trusted_numeric_source_provider_availability(&provider_evidence);
+    let signals = gateway_tpm_signals_from_trusted_numeric_source(
+        &availability,
+        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+    );
+
+    gateway_tpm_estimate_for_request(endpoint, request_body, signals)
+        .with_trusted_source_provider(provider_evidence.safe_summary())
+}
+
+fn env_trusted_numeric_token_value(name: &str) -> Option<i128> {
+    let value = env::var(name).ok()?;
+    value.trim().parse::<i128>().ok()
 }
 
 fn prompt_protection_action_label(action: PromptProtectionAction) -> &'static str {
@@ -13773,6 +13880,161 @@ mod tests {
                     "{section_name} runtime must not bypass S19 trusted source availability contract: {bypass_marker}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn rate_limit_tpm_estimate_production_provider_opt_in_uses_trusted_numeric_env_only() {
+        use std::sync::{Mutex, OnceLock};
+
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+        struct EnvRestore {
+            values: Vec<(&'static str, Option<String>)>,
+        }
+
+        impl Drop for EnvRestore {
+            fn drop(&mut self) {
+                for (key, value) in &self.values {
+                    unsafe {
+                        if let Some(value) = value {
+                            env::set_var(key, value);
+                        } else {
+                            env::remove_var(key);
+                        }
+                    }
+                }
+            }
+        }
+
+        fn capture_env(keys: &[&'static str]) -> EnvRestore {
+            EnvRestore {
+                values: keys.iter().map(|key| (*key, env::var(key).ok())).collect(),
+            }
+        }
+
+        fn set_env(key: &str, value: &str) {
+            unsafe {
+                env::set_var(key, value);
+            }
+        }
+
+        fn remove_env(key: &str) {
+            unsafe {
+                env::remove_var(key);
+            }
+        }
+
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env test lock should not be poisoned");
+        let _restore = capture_env(&[
+            GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV,
+            GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV,
+            GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV,
+            GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV,
+        ]);
+        for key in [
+            GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV,
+            GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV,
+            GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV,
+            GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV,
+        ] {
+            remove_env(key);
+        }
+
+        let request = json!({ "max_completion_tokens": 79 });
+        let default_plan = gateway_tpm_estimate_for_runtime_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &request,
+        );
+        let default_summary = default_plan.safe_summary();
+        let default_provider = default_summary
+            .trusted_source_provider
+            .as_ref()
+            .expect("default runtime should carry safe provider fallback evidence");
+        assert_eq!(default_provider.status, "disabled");
+        assert!(!default_provider.provider_invoked);
+        assert!(default_provider.fallback_required);
+        assert_eq!(
+            default_plan.estimate.source,
+            ai_gateway_routing::RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(
+            default_plan.estimate.required_tokens_i64(),
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS + 79
+        );
+
+        set_env(GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV, "true");
+        set_env(GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV, "321");
+        let trusted_plan = gateway_tpm_estimate_for_runtime_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &request,
+        );
+        let trusted_summary = trusted_plan.safe_summary();
+        let trusted_provider = trusted_summary
+            .trusted_source_provider
+            .as_ref()
+            .expect("trusted runtime should carry provider evidence");
+        assert_eq!(trusted_provider.status, "available");
+        assert_eq!(trusted_provider.source_type, "tokenizer");
+        assert_eq!(trusted_provider.token_kind, "prompt_tokens");
+        assert_eq!(trusted_provider.tokens, Some(321));
+        assert!(trusted_provider.provider_invoked);
+        assert!(!trusted_provider.fallback_required);
+        assert_eq!(
+            trusted_plan.estimate.source,
+            ai_gateway_routing::RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(trusted_plan.estimate.required_tokens_i64(), 400);
+
+        set_env(GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV, "-7");
+        let invalid_plan = gateway_tpm_estimate_for_runtime_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &request,
+        );
+        let invalid_summary = invalid_plan.safe_summary();
+        let invalid_provider = invalid_summary
+            .trusted_source_provider
+            .as_ref()
+            .expect("invalid runtime should carry safe provider fallback evidence");
+        assert_eq!(invalid_provider.status, "error");
+        assert_eq!(invalid_provider.error_reason, Some("negative_tokens"));
+        assert!(invalid_provider.provider_invoked);
+        assert!(invalid_provider.fallback_required);
+        assert_eq!(
+            invalid_plan.estimate.source,
+            ai_gateway_routing::RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(
+            invalid_plan.estimate.required_tokens_i64(),
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS + 79
+        );
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let contract =
+            &fixture["trusted_numeric_source_production_provider_wiring_attempt_contract"];
+        let serialized = serde_json::to_string(&json!({
+            "default": default_summary,
+            "trusted": trusted_summary,
+            "invalid": invalid_summary,
+        }))
+        .expect("trusted provider runtime summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted provider runtime summary leaked forbidden marker: {forbidden}"
+            );
         }
     }
 

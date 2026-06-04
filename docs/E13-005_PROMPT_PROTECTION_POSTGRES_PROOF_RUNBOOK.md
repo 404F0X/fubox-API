@@ -185,6 +185,19 @@ Expected pass evidence, when Gateway/Postgres/mock-provider/session are ready:
   are present. `route_policy_version` may be populated in endpoint evidence and
   does not prevent closure; provider/channel/key side-effect fields must remain
   false.
+- Browser Admin UI audit-detail E2E also requires a safe admin session handoff.
+  Use `ADMIN_UI_BASE_URL` for the UI URL and
+  `PROMPT_PROTECTION_ADMIN_SESSION_TOKEN` for the one-time admin session token,
+  or `CONTROL_PLANE_ADMIN_SESSION_TOKEN` as the fallback token source. The UI
+  sends the value through the `X-Admin-Session` header; the proof/audit report
+  records only these env/header names and `token_value_omitted=true`. If no
+  session handoff is available, browser audit-detail verification is a
+  `blocker`, not a failure of the live Postgres proof.
+- Browser audit-detail verification should open Audit Logs, inspect the prompt
+  protection detail/readback, and confirm current provenance, duration
+  availability, latency envelope eligibility, `providerAttempts=0`, stale/replay
+  refusal behavior, and omission of raw report path, command, DSN, token/header,
+  provider secret, raw prompt, and raw body.
 
 Expected blocker evidence, when Gateway/Postgres/mock-provider/session are not
 ready:

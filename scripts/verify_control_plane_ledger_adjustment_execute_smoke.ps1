@@ -13,6 +13,7 @@ param(
   [switch]$BrowserLiveRunnerExecutionOptIn,
   [switch]$BrowserMutationOptIn,
   [switch]$BrowserPreflight,
+  [switch]$AdminSessionHandoff,
   [switch]$ContractOnly,
   [switch]$KeepSmokeRows
 )
@@ -50,6 +51,7 @@ if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER -eq "1") { 
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE -eq "1") { $BrowserEvidenceArtifactWriteOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER -eq "1") { $BrowserLiveRunnerExecutionOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_SESSION_HANDOFF -eq "1") { $AdminSessionHandoff = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_CONTRACT_ONLY -eq "1") { $ContractOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS -eq "1") { $KeepSmokeRows = $true }
 if ($BrowserPreflight) { $ContractOnly = $true }
@@ -424,6 +426,14 @@ function Assert-SmokeFixture {
   Assert-True ($Fixture.gate_contract.scripts_test_default.requires_live_db -eq $false) "fixture test gate default must not require live DB"
   Assert-Equal $Fixture.gate_contract.scripts_test_live_opt_in.flag "-ControlPlaneLedgerAdjustmentExecuteSmokeLive" "fixture test live flag"
   Assert-Equal $Fixture.gate_contract.scripts_test_live_opt_in.env "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_LIVE" "fixture test live env"
+  Assert-Equal $Fixture.gate_contract.admin_session_handoff.flag "-AdminSessionHandoff" "fixture admin session handoff flag"
+  Assert-Equal $Fixture.gate_contract.admin_session_handoff.env "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_SESSION_HANDOFF" "fixture admin session handoff env"
+  Assert-Equal $Fixture.gate_contract.admin_session_handoff.session_env "CONTROL_PLANE_ADMIN_SESSION_TOKEN" "fixture admin session handoff session env"
+  Assert-True ($Fixture.gate_contract.admin_session_handoff.requires_live_db -eq $false) "fixture admin session handoff must not require live DB"
+  Assert-Equal $Fixture.gate_contract.admin_session_handoff.login_401_blocked_exit_code 2 "fixture admin session handoff login 401 exit"
+  Assert-Equal $Fixture.gate_contract.admin_session_handoff.session_present_marker "admin_session_present" "fixture admin session present marker"
+  Assert-True ($Fixture.gate_contract.admin_session_handoff.token_echoed -eq $false) "fixture admin session token must not be echoed"
+  Assert-True ($Fixture.gate_contract.admin_session_handoff.cookie_echoed -eq $false) "fixture admin session cookie must not be echoed"
   Assert-Equal $Fixture.gate_contract.release_check_default.mode "contract_only" "fixture release gate default mode"
   Assert-True ($Fixture.gate_contract.release_check_default.requires_live_db -eq $false) "fixture release gate default must not require live DB"
   Assert-Equal $Fixture.gate_contract.release_check_live_opt_in.flag "-RunRuntimeSmoke" "fixture release live flag"
@@ -1722,6 +1732,101 @@ function Test-BrowserAdminSessionHandoffPresent {
   $sessionHandoff = Get-JsonProperty $attempt "sessionHandoff" "UI browser bootstrap session handoff"
   $envName = [string](Get-JsonProperty $sessionHandoff "env" "UI browser bootstrap session handoff")
   return -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName))
+}
+
+function Test-BrowserLiveMutationAttemptOptIn {
+  return $BrowserLiveRunnerExecutionOptIn -or $BrowserEvidenceArtifactWriteOptIn -or $BrowserMutationOptIn -or $BrowserAdminUiDevServerOptIn
+}
+
+function Publish-BrowserAdminSessionHandoff {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $attempt = Get-JsonProperty $Handoff "browserLiveEnvironmentBootstrapAttempt" "UI handoff"
+  $sessionHandoff = Get-JsonProperty $attempt "sessionHandoff" "UI browser bootstrap session handoff"
+  $envName = [string](Get-JsonProperty $sessionHandoff "env" "UI browser bootstrap session handoff")
+  if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName))) {
+    return "env_present"
+  }
+  if (-not (Test-BrowserLiveMutationAttemptOptIn)) {
+    return "not_requested"
+  }
+  if ([string]::IsNullOrWhiteSpace($script:AdminSessionToken)) {
+    return "script_session_missing"
+  }
+
+  $response = Invoke-ControlPlaneRequest -Method GET -Path "/admin/auth/me" -SessionToken $script:AdminSessionToken
+  if ($response.StatusCode -ne 200) {
+    return "script_session_invalid:$($response.StatusCode)"
+  }
+
+  Set-Item -Path "Env:\$envName" -Value $script:AdminSessionToken
+  Add-SensitiveValue $script:AdminSessionToken
+  return "script_session_published"
+}
+
+function Test-AdminSessionTokenForHandoff {
+  param(
+    [Parameter(Mandatory = $true)][string]$SessionToken,
+    [Parameter(Mandatory = $true)][string]$Source
+  )
+
+  Add-SensitiveValue $SessionToken
+  $response = Invoke-ControlPlaneRequest -Method GET -Path "/admin/auth/me" -SessionToken $SessionToken
+  Assert-SecretSafeContent -Content $response.Content -Context "admin session handoff /admin/auth/me response"
+  if ($response.StatusCode -eq 200) {
+    return
+  }
+  if ($response.StatusCode -eq 401) {
+    throw "$Source session was rejected by /admin/auth/me with 401; regenerate CONTROL_PLANE_ADMIN_SESSION_TOKEN from dev admin login"
+  }
+  if ($response.StatusCode -eq 403) {
+    throw "$Source session reached /admin/auth/me but lacks admin access with 403"
+  }
+  throw "$Source session validation returned HTTP $($response.StatusCode)"
+}
+
+function Write-AdminSessionHandoff {
+  $source = "env"
+  if ([string]::IsNullOrWhiteSpace($script:AdminSessionToken)) {
+    $source = "dev_admin_login"
+    $response = Invoke-ControlPlaneRequest -Method POST -Path "/admin/auth/login" -Body @{
+      email = $AdminEmail
+      password = $AdminPassword
+    } -SessionToken ""
+    Assert-SecretSafeContent -Content $response.Content -Context "admin session handoff login response"
+    if ($response.StatusCode -eq 401) {
+      throw "admin login returned 401 for CONTROL_PLANE_ADMIN_EMAIL; verify dev admin seed and CONTROL_PLANE_ADMIN_PASSWORD"
+    }
+    if ($response.StatusCode -eq 429) {
+      throw "admin login returned 429 login_rate_limited; wait for retry_after_seconds before browser handoff"
+    }
+    if ($response.StatusCode -ne 200) {
+      throw "admin login returned HTTP $($response.StatusCode); expected 200"
+    }
+
+    $payload = Read-Json $response.Content
+    $token = [string]$payload.data.session_token_once
+    if ([string]::IsNullOrWhiteSpace($token)) {
+      throw "login response did not include data.session_token_once"
+    }
+    $script:AdminSessionToken = $token
+    Add-SensitiveValue $token
+  }
+
+  Test-AdminSessionTokenForHandoff -SessionToken $script:AdminSessionToken -Source $source
+  $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN = $script:AdminSessionToken
+  Add-SensitiveValue $script:AdminSessionToken
+
+  Write-SafeHost "Admin session handoff:"
+  Write-SafeHost "admin_session_present=true"
+  Write-SafeHost "admin_session_source=$source"
+  Write-SafeHost "admin_session_env=CONTROL_PLANE_ADMIN_SESSION_TOKEN"
+  Write-SafeHost "admin_session_token_echoed=false"
+  Write-SafeHost "admin_session_cookie_echoed=false"
+  Write-SafeHost "admin_session_header=X-Admin-Session"
+  Write-SafeHost "admin_session_handoff_status=env_set_for_current_process"
+  Write-SafeHost "admin_session_browser_preflight_command=powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight"
+  Write-SafeHost "admin_session_browser_live_command=`$env:CONTROL_PLANE_ADMIN_SESSION_TOKEN = '<session-token-from-secure-handoff>'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight"
 }
 
 function Start-BrowserAdminUiDevServerBootstrap {
@@ -3229,6 +3334,15 @@ try {
     Assert-AdminSourceMarkers
   }
 
+  if ($AdminSessionHandoff) {
+    Check-Blocking "control-plane admin session handoff" {
+      Write-AdminSessionHandoff
+    }
+    Exit-WithFailuresOrBlockers
+    Write-SafeHost "Control Plane admin session handoff passed."
+    exit 0
+  }
+
   if ($ContractOnly) {
     Exit-WithFailuresOrBlockers
     Write-SafeHost "Control Plane ledger adjustment execute smoke contract-only checks passed; live DB was not required."
@@ -3247,6 +3361,14 @@ try {
 
   Check "control-plane admin login for BillingAdjust smoke" {
     Initialize-AdminSession
+  }
+
+  $uiSmokeHandoff = Read-JsonFile $uiSmokeHandoffPath
+  $browserSessionHandoffStatus = "not_requested"
+  if (Test-BrowserLiveMutationAttemptOptIn) {
+    $browserSessionHandoffStatus = Publish-BrowserAdminSessionHandoff $uiSmokeHandoff
+    Write-SafeHost "browser_live_session_handoff_status=$browserSessionHandoffStatus"
+    Write-SafeHost "browser_live_session_handoff_echoed=false"
   }
 
   $sourceId = $null
@@ -3275,7 +3397,7 @@ try {
     Assert-ConcurrentRefundRace
   }
 
-  $browserLiveAttemptRequested = $BrowserLiveRunnerExecutionOptIn -or $BrowserEvidenceArtifactWriteOptIn -or $BrowserMutationOptIn -or $BrowserAdminUiDevServerOptIn -or (Test-BrowserAdminSessionHandoffPresent (Read-JsonFile $uiSmokeHandoffPath))
+  $browserLiveAttemptRequested = (Test-BrowserLiveMutationAttemptOptIn) -or (Test-BrowserAdminSessionHandoffPresent $uiSmokeHandoff)
   if ($browserLiveAttemptRequested) {
     $browserSourceId = $null
     Check "seed related confirmed debit for browser live mutation attempt" {
@@ -3284,7 +3406,7 @@ try {
     }
 
     Check "browser live mutation pass artifact attempt" {
-      Invoke-BrowserLiveMutationPassAttempt -Handoff (Read-JsonFile $uiSmokeHandoffPath) -SourceLedgerEntryId $script:browserSourceId
+      Invoke-BrowserLiveMutationPassAttempt -Handoff $uiSmokeHandoff -SourceLedgerEntryId $script:browserSourceId
     }
   }
 
@@ -3292,7 +3414,7 @@ try {
   Write-SafeHost "Control Plane ledger adjustment execute live Postgres smoke passed."
 } finally {
   try {
-    if (-not $ContractOnly) {
+    if (-not $ContractOnly -and -not $AdminSessionHandoff) {
       Remove-SmokeRows
     }
   } catch {

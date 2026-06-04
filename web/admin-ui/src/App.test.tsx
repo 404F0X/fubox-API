@@ -3620,6 +3620,15 @@ describe("App", () => {
         schema: "prompt_protection_evidence_readback_v1",
       },
       audit_import_command: {
+        browser_handoff: {
+          admin_session_header: "X-Admin-Session",
+          admin_session_token_env: "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN",
+          admin_ui_base_url_env: "ADMIN_UI_BASE_URL",
+          cookie_value_omitted: true,
+          fallback_admin_session_token_env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+          required_for_browser_audit_e2e: true,
+          token_value_omitted: true,
+        },
         command: "admin_ui_prompt_protection_audit_closure_gate_import",
         command_values_omitted: true,
         input_shape: "prompt_protection_evidence_readback_v1",
@@ -3685,6 +3694,14 @@ describe("App", () => {
       mock_provider: "blocker_if_unreachable_unless_explicitly_skipped",
       session_virtual_key: "blocker_if_missing",
       raw_values_omitted: true,
+    });
+    expect(bridge.audit_import_command.browser_handoff).toMatchObject({
+      admin_session_header: "X-Admin-Session",
+      admin_session_token_env: "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN",
+      admin_ui_base_url_env: "ADMIN_UI_BASE_URL",
+      fallback_admin_session_token_env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+      required_for_browser_audit_e2e: true,
+      token_value_omitted: true,
     });
 
     const exported = JSON.stringify(gate);

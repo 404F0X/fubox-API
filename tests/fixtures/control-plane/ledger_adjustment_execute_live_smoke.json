@@ -17,6 +17,16 @@
       "only_env": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_ONLY",
       "blocked_exit_code": 2
     },
+    "admin_session_handoff": {
+      "flag": "-AdminSessionHandoff",
+      "env": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_SESSION_HANDOFF",
+      "session_env": "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+      "requires_live_db": false,
+      "login_401_blocked_exit_code": 2,
+      "session_present_marker": "admin_session_present",
+      "token_echoed": false,
+      "cookie_echoed": false
+    },
     "release_check_default": {
       "mode": "contract_only",
       "requires_live_db": false,

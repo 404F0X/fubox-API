@@ -116,6 +116,8 @@ const CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_EXECUTOR_BOUNDARY_SCHEMA: &str =
     "control_plane_billing_ledger_live_probe_executor_boundary.v1";
 const CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_READBACK_GATE_SCHEMA: &str =
     "control_plane_billing_ledger_live_probe_measurement_readback_gate.v1";
+const CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF_SCHEMA: &str =
+    "control_plane_billing_ledger_shadow_commit_handoff.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4335,9 +4337,60 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
         "live_probe_evidence_artifact_contract": ledger_adjustment_billing_ledger_live_probe_evidence_artifact_contract(),
         "live_probe_executor_boundary_contract": ledger_adjustment_billing_ledger_live_probe_executor_boundary_contract(),
         "live_probe_measurement_readback_gate_contract": ledger_adjustment_billing_ledger_live_probe_measurement_readback_gate_contract(),
+        "shadow_commit_handoff_contract": ledger_adjustment_billing_ledger_shadow_commit_handoff_contract(),
         "safe_output_contract": {
             "env_value_output": "omitted",
             "database_url_output": "omitted",
+            "operation_key_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_shadow_commit_handoff_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF_SCHEMA,
+        "source": "control_plane_billing_ledger_runtime_writer_readiness",
+        "target": "billing_ledger_runtime_writer_shadow_commit_handoff",
+        "default_requested": false,
+        "explicit_flag": "-ShadowCommitHandoff",
+        "explicit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF",
+        "requires_live_rollback_attempt_pass": true,
+        "requires_rollback_only_executor_gate_pass": true,
+        "requires_cutover_mode": "ready",
+        "handoff_mode": "shadow_commit_handoff_contract_only",
+        "real_commit_performed": false,
+        "production_source_of_truth_switch_allowed": false,
+        "production_source_of_truth_switch_performed": false,
+        "source_of_truth": "control_plane_local_sql_writer",
+        "no_double_write_contract": {
+            "local_sql_writer_remains_authoritative": true,
+            "local_sql_writer_commit_allowed": true,
+            "billing_ledger_shadow_commit_allowed": false,
+            "dual_commit_allowed": false,
+            "dual_commit_observed_failure": true
+        },
+        "rollback_fallback_guard": {
+            "rollback_required": true,
+            "rollback_required_on_row_count_mismatch": true,
+            "rollback_required_on_adapter_refusal": true,
+            "local_writer_fallback": "control_plane_local_sql_writer",
+            "fallback_after_billing_commit_allowed": false
+        },
+        "summary_contract": {
+            "classification_values": ["blocker", "pass", "fail"],
+            "row_count_summary": "actual_expected_rows_from_rollback_probe_gate",
+            "transaction_timing_summary": "per_step_duration_ms_from_rollback_probe_gate",
+            "production_cutover_blocker": "source_of_truth_switch_not_requested"
+        },
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
             "operation_key_output": "omitted",
             "dedupe_material_echoed": false,
             "raw_env_value_echoed": false,
@@ -15781,6 +15834,34 @@ mod tests {
             contract["live_probe_executor_boundary_contract"]["production_writer_cutover_preflight"]
                 ["duration_summary_required"],
             json!(true)
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF_SCHEMA)
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["explicit_flag"],
+            json!("-ShadowCommitHandoff")
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["real_commit_performed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["production_source_of_truth_switch_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["no_double_write_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["rollback_fallback_guard"]["local_writer_fallback"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            contract["shadow_commit_handoff_contract"]["summary_contract"]["transaction_timing_summary"],
+            json!("per_step_duration_ms_from_rollback_probe_gate")
         );
         assert_eq!(
             contract["live_probe_executor_boundary_contract"]["safe_output_contract"]["raw_database_url_echoed"],

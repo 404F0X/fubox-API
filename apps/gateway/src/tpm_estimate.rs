@@ -4,7 +4,7 @@ use ai_gateway_routing::{
 };
 use serde::Serialize;
 use serde_json::Value;
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Instant};
 
 pub(crate) const GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA: &str = "gateway_tpm_estimate_mapper_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA: &str =
@@ -868,6 +868,7 @@ pub(crate) struct GatewayTrustedNumericSourceProviderEvidence {
     pub(crate) fallback_required: bool,
     pub(crate) clamped_zero_to_one: bool,
     pub(crate) clamped_to_i64_max: bool,
+    pub(crate) estimate_duration_ms: u64,
     pub(crate) error_reason: Option<GatewayTrustedNumericSourceProviderErrorReason>,
     pub(crate) material_in_output: bool,
     pub(crate) provider_side_effect_required: bool,
@@ -890,6 +891,7 @@ impl GatewayTrustedNumericSourceProviderEvidence {
             token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
             clamped_zero_to_one: self.clamped_zero_to_one,
             clamped_to_i64_max: self.clamped_to_i64_max,
+            estimate_duration_ms: self.estimate_duration_ms,
             error_reason: self
                 .error_reason
                 .map(GatewayTrustedNumericSourceProviderErrorReason::as_str),
@@ -915,6 +917,7 @@ pub(crate) struct GatewayTrustedNumericSourceProviderSummary {
     pub(crate) token_count_marker: &'static str,
     pub(crate) clamped_zero_to_one: bool,
     pub(crate) clamped_to_i64_max: bool,
+    pub(crate) estimate_duration_ms: u64,
     pub(crate) error_reason: Option<&'static str>,
     pub(crate) material_in_output: bool,
     pub(crate) provider_side_effect_required: bool,
@@ -1951,6 +1954,7 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
             GatewayTrustedNumericSourceProviderStatus::Disabled,
             input,
             false,
+            0,
             None,
         );
     }
@@ -1959,15 +1963,19 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
             GatewayTrustedNumericSourceProviderStatus::Missing,
             input,
             false,
+            0,
             None,
         );
     };
+    let started_at = Instant::now();
     let output = provider.trusted_numeric_tokens(input);
+    let estimate_duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if output.provider_side_effect_required {
         return gateway_trusted_numeric_source_provider_fallback(
             GatewayTrustedNumericSourceProviderStatus::Error,
             input,
             true,
+            estimate_duration_ms,
             Some(GatewayTrustedNumericSourceProviderErrorReason::ProviderSideEffectRequired),
         );
     }
@@ -1976,6 +1984,7 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
             GatewayTrustedNumericSourceProviderStatus::Error,
             input,
             true,
+            estimate_duration_ms,
             Some(GatewayTrustedNumericSourceProviderErrorReason::MaterialInOutput),
         );
     }
@@ -1984,6 +1993,7 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
             GatewayTrustedNumericSourceProviderStatus::Missing,
             input,
             true,
+            estimate_duration_ms,
             None,
         );
     };
@@ -1992,6 +2002,7 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
             GatewayTrustedNumericSourceProviderStatus::Error,
             input,
             true,
+            estimate_duration_ms,
             Some(GatewayTrustedNumericSourceProviderErrorReason::NegativeTokens),
         );
     }
@@ -2015,6 +2026,7 @@ pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
         fallback_required: false,
         clamped_zero_to_one,
         clamped_to_i64_max,
+        estimate_duration_ms,
         error_reason: None,
         material_in_output: false,
         provider_side_effect_required: false,
@@ -2042,6 +2054,7 @@ fn gateway_trusted_numeric_source_provider_fallback(
     status: GatewayTrustedNumericSourceProviderStatus,
     input: GatewayTrustedNumericSourceProviderInput,
     provider_invoked: bool,
+    estimate_duration_ms: u64,
     error_reason: Option<GatewayTrustedNumericSourceProviderErrorReason>,
 ) -> GatewayTrustedNumericSourceProviderEvidence {
     GatewayTrustedNumericSourceProviderEvidence {
@@ -2054,6 +2067,7 @@ fn gateway_trusted_numeric_source_provider_fallback(
         fallback_required: true,
         clamped_zero_to_one: false,
         clamped_to_i64_max: false,
+        estimate_duration_ms,
         error_reason,
         material_in_output: false,
         provider_side_effect_required: false,
@@ -2890,6 +2904,7 @@ pub(crate) struct GatewayTpmEstimatePlan {
     pub(crate) endpoint: GatewayTpmEstimateEndpoint,
     pub(crate) input: RateLimitTpmEstimateInput,
     pub(crate) estimate: RateLimitTpmReservationEstimate,
+    pub(crate) trusted_source_provider: Option<GatewayTrustedNumericSourceProviderSummary>,
 }
 
 impl GatewayTpmEstimatePlan {
@@ -2908,7 +2923,16 @@ impl GatewayTpmEstimatePlan {
             used_conservative_fallback: self.estimate.used_conservative_fallback,
             sanitized_negative_estimate: self.estimate.sanitized_negative_estimate,
             clamped_to_i64_max: self.estimate.clamped_to_i64_max,
+            trusted_source_provider: self.trusted_source_provider.clone(),
         }
+    }
+
+    pub(crate) fn with_trusted_source_provider(
+        mut self,
+        provider: GatewayTrustedNumericSourceProviderSummary,
+    ) -> Self {
+        self.trusted_source_provider = Some(provider);
+        self
     }
 }
 
@@ -2927,6 +2951,7 @@ pub(crate) struct GatewayTpmEstimateSummary {
     pub(crate) used_conservative_fallback: bool,
     pub(crate) sanitized_negative_estimate: bool,
     pub(crate) clamped_to_i64_max: bool,
+    pub(crate) trusted_source_provider: Option<GatewayTrustedNumericSourceProviderSummary>,
 }
 
 pub(crate) fn gateway_tpm_estimate_for_request(
@@ -2948,6 +2973,7 @@ pub(crate) fn gateway_tpm_estimate_for_request(
         endpoint,
         input,
         estimate,
+        trusted_source_provider: None,
     }
 }
 

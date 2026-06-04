@@ -4,6 +4,7 @@ param(
   [switch]$RunLiveDbExecutorProbe,
   [switch]$ExecuteRollbackOnlyLiveProbe,
   [switch]$AttemptRealLiveDbProbe,
+  [switch]$ShadowCommitHandoff,
   [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
   [switch]$SimulateStaleProbeArtifact,
@@ -35,6 +36,7 @@ $liveExecutionHandoffContract = $readinessContract.live_execution_handoff_contra
 $liveProbeArtifactContract = $readinessContract.live_probe_evidence_artifact_contract
 $liveProbeExecutorBoundaryContract = $readinessContract.live_probe_executor_boundary_contract
 $liveProbeReadbackGateContract = $readinessContract.live_probe_measurement_readback_gate_contract
+$shadowCommitHandoffContract = $readinessContract.shadow_commit_handoff_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -48,6 +50,7 @@ $artifactPathEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_PATH"
 $liveDbExecutorProbeEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_DB_EXECUTOR_PROBE"
 $rollbackOnlyExecutorEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_ONLY_EXECUTOR_PROBE"
 $realLiveAttemptEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_REAL_LIVE_DB_PROBE_ATTEMPT"
+$shadowCommitHandoffEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF"
 $runtimeSchemaEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_SCHEMA_AVAILABLE"
 $runtimeToolEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_TOOL_AVAILABLE"
 
@@ -118,6 +121,24 @@ function Assert-Contract {
   }
   if ([string]$providerContract.runtime_writer_feature_output -ne "boolean_only") {
     throw "runtime writer feature output must be boolean-only"
+  }
+  if ([string]$shadowCommitHandoffContract.schema_version -ne "control_plane_billing_ledger_shadow_commit_handoff.v1") {
+    throw "shadow commit handoff schema mismatch"
+  }
+  if ([bool]$shadowCommitHandoffContract.default_requested) {
+    throw "shadow commit handoff must be disabled by default"
+  }
+  if ([string]$shadowCommitHandoffContract.explicit_flag -ne "-ShadowCommitHandoff") {
+    throw "shadow commit handoff explicit flag mismatch"
+  }
+  if ([bool]$shadowCommitHandoffContract.production_source_of_truth_switch_allowed) {
+    throw "shadow commit handoff must not allow source-of-truth cutover"
+  }
+  if ([bool]$shadowCommitHandoffContract.no_double_write_contract.dual_commit_allowed) {
+    throw "shadow commit handoff must not allow dual commit"
+  }
+  if ([string]$shadowCommitHandoffContract.rollback_fallback_guard.local_writer_fallback -ne "control_plane_local_sql_writer") {
+    throw "shadow commit handoff fallback must remain local writer"
   }
   if ([string]$performanceContract.summary_field -ne "handoff_performance_summary") {
     throw "handoff performance summary contract missing"
@@ -1536,6 +1557,102 @@ function New-ProductionWriterCutoverPreflight {
   }
 }
 
+function New-ShadowCommitHandoff {
+  param(
+    [Parameter(Mandatory = $true)][bool]$Requested,
+    [Parameter(Mandatory = $true)]$LiveAttempt,
+    [Parameter(Mandatory = $true)]$RollbackGate,
+    [Parameter(Mandatory = $true)][string]$Mode
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if (-not $Requested) {
+    [void]$blockers.Add("shadow_commit_handoff_not_requested")
+  }
+  if ([string]$Mode -ne "ready") {
+    [void]$blockers.Add("cutover_mode_not_ready")
+  }
+  if ([string]$LiveAttempt.classification -ne "pass") {
+    [void]$blockers.Add("live_rollback_attempt_not_passed")
+  }
+  if ([string]$RollbackGate.classification -eq "fail") {
+    foreach ($failure in @($RollbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  } elseif ([string]$RollbackGate.classification -ne "pass") {
+    [void]$blockers.Add("rollback_only_executor_gate_not_passed")
+  }
+
+  $proof = $RollbackGate.rollback_no_commit_proof
+  if ($null -eq $proof -or $proof.rollback_observed -ne $true) {
+    [void]$blockers.Add("rollback_fallback_not_proven")
+  }
+  if ($null -ne $proof -and $proof.commit_observed -eq $true) {
+    [void]$failures.Add("commit_observed_before_shadow_handoff")
+  }
+  if ($null -ne $proof -and $proof.dual_commit_observed -eq $true) {
+    [void]$failures.Add("dual_commit_observed")
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($Requested -and $blockers.Count -eq 0) {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = [string]$shadowCommitHandoffContract.schema_version
+    requested = $Requested
+    classification = $classification
+    handoff_mode = "shadow_commit_handoff_contract_only"
+    commit_handoff = [ordered]@{
+      attempted = $Requested
+      real_commit_performed = $false
+      billing_ledger_writer_commit_allowed = $false
+      source_of_truth_switch_performed = $false
+      source_of_truth_switch_allowed = $false
+      output = "handoff_summary_only_without_writer_cutover"
+    }
+    no_double_write = [ordered]@{
+      local_sql_writer_remains_authoritative = $true
+      local_sql_writer_commit_allowed = $true
+      billing_ledger_shadow_commit_allowed = $false
+      dual_commit_allowed = $false
+      dual_commit_observed = if ($null -eq $proof) { $false } else { [bool]$proof.dual_commit_observed }
+    }
+    rollback_fallback = [ordered]@{
+      required = $true
+      proven = if ($null -eq $proof) { $false } else { [bool]$proof.rollback_observed }
+      local_writer_fallback = "control_plane_local_sql_writer"
+      rollback_required_on_row_count_mismatch = $true
+      rollback_required_on_adapter_refusal = $true
+      fallback_after_billing_commit_allowed = $false
+    }
+    row_count_summary = $RollbackGate.row_count_evidence
+    transaction_timing_summary = $RollbackGate.timing_evidence
+    production_cutover = [ordered]@{
+      remains_blocked = $true
+      blocker = "source_of_truth_switch_not_requested"
+      source_of_truth = "control_plane_local_sql_writer"
+    }
+    blockers = @($blockers | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      dedupe_material_echoed = $false
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
 function New-LiveExecutionHandoff {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -1709,6 +1826,7 @@ $runtimeToolAvailable = [bool]$RuntimeToolAvailable -or (Test-TruthyEnv ([Enviro
 $liveDbExecutorProbeRequested = [bool]$RunLiveDbExecutorProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($liveDbExecutorProbeEnvVar)))
 $rollbackOnlyExecutorRequested = [bool]$ExecuteRollbackOnlyLiveProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($rollbackOnlyExecutorEnvVar)))
 $realLiveAttemptRequested = [bool]$AttemptRealLiveDbProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($realLiveAttemptEnvVar)))
+$shadowCommitHandoffRequested = [bool]$ShadowCommitHandoff -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($shadowCommitHandoffEnvVar)))
 $artifactWriteRequested = [bool]$WriteProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactWriteEnvVar)))
 $artifactReadRequested = [bool]$ReadProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactReadEnvVar)))
 $artifactPathValue = if ([string]::IsNullOrWhiteSpace($ArtifactPath)) { [Environment]::GetEnvironmentVariable($artifactPathEnvVar) } else { $ArtifactPath }
@@ -1769,6 +1887,7 @@ $liveDbExecutorProbeCommandBoundary = New-LiveDbExecutorProbeCommandBoundary -Pr
 $liveDbExecutorSqlBridgeReadinessArtifact = New-LiveDbExecutorSqlBridgeReadinessArtifact -CommandBoundary $liveDbExecutorProbeCommandBoundary -ReadbackGate $liveProbeMeasurementReadbackGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable
 $liveDbRollbackOnlyExecutorGate = New-LiveDbRollbackOnlyExecutorGate -ExecutionRequested $rollbackOnlyExecutorRequested -SqlBridge $liveDbExecutorSqlBridgeReadinessArtifact -ReadbackGate $liveProbeMeasurementReadbackGate -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -RawSqlOutputObserved ([bool]$SimulateRawSqlOutput)
 $realLiveDbRollbackAttempt = New-RealLiveDbRollbackAttempt -AttemptRequested $realLiveAttemptRequested -ToolReadiness $localToolReadiness -RollbackGate $liveDbRollbackOnlyExecutorGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -RuntimeToolAvailable $runtimeToolAvailable
+$shadowCommitHandoffSummary = New-ShadowCommitHandoff -Requested $shadowCommitHandoffRequested -LiveAttempt $realLiveDbRollbackAttempt -RollbackGate $liveDbRollbackOnlyExecutorGate -Mode ([string]$mode.Mode)
 $productionWriterCutoverPreflight = New-ProductionWriterCutoverPreflight -LiveAttempt $realLiveDbRollbackAttempt -RollbackGate $liveDbRollbackOnlyExecutorGate -Mode ([string]$mode.Mode)
 
 $summary = [ordered]@{
@@ -1896,6 +2015,7 @@ $summary = [ordered]@{
   live_db_executor_sql_bridge_readiness_artifact = $liveDbExecutorSqlBridgeReadinessArtifact
   live_db_rollback_only_executor_gate = $liveDbRollbackOnlyExecutorGate
   real_live_db_rollback_attempt = $realLiveDbRollbackAttempt
+  shadow_commit_handoff = $shadowCommitHandoffSummary
   production_writer_cutover_preflight = $productionWriterCutoverPreflight
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{

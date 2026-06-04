@@ -1328,6 +1328,53 @@
           "raw_executor_error_detail_echoed": false
         }
       },
+      "shadow_commit_handoff_contract": {
+        "schema_version": "control_plane_billing_ledger_shadow_commit_handoff.v1",
+        "source": "control_plane_billing_ledger_runtime_writer_readiness",
+        "target": "billing_ledger_runtime_writer_shadow_commit_handoff",
+        "default_requested": false,
+        "explicit_flag": "-ShadowCommitHandoff",
+        "explicit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_SHADOW_COMMIT_HANDOFF",
+        "requires_live_rollback_attempt_pass": true,
+        "requires_rollback_only_executor_gate_pass": true,
+        "requires_cutover_mode": "ready",
+        "handoff_mode": "shadow_commit_handoff_contract_only",
+        "real_commit_performed": false,
+        "production_source_of_truth_switch_allowed": false,
+        "production_source_of_truth_switch_performed": false,
+        "source_of_truth": "control_plane_local_sql_writer",
+        "no_double_write_contract": {
+          "local_sql_writer_remains_authoritative": true,
+          "local_sql_writer_commit_allowed": true,
+          "billing_ledger_shadow_commit_allowed": false,
+          "dual_commit_allowed": false,
+          "dual_commit_observed_failure": true
+        },
+        "rollback_fallback_guard": {
+          "rollback_required": true,
+          "rollback_required_on_row_count_mismatch": true,
+          "rollback_required_on_adapter_refusal": true,
+          "local_writer_fallback": "control_plane_local_sql_writer",
+          "fallback_after_billing_commit_allowed": false
+        },
+        "summary_contract": {
+          "classification_values": ["blocker", "pass", "fail"],
+          "row_count_summary": "actual_expected_rows_from_rollback_probe_gate",
+          "transaction_timing_summary": "per_step_duration_ms_from_rollback_probe_gate",
+          "production_cutover_blocker": "source_of_truth_switch_not_requested"
+        },
+        "safe_output_contract": {
+          "database_url_output": "omitted",
+          "env_value_output": "omitted",
+          "operation_key_output": "omitted",
+          "dedupe_material_echoed": false,
+          "raw_env_value_echoed": false,
+          "raw_database_url_echoed": false,
+          "raw_metadata_echoed": false,
+          "credential_material_echoed": false,
+          "raw_executor_error_detail_echoed": false
+        }
+      },
       "safe_output_contract": {
         "env_value_output": "omitted",
         "database_url_output": "omitted",

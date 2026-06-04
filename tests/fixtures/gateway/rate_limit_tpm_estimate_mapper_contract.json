@@ -1199,6 +1199,7 @@
       "trusted_source_provider.token_count_marker",
       "trusted_source_provider.clamped_zero_to_one",
       "trusted_source_provider.clamped_to_i64_max",
+      "trusted_source_provider.estimate_duration_ms",
       "trusted_source_provider.error_reason",
       "trusted_source_provider.material_in_output",
       "trusted_source_provider.provider_side_effect_required"
@@ -1268,6 +1269,69 @@
       "TPM estimate",
       "rate-limit reservation acquire",
       "provider side effect"
+    ],
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\"",
+      "maybe"
+    ]
+  },
+  "trusted_numeric_source_production_provider_wiring_attempt_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_production_provider_wiring_attempt_v1",
+    "implementation_status": "explicit env opt-in can invoke an env-backed replaceable trusted numeric provider; default request path remains conservative fallback",
+    "opt_in_env": {
+      "tokenizer_enabled": "GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED",
+      "read_model_enabled": "GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED",
+      "tokenizer_prompt_tokens": "GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS",
+      "read_model_input_tokens": "GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS"
+    },
+    "default_behavior": {
+      "provider_invoked": false,
+      "fallback_required": true,
+      "raw_prompt_estimation_allowed": false
+    },
+    "ready_behavior": {
+      "provider_invoked": true,
+      "source_type": "tokenizer",
+      "token_kind": "prompt_tokens",
+      "tokens": 321,
+      "raw_prompt_estimation_allowed": false
+    },
+    "fallback_behavior": {
+      "invalid_or_missing_numeric_source": "conservative_fallback",
+      "request_continues": true,
+      "raw_material_omitted": true
+    },
+    "safe_summary_fields": [
+      "tpm_estimate.trusted_source_provider.status",
+      "tpm_estimate.trusted_source_provider.source_type",
+      "tpm_estimate.trusted_source_provider.token_kind",
+      "tpm_estimate.trusted_source_provider.tokens",
+      "tpm_estimate.trusted_source_provider.provider_invoked",
+      "tpm_estimate.trusted_source_provider.fallback_required",
+      "tpm_estimate.trusted_source_provider.estimate_duration_ms",
+      "tpm_estimate.trusted_source_provider.source_marker",
+      "tpm_estimate.trusted_source_provider.token_count_marker",
+      "tpm_estimate.trusted_source_provider.material_in_output",
+      "tpm_estimate.trusted_source_provider.provider_side_effect_required"
     ],
     "forbidden_output_markers": [
       "sk-live",
