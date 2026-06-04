@@ -119,6 +119,8 @@ function stubAdminFetch(
   options: {
     ledgerAdjustmentDryRunFails?: boolean;
     ledgerEntriesRefreshFails?: boolean;
+    ledgerAdjustmentErrorEnvelopeData?: boolean;
+    ledgerAdjustmentExecuteResponseShape?: "default" | "tolerant";
     ledgerAdjustmentExecuteStatus?: "applied" | "idempotent" | "blocked" | "failed";
     ledgerAdjustmentExecuteStatuses?: Array<"applied" | "idempotent" | "blocked" | "failed">;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
@@ -1124,24 +1126,30 @@ function stubAdminFetch(
         const executeStatus = options.ledgerAdjustmentExecuteStatuses?.shift() ?? options.ledgerAdjustmentExecuteStatus;
 
         if (executeStatus === "blocked") {
-          return jsonError(
-            `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-execute-blocked-hidden")} idempotency_key raw metadata`,
-            409,
-          );
+          const message = `${AUTH_HEADER_NAME}: ${bearerPlaceholder(
+            "ledger-execute-blocked-hidden",
+          )} idempotency_key raw metadata`;
+          return options.ledgerAdjustmentErrorEnvelopeData
+            ? jsonErrorWithData(message, 409, ledgerAdjustmentExecuteErrorEnvelopeData("blocked"))
+            : jsonError(message, 409);
         }
 
         if (executeStatus === "failed") {
-          return jsonError(
-            `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-execute-failed-hidden")} ${skPlaceholder(
-              "ledger-execute-failed-hidden",
-            )} raw request raw metadata`,
-            500,
-          );
+          const message = `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-execute-failed-hidden")} ${skPlaceholder(
+            "ledger-execute-failed-hidden",
+          )} raw request raw metadata`;
+          return options.ledgerAdjustmentErrorEnvelopeData
+            ? jsonErrorWithData(message, 500, ledgerAdjustmentExecuteErrorEnvelopeData("failed"))
+            : jsonError(message, 500);
         }
 
         const outcome = executeStatus ?? "applied";
+        const payload =
+          options.ledgerAdjustmentExecuteResponseShape === "tolerant"
+            ? ledgerAdjustmentExecuteTolerancePayload(outcome, validatedPlan)
+            : ledgerAdjustmentExecutePayload(outcome, validatedPlan);
         return jsonResponseWithStatus(
-          ledgerAdjustmentExecutePayload(outcome, validatedPlan),
+          payload,
           outcome === "applied" ? 201 : 200,
         );
       }
@@ -1430,6 +1438,63 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
     },
     upstream_call: false,
     validated_plan: validatedPlan,
+  };
+}
+
+function ledgerAdjustmentExecuteTolerancePayload(outcome: "applied" | "idempotent", validatedPlan: unknown) {
+  const payload = ledgerAdjustmentExecutePayload(outcome, validatedPlan);
+
+  return {
+    ...payload,
+    audit_log_id: null,
+    experimental_safe_status: "safe_backend_unknown_marker",
+    ledger_entry: null,
+    ledger_executor_summary: {
+      ...payload.ledger_executor_summary,
+      credential_material: "credential material executor tolerance hidden",
+      dedupe_material: "dedupe material executor tolerance hidden",
+      experimental_safe_executor_status: "safe_executor_unknown_marker",
+      raw_executor_error_detail: "raw executor tolerance error detail hidden",
+      raw_metadata: "raw executor tolerance metadata hidden",
+      operation_key: "operation-key-executor-tolerance-hidden",
+    },
+    ledger_executor_summary_contract: null,
+    operation_key: "operation-key-response-tolerance-hidden",
+    raw_executor_error_detail: "raw executor response tolerance detail hidden",
+    raw_metadata: "raw execute tolerance metadata hidden",
+    refund_remaining_summary: null,
+    transaction_contract: {
+      experimental_safe_transaction_status: "safe_transaction_unknown_marker",
+      write_performed: outcome === "applied",
+      writer: null,
+    },
+    unknown_safe_nested: {
+      marker: "safe_nested_unknown_marker",
+    },
+    validated_plan: {
+      authorization: bearerPlaceholder("ledger-tolerance-plan-hidden"),
+      raw_metadata: "raw execute validated plan hidden",
+      value: validatedPlan,
+    },
+  };
+}
+
+function ledgerAdjustmentExecuteErrorEnvelopeData(outcome: "blocked" | "failed") {
+  return {
+    authorization: bearerPlaceholder(`ledger-${outcome}-envelope-hidden`),
+    credential_material: "credential material error envelope hidden",
+    dedupe_material: "dedupe material error envelope hidden",
+    ledger_executor_summary: {
+      outcome,
+      raw_executor_error_detail: "raw executor error envelope hidden",
+      raw_metadata: "raw executor error envelope metadata hidden",
+    },
+    mode: "execute",
+    operation_key: `operation-key-${outcome}-envelope-hidden`,
+    outcome,
+    raw_metadata: "raw execute error envelope metadata hidden",
+    safe_unknown_error_marker: "safe_error_unknown_marker",
+    token: "token error envelope hidden",
   };
 }
 
@@ -1994,6 +2059,25 @@ function jsonError(message: string, status = 400) {
   return Promise.resolve(
     new Response(
       JSON.stringify({
+        error: {
+          code: "bad_request",
+          message,
+        },
+      }),
+      {
+        status,
+        statusText: "Bad Request",
+        headers: { "Content-Type": "application/json" },
+      },
+    ),
+  );
+}
+
+function jsonErrorWithData(message: string, status: number, data: unknown) {
+  return Promise.resolve(
+    new Response(
+      JSON.stringify({
+        data,
         error: {
           code: "bad_request",
           message,
@@ -3266,8 +3350,105 @@ describe("App", () => {
     await expectLedgerRefreshFailureKeepsFreshExecuteResult("idempotent");
   });
 
+  async function expectLedgerExecuteToleratesBackendResponseShape(outcome: "applied" | "idempotent") {
+    const fetchMock = stubAdminFetch({
+      ledgerAdjustmentExecuteResponseShape: "tolerant",
+      ledgerAdjustmentExecuteStatus: outcome,
+    });
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunPanel = within(dryRunRegion);
+
+    if (outcome === "applied") {
+      await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
+      await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
+      await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
+    } else {
+      await user.selectOptions(dryRunPanel.getByLabelText("Operation"), "adjust");
+      await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
+      await user.type(dryRunPanel.getByLabelText("Wallet ID"), "00000000-0000-0000-0000-000000000040");
+    }
+
+    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+
+    expect(
+      await screen.findByText(
+        outcome === "applied"
+          ? "Ledger adjustment applied: ledger and audit writes were confirmed."
+          : "Idempotent replay: existing ledger entry returned without new ledger or audit writes.",
+      ),
+    ).toBeInTheDocument();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeOutcome: outcome,
+      executeResultFresh: true,
+      executeWriteNetworkCall: true,
+      ledgerRefreshStatus: "success",
+      status: outcome,
+    });
+    expect(screen.getByRole("heading", { level: 3, name: "Execute Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Executed Ledger Entry" })).toBeInTheDocument();
+    expect(screen.getByText("No safe ledger entry summary returned.")).toBeInTheDocument();
+    const executorSummaryPanel = screen
+      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .closest("article");
+    expect(executorSummaryPanel).not.toBeNull();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("billing_ledger_postgres_executor_summary.v1")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText(outcome === "applied" ? "refund" : "adjust")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText(outcome)).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
+    if (outcome === "applied") {
+      expect(within(executorSummaryPanel as HTMLElement).getByText("insert_ledger_entry")).toBeInTheDocument();
+    }
+
+    expect(document.body.textContent).not.toContain("safe_backend_unknown_marker");
+    expect(document.body.textContent).not.toContain("safe_executor_unknown_marker");
+    expect(document.body.textContent).not.toContain("safe_nested_unknown_marker");
+    expect(document.body.textContent).not.toContain("safe_transaction_unknown_marker");
+    expect(document.body.textContent).not.toContain("operation_key");
+    expect(document.body.textContent).not.toContain("operation-key-response-tolerance-hidden");
+    expect(document.body.textContent).not.toContain("operation-key-executor-tolerance-hidden");
+    expect(document.body.textContent).not.toContain("raw metadata");
+    expect(document.body.textContent).not.toContain("raw execute tolerance metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor tolerance metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor error detail");
+    expect(document.body.textContent).not.toContain("raw executor tolerance error detail hidden");
+    expect(document.body.textContent).not.toContain("raw executor response tolerance detail hidden");
+    expect(document.body.textContent).not.toContain("credential material executor tolerance hidden");
+    expect(document.body.textContent).not.toContain("dedupe material executor tolerance hidden");
+    expect(document.body.textContent).not.toContain("raw execute validated plan hidden");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-tolerance-plan-hidden"));
+    expect(document.body.textContent).not.toContain("Cookie");
+    expect(document.body.textContent).not.toContain("token");
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/admin/ledger/adjustments/dry-run") &&
+          init?.method === "POST" &&
+          JSON.parse(String(init.body)).mode === "execute",
+      ),
+    ).toHaveLength(1);
+  }
+
+  it("tolerates applied execute responses with unknown and missing optional fields", async () => {
+    await expectLedgerExecuteToleratesBackendResponseShape("applied");
+  });
+
+  it("tolerates idempotent execute responses with unknown and missing optional fields", async () => {
+    await expectLedgerExecuteToleratesBackendResponseShape("idempotent");
+  });
+
   it("redacts ledger adjustment execute failures and marks failed state", async () => {
-    const fetchMock = stubAdminFetch({ ledgerAdjustmentExecuteStatus: "failed" });
+    const fetchMock = stubAdminFetch({ ledgerAdjustmentErrorEnvelopeData: true, ledgerAdjustmentExecuteStatus: "failed" });
 
     const user = await renderSignedInApp();
 
@@ -3299,6 +3480,12 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain("raw metadata");
+    expect(document.body.textContent).not.toContain("safe_error_unknown_marker");
+    expect(document.body.textContent).not.toContain("operation-key-failed-envelope-hidden");
+    expect(document.body.textContent).not.toContain("raw executor error envelope hidden");
+    expect(document.body.textContent).not.toContain("credential material error envelope hidden");
+    expect(document.body.textContent).not.toContain("dedupe material error envelope hidden");
+    expect(document.body.textContent).not.toContain("token error envelope hidden");
 
     expect(
       fetchMock.mock.calls.filter(
@@ -3311,7 +3498,7 @@ describe("App", () => {
   });
 
   it("marks ledger adjustment execute blocked without failed or success smoke markers", async () => {
-    const fetchMock = stubAdminFetch({ ledgerAdjustmentExecuteStatus: "blocked" });
+    const fetchMock = stubAdminFetch({ ledgerAdjustmentErrorEnvelopeData: true, ledgerAdjustmentExecuteStatus: "blocked" });
 
     const user = await renderSignedInApp();
 
@@ -3350,6 +3537,9 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("credential");
     expect(document.body.textContent).not.toContain("Cookie");
     expect(document.body.textContent).not.toContain("token");
+    expect(document.body.textContent).not.toContain("safe_error_unknown_marker");
+    expect(document.body.textContent).not.toContain("operation-key-blocked-envelope-hidden");
+    expect(document.body.textContent).not.toContain("raw executor error envelope hidden");
 
     expect(
       fetchMock.mock.calls.filter(

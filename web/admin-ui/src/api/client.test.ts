@@ -1321,6 +1321,118 @@ describe("api client", () => {
     });
   });
 
+  it("accepts ledger adjustment execute responses with unknown fields and missing optional summaries", async () => {
+    const { executeLedgerAdjustment } = await loadClient();
+    const executeResponse = {
+      audit_log_write: false,
+      ledger_entry: null,
+      ledger_executor_summary: {
+        committed: true,
+        error_detail_output: "omitted",
+        executor: "control_plane_transactional_admin_ledger_adjustment_writer",
+        experimental_safe_executor_status: "safe_executor_unknown_marker",
+        operation: "adjust",
+        operation_key: "operation-key-api-tolerance-hidden",
+        operation_key_output: "omitted",
+        outcome: "idempotent",
+        raw_executor_error_detail: "raw executor api tolerance hidden",
+        raw_metadata: "raw executor api tolerance metadata hidden",
+        rolled_back: false,
+        row_count_mismatch: false,
+        schema_version: "billing_ledger_postgres_executor_summary.v1",
+      },
+      ledger_executor_summary_contract: null,
+      ledger_write: false,
+      mode: "execute",
+      operation_key: "operation-key-api-response-hidden",
+      outcome: "idempotent",
+      raw_metadata: "raw api execute metadata hidden",
+      request_log_write: false,
+      transaction_contract: {
+        experimental_safe_transaction_status: "safe_transaction_unknown_marker",
+        writer: null,
+      },
+      unknown_safe_marker: "safe_backend_unknown_marker",
+      upstream_call: false,
+    };
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse(executeResponse));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      executeLedgerAdjustment({
+        amount: "0.10000000",
+        currency: "USD",
+        operation: "adjust",
+        wallet_id: "wallet-1",
+      }),
+    ).resolves.toMatchObject({
+      kind: "future_execute",
+      response: {
+        ledger_entry: null,
+        ledger_executor_summary: {
+          outcome: "idempotent",
+          schema_version: "billing_ledger_postgres_executor_summary.v1",
+        },
+        outcome: "idempotent",
+      },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      amount: "0.10000000",
+      currency: "USD",
+      mode: "execute",
+      operation: "adjust",
+      wallet_id: "wallet-1",
+    });
+  });
+
+  it("keeps blocked execute error envelopes with data from becoming execute success", async () => {
+    const { executeLedgerAdjustment } = await loadClient();
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              ledger_executor_summary: {
+                outcome: "blocked",
+                raw_executor_error_detail: "raw executor blocked api envelope hidden",
+              },
+              mode: "execute",
+              operation_key: "operation-key-blocked-api-envelope-hidden",
+              outcome: "blocked",
+              raw_metadata: "raw blocked api envelope metadata hidden",
+              safe_unknown_error_marker: "safe_error_unknown_marker",
+            },
+            error: {
+              code: "ledger_execute_blocked",
+              message: "ledger adjustment execute blocked",
+            },
+          }),
+          {
+            status: 409,
+            statusText: "Conflict",
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      executeLedgerAdjustment({
+        amount: "0.25000000",
+        currency: "USD",
+        operation: "refund",
+        related_ledger_entry_id: "ledger-entry-1",
+      }),
+    ).rejects.toMatchObject({
+      code: "ledger_execute_blocked",
+      message: "ledger adjustment execute blocked",
+      status: 409,
+    });
+  });
+
   it("loads the current admin session through cookie credentials without fallback headers", async () => {
     const { ADMIN_SESSION_HEADER, getAdminMe } = await loadClient();
     const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) =>
