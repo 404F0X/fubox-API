@@ -288,6 +288,100 @@
       }
     ]
   },
+  "trusted_signal_smoke_evidence_projection_contract": {
+    "schema": "gateway_tpm_trusted_signal_smoke_evidence_projection_v1",
+    "source": "rate_limit_reservation_metadata",
+    "source_handoff_schema": "gateway_tpm_trusted_signal_smoke_handoff_v1",
+    "current_handoff_status": "fallback_missing_tokenizer",
+    "evidence_material": "bounded numeric/status/source fields only",
+    "field_projection": {
+      "endpoint": "tpm_estimate.endpoint",
+      "handoff_status": "fallback_missing_tokenizer",
+      "tpm_estimate": "rate_limit_reservation.tpm_estimate",
+      "required_capacity.tokens_per_minute": "rate_limit_reservation.required_capacity.tokens_per_minute",
+      "acquire.dimensions.tpm.required": "rate_limit_reservation.acquire.dimensions[dimension=tpm].required",
+      "db_required_capacity.tokens_per_minute": "ProviderKeyRateLimitRequiredCapacity.tokens_per_minute",
+      "trusted_signal.status": "current missing-tokenizer runtime guard",
+      "trusted_signal.source_type": "null until tokenizer/read-model is wired",
+      "trusted_signal.tokens": "null until tokenizer/read-model is wired",
+      "trusted_signal.material_in_output": false
+    },
+    "capacity_consistency_fields": [
+      "tpm_estimate.required_tokens_i64",
+      "required_capacity.tokens_per_minute",
+      "acquire.dimensions.tpm.required",
+      "db_required_capacity.tokens_per_minute"
+    ],
+    "forbidden_projection_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "response_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_headers",
+      "provider_endpoint",
+      "current_window_state",
+      "https://provider.example.test"
+    ],
+    "endpoints": [
+      {
+        "endpoint": "openai_chat",
+        "handoff_status": "fallback_missing_tokenizer",
+        "expected_tpm_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1152,
+        "trusted_signal_status": "missing_tokenizer_fallback",
+        "trusted_signal_source_type": null,
+        "trusted_signal_tokens": null,
+        "trusted_signal_material_in_output": false
+      },
+      {
+        "endpoint": "openai_responses",
+        "handoff_status": "fallback_missing_tokenizer",
+        "expected_tpm_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1324,
+        "trusted_signal_status": "missing_tokenizer_fallback",
+        "trusted_signal_source_type": null,
+        "trusted_signal_tokens": null,
+        "trusted_signal_material_in_output": false
+      },
+      {
+        "endpoint": "openai_embeddings",
+        "handoff_status": "fallback_missing_tokenizer",
+        "expected_tpm_source": "ConservativeFallback",
+        "expected_required_tokens": 1024,
+        "trusted_signal_status": "missing_tokenizer_fallback",
+        "trusted_signal_source_type": null,
+        "trusted_signal_tokens": null,
+        "trusted_signal_material_in_output": false
+      },
+      {
+        "endpoint": "anthropic_messages",
+        "handoff_status": "fallback_missing_tokenizer",
+        "expected_tpm_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1536,
+        "trusted_signal_status": "missing_tokenizer_fallback",
+        "trusted_signal_source_type": null,
+        "trusted_signal_tokens": null,
+        "trusted_signal_material_in_output": false
+      },
+      {
+        "endpoint": "gemini_native",
+        "handoff_status": "fallback_missing_tokenizer",
+        "expected_tpm_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1280,
+        "trusted_signal_status": "missing_tokenizer_fallback",
+        "trusted_signal_source_type": null,
+        "trusted_signal_tokens": null,
+        "trusted_signal_material_in_output": false
+      }
+    ]
+  },
   "endpoint_mappings": [
     {
       "endpoint": "openai_chat",

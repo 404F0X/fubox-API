@@ -13647,6 +13647,299 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_smoke_evidence_projection_is_secret_safe_and_consistent() {
+        fn json_path_exists(value: &Value, path: &str) -> bool {
+            path.split('.')
+                .try_fold(value, |current, segment| current.get(segment))
+                .is_some()
+        }
+
+        fn endpoint_contract<'a>(projection: &'a Value, endpoint: &str) -> &'a serde_json::Value {
+            projection["endpoints"]
+                .as_array()
+                .expect("projection endpoints should be an array")
+                .iter()
+                .find(|entry| entry["endpoint"].as_str() == Some(endpoint))
+                .unwrap_or_else(|| panic!("missing TPM evidence projection endpoint: {endpoint}"))
+        }
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let handoff = &fixture["trusted_signal_smoke_handoff_contract"];
+        let projection = &fixture["trusted_signal_smoke_evidence_projection_contract"];
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(156),
+            0,
+            Some(60),
+            Some(20_000),
+            Some(8),
+            json!({
+                "rpm": { "used": 10 },
+                "tokens_per_minute": { "used": 100 },
+                "concurrency": { "used": 1 },
+                "authorization": "Bearer sk-live-secret",
+                "api_key": "sk-live-provider-secret",
+                "provider_key": "sk-live-provider-secret",
+                "provider_endpoint": "https://provider.example.test/v1",
+                "payload": "raw request body",
+                "raw_headers": { "Authorization": "Bearer sk-live-secret" },
+                "current_window_state": { "raw": "do-not-project" }
+            }),
+        );
+
+        assert_eq!(
+            projection["schema"].as_str(),
+            Some("gateway_tpm_trusted_signal_smoke_evidence_projection_v1")
+        );
+        assert_eq!(
+            projection["source"].as_str(),
+            Some("rate_limit_reservation_metadata")
+        );
+        assert_eq!(
+            projection["source_handoff_schema"].as_str(),
+            handoff["schema"].as_str()
+        );
+        assert_eq!(
+            projection["current_handoff_status"].as_str(),
+            handoff["current_default_status"].as_str()
+        );
+
+        let cases = vec![
+            (
+                "openai_chat",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::OpenAiChat,
+                    br#"{
+                        "model": "mock-gpt",
+                        "messages": [{ "role": "user", "content": "sk-live-secret raw prompt" }],
+                        "max_completion_tokens": 128
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "openai_responses",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::OpenAiResponses,
+                    br#"{
+                        "model": "mock-gpt",
+                        "input": "sk-live-secret raw response input",
+                        "max_output_tokens": 300
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "openai_embeddings",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+                    br#"{
+                        "model": "mock-embedding",
+                        "input": ["sk-live-secret raw embedding input", "second raw input"]
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "anthropic_messages",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::AnthropicMessages,
+                    br#"{
+                        "model": "claude-mock",
+                        "messages": [{ "role": "user", "content": "sk-live-secret raw prompt" }],
+                        "max_tokens": 512
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "gemini_native",
+                gateway_tpm_estimate_for_request(
+                    GatewayTpmEstimateEndpoint::GeminiNative,
+                    &json!({
+                        "contents": [
+                            {
+                                "role": "user",
+                                "parts": [{ "text": "sk-live-secret raw prompt" }]
+                            }
+                        ],
+                        "generationConfig": { "maxOutputTokens": 256 }
+                    }),
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+        ];
+
+        assert_eq!(
+            projection["endpoints"]
+                .as_array()
+                .expect("projection endpoints should be an array")
+                .len(),
+            cases.len()
+        );
+
+        let common_required = handoff["common_required_evidence_fields"]
+            .as_array()
+            .expect("handoff common required evidence fields should be an array");
+        for (endpoint, tpm_estimate) in cases {
+            let endpoint_contract = endpoint_contract(projection, endpoint);
+            let reservation =
+                gateway_rate_limit_reservation_for_attempt(&route, Some(&tpm_estimate));
+            let metadata = reservation.metadata("completed");
+            let acquire_tpm = rate_limit_reservation_dimension(&metadata, "acquire", "tpm");
+            let db_required =
+                gateway_rate_limit_required_capacity_for_db(reservation.required_capacity);
+            let expected_required = endpoint_contract["expected_required_tokens"]
+                .as_i64()
+                .expect("projection endpoint expected required tokens should be an integer");
+
+            let evidence = json!({
+                "endpoint": endpoint,
+                "handoff_status": endpoint_contract["handoff_status"].clone(),
+                "tpm_estimate": metadata["tpm_estimate"].clone(),
+                "required_capacity": {
+                    "tokens_per_minute": metadata["required_capacity"]["tokens_per_minute"].clone()
+                },
+                "acquire": {
+                    "dimensions": {
+                        "tpm": {
+                            "required": acquire_tpm["required"].clone()
+                        }
+                    }
+                },
+                "db_required_capacity": {
+                    "tokens_per_minute": db_required.tokens_per_minute
+                },
+                "trusted_signal": {
+                    "status": endpoint_contract["trusted_signal_status"].clone(),
+                    "source_type": endpoint_contract["trusted_signal_source_type"].clone(),
+                    "tokens": endpoint_contract["trusted_signal_tokens"].clone(),
+                    "material_in_output": endpoint_contract["trusted_signal_material_in_output"].clone()
+                }
+            });
+
+            for required in common_required.iter().filter_map(serde_json::Value::as_str) {
+                assert!(
+                    json_path_exists(&evidence, required),
+                    "{endpoint} projected smoke evidence missing required field: {required}"
+                );
+            }
+            for required in projection["capacity_consistency_fields"]
+                .as_array()
+                .expect("projection capacity consistency fields should be an array")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+            {
+                assert!(
+                    json_path_exists(&evidence, required),
+                    "{endpoint} projected smoke evidence missing capacity field: {required}"
+                );
+            }
+
+            assert!(reservation.acquired(), "{endpoint}");
+            assert_eq!(
+                tpm_estimate.estimate.required_tokens_i64(),
+                expected_required,
+                "{endpoint}"
+            );
+            assert_eq!(
+                reservation.required_capacity.tokens_per_minute, expected_required,
+                "{endpoint}"
+            );
+            assert_eq!(
+                db_required.tokens_per_minute, expected_required,
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["tpm_estimate"]["required_tokens_i64"],
+                json!(expected_required),
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["required_capacity"]["tokens_per_minute"],
+                json!(expected_required),
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["acquire"]["dimensions"]["tpm"]["required"],
+                json!(expected_required),
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["db_required_capacity"]["tokens_per_minute"],
+                json!(expected_required),
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["tpm_estimate"]["source"], endpoint_contract["expected_tpm_source"],
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["tpm_estimate"]["used_conservative_fallback"], true,
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["trusted_signal"]["status"], endpoint_contract["trusted_signal_status"],
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["trusted_signal"]["source_type"],
+                endpoint_contract["trusted_signal_source_type"],
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["trusted_signal"]["tokens"], endpoint_contract["trusted_signal_tokens"],
+                "{endpoint}"
+            );
+            assert_eq!(
+                evidence["trusted_signal"]["material_in_output"], false,
+                "{endpoint}"
+            );
+
+            let evidence_text = evidence.to_string().to_ascii_lowercase();
+            for marker in projection["forbidden_projection_markers"]
+                .as_array()
+                .expect("projection forbidden markers should be an array")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+            {
+                assert!(
+                    !evidence_text.contains(&marker.to_ascii_lowercase()),
+                    "{endpoint} projected smoke evidence leaked forbidden marker: {marker}"
+                );
+            }
+            for marker in [
+                "raw response input",
+                "raw embedding input",
+                "second raw input",
+                "raw request body",
+                "do-not-project",
+                "\"messages\"",
+                "\"contents\"",
+                "\"parts\"",
+                "\"text\"",
+            ] {
+                assert!(
+                    !evidence_text.contains(marker),
+                    "{endpoint} projected smoke evidence leaked raw material marker: {marker}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_reservation_chat_tpm_estimate_feeds_plan_metadata_and_db_capacity() {
         let route = test_route_with_rate_limit(
             uuid::Uuid::from_u128(151),
