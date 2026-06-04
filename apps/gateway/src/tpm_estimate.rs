@@ -51,6 +51,30 @@ impl GatewayTpmEstimateSignals {
         }
     }
 
+    pub(crate) const fn trusted_prompt_tokens(
+        prompt_tokens: Option<i64>,
+        conservative_fallback_tokens: i64,
+    ) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens: None,
+            total_tokens: None,
+            conservative_fallback_tokens,
+        }
+    }
+
+    pub(crate) const fn trusted_input_tokens(
+        input_tokens: Option<i64>,
+        conservative_fallback_tokens: i64,
+    ) -> Self {
+        Self {
+            prompt_tokens: None,
+            completion_tokens: None,
+            total_tokens: input_tokens,
+            conservative_fallback_tokens,
+        }
+    }
+
     pub(crate) const fn missing_tokenizer(conservative_fallback_tokens: i64) -> Self {
         Self {
             prompt_tokens: None,
@@ -194,6 +218,118 @@ mod tests {
 
     fn signals(prompt_tokens: Option<i64>, fallback_tokens: i64) -> GatewayTpmEstimateSignals {
         GatewayTpmEstimateSignals::new(prompt_tokens, None, None, fallback_tokens)
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_accepts_only_trusted_numeric_token_signals() {
+        let prompt = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "sk-live-provider-secret raw prompt" }],
+                "max_completion_tokens": 400
+            }),
+            GatewayTpmEstimateSignals::trusted_prompt_tokens(Some(200), 256),
+        );
+        assert_eq!(
+            prompt.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(prompt.estimate.prompt_tokens, Some(200));
+        assert_eq!(prompt.estimate.max_completion_tokens, Some(400));
+        assert_eq!(prompt.estimate.required_tokens, 600);
+        assert!(!prompt.estimate.used_conservative_fallback);
+
+        let input = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "sk-live-provider-secret raw embedding input" }),
+            GatewayTpmEstimateSignals::trusted_input_tokens(Some(222), 256),
+        );
+        assert_eq!(
+            input.estimate.source,
+            RateLimitTpmEstimateSource::TotalTokens
+        );
+        assert_eq!(input.estimate.required_tokens, 222);
+        assert_eq!(input.estimate.required_tokens_i64(), 222);
+        assert!(!input.estimate.used_conservative_fallback);
+
+        let missing = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": ["raw one", "raw two"] }),
+            GatewayTpmEstimateSignals::trusted_input_tokens(None, 256),
+        );
+        assert_eq!(
+            missing.estimate.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(missing.estimate.required_tokens, 256);
+        assert!(missing.estimate.used_conservative_fallback);
+
+        let negative = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw negative input" }),
+            GatewayTpmEstimateSignals::trusted_input_tokens(Some(-7), 256),
+        );
+        assert_eq!(
+            negative.estimate.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(negative.estimate.required_tokens, 256);
+        assert!(negative.estimate.sanitized_negative_estimate);
+        assert!(negative.estimate.used_conservative_fallback);
+
+        let overflow = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({ "max_completion_tokens": 256 }),
+            GatewayTpmEstimateSignals::trusted_prompt_tokens(Some(i64::MAX), 256),
+        );
+        assert_eq!(
+            overflow.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert!(overflow.estimate.required_tokens > i64::MAX as u64);
+        assert_eq!(overflow.estimate.required_tokens_i64(), i64::MAX);
+        assert!(overflow.estimate.clamped_to_i64_max);
+
+        let invalid_fallback = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw fallback input" }),
+            GatewayTpmEstimateSignals::trusted_input_tokens(None, -1),
+        );
+        assert_eq!(
+            invalid_fallback.estimate.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(invalid_fallback.estimate.required_tokens, 1_024);
+        assert!(invalid_fallback.estimate.sanitized_negative_estimate);
+        assert!(invalid_fallback.estimate.used_conservative_fallback);
+
+        let serialized = serde_json::to_string(&vec![
+            prompt.safe_summary(),
+            input.safe_summary(),
+            missing.safe_summary(),
+            negative.safe_summary(),
+            overflow.safe_summary(),
+            invalid_fallback.safe_summary(),
+        ])
+        .expect("trusted token summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in [
+            "sk-live-provider-secret",
+            "raw prompt",
+            "raw embedding input",
+            "raw one",
+            "raw two",
+            "raw negative input",
+            "raw fallback input",
+            "\"input\"",
+            "\"messages\"",
+            "\"content\"",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "trusted token TPM summary leaked forbidden marker: {forbidden}"
+            );
+        }
     }
 
     #[test]

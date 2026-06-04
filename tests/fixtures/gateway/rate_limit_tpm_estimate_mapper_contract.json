@@ -3,6 +3,16 @@
   "schema": "gateway_tpm_estimate_mapper_v1",
   "routing_contract": "rate_limit_tpm_estimate_contract_v1",
   "runtime_scope": "DB-free endpoint request signal mapper only; no reservation acquire, provider attempt, provider key open, upstream call, or billing side effect",
+  "trusted_token_signal_boundary": {
+    "accepted_material": "numeric trusted prompt/input/completion/total token counts only",
+    "raw_material_accepted": false,
+    "raw_material_emitted": false,
+    "trusted_prompt_tokens_helper": "GatewayTpmEstimateSignals::trusted_prompt_tokens",
+    "trusted_input_tokens_helper": "GatewayTpmEstimateSignals::trusted_input_tokens",
+    "missing_signal_behavior": "ConservativeFallback",
+    "negative_signal_behavior": "sanitize to missing and use fallback",
+    "overflow_behavior": "required_tokens_i64 clamps to i64::MAX"
+  },
   "endpoint_mappings": [
     {
       "endpoint": "openai_chat",
@@ -117,6 +127,70 @@
       "required_tokens": 256,
       "required_tokens_i64": 256,
       "used_conservative_fallback": true,
+      "raw_input_emitted": false
+    },
+    {
+      "name": "trusted_prompt_tokens_with_max_output",
+      "endpoint": "openai_chat",
+      "request_numeric_signal": { "trusted_prompt_tokens": 200, "max_completion_tokens": 400 },
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 600,
+      "required_tokens_i64": 600,
+      "used_conservative_fallback": false,
+      "raw_prompt_emitted": false
+    },
+    {
+      "name": "trusted_input_tokens_for_embeddings",
+      "endpoint": "openai_embeddings",
+      "request_numeric_signal": { "trusted_input_tokens": 222 },
+      "source": "TotalTokens",
+      "required_tokens": 222,
+      "required_tokens_i64": 222,
+      "used_conservative_fallback": false,
+      "raw_input_emitted": false
+    },
+    {
+      "name": "trusted_input_tokens_missing",
+      "endpoint": "openai_embeddings",
+      "request_numeric_signal": { "trusted_input_tokens": null },
+      "source": "ConservativeFallback",
+      "required_tokens": 256,
+      "required_tokens_i64": 256,
+      "used_conservative_fallback": true,
+      "raw_input_emitted": false
+    },
+    {
+      "name": "trusted_input_tokens_negative",
+      "endpoint": "openai_embeddings",
+      "request_numeric_signal": { "trusted_input_tokens": -7 },
+      "source": "ConservativeFallback",
+      "required_tokens": 256,
+      "required_tokens_i64": 256,
+      "used_conservative_fallback": true,
+      "sanitized_negative_estimate": true,
+      "raw_input_emitted": false
+    },
+    {
+      "name": "trusted_prompt_tokens_overflow_clamps",
+      "endpoint": "openai_chat",
+      "request_numeric_signal": {
+        "trusted_prompt_tokens": 9223372036854775807,
+        "max_completion_tokens": 256
+      },
+      "source": "PromptAndMaxCompletion",
+      "required_tokens_i64": 9223372036854775807,
+      "clamped_to_i64_max": true,
+      "raw_prompt_emitted": false
+    },
+    {
+      "name": "trusted_input_tokens_invalid_fallback",
+      "endpoint": "openai_embeddings",
+      "request_numeric_signal": { "trusted_input_tokens": null, "fallback_tokens": -1 },
+      "source": "ConservativeFallback",
+      "required_tokens": 1024,
+      "required_tokens_i64": 1024,
+      "used_conservative_fallback": true,
+      "sanitized_negative_estimate": true,
       "raw_input_emitted": false
     },
     {
