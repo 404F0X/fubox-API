@@ -51,13 +51,13 @@ use ai_gateway_observability::{
 };
 use ai_gateway_routing::{
     ChannelHealth, ChannelStatus, HealthImpact, ProviderErrorClassification, ProviderErrorSignal,
-    ProviderTransportErrorKind, RateLimitAvailability, RateLimitAvailabilityInput,
-    RateLimitCounterUpdate, RateLimitCounterWindow, RateLimitDimension, RateLimitDimensionStatus,
-    RateLimitRequiredCapacity, RateLimitReservationInput, RateLimitReservationOperation,
-    RateLimitReservationPlan, RateLimitReservationStatus, RateLimitWindow, RouteCandidate,
-    RouteDecision, RouteDecisionSnapshot, RouteRequest, RouteSelectionContext,
-    classify_provider_error, evaluate_rate_limit_availability, plan_rate_limit_reservation,
-    select_route_with_context,
+    ProviderTransportErrorKind, RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS, RateLimitAvailability,
+    RateLimitAvailabilityInput, RateLimitCounterUpdate, RateLimitCounterWindow, RateLimitDimension,
+    RateLimitDimensionStatus, RateLimitRequiredCapacity, RateLimitReservationInput,
+    RateLimitReservationOperation, RateLimitReservationPlan, RateLimitReservationStatus,
+    RateLimitWindow, RouteCandidate, RouteDecision, RouteDecisionSnapshot, RouteRequest,
+    RouteSelectionContext, classify_provider_error, evaluate_rate_limit_availability,
+    plan_rate_limit_reservation, select_route_with_context,
 };
 use axum::{
     Json, Router,
@@ -88,6 +88,10 @@ use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
+use tpm_estimate::{
+    GatewayTpmEstimateEndpoint, GatewayTpmEstimatePlan, GatewayTpmEstimateSignals,
+    GatewayTpmEstimateSummary, gateway_tpm_estimate_for_request_body,
+};
 
 const GATEWAY_ROUTE_POLICY_VERSION: &str = "gateway_db_route_v1";
 const ROUTE_PRIORITY_ASSOCIATION_MULTIPLIER: i32 = 1_000_000;
@@ -106,6 +110,8 @@ const GATEWAY_RATE_LIMIT_RESERVATION_DB_EXECUTION_SCHEMA: &str =
 const GATEWAY_RATE_LIMIT_RESERVATION_DB_BACKEND: &str = "db_key_window_counters";
 const GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS: i64 = 1;
 const GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK: i64 = 1;
+const GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS: i64 =
+    RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS;
 const GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY: i64 = 1;
 const X_FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 const X_REAL_IP_HEADER: &str = "x-real-ip";
@@ -725,6 +731,14 @@ async fn chat_completions(
         return error.into_response();
     }
 
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+        GatewayTpmEstimateEndpoint::OpenAiChat,
+        &body,
+        GatewayTpmEstimateSignals::missing_tokenizer(
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+        ),
+    );
+
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &request.model)
         .await
@@ -829,6 +843,7 @@ async fn chat_completions(
             upstream_timeout: state.upstream_timeout,
             stream_idle_timeout: state.stream_idle_timeout,
             route_snapshot,
+            rate_limit_tpm_estimate: Some(&rate_limit_tpm_estimate),
         })
         .await;
     }
@@ -851,7 +866,8 @@ async fn chat_completions(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate));
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_CHAT_COMPLETIONS,
             repository,
@@ -1414,6 +1430,14 @@ async fn responses(
         return error.into_response();
     }
 
+    let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(
+        GatewayTpmEstimateEndpoint::OpenAiResponses,
+        &body,
+        GatewayTpmEstimateSignals::missing_tokenizer(
+            GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+        ),
+    );
+
     let canonical_model = match repository
         .resolve_canonical_model(&auth, &request.model)
         .await
@@ -1537,6 +1561,7 @@ async fn responses(
             upstream_timeout: state.upstream_timeout,
             stream_idle_timeout: state.stream_idle_timeout,
             route_snapshot,
+            rate_limit_tpm_estimate: Some(&rate_limit_tpm_estimate),
         })
         .await;
     }
@@ -1559,7 +1584,8 @@ async fn responses(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate));
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_RESPONSES,
             repository,
@@ -2282,7 +2308,7 @@ async fn embeddings(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_EMBEDDINGS,
             repository,
@@ -2907,7 +2933,7 @@ async fn anthropic_messages(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
             repository,
@@ -3747,7 +3773,7 @@ async fn gemini_generate_content_native_passthrough(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
             repository,
@@ -5972,6 +5998,8 @@ fn route_rate_limit_window(
 pub(crate) struct GatewayRateLimitReservationAttempt {
     acquire: RateLimitReservationPlan,
     release: RateLimitReservationPlan,
+    required_capacity: RateLimitRequiredCapacity,
+    tpm_estimate: Option<GatewayTpmEstimateSummary>,
     db_acquire: Option<GatewayRateLimitReservationDbExecution>,
     db_release: Option<GatewayRateLimitReservationDbExecution>,
     db_release_attempted: bool,
@@ -6009,18 +6037,35 @@ struct GatewayRateLimitReservationDbExecutionRow {
 }
 
 impl GatewayRateLimitReservationAttempt {
-    fn new(route: &ResolvedChatRoute) -> Self {
-        let acquire =
-            route_rate_limit_reservation_plan(route, RateLimitReservationOperation::Acquire, false);
+    fn new(route: &ResolvedChatRoute, tpm_estimate: Option<&GatewayTpmEstimatePlan>) -> Self {
+        let required_capacity = tpm_estimate
+            .map(|estimate| {
+                RateLimitRequiredCapacity::from_tpm_estimate(
+                    GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+                    &estimate.estimate,
+                    GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+                )
+            })
+            .unwrap_or_else(default_gateway_rate_limit_required_capacity);
+        let tpm_estimate = tpm_estimate.map(GatewayTpmEstimatePlan::safe_summary);
+        let acquire = route_rate_limit_reservation_plan(
+            route,
+            RateLimitReservationOperation::Acquire,
+            false,
+            required_capacity,
+        );
         let release = route_rate_limit_reservation_plan(
             route,
             RateLimitReservationOperation::Release,
             acquire.status == RateLimitReservationStatus::Acquired,
+            required_capacity,
         );
 
         Self {
             acquire,
             release,
+            required_capacity,
+            tpm_estimate,
             db_acquire: None,
             db_release: None,
             db_release_attempted: false,
@@ -6081,10 +6126,11 @@ impl GatewayRateLimitReservationAttempt {
             "acquire": rate_limit_reservation_plan_metadata(&self.acquire),
             "finalize": rate_limit_reservation_plan_metadata(&self.release),
             "required_capacity": {
-                "requests_per_minute": GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
-                "tokens_per_minute": GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
-                "concurrency": GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+                "requests_per_minute": self.required_capacity.requests_per_minute,
+                "tokens_per_minute": self.required_capacity.tokens_per_minute,
+                "concurrency": self.required_capacity.concurrency,
             },
+            "tpm_estimate": self.tpm_estimate.as_ref(),
             "window_material_in_output": self.acquire.window_material_in_output
                 || self.release.window_material_in_output,
             "db_execution": {
@@ -6161,8 +6207,9 @@ impl GatewayRateLimitReservationDbExecutionRow {
 
 pub(crate) fn gateway_rate_limit_reservation_for_attempt(
     route: &ResolvedChatRoute,
+    tpm_estimate: Option<&GatewayTpmEstimatePlan>,
 ) -> GatewayRateLimitReservationAttempt {
-    GatewayRateLimitReservationAttempt::new(route)
+    GatewayRateLimitReservationAttempt::new(route, tpm_estimate)
 }
 
 pub(crate) async fn acquire_gateway_rate_limit_reservation_for_attempt(
@@ -6185,7 +6232,7 @@ pub(crate) async fn acquire_gateway_rate_limit_reservation_for_attempt(
         auth.tenant_id,
         route.provider_key_id,
         route.channel_id,
-        gateway_rate_limit_required_capacity_for_db(),
+        gateway_rate_limit_required_capacity_for_db(reservation.required_capacity),
     );
 
     match repository
@@ -6225,7 +6272,7 @@ pub(crate) async fn release_gateway_rate_limit_reservation_if_needed(
         auth.tenant_id,
         route.provider_key_id,
         route.channel_id,
-        gateway_rate_limit_required_capacity_for_db(),
+        gateway_rate_limit_required_capacity_for_db(reservation.required_capacity),
         true,
     );
 
@@ -6245,11 +6292,21 @@ pub(crate) async fn release_gateway_rate_limit_reservation_if_needed(
     }
 }
 
-const fn gateway_rate_limit_required_capacity_for_db() -> ProviderKeyRateLimitRequiredCapacity {
-    ProviderKeyRateLimitRequiredCapacity::new(
+const fn default_gateway_rate_limit_required_capacity() -> RateLimitRequiredCapacity {
+    RateLimitRequiredCapacity::new(
         GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
         GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
         GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+    )
+}
+
+const fn gateway_rate_limit_required_capacity_for_db(
+    required: RateLimitRequiredCapacity,
+) -> ProviderKeyRateLimitRequiredCapacity {
+    ProviderKeyRateLimitRequiredCapacity::new(
+        required.requests_per_minute,
+        required.tokens_per_minute,
+        required.concurrency,
     )
 }
 
@@ -6257,6 +6314,7 @@ fn route_rate_limit_reservation_plan(
     route: &ResolvedChatRoute,
     operation: RateLimitReservationOperation,
     reservation_acquired: bool,
+    required: RateLimitRequiredCapacity,
 ) -> RateLimitReservationPlan {
     let requests_per_minute = route_rate_limit_counter_window(
         route.provider_key_rpm_limit,
@@ -6279,12 +6337,6 @@ fn route_rate_limit_reservation_plan(
             RateLimitDimension::Concurrency,
         ),
     );
-    let required = RateLimitRequiredCapacity::new(
-        GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
-        GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
-        GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
-    );
-
     let input = match operation {
         RateLimitReservationOperation::Acquire => RateLimitReservationInput::acquire(
             requests_per_minute,
@@ -8983,7 +9035,9 @@ mod tests {
                     uuid::Uuid::from_u128(1),
                     uuid::Uuid::from_u128(2),
                     uuid::Uuid::from_u128(3),
-                    gateway_rate_limit_required_capacity_for_db(),
+                    gateway_rate_limit_required_capacity_for_db(
+                        default_gateway_rate_limit_required_capacity(),
+                    ),
                 )
             }
             DbRateLimitReservationOperation::Release => {
@@ -8991,7 +9045,9 @@ mod tests {
                     uuid::Uuid::from_u128(1),
                     uuid::Uuid::from_u128(2),
                     uuid::Uuid::from_u128(3),
-                    gateway_rate_limit_required_capacity_for_db(),
+                    gateway_rate_limit_required_capacity_for_db(
+                        default_gateway_rate_limit_required_capacity(),
+                    ),
                     true,
                 )
             }
@@ -9033,6 +9089,19 @@ mod tests {
             tpm_used: Some(tpm_used),
             concurrency_used: Some(concurrency_used),
         }
+    }
+
+    fn rate_limit_reservation_dimension<'a>(
+        metadata: &'a Value,
+        operation: &str,
+        dimension: &str,
+    ) -> &'a Value {
+        metadata[operation]["dimensions"]
+            .as_array()
+            .expect("rate-limit reservation dimensions should be an array")
+            .iter()
+            .find(|entry| entry["dimension"].as_str() == Some(dimension))
+            .unwrap_or_else(|| panic!("missing {dimension} dimension in {operation} metadata"))
     }
 
     fn test_previous_success(channel_id: uuid::Uuid) -> TraceAffinityPreviousSuccessRoute {
@@ -13307,7 +13376,7 @@ mod tests {
         let db_release_helper = source_section(
             main_source,
             "pub(crate) async fn release_gateway_rate_limit_reservation_if_needed(",
-            "const fn gateway_rate_limit_required_capacity_for_db()",
+            "const fn gateway_rate_limit_required_capacity_for_db(",
         );
         assert!(db_release_helper.contains("reservation.db_release_needed()"));
         assert!(
@@ -13335,6 +13404,267 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_reservation_tpm_mapper_runs_after_prompt_protection_before_reservation() {
+        let main_source = include_str!("main.rs");
+        let streaming_source = include_str!("streaming.rs");
+
+        for (section, section_name, rejection_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+            ),
+        ] {
+            assert_marker_before(
+                section,
+                rejection_marker,
+                "gateway_tpm_estimate_for_request_body(",
+                section_name,
+            );
+            assert_marker_before(
+                section,
+                "gateway_tpm_estimate_for_request_body(",
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+
+            let rejection_section = source_section(
+                section,
+                rejection_marker,
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            );
+            assert!(rejection_section.contains("return error.into_response();"));
+            assert!(!rejection_section.contains("gateway_rate_limit_reservation_for_attempt("));
+            assert!(!rejection_section.contains("create_provider_attempt_started("));
+            assert!(!rejection_section.contains("open_provider_key_for_route("));
+        }
+
+        for (section, section_name) in [
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn chat_completions_streaming(",
+                    "pub(crate) async fn responses_streaming(",
+                ),
+                "chat completions streaming",
+            ),
+            (
+                source_section(
+                    streaming_source,
+                    "pub(crate) async fn responses_streaming(",
+                    "pub(crate) async fn anthropic_messages_streaming(",
+                ),
+                "responses streaming",
+            ),
+        ] {
+            assert!(section.contains("rate_limit_tpm_estimate"));
+            assert!(section.contains(
+                "gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate)"
+            ));
+            assert_marker_before(
+                section,
+                "pre_authorize_before_provider_attempt(",
+                "gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate)",
+                section_name,
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_reservation_chat_tpm_estimate_feeds_plan_metadata_and_db_capacity() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(151),
+            0,
+            Some(60),
+            Some(10_000),
+            Some(8),
+            json!({
+                "rpm": { "used": 10 },
+                "tokens_per_minute": { "used": 100 },
+                "concurrency": { "used": 1 },
+                "authorization": "Bearer sk-live-secret",
+                "payload": "raw request body"
+            }),
+        );
+        let tpm_estimate = gateway_tpm_estimate_for_request_body(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            br#"{
+                "model": "mock-gpt",
+                "messages": [{ "role": "user", "content": "sk-live-secret raw prompt" }],
+                "max_completion_tokens": 128
+            }"#,
+            GatewayTpmEstimateSignals::missing_tokenizer(
+                GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+            ),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, Some(&tpm_estimate));
+        let metadata = reservation.metadata("completed");
+        let acquire_tpm = rate_limit_reservation_dimension(&metadata, "acquire", "tpm");
+        let finalize_tpm = rate_limit_reservation_dimension(&metadata, "finalize", "tpm");
+        let db_required =
+            gateway_rate_limit_required_capacity_for_db(reservation.required_capacity);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+        let bridge = &fixture["tpm_estimate_bridge"];
+        let expected_required = bridge["openai_chat_partial_required_tokens"]
+            .as_i64()
+            .expect("expected chat TPM required tokens");
+
+        assert!(reservation.acquired());
+        assert_eq!(
+            tpm_estimate.estimate.required_tokens_i64(),
+            expected_required
+        );
+        assert_eq!(
+            reservation.required_capacity.tokens_per_minute,
+            expected_required
+        );
+        assert_eq!(db_required.tokens_per_minute, expected_required);
+        assert_eq!(
+            metadata["required_capacity"]["tokens_per_minute"],
+            json!(expected_required)
+        );
+        assert_eq!(metadata["tpm_estimate"]["endpoint"], "openai_chat");
+        assert_eq!(metadata["tpm_estimate"]["source"], bridge["partial_source"]);
+        assert_eq!(
+            metadata["tpm_estimate"]["fallback_tokens"],
+            bridge["conservative_fallback_tokens"]
+        );
+        assert_eq!(metadata["tpm_estimate"]["max_completion_tokens"], 128);
+        assert_eq!(acquire_tpm["required"], json!(expected_required));
+        assert_eq!(finalize_tpm["required"], json!(expected_required));
+
+        let metadata_text = metadata.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !metadata_text.contains(&marker.to_ascii_lowercase()),
+                "rate-limit TPM reservation bridge leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_reservation_responses_tpm_estimate_feeds_required_capacity() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(152),
+            0,
+            Some(60),
+            Some(10_000),
+            Some(8),
+            json!({
+                "rpm": { "used": 10 },
+                "tokens_per_minute": { "used": 100 },
+                "concurrency": { "used": 1 }
+            }),
+        );
+        let tpm_estimate = gateway_tpm_estimate_for_request_body(
+            GatewayTpmEstimateEndpoint::OpenAiResponses,
+            br#"{
+                "model": "mock-gpt",
+                "input": "sk-live-secret raw prompt",
+                "max_output_tokens": 300
+            }"#,
+            GatewayTpmEstimateSignals::missing_tokenizer(
+                GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+            ),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, Some(&tpm_estimate));
+        let metadata = reservation.metadata("completed");
+        let acquire_tpm = rate_limit_reservation_dimension(&metadata, "acquire", "tpm");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+        let bridge = &fixture["tpm_estimate_bridge"];
+        let expected_required = bridge["openai_responses_partial_required_tokens"]
+            .as_i64()
+            .expect("expected responses TPM required tokens");
+
+        assert!(reservation.acquired());
+        assert_eq!(
+            tpm_estimate.estimate.required_tokens_i64(),
+            expected_required
+        );
+        assert_eq!(
+            metadata["required_capacity"]["tokens_per_minute"],
+            json!(expected_required)
+        );
+        assert_eq!(metadata["tpm_estimate"]["endpoint"], "openai_responses");
+        assert_eq!(metadata["tpm_estimate"]["source"], bridge["partial_source"]);
+        assert_eq!(metadata["tpm_estimate"]["max_completion_tokens"], 300);
+        assert_eq!(acquire_tpm["required"], json!(expected_required));
+    }
+
+    #[test]
+    fn rate_limit_reservation_tpm_estimate_missing_max_uses_conservative_fallback() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(153),
+            0,
+            Some(60),
+            Some(10_000),
+            Some(8),
+            json!({
+                "rpm": { "used": 10 },
+                "tokens_per_minute": { "used": 100 },
+                "concurrency": { "used": 1 }
+            }),
+        );
+        let tpm_estimate = gateway_tpm_estimate_for_request_body(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            br#"{
+                "model": "mock-gpt",
+                "messages": [{ "role": "user", "content": "no tokenizer available" }]
+            }"#,
+            GatewayTpmEstimateSignals::missing_tokenizer(
+                GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+            ),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, Some(&tpm_estimate));
+        let metadata = reservation.metadata("completed");
+        let acquire_tpm = rate_limit_reservation_dimension(&metadata, "acquire", "tpm");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+        let bridge = &fixture["tpm_estimate_bridge"];
+        let expected_required = bridge["missing_max_required_tokens"]
+            .as_i64()
+            .expect("expected fallback TPM required tokens");
+
+        assert!(reservation.acquired());
+        assert_eq!(
+            tpm_estimate.estimate.required_tokens_i64(),
+            expected_required
+        );
+        assert_eq!(
+            metadata["required_capacity"]["tokens_per_minute"],
+            json!(expected_required)
+        );
+        assert_eq!(
+            metadata["tpm_estimate"]["source"],
+            bridge["fallback_source"]
+        );
+        assert_eq!(metadata["tpm_estimate"]["used_conservative_fallback"], true);
+        assert_eq!(acquire_tpm["required"], json!(expected_required));
+    }
+
+    #[test]
     fn rate_limit_reservation_runtime_metadata_acquires_releases_and_is_secret_safe() {
         let route = test_route_with_rate_limit(
             uuid::Uuid::from_u128(51),
@@ -13351,7 +13681,7 @@ mod tests {
                 "payload": "raw request body"
             }),
         );
-        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, None);
         let metadata = provider_attempt_metadata_with_rate_limit_reservation(
             json!({ "fallback": { "schema": "gateway_retry_fallback_v1" } }),
             &reservation,
@@ -13422,7 +13752,7 @@ mod tests {
                 "payload": "raw request body"
             }),
         );
-        let mut reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let mut reservation = gateway_rate_limit_reservation_for_attempt(&route, None);
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
         ))
@@ -13494,7 +13824,7 @@ mod tests {
                 "concurrency": { "used": 3 }
             }),
         );
-        let mut not_applied = gateway_rate_limit_reservation_for_attempt(&route);
+        let mut not_applied = gateway_rate_limit_reservation_for_attempt(&route, None);
         not_applied.record_db_acquire(test_db_rate_limit_reservation_execution_result(
             DbRateLimitReservationOperation::Acquire,
             None,
@@ -13507,7 +13837,7 @@ mod tests {
             "not_applied"
         );
 
-        let mut noop = gateway_rate_limit_reservation_for_attempt(&route);
+        let mut noop = gateway_rate_limit_reservation_for_attempt(&route, None);
         noop.record_db_acquire(test_db_rate_limit_reservation_noop_result(&route));
 
         assert!(noop.executable());
@@ -13531,7 +13861,7 @@ mod tests {
                 "payload": "raw request body"
             }),
         );
-        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, None);
         let metadata = reservation.metadata("completed");
 
         assert!(reservation.acquired());
@@ -13558,7 +13888,7 @@ mod tests {
             None,
             json!({}),
         );
-        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, None);
         let metadata = reservation.metadata("reservation_rejected");
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
@@ -13593,7 +13923,7 @@ mod tests {
             }),
         );
         let next_route = test_route(uuid::Uuid::from_u128(54), "enabled", 0, 1, 100, 1.0);
-        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, None);
         let event = rate_limit_reservation_skip_event(1, &route, &next_route, &reservation);
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
@@ -13652,7 +13982,7 @@ mod tests {
             }),
         );
         let next_route = test_route(uuid::Uuid::from_u128(56), "enabled", 0, 1, 100, 1.0);
-        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route, None);
         let skip_event = rate_limit_reservation_skip_event(1, &route, &next_route, &reservation);
         let provider_event = fallback_event(
             1,

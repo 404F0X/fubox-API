@@ -125,6 +125,15 @@ pub(crate) fn gateway_tpm_estimate_for_request(
     }
 }
 
+pub(crate) fn gateway_tpm_estimate_for_request_body(
+    endpoint: GatewayTpmEstimateEndpoint,
+    request_body: &[u8],
+    signals: GatewayTpmEstimateSignals,
+) -> GatewayTpmEstimatePlan {
+    let request_body = serde_json::from_slice::<Value>(request_body).unwrap_or(Value::Null);
+    gateway_tpm_estimate_for_request(endpoint, &request_body, signals)
+}
+
 fn max_completion_tokens_for_endpoint(
     endpoint: GatewayTpmEstimateEndpoint,
     request_body: &Value,
@@ -335,12 +344,12 @@ mod tests {
         assert_eq!(fixture["scenario"], "gateway_tpm_estimate_mapper_contract");
         assert_eq!(fixture["schema"], GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA);
 
-        let plan = gateway_tpm_estimate_for_request(
+        let plan = gateway_tpm_estimate_for_request_body(
             GatewayTpmEstimateEndpoint::OpenAiChat,
-            &json!({
+            br#"{
                 "messages": [{ "content": "sk-live-provider-secret" }],
                 "max_completion_tokens": 128
-            }),
+            }"#,
             signals(Some(64), 256),
         );
         let serialized = serde_json::to_string(&plan.safe_summary())

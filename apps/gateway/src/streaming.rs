@@ -54,6 +54,7 @@ use crate::{
     record_request_final_route, record_request_rate_limit_reservation_rejection,
     release_gateway_rate_limit_reservation_if_needed, request_for_upstream,
     responses_request_for_upstream, route_snapshot_with_final_attempt,
+    tpm_estimate::GatewayTpmEstimatePlan,
     validate_anthropic_route_endpoint_for_provider_call, validate_route_endpoint_for_provider_call,
 };
 
@@ -75,6 +76,7 @@ pub(crate) struct StreamingChatContext<'a> {
     pub(crate) upstream_timeout: Duration,
     pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
+    pub(crate) rate_limit_tpm_estimate: Option<&'a GatewayTpmEstimatePlan>,
 }
 
 pub(crate) struct StreamingResponsesContext<'a> {
@@ -88,6 +90,7 @@ pub(crate) struct StreamingResponsesContext<'a> {
     pub(crate) upstream_timeout: Duration,
     pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
+    pub(crate) rate_limit_tpm_estimate: Option<&'a GatewayTpmEstimatePlan>,
 }
 
 pub(crate) struct StreamingAnthropicMessagesContext<'a> {
@@ -128,6 +131,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         upstream_timeout,
         stream_idle_timeout,
         route_snapshot,
+        rate_limit_tpm_estimate,
     } = context;
 
     debug_assert!(request.is_streaming());
@@ -150,7 +154,8 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
             repository,
@@ -453,6 +458,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         upstream_timeout,
         stream_idle_timeout,
         route_snapshot,
+        rate_limit_tpm_estimate,
     } = context;
 
     debug_assert!(request.is_streaming());
@@ -475,7 +481,8 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation =
+            gateway_rate_limit_reservation_for_attempt(route, rate_limit_tpm_estimate);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             crate::METRICS_ENDPOINT_RESPONSES,
             repository,
@@ -803,7 +810,7 @@ pub(crate) async fn anthropic_messages_streaming(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
             repository,
@@ -1164,7 +1171,7 @@ pub(crate) async fn gemini_generate_content_streaming(
             return response;
         }
 
-        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route, None);
         if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
             crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
             repository,

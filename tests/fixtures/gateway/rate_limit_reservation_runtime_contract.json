@@ -57,17 +57,35 @@
     "reservation_reject_skip_reason": "rate_limit_reservation_rejected",
     "reservation_reject_skip_action": "try_next_route"
   },
+  "tpm_estimate_bridge": {
+    "schema": "gateway_tpm_estimate_mapper_v1",
+    "conservative_fallback_tokens": 1024,
+    "partial_source": "PartialEstimateWithConservativeFallback",
+    "fallback_source": "ConservativeFallback",
+    "openai_chat_partial_required_tokens": 1152,
+    "openai_responses_partial_required_tokens": 1324,
+    "missing_max_required_tokens": 1024,
+    "metadata_material": "bounded numeric/source summary only",
+    "db_required_capacity_uses_estimate_required_tokens_i64": true
+  },
   "forbidden_snapshot_markers": [
     "sk-live-secret",
     "authorization",
     "bearer",
     "provider_key",
     "provider key",
+    "api_key",
+    "encrypted_secret",
     "payload",
     "request_body",
     "response_body",
+    "raw_prompt",
     "raw_headers",
     "raw endpoint",
+    "current_window_state",
+    "messages",
+    "contents",
+    "input",
     "https://provider.example.test"
   ]
 }
