@@ -137,6 +137,7 @@ function stubAdminFetch(
     ledgerAdjustmentExecuteStatuses?: Array<"applied" | "idempotent" | "blocked" | "failed">;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
     payloadStored?: boolean;
+    promptProtectionProofVariant?: "liveEligible" | "simulatedRefused";
     promptProtectionSignals?: boolean;
   } = {},
 ) {
@@ -288,6 +289,57 @@ function stubAdminFetch(
     scopes: ["messages", "metadata"],
     token: skPlaceholder("prompt-token-hidden"),
   };
+  const liveEligiblePromptProtectionSignal = {
+    ...promptProtectionSignal,
+    freshness: {
+      generated_at_utc: "2026-06-04T14:05:00.000Z",
+      live_evidence_closure_eligible: true,
+      proof_run_id_hash: "deadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0de",
+      raw_report_path: "C:\\secret\\prompt-live-proof-report-hidden.json",
+      repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
+      stale_or_simulated_report_closes_live_gap: false,
+    },
+    generated_at_utc: "2026-06-04T14:05:00.000Z",
+    performance: {
+      db_evidence_duration_ms: 15,
+      duration_available: true,
+      raw_body: "raw live prompt proof performance body hidden",
+      request_preflight_duration_ms: 9,
+      total_case_duration_ms: 24,
+      unavailable_reason: skPlaceholder("prompt-live-unavailable-hidden"),
+    },
+    performance_envelope: {
+      all_endpoint_performance_within_bounds: true,
+      command_summary: {
+        authorization: bearerPlaceholder("prompt-live-performance-command-hidden"),
+        database_url: "postgres://prompt-live-performance-dsn-hidden",
+      },
+      duration_unavailable_marker: "duration_available=false",
+      external_blocker_count: 0,
+      latency_envelope_closure_eligible: true,
+      live_blocker_status: "not_blocked",
+      provider_attempts_zero_required: true,
+      raw_headers: {
+        [AUTH_HEADER_NAME]: bearerPlaceholder("prompt-live-performance-header-hidden"),
+      },
+    },
+    provenance: {
+      command_line: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-live-artifact-command-hidden")}`,
+      generated_at_utc: "2026-06-04T14:05:00.000Z",
+      kind: "live",
+      mode: "live",
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-live-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-live-artifact-provider-hidden"),
+        report_path: "C:\\secret\\prompt-live-proof-report-hidden.json",
+      },
+      repo: {
+        head_commit: "1234567890abcdef1234567890abcdef12345678",
+      },
+    },
+  };
+  const effectivePromptProtectionSignal =
+    options.promptProtectionProofVariant === "liveEligible" ? liveEligiblePromptProtectionSignal : promptProtectionSignal;
   const requestDetail = {
     ledger: requestLedgerSummary,
     provider_attempts: [
@@ -323,7 +375,7 @@ function stubAdminFetch(
         token: bearerPlaceholder("nested-route-hidden"),
       },
       payload_ref: "payload-123-hidden",
-      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: promptProtectionSignal }),
+      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: effectivePromptProtectionSignal }),
       request_body: {
         body: "raw prompt hidden",
       },
@@ -812,7 +864,7 @@ function stubAdminFetch(
       payload: {
         body: "raw audit metadata payload hidden",
       },
-      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: promptProtectionSignal }),
+      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: effectivePromptProtectionSignal }),
       raw_headers: {
         cookie: "session hidden",
       },
@@ -2742,6 +2794,40 @@ describe("App", () => {
         "/api/control-plane/admin/audit-logs?action=provider_key.update&actor_user_id=00000000-0000-0000-0000-000000000070&created_from=2026-06-03T00%3A00%3A00Z&created_to=2026-06-03T23%3A59%3A59Z&limit=5&resource_type=provider_key",
       ),
     );
+  });
+
+  it("renders prompt protection audit live proof readiness without raw artifact material", async () => {
+    stubAdminFetch({ promptProtectionProofVariant: "liveEligible" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
+    await user.click(await screen.findByRole("button", { name: "View audit log audit-1" }));
+
+    const auditPromptPanel = await screen.findByRole("heading", { level: 2, name: "Prompt Protection" });
+    const panel = auditPromptPanel.closest("article");
+    expect(panel).not.toBeNull();
+
+    expect(within(panel as HTMLElement).getByText("0")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("total 24 ms / preflight 9 ms / db 15 ms")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getAllByText("eligible").length).toBeGreaterThanOrEqual(2);
+    expect(within(panel as HTMLElement).getByText("not_blocked")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("2026-06-04T14:05:00Z")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("1234567890ab")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("live / live")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("current live proof")).toBeInTheDocument();
+
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-live-proof-report-hidden.json");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-artifact-command-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-live-artifact-dsn-hidden");
+    expect(document.body.textContent).not.toContain("postgres://prompt-live-performance-dsn-hidden");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-performance-command-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-performance-header-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-live-artifact-provider-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-live-unavailable-hidden"));
+    expect(document.body.textContent).not.toContain("deadc0dedeadc0de");
+    expect(document.body.textContent).not.toContain("raw live prompt proof performance body hidden");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
   });
 
   it("runs routing dry-run and renders selected candidates without secret material", async () => {

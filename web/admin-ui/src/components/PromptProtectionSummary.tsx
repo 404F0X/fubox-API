@@ -523,6 +523,10 @@ function staleSimulatedMarkerField(record: Record<string, JsonValue>): string {
   const marker = record.freshness.stale_or_simulated_report_closes_live_gap;
 
   if (marker === false) {
+    if (record.freshness.live_evidence_closure_eligible === true) {
+      return "current live proof";
+    }
+
     return "cannot close live gap";
   }
 
