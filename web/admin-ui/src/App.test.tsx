@@ -3550,6 +3550,36 @@ describe("App", () => {
       requiresLiveBackendByDefault: false,
       usesDataTestIdsOnly: true,
     });
+    expect(parsed.browserRunnerReadiness).toEqual({
+      actionPermission: {
+        defaultClicksAdminUiActions: false,
+        requireAdminUiReachable: true,
+        requireBrowserToolingAvailable: true,
+        requireControlPlaneHealthReachable: true,
+        requireMutationOptIn: true,
+        requireSessionMaterialPresent: true,
+        requireStableActionSelectors: true,
+      },
+      artifactRoundTrip: {
+        freshnessMarker: "artifact_roundtrip_fresh",
+        outputMarker: "browser_runner_evidence_json",
+        writeMode: "json_roundtrip_only",
+      },
+      defaultMode: "runner_readiness_only",
+      durationCaptureNames: parsed.browserEvidenceArtifact.durationFields,
+      readinessFields: {
+        actionsAllowed: "actions_allowed",
+        adminUiUrlSafe: "admin_ui_url_safe",
+        browserAvailable: "browser_available",
+        controlPlaneUrlSafe: "control_plane_url_safe",
+        mutationOptInEnabled: "mutation_opt_in_enabled",
+        noMutationDefault: "no_mutation_default",
+        selectorReadiness: "selector_readiness",
+        sessionMaterialPresent: "session_material_present",
+      },
+      selectorSource: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
+      statusSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
+    });
     expect(parsed.selectors).toEqual(ledgerExecuteSmoke.selectors);
     expect(parsed.statusMarkers).toEqual(ledgerExecuteSmoke.markers);
     expect(parsed.forbiddenSensitiveMarkers).toEqual(ledgerExecuteSmoke.forbiddenSensitiveMarkers);

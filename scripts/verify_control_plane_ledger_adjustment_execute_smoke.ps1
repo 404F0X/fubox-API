@@ -795,11 +795,13 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteBrowserPreflightContract",
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
+      "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
       "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
-      "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract"
+      "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract",
+      "browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract"
     )) {
     if (-not $source.Contains($needle)) {
       throw "UI smoke contract source missing freshness marker '$needle'"
@@ -813,8 +815,11 @@ function Assert-UiSmokeHandoffFreshness {
       "browserPreflight",
       "browserActionPlan",
       "browserEvidenceArtifact",
+      "browserRunnerReadiness",
       "browserLiveRunbook",
       "billing_execute_browser_live_e2e_evidence.v1",
+      "runner_readiness_only",
+      "artifact_roundtrip_fresh",
       "live_mutation_opt_in_missing",
       "session_material_missing",
       "dry_run_plan_duration_ms",
@@ -1256,6 +1261,118 @@ function Write-BrowserEvidenceArtifactDryRun {
   Write-SafeHost "browser_evidence_json=$summary"
 }
 
+function Assert-BrowserRunnerReadinessContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runner = Get-JsonProperty $Handoff "browserRunnerReadiness" "UI handoff"
+  Assert-Equal (Get-JsonProperty $runner "defaultMode" "UI browser runner readiness") "runner_readiness_only" "UI browser runner default mode"
+  Assert-Equal (Get-JsonProperty $runner "selectorSource" "UI browser runner readiness") "ledgerAdjustmentExecuteLiveSmokeContract.selectors" "UI browser runner selector source"
+  Assert-Equal (Get-JsonProperty $runner "statusSource" "UI browser runner readiness") "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates" "UI browser runner status source"
+
+  $permission = Get-JsonProperty $runner "actionPermission" "UI browser runner readiness"
+  foreach ($name in @(
+      "requireBrowserToolingAvailable",
+      "requireAdminUiReachable",
+      "requireControlPlaneHealthReachable",
+      "requireSessionMaterialPresent",
+      "requireMutationOptIn",
+      "requireStableActionSelectors"
+    )) {
+    Assert-True ([bool](Get-JsonProperty $permission $name "UI browser runner action permission")) "UI browser runner must require $name"
+  }
+  Assert-True ((Get-JsonProperty $permission "defaultClicksAdminUiActions" "UI browser runner action permission") -eq $false) "UI browser runner must not click Admin UI actions by default"
+
+  $roundTrip = Get-JsonProperty $runner "artifactRoundTrip" "UI browser runner readiness"
+  Assert-Equal (Get-JsonProperty $roundTrip "freshnessMarker" "UI browser runner artifact round-trip") "artifact_roundtrip_fresh" "UI browser runner artifact round-trip freshness marker"
+  Assert-Equal (Get-JsonProperty $roundTrip "outputMarker" "UI browser runner artifact round-trip") "browser_runner_evidence_json" "UI browser runner artifact round-trip output marker"
+  Assert-Equal (Get-JsonProperty $roundTrip "writeMode" "UI browser runner artifact round-trip") "json_roundtrip_only" "UI browser runner artifact round-trip write mode"
+
+  $durationCaptureNames = Get-JsonProperty $runner "durationCaptureNames" "UI browser runner readiness"
+  $evidenceContract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
+  $durationFields = Get-JsonProperty $evidenceContract "durationFields" "UI browser evidence artifact"
+  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    Assert-Equal (Get-JsonProperty $durationCaptureNames $name "UI browser runner duration capture names") (Get-JsonProperty $durationFields $name "UI browser evidence duration fields") "UI browser runner duration capture $name"
+  }
+
+  $readinessFields = Get-JsonProperty $runner "readinessFields" "UI browser runner readiness"
+  foreach ($name in @("actionsAllowed", "adminUiUrlSafe", "browserAvailable", "controlPlaneUrlSafe", "mutationOptInEnabled", "noMutationDefault", "selectorReadiness", "sessionMaterialPresent")) {
+    $field = [string](Get-JsonProperty $readinessFields $name "UI browser runner readiness fields")
+    if ($field -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser runner readiness field '$name' must be machine readable"
+    }
+  }
+}
+
+function Get-ActionSelectorReadiness {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $selectors = Get-JsonProperty $Handoff "selectors" "UI handoff"
+  $actionPlan = Get-JsonProperty $Handoff "browserActionPlan" "UI handoff"
+  $missing = @()
+  foreach ($step in @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")) {
+    $selectorKey = [string](Get-JsonProperty $step "selector" "UI browser action plan step")
+    try {
+      [void](Get-JsonProperty $selectors $selectorKey "UI browser action selector")
+    } catch {
+      $missing += $selectorKey
+    }
+  }
+
+  if ($missing.Count -gt 0) {
+    return "missing:$($missing -join '+')"
+  }
+  return "ready"
+}
+
+function Write-BrowserRunnerReadinessGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Blockers,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+  )
+
+  Assert-BrowserRunnerReadinessContract $Handoff
+  $runner = Get-JsonProperty $Handoff "browserRunnerReadiness" "UI handoff"
+  $readinessFields = Get-JsonProperty $runner "readinessFields" "UI browser runner readiness"
+  $roundTrip = Get-JsonProperty $runner "artifactRoundTrip" "UI browser runner artifact round-trip"
+  $selectorReadiness = Get-ActionSelectorReadiness $Handoff
+  $actionsAllowed = (
+    $ToolingStatus -eq "available" -and
+    [bool]$AdminUiProbe.Reachable -and
+    [bool]$ControlPlaneProbe.Reachable -and
+    $SessionMaterialPresent -and
+    $MutationEnabled -and
+    $selectorReadiness -eq "ready"
+  )
+
+  $outcome = if ($actionsAllowed) { "passed" } else { "blocked" }
+  $runnerBlockers = @($Blockers)
+  if ($selectorReadiness -ne "ready") {
+    $runnerBlockers += "selector_unavailable"
+  }
+  $artifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome $outcome -Blockers $runnerBlockers -ToolingStatus $ToolingStatus -AdminUiProbe $AdminUiProbe -ControlPlaneProbe $ControlPlaneProbe -MutationEnabled $MutationEnabled -SessionMaterialPresent $SessionMaterialPresent -ServiceReadinessDurationMs $ServiceReadinessDurationMs
+  $artifactJson = $artifact | ConvertTo-Json -Depth 32 -Compress
+  $roundTripArtifact = Read-Json $artifactJson
+  Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $roundTripArtifact
+
+  Write-SafeHost "Browser ledger execute runner readiness gate:"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "actionsAllowed" "UI browser runner readiness fields"))=$(Format-BoolMarker $actionsAllowed)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "browserAvailable" "UI browser runner readiness fields"))=$(Format-BoolMarker ($ToolingStatus -eq "available"))"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "adminUiUrlSafe" "UI browser runner readiness fields"))=true"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "controlPlaneUrlSafe" "UI browser runner readiness fields"))=true"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "sessionMaterialPresent" "UI browser runner readiness fields"))=$(Format-BoolMarker $SessionMaterialPresent)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "mutationOptInEnabled" "UI browser runner readiness fields"))=$(Format-BoolMarker $MutationEnabled)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "selectorReadiness" "UI browser runner readiness fields"))=$selectorReadiness"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "noMutationDefault" "UI browser runner readiness fields"))=true"
+  Write-SafeHost "$([string](Get-JsonProperty $roundTrip "freshnessMarker" "UI browser runner artifact round-trip"))=true"
+  Write-SafeHost "$([string](Get-JsonProperty $roundTrip "outputMarker" "UI browser runner artifact round-trip"))=$artifactJson"
+}
+
 function Assert-BrowserLiveSmokeHarnessPreflight {
   param([Parameter(Mandatory = $true)]$Handoff)
 
@@ -1323,6 +1440,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-SafeHost "$ledgerRefreshMarker=$unavailableMarker"
   Write-BrowserLiveRunbookGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
   Write-BrowserEvidenceArtifactDryRun -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+  Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
 }
 
 function Assert-AdminSourceMarkers {
