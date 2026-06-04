@@ -69,6 +69,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_READINESS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
@@ -89,6 +90,8 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_CURRENT=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_STALE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER=1`
@@ -148,6 +151,10 @@ Expected result:
 - Child case `simulated package materialization boundary` returns exit `2` and
   writes per-package pass/blocker evidence with simulated provenance, including
   an incomplete-cache refusal.
+- Child case `simulated real-tool readiness current` returns exit `0` and writes
+  per-tool readiness evidence without executing validators/generators.
+- Child case `simulated real-tool readiness stale` returns exit `2` and writes
+  stale/incomplete cache blocker evidence without executing validators/generators.
 - Child case `simulated real-tool execution evidence pass` returns exit `0` and
   writes execution-shaped evidence with real-command fields but simulated
   provenance, so it cannot close the real gap.
@@ -209,6 +216,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulatePackageMaterializationBoundary -MaterializePackageCache -AllowPackageDownload
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolReadiness
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealToolReadinessCurrent -RealToolReadiness
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealToolReadinessStale -RealToolReadiness
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidenceFailure
@@ -235,13 +248,14 @@ evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
 returns `2`. They prove wrapper failure-path classification, generated-client
 readiness gating, command matrix coverage, cache/tool availability evidence,
 package download opt-in provenance, package materialization boundary evidence,
-real-execution evidence shape, bounded evidence lifecycle, path/output
-hardening, preflight/performance evidence shape, and redaction only. They do
-not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
-inspection against real generated output, download packages in self-test, or any
-live Postgres checks. Do not use simulated passes, cache-probe blockers,
-simulated execution evidence, simulated download opt-in evidence, simulated
-materialization evidence, or the matrix dry-run to close the real
+real-tool readiness evidence, real-execution evidence shape, bounded evidence
+lifecycle, path/output hardening, preflight/performance evidence shape, and
+redaction only. They do not run Redocly, OpenAPI Generator,
+`openapi-typescript`, generated-client inspection against real generated output,
+download packages in self-test, or any live Postgres checks. Do not use
+simulated passes, cache-probe blockers, simulated execution evidence, simulated
+download opt-in evidence, simulated materialization evidence, simulated
+readiness evidence, or the matrix dry-run to close the real
 semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
@@ -308,8 +322,8 @@ bounded fields:
 
 Each evidence record contains:
 
-- `kind`: `semantic_validator`, `client_generation`, or
-  `package_materialization`
+- `kind`: `semantic_validator`, `client_generation`,
+  `package_materialization`, or `real_tool_readiness`
 - `label`
 - `provenance_mode`: `real` for external validators/client generators or
   `simulated` for self-test fixtures
@@ -332,8 +346,8 @@ Each evidence record contains:
 - `execution_mode`: `real_tool_execution`, `package_materialization`,
   `cache_probe`, `command_matrix`, `simulated`, or `not_run`
 - `real_command_executed`
-- `readiness_marker_status`: `current`, `missing`, `stale`, `pending`, or
-  `not_applicable`
+- `readiness_marker_status`: `current`, `missing`, `stale`, `incomplete`,
+  `pending`, or `not_applicable`
 - `closure_eligible`
 - `checked_schema`
 - `classification`: `pass`, `failure`, or `blocker`
@@ -437,6 +451,12 @@ Package materialization executor boundary:
 - After a successful `npm cache add`, the wrapper performs a bounded
   `npm cache ls <package> --offline` probe. Missing cache entries or incomplete
   markers are blockers and cannot close readiness.
+- When every allowed package materializes and passes cache readback, the wrapper
+  writes `.ledger-openapi-package-materialization.json` under the validated
+  npm cache. The marker records schema
+  `ledger_openapi_package_materialization.v1`, current OpenAPI fixture SHA-256,
+  bounded cache path, bounded cache size, generated time, and the fixed package
+  list.
 - Materialization prepares package cache only. It does not run Redocly, OpenAPI
   Generator validation, `openapi-typescript`, generated-client inspection, or
   live Postgres checks, and it cannot close the real semantic/client-generation
@@ -454,6 +474,37 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 # Real cache materialization boundary. This may download packages, but it still
 # does not run validators/generators.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -MaterializePackageCache -AllowPackageDownload
+```
+
+Real-tool readiness gate:
+
+- `-RealToolReadiness` or
+  `CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_READINESS=1` performs a dry-run
+  readiness readback for each real tool command. It does not run validators,
+  generators, generated-client inspection, or package downloads.
+- The gate requires a current materialization marker and successful offline
+  `npm cache ls <package>` readback for the package required by each command.
+- Missing marker, stale marker, incomplete marker package list, missing cache
+  entry, or incomplete cache readback writes `real_tool_readiness` blocker
+  evidence and exits `2`.
+- Each readiness evidence record includes tool availability, package provenance,
+  cache path, cache size, package readback duration, tool preflight duration,
+  `readiness_marker_status`, and redacted output tail.
+- Real validator/generator execution calls the same readiness readback before
+  invoking `npm exec`. If readiness fails, the wrapper records blocker evidence
+  and does not execute Redocly, OpenAPI Generator, `openapi-typescript`, or
+  `typescript-fetch`.
+- Generated-client commands still need a generated-client readiness marker after
+  successful generation. The wrapper reads that marker before marking generated
+  client evidence as current or closure eligible.
+- The readiness gate closes only the execution-readiness contract. A real
+  semantic/client-generation pass still requires an explicit real-tool run after
+  readiness passes.
+
+Readiness dry-run command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolReadiness
 ```
 
 Real-tool execution evidence:
@@ -988,6 +1039,9 @@ Record all of the following when closing the semantic/client-generation gap:
   `package_materialization` records, cache bytes before/after summary through
   `package_cache_bytes`, duration fields, and any blocker reason for missing or
   incomplete cache entries.
+- Real-tool readiness evidence: materialization marker status, per-tool
+  `real_tool_readiness` records, cache readback status, cache readback duration,
+  and any stale/incomplete blocker reason before real command execution.
 - Tool preflight status, safe tool path summary, package/cache status, and
   bounded `duration_ms` for each opt-in evidence record.
 - Real execution evidence fields for each opt-in command:

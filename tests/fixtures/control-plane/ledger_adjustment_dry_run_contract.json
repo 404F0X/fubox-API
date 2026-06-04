@@ -1141,6 +1141,78 @@
           "raw_executor_error_detail_echoed": false
         }
       },
+      "live_probe_measurement_readback_gate_contract": {
+        "schema_version": "control_plane_billing_ledger_live_probe_measurement_readback_gate.v1",
+        "source": "billing_ledger_runtime_writer_live_probe_evidence_artifact",
+        "target": "billing_ledger_runtime_writer_live_probe_measurement_readback_gate",
+        "default_db_write_performed": false,
+        "production_writer_replaced": false,
+        "production_source_of_truth_switch_allowed": false,
+        "dual_commit_allowed": false,
+        "required_freshness_fields": [
+          "generated_at_utc",
+          "current_commit",
+          "freshness_marker",
+          "stale_artifact"
+        ],
+        "required_row_count_fields": [
+          "statement_kind",
+          "expected_rows",
+          "actual_rows",
+          "rows_match",
+          "rows_affected_source"
+        ],
+        "required_timing_duration_fields": [
+          "begin_transaction_duration_ms",
+          "lock_idempotency_scope_duration_ms",
+          "lock_wallet_scope_duration_ms",
+          "lock_budget_scope_duration_ms",
+          "insert_probe_ledger_entry_duration_ms",
+          "mark_probe_idempotency_duration_ms",
+          "row_count_capture_duration_ms",
+          "rollback_transaction_duration_ms"
+        ],
+        "required_rollback_no_commit_fields": [
+          "rollback_observed",
+          "commit_observed",
+          "production_writer_replaced",
+          "dual_commit_observed",
+          "probe_commits_billing_ledger"
+        ],
+        "pass_requirements": {
+          "artifact_classification": "pass",
+          "freshness_marker": "current",
+          "stale_artifact": false,
+          "all_row_counts_match": true,
+          "all_timing_durations_present": true,
+          "rollback_observed": true,
+          "commit_observed": false,
+          "production_writer_replaced": false,
+          "dual_commit_observed": false
+        },
+        "refusal_codes": {
+          "missing_freshness_field": "blocker",
+          "stale_artifact": "blocker",
+          "missing_row_count_field": "blocker",
+          "missing_timing_duration": "blocker",
+          "missing_rollback_proof": "blocker",
+          "row_count_mismatch": "fail",
+          "commit_observed": "fail",
+          "production_writer_replaced": "fail",
+          "dual_commit_observed": "fail",
+          "unsafe_output_detected": "fail"
+        },
+        "safe_output_contract": {
+          "database_url_output": "omitted",
+          "env_value_output": "omitted",
+          "operation_key_output": "omitted",
+          "raw_env_value_echoed": false,
+          "raw_database_url_echoed": false,
+          "raw_metadata_echoed": false,
+          "credential_material_echoed": false,
+          "raw_executor_error_detail_echoed": false
+        }
+      },
       "safe_output_contract": {
         "env_value_output": "omitted",
         "database_url_output": "omitted",

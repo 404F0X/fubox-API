@@ -10,6 +10,7 @@ param(
   [switch]$TypescriptFetch,
   [switch]$AllowPackageDownload,
   [switch]$MaterializePackageCache,
+  [switch]$RealToolReadiness,
   [switch]$CacheProbe,
   [switch]$CommandMatrix,
   [switch]$Clean,
@@ -30,6 +31,8 @@ param(
   [switch]$SimulateToolPreflightBlocker,
   [switch]$SimulateCacheProbe,
   [switch]$SimulatePackageMaterializationBoundary,
+  [switch]$SimulateRealToolReadinessCurrent,
+  [switch]$SimulateRealToolReadinessStale,
   [switch]$SimulateRealExecutionEvidencePass,
   [switch]$SimulateRealExecutionEvidenceFailure,
   [switch]$SimulateRealExecutionEvidenceBlocker
@@ -58,6 +61,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT) { $OpenApiTypes
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH) { $TypescriptFetch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD) { $AllowPackageDownload = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_MATERIALIZE_PACKAGE_CACHE) { $MaterializePackageCache = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_REAL_TOOL_READINESS) { $RealToolReadiness = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE) { $CacheProbe = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX) { $CommandMatrix = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLEAN) { $Clean = $true }
@@ -78,6 +82,8 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER) { $SimulateToolPreflightBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE) { $SimulateCacheProbe = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY) { $SimulatePackageMaterializationBoundary = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_CURRENT) { $SimulateRealToolReadinessCurrent = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_STALE) { $SimulateRealToolReadinessStale = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS) { $SimulateRealExecutionEvidencePass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE) { $SimulateRealExecutionEvidenceFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER) { $SimulateRealExecutionEvidenceBlocker = $true }
@@ -103,6 +109,7 @@ if ($CommandMatrix -or $CacheProbe) {
   $OpenApiTypescript = $false
   $TypescriptFetch = $false
   $MaterializePackageCache = $false
+  $RealToolReadiness = $false
 }
 
 function Resolve-RepoRelativePath {
@@ -243,6 +250,8 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-package-download-opt-in"),
     (Join-Path $TempRoot "self-test-package-materialization-missing-download-opt-in"),
     (Join-Path $TempRoot "self-test-package-materialization-boundary"),
+    (Join-Path $TempRoot "self-test-real-tool-readiness-current"),
+    (Join-Path $TempRoot "self-test-real-tool-readiness-stale"),
     (Join-Path $TempRoot "self-test-real-execution-pass"),
     (Join-Path $TempRoot "self-test-real-execution-failure"),
     (Join-Path $TempRoot "self-test-real-execution-blocker"),
@@ -375,6 +384,7 @@ function Get-WrapperCommandSummary {
   if ($OpenApiTypescript) { [void]$requestedChecks.Add("openapi_typescript") }
   if ($TypescriptFetch) { [void]$requestedChecks.Add("typescript_fetch") }
   if ($MaterializePackageCache) { [void]$requestedChecks.Add("package_cache_materialization") }
+  if ($RealToolReadiness) { [void]$requestedChecks.Add("real_tool_readiness") }
   if ($requestedChecks.Count -eq 0) { [void]$requestedChecks.Add("lightweight_only") }
 
   $simulatedModes = New-Object System.Collections.Generic.List[string]
@@ -394,6 +404,8 @@ function Get-WrapperCommandSummary {
   if ($SimulateToolPreflightBlocker) { [void]$simulatedModes.Add("tool_preflight_blocker") }
   if ($SimulateCacheProbe) { [void]$simulatedModes.Add("cache_probe") }
   if ($SimulatePackageMaterializationBoundary) { [void]$simulatedModes.Add("package_materialization_boundary") }
+  if ($SimulateRealToolReadinessCurrent) { [void]$simulatedModes.Add("real_tool_readiness_current") }
+  if ($SimulateRealToolReadinessStale) { [void]$simulatedModes.Add("real_tool_readiness_stale") }
   if ($SimulateRealExecutionEvidencePass) { [void]$simulatedModes.Add("real_execution_evidence_pass") }
   if ($SimulateRealExecutionEvidenceFailure) { [void]$simulatedModes.Add("real_execution_evidence_failure") }
   if ($SimulateRealExecutionEvidenceBlocker) { [void]$simulatedModes.Add("real_execution_evidence_blocker") }
@@ -407,6 +419,7 @@ function Get-WrapperCommandSummary {
     simulated_modes = @($simulatedModes.ToArray())
     allow_package_download = [bool]$AllowPackageDownload
     materialize_package_cache = [bool]$MaterializePackageCache
+    real_tool_readiness = [bool]$RealToolReadiness
     cache_probe = [bool]$CacheProbe
     command_matrix = [bool]$CommandMatrix
     clean_requested = [bool]$Clean
@@ -543,6 +556,82 @@ function Assert-OpenApiNpmPackageAllowed {
     return $false
   }
   return $true
+}
+
+function Get-PackageMaterializationMarkerPath {
+  return Join-Path $NpmCache ".ledger-openapi-package-materialization.json"
+}
+
+function Get-MaterializationMarkerStatus {
+  param([Parameter(Mandatory = $true)][string[]]$Packages)
+
+  $path = Get-PackageMaterializationMarkerPath
+  if (-not (Test-Path $path)) {
+    return [pscustomobject]@{
+      Status = "missing"
+      Path = Format-BoundedPath $path
+      Output = @("materialization marker missing")
+      Packages = @()
+    }
+  }
+
+  try {
+    $raw = Get-Content -Path $path -Raw
+    $marker = $raw | ConvertFrom-Json
+    $fixture = Get-OpenApiFixtureFingerprint
+    $missingPackages = @($Packages | Where-Object { -not @($marker.packages).Contains($_) })
+    if ([string]$marker.schema_version -ne "ledger_openapi_package_materialization.v1") {
+      $status = "stale"
+      $output = @("materialization marker schema mismatch")
+    } elseif ([string]$marker.openapi_sha256 -ne [string]$fixture.Sha256) {
+      $status = "stale"
+      $output = @("materialization marker OpenAPI fixture hash stale")
+    } elseif ($missingPackages.Count -gt 0) {
+      $status = "incomplete"
+      $output = @("materialization marker package list incomplete")
+    } else {
+      $status = "current"
+      $output = @("materialization marker current")
+    }
+    return [pscustomobject]@{
+      Status = $status
+      Path = Format-BoundedPath $path
+      Output = $output
+      Packages = @($marker.packages)
+    }
+  } catch {
+    return [pscustomobject]@{
+      Status = "stale"
+      Path = Format-BoundedPath $path
+      Output = @("materialization marker unreadable")
+      Packages = @()
+    }
+  }
+}
+
+function Write-PackageMaterializationMarker {
+  $fixture = Get-OpenApiFixtureFingerprint
+  $markerPath = Get-PackageMaterializationMarkerPath
+  Assert-PathUnderRepo -Path $markerPath -Label "package materialization marker"
+  if (
+    -not (Test-PathUnderRoot -Path $markerPath -Root $toolCacheRoot) -and
+    -not (Test-PathUnderRoot -Path $markerPath -Root $tmpRoot)
+  ) {
+    throw "package materialization marker must stay under repository .tool-cache or .tmp: $(Format-BoundedPath $markerPath)"
+  }
+
+  $marker = [ordered]@{
+    schema_version = "ledger_openapi_package_materialization.v1"
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    openapi_path = Get-RepoRelativePath $OpenApiPath
+    openapi_sha256 = $fixture.Sha256
+    package_cache_path = Format-BoundedPath $NpmCache
+    package_cache_bytes = [int64](Get-BoundedDirectorySizeBytes -Path $NpmCache)
+    packages = @(Get-OpenApiNpmPackageList)
+  }
+  New-Item -ItemType Directory -Force (Split-Path -Parent $markerPath) | Out-Null
+  ($marker | ConvertTo-Json -Depth 5) | Set-Content -Path $markerPath -Encoding ascii
+  Write-SafeHost "[OK] package materialization marker: $(Format-BoundedPath $markerPath)"
 }
 
 function Get-OpenApiCommandMatrix {
@@ -917,9 +1006,9 @@ function Add-EvidenceRecord {
     [int64]$PackageCacheBytes = -1,
     [int64]$PackageProbeDurationMs = 0,
     [int64]$DurationMs = 0,
-    [ValidateSet("real_tool_execution", "package_materialization", "cache_probe", "command_matrix", "simulated", "not_run")][string]$ExecutionMode = "not_run",
+    [ValidateSet("real_tool_execution", "real_tool_readiness", "package_materialization", "cache_probe", "command_matrix", "simulated", "not_run")][string]$ExecutionMode = "not_run",
     [bool]$RealCommandExecuted = $false,
-    [ValidateSet("current", "missing", "stale", "not_applicable", "pending")][string]$ReadinessMarkerStatus = "not_applicable",
+    [ValidateSet("current", "missing", "stale", "incomplete", "not_applicable", "pending")][string]$ReadinessMarkerStatus = "not_applicable",
     [bool]$ClosureEligible = $false
   )
 
@@ -1112,7 +1201,7 @@ function Assert-EvidenceReportContract {
     Add-Failure "[FAIL] evidence report contract - missing command_summary"
   } else {
     foreach ($field in @($report.command_summary.PSObject.Properties.Name)) {
-      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "materialize_package_cache", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
+      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "materialize_package_cache", "real_tool_readiness", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected command_summary field '$field'"
       }
     }
@@ -1171,7 +1260,7 @@ function Assert-EvidenceReportContract {
     if (-not @("real", "simulated").Contains([string]$record.provenance_mode)) {
       Add-Failure "[FAIL] evidence report contract - invalid evidence provenance_mode '$($record.provenance_mode)'"
     }
-    if (-not @("semantic_validator", "client_generation", "package_materialization").Contains([string]$record.kind)) {
+    if (-not @("semantic_validator", "client_generation", "package_materialization", "real_tool_readiness").Contains([string]$record.kind)) {
       Add-Failure "[FAIL] evidence report contract - invalid evidence kind '$($record.kind)'"
     }
     if (-not @("pass", "failure", "blocker").Contains([string]$record.classification)) {
@@ -1186,13 +1275,13 @@ function Assert-EvidenceReportContract {
     if (-not @("passed", "blocked", "simulated", "not_run").Contains([string]$record.preflight_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid preflight_status '$($record.preflight_status)'"
     }
-    if (-not @("real_tool_execution", "package_materialization", "cache_probe", "command_matrix", "simulated", "not_run").Contains([string]$record.execution_mode)) {
+    if (-not @("real_tool_execution", "real_tool_readiness", "package_materialization", "cache_probe", "command_matrix", "simulated", "not_run").Contains([string]$record.execution_mode)) {
       Add-Failure "[FAIL] evidence report contract - invalid execution_mode '$($record.execution_mode)'"
     }
     if ($null -eq $record.real_command_executed) {
       Add-Failure "[FAIL] evidence report contract - missing real_command_executed"
     }
-    if (-not @("current", "missing", "stale", "not_applicable", "pending").Contains([string]$record.readiness_marker_status)) {
+    if (-not @("current", "missing", "stale", "incomplete", "not_applicable", "pending").Contains([string]$record.readiness_marker_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid readiness_marker_status '$($record.readiness_marker_status)'"
     }
     if ($null -eq $record.closure_eligible) {
@@ -1548,6 +1637,11 @@ function Invoke-NpmTool {
       -RealCommandExecuted $false `
       -ReadinessMarkerStatus "not_applicable" `
       -ClosureEligible $false
+    return
+  }
+
+  $ready = Add-RealToolReadinessEvidence -OnlyPackage $Package
+  if (-not $ready) {
     return
   }
 
@@ -2408,6 +2502,7 @@ function Add-OpenApiPackageMaterializationEvidence {
   param([switch]$Simulated)
 
   $packageList = Get-OpenApiNpmPackageList
+  $allPackagesReady = $true
   $toolProbes = @{}
   if ($Simulated) {
     $toolProbes["node"] = [pscustomobject]@{ Status = "available"; Version = "v20.0.0-simulated"; ToolPath = "node=simulated"; DurationMs = 1; Output = @("node simulated") }
@@ -2495,6 +2590,7 @@ function Add-OpenApiPackageMaterializationEvidence {
     }
 
     if ($classification -eq "blocker") {
+      $allPackagesReady = $false
       Add-Blocker "[BLOCKED] package materialization $package - $blockerReason"
     }
 
@@ -2522,6 +2618,103 @@ function Add-OpenApiPackageMaterializationEvidence {
       -ReadinessMarkerStatus $(if ($classification -eq "pass") { "current" } else { "missing" }) `
       -ClosureEligible $false
   }
+
+  if (-not $Simulated -and [bool]$AllowPackageDownload -and $allPackagesReady) {
+    Write-PackageMaterializationMarker
+  }
+}
+
+function Add-RealToolReadinessEvidence {
+  param(
+    [switch]$SimulatedCurrent,
+    [switch]$SimulatedStale,
+    [AllowNull()][string]$OnlyPackage = ""
+  )
+
+  $matrix = @(Get-OpenApiCommandMatrix)
+  Assert-OpenApiCommandMatrixContract -Matrix $matrix
+  if ($script:Failures.Count -gt 0) {
+    return $false
+  }
+
+  $toolProbes = @{}
+  if ($SimulatedCurrent -or $SimulatedStale) {
+    $toolProbes["node"] = [pscustomobject]@{ Status = "available"; Version = "v20.0.0-simulated"; ToolPath = "node=simulated"; DurationMs = 1; Output = @("node simulated") }
+    $toolProbes["npm"] = [pscustomobject]@{ Status = "available"; Version = "10.0.0-simulated"; ToolPath = "npm=simulated"; DurationMs = 1; Output = @("npm simulated") }
+    $toolProbes["java"] = [pscustomobject]@{ Status = $(if ($SimulatedCurrent) { "available" } else { "missing" }); Version = $(if ($SimulatedCurrent) { "17.0.0-simulated" } else { "unavailable" }); ToolPath = $(if ($SimulatedCurrent) { "java=simulated" } else { "java=unavailable" }); DurationMs = 1; Output = @("java simulated") }
+  } else {
+    $toolProbes["node"] = Invoke-LightweightToolVersionProbe -Name "node" -Arguments @("--version")
+    $toolProbes["npm"] = Invoke-LightweightToolVersionProbe -Name "npm" -Arguments @("--version")
+    $toolProbes["java"] = Invoke-LightweightToolVersionProbe -Name "java" -Arguments @("-version")
+  }
+
+  $packages = Get-OpenApiNpmPackageList
+  $markerStatus = if ($SimulatedCurrent) {
+    [pscustomobject]@{ Status = "current"; Path = Format-BoundedPath (Get-PackageMaterializationMarkerPath); Output = @("simulated materialization marker current"); Packages = @($packages) }
+  } elseif ($SimulatedStale) {
+    [pscustomobject]@{ Status = "stale"; Path = Format-BoundedPath (Get-PackageMaterializationMarkerPath); Output = @("simulated materialization marker stale"); Packages = @($packages[0]) }
+  } else {
+    Get-MaterializationMarkerStatus -Packages $packages
+  }
+
+  $allReady = $true
+  foreach ($entry in $matrix) {
+    if (-not [string]::IsNullOrWhiteSpace($OnlyPackage) -and [string]$entry.package -ne $OnlyPackage) {
+      continue
+    }
+
+    $requiredTools = @($entry.required_tools)
+    $preflightStatus = Get-ToolProbePreflightStatus -ToolProbes $toolProbes -Names $requiredTools
+    $toolPath = Get-ToolProbePathSummary -ToolProbes $toolProbes -Names $requiredTools
+    $toolOutput = @(Get-ToolProbeOutput -ToolProbes $toolProbes -Names $requiredTools)
+    $cacheProbe = if ($SimulatedCurrent) {
+      [pscustomobject]@{ Status = "offline_repo_cache_present"; Classification = "pass"; ExitCode = 0; DurationMs = 2; Output = @("simulated cache readback present") }
+    } elseif ($SimulatedStale) {
+      [pscustomobject]@{ Status = "offline_repo_cache_missing"; Classification = "blocker"; ExitCode = 2; DurationMs = 2; Output = @("simulated cache readback incomplete") }
+    } else {
+      Invoke-NpmCachePackageProbe -Package ([string]$entry.package)
+    }
+
+    $readinessStatus = [string]$markerStatus.Status
+    if (-not @("current", "missing", "stale", "incomplete").Contains($readinessStatus)) {
+      $readinessStatus = "stale"
+    }
+
+    $classification = if ($preflightStatus -eq "passed" -and $markerStatus.Status -eq "current" -and $cacheProbe.Classification -eq "pass") { "pass" } else { "blocker" }
+    $exitCode = if ($classification -eq "pass") { 0 } else { 2 }
+    $blockerReason = ""
+    if ($classification -eq "blocker") {
+      $allReady = $false
+      $blockerReason = "materialized package cache readiness failed before real tool execution"
+      Add-Blocker "[BLOCKED] real-tool readiness $($entry.name) - $blockerReason"
+    }
+
+    Add-EvidenceRecord `
+      -Kind "real_tool_readiness" `
+      -Label "real-tool execution readiness $($entry.name)" `
+      -Tool ([string]$entry.tool) `
+      -ToolVersion (Get-ToolProbeVersion -ToolProbes $toolProbes -Name ([string]$requiredTools[0])) `
+      -Package ([string]$entry.package) `
+      -Classification $classification `
+      -ExitCode $exitCode `
+      -Command "real-tool readiness readback for $($entry.name)" `
+      -Output ($toolOutput + @($markerStatus.Output) + @($cacheProbe.Output)) `
+      -BlockerReason $blockerReason `
+      -ProvenanceMode $(if ($SimulatedCurrent -or $SimulatedStale) { "simulated" } else { "real" }) `
+      -ToolPath $toolPath `
+      -PreflightStatus $preflightStatus `
+      -PackageCacheStatus ([string]$cacheProbe.Status) `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -PackageVersion (Get-PackageVersionMarker -PackageCacheStatus ([string]$cacheProbe.Status) -ToolVersion "") `
+      -PackageProbeDurationMs ([int64]$cacheProbe.DurationMs) `
+      -DurationMs ([int64]($cacheProbe.DurationMs + ($requiredTools | ForEach-Object { if ($toolProbes.ContainsKey($_)) { [int64]$toolProbes[$_].DurationMs } else { 0 } } | Measure-Object -Sum).Sum)) `
+      -ExecutionMode "real_tool_readiness" `
+      -RealCommandExecuted $false `
+      -ReadinessMarkerStatus $readinessStatus `
+      -ClosureEligible $false
+  }
+
+  return $allReady
 }
 
 function Invoke-Redocly {
@@ -2759,6 +2952,20 @@ function Invoke-SelfTest {
     -ExpectedEvidenceClassifications @("pass", "blocker") `
     -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild `
+    -Name "simulated real-tool readiness current" `
+    -Arguments @("-SimulateRealToolReadinessCurrent", "-RealToolReadiness") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-real-tool-readiness-current") `
+    -ExpectedExitCode 0 `
+    -ExpectedEvidenceClassifications @("pass") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool readiness stale" `
+    -Arguments @("-SimulateRealToolReadinessStale", "-RealToolReadiness") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-real-tool-readiness-stale") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("blocker") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
     -Name "simulated real-tool execution evidence pass" `
     -Arguments @("-SimulateRealExecutionEvidencePass") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-real-execution-pass") `
@@ -2988,6 +3195,14 @@ if ($SimulatePackageMaterializationBoundary) {
   Add-OpenApiPackageMaterializationEvidence -Simulated
   Exit-WithResult
 }
+if ($SimulateRealToolReadinessCurrent) {
+  [void](Add-RealToolReadinessEvidence -SimulatedCurrent)
+  Exit-WithResult
+}
+if ($SimulateRealToolReadinessStale) {
+  [void](Add-RealToolReadinessEvidence -SimulatedStale)
+  Exit-WithResult
+}
 if ($SimulateRealExecutionEvidencePass) {
   Add-SimulatedRealExecutionEvidence -Classification "pass"
   Exit-WithResult
@@ -3015,6 +3230,11 @@ if ($CacheProbe) {
 
 if ($MaterializePackageCache) {
   Add-OpenApiPackageMaterializationEvidence
+  Exit-WithResult
+}
+
+if ($RealToolReadiness) {
+  [void](Add-RealToolReadinessEvidence)
   Exit-WithResult
 }
 

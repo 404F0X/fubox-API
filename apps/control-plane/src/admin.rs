@@ -114,6 +114,8 @@ const CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_EVIDENCE_ARTIFACT_SCHEMA: &str =
     "control_plane_billing_ledger_live_probe_evidence_artifact.v1";
 const CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_EXECUTOR_BOUNDARY_SCHEMA: &str =
     "control_plane_billing_ledger_live_probe_executor_boundary.v1";
+const CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_READBACK_GATE_SCHEMA: &str =
+    "control_plane_billing_ledger_live_probe_measurement_readback_gate.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4332,11 +4334,87 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
         "live_execution_handoff_contract": ledger_adjustment_billing_ledger_live_execution_handoff_contract(),
         "live_probe_evidence_artifact_contract": ledger_adjustment_billing_ledger_live_probe_evidence_artifact_contract(),
         "live_probe_executor_boundary_contract": ledger_adjustment_billing_ledger_live_probe_executor_boundary_contract(),
+        "live_probe_measurement_readback_gate_contract": ledger_adjustment_billing_ledger_live_probe_measurement_readback_gate_contract(),
         "safe_output_contract": {
             "env_value_output": "omitted",
             "database_url_output": "omitted",
             "operation_key_output": "omitted",
             "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_live_probe_measurement_readback_gate_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_READBACK_GATE_SCHEMA,
+        "source": "billing_ledger_runtime_writer_live_probe_evidence_artifact",
+        "target": "billing_ledger_runtime_writer_live_probe_measurement_readback_gate",
+        "default_db_write_performed": false,
+        "production_writer_replaced": false,
+        "production_source_of_truth_switch_allowed": false,
+        "dual_commit_allowed": false,
+        "required_freshness_fields": [
+            "generated_at_utc",
+            "current_commit",
+            "freshness_marker",
+            "stale_artifact"
+        ],
+        "required_row_count_fields": [
+            "statement_kind",
+            "expected_rows",
+            "actual_rows",
+            "rows_match",
+            "rows_affected_source"
+        ],
+        "required_timing_duration_fields": [
+            "begin_transaction_duration_ms",
+            "lock_idempotency_scope_duration_ms",
+            "lock_wallet_scope_duration_ms",
+            "lock_budget_scope_duration_ms",
+            "insert_probe_ledger_entry_duration_ms",
+            "mark_probe_idempotency_duration_ms",
+            "row_count_capture_duration_ms",
+            "rollback_transaction_duration_ms"
+        ],
+        "required_rollback_no_commit_fields": [
+            "rollback_observed",
+            "commit_observed",
+            "production_writer_replaced",
+            "dual_commit_observed",
+            "probe_commits_billing_ledger"
+        ],
+        "pass_requirements": {
+            "artifact_classification": "pass",
+            "freshness_marker": "current",
+            "stale_artifact": false,
+            "all_row_counts_match": true,
+            "all_timing_durations_present": true,
+            "rollback_observed": true,
+            "commit_observed": false,
+            "production_writer_replaced": false,
+            "dual_commit_observed": false
+        },
+        "refusal_codes": {
+            "missing_freshness_field": "blocker",
+            "stale_artifact": "blocker",
+            "missing_row_count_field": "blocker",
+            "missing_timing_duration": "blocker",
+            "missing_rollback_proof": "blocker",
+            "row_count_mismatch": "fail",
+            "commit_observed": "fail",
+            "production_writer_replaced": "fail",
+            "dual_commit_observed": "fail",
+            "unsafe_output_detected": "fail"
+        },
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
+            "operation_key_output": "omitted",
             "raw_env_value_echoed": false,
             "raw_database_url_echoed": false,
             "raw_metadata_echoed": false,
@@ -15497,6 +15575,62 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_READBACK_GATE_SCHEMA)
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["required_freshness_fields"],
+            json!([
+                "generated_at_utc",
+                "current_commit",
+                "freshness_marker",
+                "stale_artifact"
+            ])
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["required_row_count_fields"],
+            json!([
+                "statement_kind",
+                "expected_rows",
+                "actual_rows",
+                "rows_match",
+                "rows_affected_source"
+            ])
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["required_timing_duration_fields"],
+            json!([
+                "begin_transaction_duration_ms",
+                "lock_idempotency_scope_duration_ms",
+                "lock_wallet_scope_duration_ms",
+                "lock_budget_scope_duration_ms",
+                "insert_probe_ledger_entry_duration_ms",
+                "mark_probe_idempotency_duration_ms",
+                "row_count_capture_duration_ms",
+                "rollback_transaction_duration_ms"
+            ])
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["pass_requirements"]["rollback_observed"],
+            json!(true)
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["pass_requirements"]["commit_observed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["refusal_codes"]["stale_artifact"],
+            json!("blocker")
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["refusal_codes"]["dual_commit_observed"],
+            json!("fail")
+        );
+        assert_eq!(
+            contract["live_probe_measurement_readback_gate_contract"]["safe_output_contract"]["raw_database_url_echoed"],
+            json!(false)
+        );
+        assert_eq!(
             contract["safe_output_contract"]["database_url_output"],
             json!("omitted")
         );
@@ -16842,6 +16976,33 @@ mod tests {
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
                 ["live_probe_executor_boundary_contract"]["bounded_scope"]["unbounded_scan_allowed"],
             json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_PROBE_READBACK_GATE_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["required_row_count_fields"][2],
+            json!("actual_rows")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["required_timing_duration_fields"]
+                [7],
+            json!("rollback_transaction_duration_ms")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["required_rollback_no_commit_fields"]
+                [1],
+            json!("commit_observed")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_measurement_readback_gate_contract"]["refusal_codes"]["production_writer_replaced"],
+            json!("fail")
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]

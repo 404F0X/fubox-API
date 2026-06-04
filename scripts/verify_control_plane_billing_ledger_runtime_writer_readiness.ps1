@@ -4,6 +4,12 @@ param(
   [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
   [switch]$SimulateStaleProbeArtifact,
+  [switch]$SimulateMissingRowCountReadback,
+  [switch]$SimulateMissingTimingReadback,
+  [switch]$SimulateMissingRollbackProofReadback,
+  [switch]$SimulateCommitObserved,
+  [switch]$SimulateProductionWriterReplaced,
+  [switch]$SimulateDualCommitObserved,
   [switch]$RuntimeWriterAvailable,
   [int]$BlockedExitCode = 2
 )
@@ -19,6 +25,7 @@ $dryRunEvidenceContract = $readinessContract.runtime_writer_dry_run_execution_ev
 $liveExecutionHandoffContract = $readinessContract.live_execution_handoff_contract
 $liveProbeArtifactContract = $readinessContract.live_probe_evidence_artifact_contract
 $liveProbeExecutorBoundaryContract = $readinessContract.live_probe_executor_boundary_contract
+$liveProbeReadbackGateContract = $readinessContract.live_probe_measurement_readback_gate_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -244,6 +251,33 @@ function Assert-Contract {
   if ([bool]$liveProbeExecutorBoundaryContract.bounded_scope.unbounded_scan_allowed) {
     throw "live probe executor boundary must not allow unbounded scans"
   }
+  if ([string]$liveProbeReadbackGateContract.schema_version -ne "control_plane_billing_ledger_live_probe_measurement_readback_gate.v1") {
+    throw "live probe measurement readback gate schema mismatch"
+  }
+  $readbackFreshnessFields = @($liveProbeReadbackGateContract.required_freshness_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredReadbackFreshnessField in @("generated_at_utc", "current_commit", "freshness_marker", "stale_artifact")) {
+    if ($requiredReadbackFreshnessField -notin $readbackFreshnessFields) {
+      throw "live probe readback gate missing freshness field: $requiredReadbackFreshnessField"
+    }
+  }
+  $readbackRowFields = @($liveProbeReadbackGateContract.required_row_count_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredReadbackRowField in @("statement_kind", "expected_rows", "actual_rows", "rows_match", "rows_affected_source")) {
+    if ($requiredReadbackRowField -notin $readbackRowFields) {
+      throw "live probe readback gate missing row-count field: $requiredReadbackRowField"
+    }
+  }
+  $readbackTimingFields = @($liveProbeReadbackGateContract.required_timing_duration_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredReadbackTimingField in @("begin_transaction_duration_ms", "insert_probe_ledger_entry_duration_ms", "row_count_capture_duration_ms", "rollback_transaction_duration_ms")) {
+    if ($requiredReadbackTimingField -notin $readbackTimingFields) {
+      throw "live probe readback gate missing timing field: $requiredReadbackTimingField"
+    }
+  }
+  if (-not [bool]$liveProbeReadbackGateContract.pass_requirements.rollback_observed) {
+    throw "live probe readback gate pass must require rollback observed"
+  }
+  if ([bool]$liveProbeReadbackGateContract.pass_requirements.commit_observed) {
+    throw "live probe readback gate pass must forbid commit observed"
+  }
   $handoffRowEvidenceNames = @($liveExecutionHandoffContract.row_count_evidence_names | ForEach-Object { [string]$_ })
   foreach ($requiredRowEvidence in @("lock_idempotency_scope", "lock_wallet_scope", "insert_ledger_entry", "mark_idempotency_applied")) {
     if ($requiredRowEvidence -notin $handoffRowEvidenceNames) {
@@ -329,6 +363,32 @@ function Get-CurrentCommitMarker {
   }
 }
 
+function Test-EvidenceField {
+  param(
+    [Parameter(Mandatory = $true)]$Object,
+    [Parameter(Mandatory = $true)][string]$Field
+  )
+
+  if ($Object -is [System.Collections.IDictionary]) {
+    return $Object.Contains($Field)
+  }
+
+  return $Object.PSObject.Properties.Name -contains $Field
+}
+
+function Get-EvidenceField {
+  param(
+    [Parameter(Mandatory = $true)]$Object,
+    [Parameter(Mandatory = $true)][string]$Field
+  )
+
+  if ($Object -is [System.Collections.IDictionary]) {
+    return $Object[$Field]
+  }
+
+  return $Object.$Field
+}
+
 function New-LiveProbeEvidenceArtifact {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -336,6 +396,9 @@ function New-LiveProbeEvidenceArtifact {
     [Parameter(Mandatory = $true)][bool]$MeasurementsAvailable,
     [Parameter(Mandatory = $true)][bool]$RowCountMismatch,
     [Parameter(Mandatory = $true)][bool]$StaleArtifact,
+    [Parameter(Mandatory = $true)][bool]$CommitObserved,
+    [Parameter(Mandatory = $true)][bool]$ProductionWriterReplaced,
+    [Parameter(Mandatory = $true)][bool]$DualCommitObserved,
     [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Blockers
   )
 
@@ -358,6 +421,8 @@ function New-LiveProbeEvidenceArtifact {
 
   $classification = "blocker"
   if ($RowCountMismatch) {
+    $classification = "fail"
+  } elseif ($CommitObserved -or $ProductionWriterReplaced -or $DualCommitObserved) {
     $classification = "fail"
   } elseif ($ProbeRequested -and $Readiness -eq "ready" -and $MeasurementsAvailable -and -not $StaleArtifact) {
     $classification = "pass"
@@ -417,7 +482,7 @@ function New-LiveProbeEvidenceArtifact {
       probe_requested = $ProbeRequested
     }
     db_write_performed = $false
-    production_writer_replaced = $false
+    production_writer_replaced = $ProductionWriterReplaced
     production_source_of_truth_switch_allowed = $false
     dual_commit_allowed = $false
     safe_command_summary = [ordered]@{
@@ -442,10 +507,10 @@ function New-LiveProbeEvidenceArtifact {
     }
     rollback_no_commit_proof = [ordered]@{
       rollback_observed = $MeasurementsAvailable
-      commit_observed = $false
+      commit_observed = $CommitObserved
       probe_commits_billing_ledger = $false
-      production_writer_replaced = $false
-      dual_commit_observed = $false
+      production_writer_replaced = $ProductionWriterReplaced
+      dual_commit_observed = $DualCommitObserved
       local_writer_fallback = "control_plane_local_sql_writer"
       proof_source = $durationSource
     }
@@ -530,6 +595,125 @@ function New-LiveProbeExecutorBoundary {
       env_value_output = "omitted"
       operation_key_output = "omitted"
       dedupe_material_echoed = $false
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
+function New-LiveProbeMeasurementReadbackGate {
+  param(
+    [Parameter(Mandatory = $true)]$Artifact,
+    [Parameter(Mandatory = $true)][bool]$MissingRowCount,
+    [Parameter(Mandatory = $true)][bool]$MissingTiming,
+    [Parameter(Mandatory = $true)][bool]$MissingRollbackProof
+  )
+
+  $refusals = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+
+  foreach ($field in @($liveProbeReadbackGateContract.required_freshness_fields | ForEach-Object { [string]$_ })) {
+    if (-not (Test-EvidenceField -Object $Artifact -Field $field)) {
+      [void]$refusals.Add("missing_freshness_field")
+      break
+    }
+  }
+
+  if ([bool](Get-EvidenceField -Object $Artifact -Field "stale_artifact") -or [string](Get-EvidenceField -Object $Artifact -Field "freshness_marker") -ne "current") {
+    [void]$refusals.Add("stale_artifact")
+  }
+
+  $rowCountEvidence = @(Get-EvidenceField -Object $Artifact -Field "row_count_evidence")
+  if ($MissingRowCount -or $rowCountEvidence.Count -eq 0) {
+    [void]$refusals.Add("missing_row_count_field")
+  } else {
+    foreach ($row in $rowCountEvidence) {
+      foreach ($field in @($liveProbeReadbackGateContract.required_row_count_fields | ForEach-Object { [string]$_ })) {
+        if (-not (Test-EvidenceField -Object $row -Field $field)) {
+          [void]$refusals.Add("missing_row_count_field")
+          break
+        }
+      }
+      if ((Get-EvidenceField -Object $row -Field "rows_match") -eq $false) {
+        [void]$failures.Add("row_count_mismatch")
+      }
+      if ($null -eq (Get-EvidenceField -Object $row -Field "actual_rows") -or $null -eq (Get-EvidenceField -Object $row -Field "rows_match")) {
+        [void]$refusals.Add("missing_row_count_field")
+      }
+    }
+  }
+
+  $timing = Get-EvidenceField -Object $Artifact -Field "transaction_timing_durations"
+  if ($MissingTiming -or $null -eq $timing) {
+    [void]$refusals.Add("missing_timing_duration")
+  } else {
+    foreach ($field in @($liveProbeReadbackGateContract.required_timing_duration_fields | ForEach-Object { [string]$_ })) {
+      if (-not (Test-EvidenceField -Object $timing -Field $field) -or $null -eq (Get-EvidenceField -Object $timing -Field $field)) {
+        [void]$refusals.Add("missing_timing_duration")
+        break
+      }
+    }
+  }
+
+  $proof = Get-EvidenceField -Object $Artifact -Field "rollback_no_commit_proof"
+  if ($MissingRollbackProof -or $null -eq $proof) {
+    [void]$refusals.Add("missing_rollback_proof")
+  } else {
+    foreach ($field in @($liveProbeReadbackGateContract.required_rollback_no_commit_fields | ForEach-Object { [string]$_ })) {
+      if (-not (Test-EvidenceField -Object $proof -Field $field)) {
+        [void]$refusals.Add("missing_rollback_proof")
+        break
+      }
+    }
+    if ((Get-EvidenceField -Object $proof -Field "rollback_observed") -ne $true) {
+      [void]$refusals.Add("missing_rollback_proof")
+    }
+    if ((Get-EvidenceField -Object $proof -Field "commit_observed") -eq $true) {
+      [void]$failures.Add("commit_observed")
+    }
+    if ((Get-EvidenceField -Object $proof -Field "production_writer_replaced") -eq $true -or (Get-EvidenceField -Object $Artifact -Field "production_writer_replaced") -eq $true) {
+      [void]$failures.Add("production_writer_replaced")
+    }
+    if ((Get-EvidenceField -Object $proof -Field "dual_commit_observed") -eq $true) {
+      [void]$failures.Add("dual_commit_observed")
+    }
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($refusals.Count -eq 0 -and [string](Get-EvidenceField -Object $Artifact -Field "classification") -eq "pass") {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = [string]$liveProbeReadbackGateContract.schema_version
+    classification = $classification
+    artifact_schema_version = [string](Get-EvidenceField -Object $Artifact -Field "schema_version")
+    generated_at_utc = [string](Get-EvidenceField -Object $Artifact -Field "generated_at_utc")
+    current_commit = [string](Get-EvidenceField -Object $Artifact -Field "current_commit")
+    freshness_marker = [string](Get-EvidenceField -Object $Artifact -Field "freshness_marker")
+    stale_artifact = [bool](Get-EvidenceField -Object $Artifact -Field "stale_artifact")
+    probe_requested = [bool](Get-EvidenceField -Object $Artifact -Field "probe_requested")
+    provenance = (Get-EvidenceField -Object $Artifact -Field "provenance")
+    row_count_evidence = $rowCountEvidence
+    transaction_timing_durations = $timing
+    rollback_no_commit_proof = $proof
+    refusals = @($refusals | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    pass_requirements = [ordered]@{
+      rollback_observed_required = $true
+      commit_observed_required = $false
+      production_writer_replaced_required = $false
+      dual_commit_observed_required = $false
+    }
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
       raw_env_value_echoed = $false
       raw_database_url_echoed = $false
       raw_metadata_echoed = $false
@@ -748,6 +932,9 @@ $schemaStatus = "pass"
 
 $stopwatch.Stop()
 
+$liveProbeEvidenceArtifact = New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -MeasurementsAvailable ([bool]$SimulateProbeMeasurements) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -StaleArtifact ([bool]$SimulateStaleProbeArtifact) -CommitObserved ([bool]$SimulateCommitObserved) -ProductionWriterReplaced ([bool]$SimulateProductionWriterReplaced) -DualCommitObserved ([bool]$SimulateDualCommitObserved) -Blockers @($blockers)
+$liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifact $liveProbeEvidenceArtifact -MissingRowCount ([bool]$SimulateMissingRowCountReadback) -MissingTiming ([bool]$SimulateMissingTimingReadback) -MissingRollbackProof ([bool]$SimulateMissingRollbackProofReadback)
+
 $summary = [ordered]@{
   schema_version = [string]$readinessContract.schema_version
   script = "scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1"
@@ -841,7 +1028,8 @@ $summary = [ordered]@{
   }
   live_execution_handoff = (New-LiveExecutionHandoff -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
   live_probe_executor_boundary = (New-LiveProbeExecutorBoundary -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
-  live_probe_evidence_artifact = (New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -MeasurementsAvailable ([bool]$SimulateProbeMeasurements) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -StaleArtifact ([bool]$SimulateStaleProbeArtifact) -Blockers @($blockers))
+  live_probe_evidence_artifact = $liveProbeEvidenceArtifact
+  live_probe_measurement_readback_gate = $liveProbeMeasurementReadbackGate
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version
