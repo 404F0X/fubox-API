@@ -928,7 +928,11 @@ function LedgerAdjustmentExecuteAffordance({
   const refreshText = executeResult && executeFresh ? executeRefreshStatusText(executeRefreshState) : null;
 
   return (
-    <section className="admin-panel" aria-label="Ledger adjustment execute readiness">
+    <section
+      className="admin-panel"
+      aria-label="Ledger adjustment execute readiness"
+      data-testid="ledger-adjustment-execute-readiness"
+    >
       <div className="section-heading">
         <div>
           <h2>Execute Readiness</h2>
@@ -945,18 +949,26 @@ function LedgerAdjustmentExecuteAffordance({
           })}
         />
       </div>
-      <div className="manual-test-flags" aria-label="Execute contract flags">
-        <span>execute_contract_mode=true</span>
-        <span>execute_endpoint=true</span>
-        <span>fresh_dry_run={String(dryRunFresh)}</span>
-        <span>contract_check_fresh={String(contractFresh)}</span>
-        <span>contract_check_network_call={String(Boolean(contractResult))}</span>
-        <span>execute_write_network_call={String(Boolean(executeResult || executeError))}</span>
+      <div className="manual-test-flags" aria-label="Execute contract flags" data-testid="ledger-adjustment-execute-flags">
+        <span data-testid="ledger-adjustment-execute-contract-mode">execute_contract_mode=true</span>
+        <span data-testid="ledger-adjustment-execute-endpoint">execute_endpoint=true</span>
+        <span data-testid="ledger-adjustment-dry-run-fresh">fresh_dry_run={String(dryRunFresh)}</span>
+        <span data-testid="ledger-adjustment-contract-check-fresh">contract_check_fresh={String(contractFresh)}</span>
+        <span data-testid="ledger-adjustment-contract-check-network-call">
+          contract_check_network_call={String(Boolean(contractResult))}
+        </span>
+        <span data-testid="ledger-adjustment-execute-write-network-call">
+          execute_write_network_call={String(Boolean(executeResult || executeError))}
+        </span>
         {executeResult && executeResult.kind === "future_execute" ? (
           <>
-            <span>execute_result_fresh={String(executeFresh)}</span>
-            <span>execute_outcome={safeFieldValue(executeOutcome(executeResult.response))}</span>
-            <span>ledger_entries_refresh_after_execute={executeRefreshState.status}</span>
+            <span data-testid="ledger-adjustment-execute-result-fresh">execute_result_fresh={String(executeFresh)}</span>
+            <span data-testid="ledger-adjustment-execute-outcome">
+              execute_outcome={safeFieldValue(executeOutcome(executeResult.response))}
+            </span>
+            <span data-testid="ledger-adjustment-ledger-refresh-status">
+              ledger_entries_refresh_after_execute={executeRefreshState.status}
+            </span>
           </>
         ) : null}
         {flags ? (
@@ -974,13 +986,20 @@ function LedgerAdjustmentExecuteAffordance({
       <div className="action-row">
         <button
           className="secondary-button"
+          data-testid="ledger-adjustment-execute-contract-button"
           type="button"
           disabled={!dryRunFresh || checking}
           onClick={onCheckExecuteContract}
         >
           {checking ? "Checking execute contract" : "Check execute contract"}
         </button>
-        <button className="primary-button primary-button--inline" type="button" disabled={!dryRunFresh || executing} onClick={onExecute}>
+        <button
+          className="primary-button primary-button--inline"
+          data-testid="ledger-adjustment-execute-button"
+          type="button"
+          disabled={!dryRunFresh || executing}
+          onClick={onExecute}
+        >
           {executing ? "Executing" : "Execute ledger adjustment"}
         </button>
         <p className="muted-copy">Execution uses the fresh dry-run payload and returns only safe ledger/audit summaries.</p>

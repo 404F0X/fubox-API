@@ -2715,6 +2715,62 @@ describe("App", () => {
     );
   });
 
+  function expectLedgerBackendSmokeReadiness({
+    contractCheckNetworkCall = false,
+    dryRunFresh,
+    executeEnabled,
+    executeOutcome,
+    executeResultFresh,
+    executeWriteNetworkCall,
+    ledgerRefreshStatus,
+    status,
+  }: {
+    contractCheckNetworkCall?: boolean;
+    dryRunFresh: boolean;
+    executeEnabled: boolean;
+    executeOutcome?: "applied" | "idempotent";
+    executeResultFresh?: boolean;
+    executeWriteNetworkCall: boolean;
+    ledgerRefreshStatus?: "success" | "error";
+    status: string;
+  }) {
+    const readiness = screen.getByTestId("ledger-adjustment-execute-readiness");
+
+    expect(screen.getByTestId("ledger-adjustment-execute-contract-mode")).toHaveTextContent("execute_contract_mode=true");
+    expect(screen.getByTestId("ledger-adjustment-execute-endpoint")).toHaveTextContent("execute_endpoint=true");
+    expect(screen.getByTestId("ledger-adjustment-dry-run-fresh")).toHaveTextContent(`fresh_dry_run=${String(dryRunFresh)}`);
+    expect(screen.getByTestId("ledger-adjustment-contract-check-network-call")).toHaveTextContent(
+      `contract_check_network_call=${String(contractCheckNetworkCall)}`,
+    );
+    expect(screen.getByTestId("ledger-adjustment-execute-write-network-call")).toHaveTextContent(
+      `execute_write_network_call=${String(executeWriteNetworkCall)}`,
+    );
+    if (executeEnabled) {
+      expect(screen.getByTestId("ledger-adjustment-execute-button")).toBeEnabled();
+    } else {
+      expect(screen.getByTestId("ledger-adjustment-execute-button")).toBeDisabled();
+    }
+    expect(within(readiness).getAllByText(status).length).toBeGreaterThan(0);
+
+    if (executeOutcome) {
+      expect(screen.getByTestId("ledger-adjustment-execute-result-fresh")).toHaveTextContent(
+        `execute_result_fresh=${String(executeResultFresh ?? true)}`,
+      );
+      expect(screen.getByTestId("ledger-adjustment-execute-outcome")).toHaveTextContent(`execute_outcome=${executeOutcome}`);
+    } else {
+      expect(screen.queryByTestId("ledger-adjustment-execute-result-fresh")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("ledger-adjustment-execute-outcome")).not.toBeInTheDocument();
+    }
+
+    if (ledgerRefreshStatus) {
+      expect(screen.getByTestId("ledger-adjustment-ledger-refresh-status")).toHaveTextContent(
+        `ledger_entries_refresh_after_execute=${ledgerRefreshStatus}`,
+      );
+    } else {
+      expect(screen.queryByTestId("ledger-adjustment-ledger-refresh-status")).not.toBeInTheDocument();
+    }
+  }
+
   it("runs ledger adjustment dry-run and renders the plan-only contract with execute readiness", async () => {
     const fetchMock = stubAdminFetch();
 
@@ -2731,6 +2787,12 @@ describe("App", () => {
     expect(readinessPanel.getByText("contract_check_network_call=false")).toBeInTheDocument();
     expect(readinessPanel.getByText("execute_write_network_call=false")).toBeInTheDocument();
     expect(readinessPanel.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: false,
+      executeEnabled: false,
+      executeWriteNetworkCall: false,
+      status: "dry run required",
+    });
 
     const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
     const dryRunPanel = within(dryRunRegion);
@@ -2763,6 +2825,12 @@ describe("App", () => {
     expect(screen.getByText("bounded public ids and amounts only")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Check execute contract" })).toBeEnabled();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeWriteNetworkCall: false,
+      status: "execute preflight",
+    });
 
     await user.click(screen.getByRole("button", { name: "Check execute contract" }));
 
@@ -2824,6 +2892,13 @@ describe("App", () => {
     expect(screen.getByText("Compatible fields")).toBeInTheDocument();
     expect(screen.getByText("Constraints checked")).toBeInTheDocument();
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
+    expectLedgerBackendSmokeReadiness({
+      contractCheckNetworkCall: true,
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeWriteNetworkCall: false,
+      status: "blocked",
+    });
 
     const dryRunCall = fetchMock.mock.calls.find(
       ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
@@ -2923,6 +2998,15 @@ describe("App", () => {
     expect(screen.getByText("execute_outcome=applied")).toBeInTheDocument();
     expect(await screen.findByText("Ledger entries refreshed after execute; this execute result matches the current dry-run payload.")).toBeInTheDocument();
     expect(screen.getByText("ledger_entries_refresh_after_execute=success")).toBeInTheDocument();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeOutcome: "applied",
+      executeResultFresh: true,
+      executeWriteNetworkCall: true,
+      ledgerRefreshStatus: "success",
+      status: "applied",
+    });
     expect(screen.getAllByText("ledger_write=true").length).toBeGreaterThan(0);
     expect(screen.getAllByText("audit_log_write=true").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { level: 3, name: "Execute Summary" })).toBeInTheDocument();
@@ -3033,6 +3117,15 @@ describe("App", () => {
     expect(screen.getByText("execute_outcome=idempotent")).toBeInTheDocument();
     expect(await screen.findByText("Ledger entries refreshed after execute; this execute result matches the current dry-run payload.")).toBeInTheDocument();
     expect(screen.getByText("ledger_entries_refresh_after_execute=success")).toBeInTheDocument();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeOutcome: "idempotent",
+      executeResultFresh: true,
+      executeWriteNetworkCall: true,
+      ledgerRefreshStatus: "success",
+      status: "idempotent",
+    });
     expect(screen.getAllByText("ledger_write=false").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("audit_log_write=false").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("idempotent").length).toBeGreaterThan(0);
@@ -3110,6 +3203,15 @@ describe("App", () => {
     expect(screen.getByText("execute_result_fresh=true")).toBeInTheDocument();
     expect(screen.getByText(`execute_outcome=${outcome}`)).toBeInTheDocument();
     expect(screen.getByText("ledger_entries_refresh_after_execute=error")).toBeInTheDocument();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeOutcome: outcome,
+      executeResultFresh: true,
+      executeWriteNetworkCall: true,
+      ledgerRefreshStatus: "error",
+      status: outcome,
+    });
     expect(
       await screen.findByText(
         "Execute result matches the current dry-run payload, but ledger entries refresh failed. Request failed.",
@@ -3185,12 +3287,69 @@ describe("App", () => {
     const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
     expect(within(readinessRegion).getByText("failed")).toBeInTheDocument();
     expect(screen.getByText("execute_write_network_call=true")).toBeInTheDocument();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeWriteNetworkCall: true,
+      status: "failed",
+    });
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-failed-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-failed-hidden"));
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain("raw metadata");
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/admin/ledger/adjustments/dry-run") &&
+          init?.method === "POST" &&
+          JSON.parse(String(init.body)).mode === "execute",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("marks ledger adjustment execute blocked without failed or success smoke markers", async () => {
+    const fetchMock = stubAdminFetch({ ledgerAdjustmentExecuteStatus: "blocked" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunPanel = within(dryRunRegion);
+
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
+    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
+    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+
+    expect((await screen.findAllByText("Ledger adjustment execute was blocked.")).length).toBeGreaterThan(0);
+    const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
+    expect(within(readinessRegion).getByText("blocked")).toBeInTheDocument();
+    expect(within(readinessRegion).queryByText("failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
+    expect(screen.queryByText("execute_outcome=idempotent")).not.toBeInTheDocument();
+    expect(screen.queryByText("ledger_entries_refresh_after_execute=success")).not.toBeInTheDocument();
+    expect(screen.queryByText("ledger_entries_refresh_after_execute=error")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: true,
+      executeEnabled: true,
+      executeWriteNetworkCall: true,
+      status: "blocked",
+    });
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-blocked-hidden"));
+    expect(document.body.textContent).not.toContain("operation_key");
+    expect(document.body.textContent).not.toContain("raw metadata");
+    expect(document.body.textContent).not.toContain("raw executor error detail");
+    expect(document.body.textContent).not.toContain("credential");
+    expect(document.body.textContent).not.toContain("Cookie");
+    expect(document.body.textContent).not.toContain("token");
 
     expect(
       fetchMock.mock.calls.filter(
@@ -3283,6 +3442,12 @@ describe("App", () => {
     expect(await screen.findByText("Form changed after dry-run. Run dry-run again before execute can be considered.")).toBeInTheDocument();
     expect(screen.getAllByText("fresh_dry_run=false").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expectLedgerBackendSmokeReadiness({
+      dryRunFresh: false,
+      executeEnabled: false,
+      executeWriteNetworkCall: false,
+      status: "stale plan",
+    });
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
