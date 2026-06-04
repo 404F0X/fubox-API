@@ -363,11 +363,53 @@ export const ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract = {
   },
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract = {
+  artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+  defaultClosesLiveGap: false,
+  defaultMode: "mutation_pass_artifact_closure_gate",
+  defaultSubmitsLiveMutation: false,
+  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+  expectedActionOutcomes: {
+    dry_run_plan: "executePreflight",
+    execute_apply: "applied",
+    idempotent_replay: "idempotent",
+    ledger_refresh: "success",
+    refund_refusal: "blocked",
+  },
+  requiredArtifactFreshness: {
+    requireCurrentGitCommit: true,
+    requireFreshnessMarker: true,
+    requireHandoffFresh: true,
+    requireReadBack: true,
+  },
+  requiredReadiness: {
+    adminUiReachable: true,
+    browserLaunchReady: true,
+    contextReady: true,
+    controlPlaneHealthReachable: true,
+    mutationOptInEnabled: true,
+    pageReady: true,
+    selectorSnapshotReady: true,
+    sessionMaterialPresent: true,
+  },
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
+  statusMarkers: {
+    blocked: "blocked",
+    closureEligible: "closure_eligible",
+    passed: "passed",
+  },
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
   browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
+  browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract,
   browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
   browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract,

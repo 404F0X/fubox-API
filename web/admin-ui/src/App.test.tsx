@@ -9,7 +9,10 @@ import {
   ledgerAdjustmentExecuteLiveSmokeSerializableHandoff,
 } from "./billingExecuteSmokeContract";
 import ledgerAdjustmentExecuteLiveSmokeSerializableHandoffArtifact from "./billingExecuteSmokeContract.serializable.json";
-import { promptProtectionEvidenceReadback } from "./components/PromptProtectionSummary";
+import {
+  promptProtectionAuditClosureGate,
+  promptProtectionEvidenceReadback,
+} from "./components/PromptProtectionSummary";
 
 vi.setConfig({ testTimeout: 15000 });
 
@@ -3395,6 +3398,179 @@ describe("App", () => {
     },
   );
 
+  it.each([
+    {
+      auditReadiness: "pass",
+      closureEligible: true,
+      closureGaps: ["none"],
+      durationAvailability: "total 24 ms / preflight 9 ms / db 15 ms",
+      expectedClassification: "pass",
+      expectedGaps: [],
+      freshnessReplay: "current_live_proof",
+      latencyEnvelope: "eligible",
+      proofClosure: "eligible",
+      proofMode: "live / live",
+      providerAttempts: "0",
+      rawMarker: "prompt-import-current-hidden",
+    },
+    {
+      auditReadiness: "fail",
+      closureEligible: false,
+      closureGaps: ["stale_generated_at"],
+      durationAvailability: "total 24 ms / preflight 9 ms / db 15 ms",
+      expectedClassification: "fail",
+      expectedGaps: ["stale_generated_at", "proof_closure_not_eligible", "freshness_replay_refused"],
+      freshnessReplay: "stale_generated_at_refused",
+      latencyEnvelope: "eligible",
+      proofClosure: "not eligible",
+      proofMode: "live / live",
+      providerAttempts: "0",
+      rawMarker: "prompt-import-stale-hidden",
+    },
+    {
+      auditReadiness: "blocker",
+      closureEligible: false,
+      closureGaps: ["simulated_replay"],
+      durationAvailability: "total 24 ms / preflight 9 ms / db 15 ms",
+      expectedClassification: "blocker",
+      expectedGaps: [
+        "simulated_replay",
+        "current_live_proof_missing",
+        "proof_closure_not_eligible",
+        "freshness_replay_refused",
+      ],
+      freshnessReplay: "simulated_replay_refused",
+      latencyEnvelope: "eligible",
+      proofClosure: "not eligible",
+      proofMode: "contract / simulated",
+      providerAttempts: "0",
+      rawMarker: "prompt-import-simulated-hidden",
+    },
+    {
+      auditReadiness: "blocker",
+      closureEligible: false,
+      closureGaps: ["none"],
+      durationAvailability: "total 24 ms / preflight 9 ms / db 15 ms",
+      expectedClassification: "blocker",
+      expectedGaps: ["provider_attempts_missing"],
+      freshnessReplay: "current_live_proof",
+      latencyEnvelope: "eligible",
+      proofClosure: "eligible",
+      proofMode: "live / live",
+      providerAttempts: "-",
+      rawMarker: "prompt-import-provider-missing-hidden",
+    },
+    {
+      auditReadiness: "blocker",
+      closureEligible: false,
+      closureGaps: ["none"],
+      durationAvailability: "unavailable: duration_unavailable",
+      expectedClassification: "blocker",
+      expectedGaps: ["latency_envelope_missing_or_ineligible", "duration_unavailable"],
+      freshnessReplay: "current_live_proof",
+      latencyEnvelope: "-",
+      proofClosure: "eligible",
+      proofMode: "live / live",
+      providerAttempts: "0",
+      rawMarker: "prompt-import-latency-hidden",
+    },
+    {
+      auditReadiness: "blocker",
+      closureEligible: false,
+      closureGaps: ["postgres_audit_row_missing"],
+      durationAvailability: "total 24 ms / preflight 9 ms / db 15 ms",
+      expectedClassification: "blocker",
+      expectedGaps: ["postgres_audit_row_missing"],
+      freshnessReplay: "current_live_proof",
+      latencyEnvelope: "eligible",
+      proofClosure: "eligible",
+      proofMode: "live / live",
+      providerAttempts: "0",
+      rawMarker: "prompt-import-gap-hidden",
+    },
+  ])(
+    "gates imported prompt protection audit evidence for $rawMarker as $expectedClassification",
+    ({
+      auditReadiness,
+      closureEligible,
+      closureGaps,
+      durationAvailability,
+      expectedClassification,
+      expectedGaps,
+      freshnessReplay,
+      latencyEnvelope,
+      proofClosure,
+      proofMode,
+      providerAttempts,
+      rawMarker,
+    }) => {
+      const importedReadback = {
+        auditReadiness,
+        closureChecklist: [
+          "gateway_live_proof",
+          "postgres_audit_row",
+          "mock_provider_upstream_refusal",
+          "provider_attempts_zero",
+          "latency_envelope",
+          "current_provenance",
+          "duration_available",
+          "freshness_replay_classification",
+        ],
+        closureGaps,
+        closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+        currentCommit: "1234567890ab",
+        durationAvailability,
+        freshnessReplay,
+        latencyEnvelope,
+        omittedMaterial: "raw payload, raw pattern values",
+        proofClosure,
+        proofEvidence: ["provider_attempts_count", "latency_envelope", "provenance"],
+        proofMode,
+        providerAttempts,
+        raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder(`${rawMarker}-command`)}`,
+        raw_prompt: `raw prompt ${rawMarker}`,
+        raw_report_path: `C:\\secret\\${rawMarker}.json`,
+        schema: "prompt_protection_evidence_readback_v1",
+        secret_dsn: `postgres://${rawMarker}`,
+        token: bearerPlaceholder(`${rawMarker}-token`),
+      };
+
+      const gate = promptProtectionAuditClosureGate(importedReadback);
+      expect(gate).not.toBeNull();
+      expect(gate).toEqual(JSON.parse(JSON.stringify(gate)));
+      expect(gate).toMatchObject({
+        classification: expectedClassification,
+        closureEligible,
+        gaps: expectedGaps,
+        schema: "prompt_protection_audit_closure_gate_v1",
+      });
+      expect(gate?.readback).toMatchObject({
+        auditReadiness,
+        closureChecklist: [
+          "gateway_live_proof",
+          "postgres_audit_row",
+          "mock_provider_upstream_refusal",
+          "provider_attempts_zero",
+          "latency_envelope",
+          "current_provenance",
+          "duration_available",
+          "freshness_replay_classification",
+        ],
+        freshnessReplay,
+        providerAttempts,
+        schema: "prompt_protection_evidence_readback_v1",
+      });
+
+      const exported = JSON.stringify(gate);
+      expect(exported).not.toContain(rawMarker);
+      expect(exported).not.toContain("C:\\secret");
+      expect(exported).not.toContain("postgres://");
+      expect(exported).not.toContain(AUTH_HEADER_NAME);
+      expect(exported).not.toContain(BEARER_SCHEME);
+      expect(exported).not.toContain("raw prompt");
+    },
+  );
+
   it("runs routing dry-run and renders selected candidates without secret material", async () => {
     const fetchMock = stubAdminFetch();
 
@@ -4013,6 +4189,46 @@ describe("App", () => {
       secretSafeOutput: {
         echoSessionMaterial: false,
         forbiddenMarkers: ledgerExecuteSmoke.forbiddenSensitiveMarkers,
+      },
+    });
+    expect(parsed.browserMutationPassArtifactClosure).toEqual({
+      artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      defaultClosesLiveGap: false,
+      defaultMode: "mutation_pass_artifact_closure_gate",
+      defaultSubmitsLiveMutation: false,
+      durationFields: parsed.browserEvidenceArtifact.durationFields,
+      expectedActionOutcomes: {
+        dry_run_plan: "executePreflight",
+        execute_apply: "applied",
+        idempotent_replay: "idempotent",
+        ledger_refresh: "success",
+        refund_refusal: "blocked",
+      },
+      requiredArtifactFreshness: {
+        requireCurrentGitCommit: true,
+        requireFreshnessMarker: true,
+        requireHandoffFresh: true,
+        requireReadBack: true,
+      },
+      requiredReadiness: {
+        adminUiReachable: true,
+        browserLaunchReady: true,
+        contextReady: true,
+        controlPlaneHealthReachable: true,
+        mutationOptInEnabled: true,
+        pageReady: true,
+        selectorSnapshotReady: true,
+        sessionMaterialPresent: true,
+      },
+      secretSafeOmission: {
+        echoRequestMaterial: false,
+        echoSessionMaterial: false,
+        echoUrlCredentials: false,
+      },
+      statusMarkers: {
+        blocked: "blocked",
+        closureEligible: "closure_eligible",
+        passed: "passed",
       },
     });
     expect(parsed.browserPlaywrightLaunchReadiness).toEqual({

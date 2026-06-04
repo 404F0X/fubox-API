@@ -51,6 +51,14 @@ export type PromptProtectionEvidenceReadback = {
   schema: "prompt_protection_evidence_readback_v1";
 };
 
+export type PromptProtectionAuditClosureGate = {
+  classification: "blocker" | "fail" | "pass";
+  closureEligible: boolean;
+  gaps: string[];
+  readback: PromptProtectionEvidenceReadback;
+  schema: "prompt_protection_audit_closure_gate_v1";
+};
+
 const PROMPT_PROTECTION_KEYS = new Set([
   "promptprotection",
   "promptprotectionsummary",
@@ -251,6 +259,97 @@ export function promptProtectionEvidenceReadback(
     proofMode: provenanceModeField(record),
     providerAttempts: providerAttemptsField(record),
     schema: "prompt_protection_evidence_readback_v1",
+  };
+}
+
+function promptProtectionEvidenceReadbackFromImport(
+  value: JsonValue | PromptProtectionEvidenceReadback | null | undefined,
+): PromptProtectionEvidenceReadback | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (!isJsonRecord(value)) {
+    return null;
+  }
+
+  if (value.schema !== "prompt_protection_evidence_readback_v1") {
+    return promptProtectionEvidenceReadback(value);
+  }
+
+  return {
+    auditReadiness: enumField(value.auditReadiness),
+    closureChecklist: listItems(value.closureChecklist),
+    closureGaps: listItems(value.closureGaps),
+    closureRule: safeReadbackText(value.closureRule),
+    currentCommit: safeReadbackText(value.currentCommit),
+    durationAvailability: safeReadbackText(value.durationAvailability),
+    freshnessReplay: enumField(value.freshnessReplay),
+    latencyEnvelope: safeReadbackText(value.latencyEnvelope),
+    omittedMaterial: safeReadbackText(value.omittedMaterial),
+    proofClosure: safeReadbackText(value.proofClosure),
+    proofEvidence: listItems(value.proofEvidence),
+    proofMode: safeReadbackText(value.proofMode),
+    providerAttempts: safeReadbackText(value.providerAttempts),
+    schema: "prompt_protection_evidence_readback_v1",
+  };
+}
+
+export function promptProtectionAuditClosureGate(
+  value: JsonValue | PromptProtectionEvidenceReadback | null | undefined,
+): PromptProtectionAuditClosureGate | null {
+  const readback = promptProtectionEvidenceReadbackFromImport(value);
+
+  if (!readback) {
+    return null;
+  }
+
+  const gaps = new Set(readback.closureGaps.filter((gap) => gap !== "none"));
+  let fail = readback.auditReadiness === "fail";
+
+  if (readback.providerAttempts === "-") {
+    gaps.add("provider_attempts_missing");
+  } else if (/^\d+$/.test(readback.providerAttempts) && readback.providerAttempts !== "0") {
+    gaps.add("provider_attempts_nonzero");
+    fail = true;
+  } else if (readback.providerAttempts !== "0") {
+    gaps.add("provider_attempts_missing");
+  }
+
+  if (readback.latencyEnvelope !== "eligible") {
+    gaps.add("latency_envelope_missing_or_ineligible");
+  }
+
+  if (!readback.durationAvailability.startsWith("total ")) {
+    gaps.add("duration_unavailable");
+  }
+
+  if (readback.proofMode !== "live / live") {
+    gaps.add("current_live_proof_missing");
+  }
+
+  if (readback.proofClosure !== "eligible") {
+    gaps.add("proof_closure_not_eligible");
+  }
+
+  if (readback.freshnessReplay !== "current_live_proof") {
+    gaps.add("freshness_replay_refused");
+
+    if (readback.freshnessReplay !== "simulated_replay_refused") {
+      fail = true;
+    }
+  }
+
+  const normalizedGaps = Array.from(gaps).slice(0, 12);
+  const closureEligible = normalizedGaps.length === 0 && readback.auditReadiness === "pass";
+  const classification = closureEligible ? "pass" : fail ? "fail" : "blocker";
+
+  return {
+    classification,
+    closureEligible,
+    gaps: normalizedGaps,
+    readback,
+    schema: "prompt_protection_audit_closure_gate_v1",
   };
 }
 
@@ -813,4 +912,18 @@ function listItems(value: JsonValue | undefined): string[] {
     .map((item) => enumField(item))
     .filter((item) => item !== "-")
     .slice(0, 8);
+}
+
+function safeReadbackText(value: JsonValue | undefined): string {
+  if (typeof value !== "string") {
+    return "-";
+  }
+
+  const safeValue = safeFieldValue(value.trim()).slice(0, 160);
+
+  if (safeValue === "-" || safeValue === "[redacted]") {
+    return safeValue;
+  }
+
+  return /^[a-z0-9_.,:=/ +()-]{1,160}$/i.test(safeValue) ? safeValue : "[redacted]";
 }

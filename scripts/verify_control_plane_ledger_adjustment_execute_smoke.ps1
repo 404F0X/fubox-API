@@ -833,6 +833,7 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteBrowserPreflightContract",
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
       "ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
+      "ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
       "ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
@@ -840,6 +841,7 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
+      "browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
       "browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract",
@@ -857,6 +859,7 @@ function Assert-UiSmokeHandoffFreshness {
       "browserPreflight",
       "browserActionPlan",
       "browserDomActionRunner",
+      "browserMutationPassArtifactClosure",
       "browserPlaywrightLaunchReadiness",
       "browserEvidenceArtifact",
       "browserRunnerReadiness",
@@ -864,6 +867,8 @@ function Assert-UiSmokeHandoffFreshness {
       "billing_execute_browser_live_e2e_evidence.v1",
       "dom_action_runner_dry_run_only",
       "playwright_launch_readiness_only",
+      "mutation_pass_artifact_closure_gate",
+      "closure_eligible",
       "browser_launch_duration_ms",
       "context_setup_duration_ms",
       "page_ready_duration_ms",
@@ -1253,6 +1258,154 @@ function Write-BrowserPlaywrightLaunchReadinessBoundary {
   Write-SafeHost "browser_playwright_artifact=$([string](Get-JsonProperty $artifactEmission "artifactName" "UI browser Playwright artifact emission"))"
   Write-SafeHost "browser_playwright_artifact_output=$([string](Get-JsonProperty $artifactEmission "outputMarker" "UI browser Playwright artifact emission"))"
   Write-SafeHost "browser_playwright_artifact_write_disabled_default=$(Format-BoolMarker ([bool](Get-JsonProperty $artifactEmission "writeDisabledByDefault" "UI browser Playwright artifact emission")))"
+}
+
+function Assert-BrowserMutationPassArtifactClosureContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $closure = Get-JsonProperty $Handoff "browserMutationPassArtifactClosure" "UI handoff"
+  Assert-Equal (Get-JsonProperty $closure "artifactName" "UI browser mutation pass artifact closure") "billing_execute_browser_live_e2e_evidence.v1" "UI browser mutation closure artifact name"
+  Assert-Equal (Get-JsonProperty $closure "defaultMode" "UI browser mutation pass artifact closure") "mutation_pass_artifact_closure_gate" "UI browser mutation closure default mode"
+  Assert-True ((Get-JsonProperty $closure "defaultClosesLiveGap" "UI browser mutation pass artifact closure") -eq $false) "UI browser mutation closure must not close by default"
+  Assert-True ((Get-JsonProperty $closure "defaultSubmitsLiveMutation" "UI browser mutation pass artifact closure") -eq $false) "UI browser mutation closure must not mutate by default"
+
+  $requiredReadiness = Get-JsonProperty $closure "requiredReadiness" "UI browser mutation pass artifact closure"
+  foreach ($name in @("adminUiReachable", "browserLaunchReady", "contextReady", "controlPlaneHealthReachable", "mutationOptInEnabled", "pageReady", "selectorSnapshotReady", "sessionMaterialPresent")) {
+    Assert-True ([bool](Get-JsonProperty $requiredReadiness $name "UI browser mutation closure readiness")) "UI browser mutation closure must require $name"
+  }
+
+  $freshness = Get-JsonProperty $closure "requiredArtifactFreshness" "UI browser mutation pass artifact closure"
+  foreach ($name in @("requireCurrentGitCommit", "requireFreshnessMarker", "requireHandoffFresh", "requireReadBack")) {
+    Assert-True ([bool](Get-JsonProperty $freshness $name "UI browser mutation closure freshness")) "UI browser mutation closure must require $name"
+  }
+
+  $expectedActionOutcomes = Get-JsonProperty $closure "expectedActionOutcomes" "UI browser mutation pass artifact closure"
+  foreach ($name in @("dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh")) {
+    [void](Get-JsonProperty $expectedActionOutcomes $name "UI browser mutation closure action outcomes")
+  }
+
+  $statusMarkers = Get-JsonProperty $closure "statusMarkers" "UI browser mutation pass artifact closure"
+  foreach ($name in @("blocked", "closureEligible", "passed")) {
+    $marker = [string](Get-JsonProperty $statusMarkers $name "UI browser mutation closure status markers")
+    if ($marker -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser mutation closure status marker '$name' must be machine readable"
+    }
+  }
+}
+
+function Set-SyntheticPassActionEvidence {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  $closure = Get-JsonProperty $Handoff "browserMutationPassArtifactClosure" "UI handoff"
+  $durationFields = Get-JsonProperty $closure "durationFields" "UI browser mutation pass artifact closure"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    $field = [string](Get-JsonProperty $durationFields $name "UI browser mutation closure duration fields")
+    $Artifact.durations.$field = 1
+  }
+
+  $expectedActionOutcomes = Get-JsonProperty $closure "expectedActionOutcomes" "UI browser mutation pass artifact closure"
+  foreach ($action in @(Get-JsonProperty $Artifact "actions" "browser evidence artifact")) {
+    $name = [string](Get-JsonProperty $action "name" "browser evidence action")
+    $expected = [string](Get-JsonProperty $expectedActionOutcomes $name "UI browser mutation closure action outcomes")
+    $action.outcome = $expected
+    $action.status = $expected
+    $action.duration_ms = 1
+  }
+}
+
+function Test-BrowserMutationPassArtifactClosure {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  try {
+    Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $Artifact
+  } catch {
+    return $false
+  }
+
+  if ([string]$Artifact.outcome -ne "passed") {
+    return $false
+  }
+  if ([string](Get-JsonProperty $Artifact.matrix "browser_tooling" "browser evidence matrix") -ne "available") {
+    return $false
+  }
+  foreach ($name in @("admin_ui_reachable", "control_plane_health_reachable", "session_material_present", "mutation_opt_in_enabled")) {
+    if ((Get-JsonProperty $Artifact.matrix $name "browser evidence matrix") -ne $true) {
+      return $false
+    }
+  }
+
+  $closure = Get-JsonProperty $Handoff "browserMutationPassArtifactClosure" "UI handoff"
+  $durationFields = Get-JsonProperty $closure "durationFields" "UI browser mutation pass artifact closure"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    $field = [string](Get-JsonProperty $durationFields $name "UI browser mutation closure duration fields")
+    $value = Get-JsonProperty $Artifact.durations $field "browser evidence durations"
+    if ([string]$value -eq "unavailable") {
+      return $false
+    }
+  }
+
+  $expectedActionOutcomes = Get-JsonProperty $closure "expectedActionOutcomes" "UI browser mutation pass artifact closure"
+  foreach ($action in @(Get-JsonProperty $Artifact "actions" "browser evidence artifact")) {
+    $name = [string](Get-JsonProperty $action "name" "browser evidence action")
+    $expected = [string](Get-JsonProperty $expectedActionOutcomes $name "UI browser mutation closure action outcomes")
+    if ([string](Get-JsonProperty $action "outcome" "browser evidence action") -ne $expected) {
+      return $false
+    }
+    if ([string](Get-JsonProperty $action "duration_ms" "browser evidence action") -eq "unavailable") {
+      return $false
+    }
+  }
+
+  return $true
+}
+
+function Write-BrowserMutationPassArtifactClosureGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Blockers,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+  )
+
+  Assert-BrowserMutationPassArtifactClosureContract $Handoff
+  $closure = Get-JsonProperty $Handoff "browserMutationPassArtifactClosure" "UI handoff"
+  $statusMarkers = Get-JsonProperty $closure "statusMarkers" "UI browser mutation pass artifact closure"
+  $currentArtifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "blocked" -Blockers $Blockers -ToolingStatus $ToolingStatus -AdminUiProbe $AdminUiProbe -ControlPlaneProbe $ControlPlaneProbe -MutationEnabled $MutationEnabled -SessionMaterialPresent $SessionMaterialPresent -ServiceReadinessDurationMs $ServiceReadinessDurationMs
+  $probe = [PSCustomObject]@{ Reachable = $true }
+  $syntheticPass = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 1
+  Set-SyntheticPassActionEvidence -Handoff $Handoff -Artifact $syntheticPass
+  Assert-True (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $syntheticPass) "synthetic complete browser mutation evidence must be closure eligible"
+  Assert-True (-not (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $currentArtifact)) "blocked browser mutation evidence must not be closure eligible"
+
+  $closureEligible = Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $currentArtifact
+  $status = if ($closureEligible) { [string](Get-JsonProperty $statusMarkers "closureEligible" "UI browser mutation closure status markers") } else { [string](Get-JsonProperty $statusMarkers "blocked" "UI browser mutation closure status markers") }
+  $blockerSummary = "none"
+  if ($Blockers.Count -gt 0) {
+    $blockerSummary = ($Blockers -join "+")
+  }
+
+  Write-SafeHost "Browser ledger execute mutation pass artifact closure gate:"
+  Write-SafeHost "browser_mutation_pass_closure_status=$status"
+  Write-SafeHost "browser_mutation_pass_closure_eligible=$(Format-BoolMarker $closureEligible)"
+  Write-SafeHost "browser_mutation_pass_closure_blockers=$blockerSummary"
+  Write-SafeHost "browser_mutation_pass_default_closes_live_gap=false"
+  Write-SafeHost "browser_mutation_pass_default_mutation_allowed=false"
+  Write-SafeHost "browser_mutation_pass_requires_artifact_readback=true"
+  Write-SafeHost "browser_mutation_pass_requires_freshness=true"
+  Write-SafeHost "browser_mutation_pass_requires_action_outcomes=true"
+  Write-SafeHost "browser_mutation_pass_secret_url_credentials_echoed=false"
+  Write-SafeHost "browser_mutation_pass_secret_session_echoed=false"
+  Write-SafeHost "browser_mutation_pass_request_material_echoed=false"
 }
 
 function Test-BrowserMutationOptIn {
@@ -1848,6 +2001,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-BrowserEvidenceArtifactDryRun -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+  Write-BrowserMutationPassArtifactClosureGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
 }
 
 function Assert-AdminSourceMarkers {
