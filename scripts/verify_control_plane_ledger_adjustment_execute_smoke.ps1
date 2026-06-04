@@ -812,7 +812,9 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerExecuteSmokeSerializableHandoffArtifact",
       "browserPreflight",
       "browserActionPlan",
+      "browserEvidenceArtifact",
       "browserLiveRunbook",
+      "billing_execute_browser_live_e2e_evidence.v1",
       "live_mutation_opt_in_missing",
       "session_material_missing",
       "dry_run_plan_duration_ms",
@@ -1092,6 +1094,168 @@ function Write-BrowserLiveRunbookGate {
   }
 }
 
+function Assert-BrowserEvidenceArtifactContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $contract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
+  Assert-Equal (Get-JsonProperty $contract "artifactName" "UI browser evidence artifact") "billing_execute_browser_live_e2e_evidence.v1" "UI browser evidence artifact name"
+  Assert-Equal (Get-JsonProperty $contract "unavailableMarker" "UI browser evidence artifact") "unavailable" "UI browser evidence unavailable marker"
+
+  $requiredTopLevel = Get-JsonStringArray (Get-JsonProperty $contract "requiredTopLevelFields" "UI browser evidence artifact") "UI browser evidence top-level fields"
+  Assert-StringSetEqual $requiredTopLevel @("artifact", "generated_at", "mode", "outcome", "provenance", "blockers", "matrix", "durations", "actions", "secret_safe") "UI browser evidence top-level fields"
+
+  $outcomes = Get-JsonProperty $contract "outcomes" "UI browser evidence artifact"
+  foreach ($name in @("blocked", "failed", "passed")) {
+    Assert-Equal (Get-JsonProperty $outcomes $name "UI browser evidence outcomes") $name "UI browser evidence outcome $name"
+  }
+
+  $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
+  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    $field = [string](Get-JsonProperty $durationFields $name "UI browser evidence duration fields")
+    if ($field -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser evidence duration field '$name' must be machine readable"
+    }
+  }
+}
+
+function New-BrowserEvidenceArtifact {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$Outcome,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Blockers,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+  )
+
+  $contract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
+  $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
+  $unavailable = [string](Get-JsonProperty $contract "unavailableMarker" "UI browser evidence artifact")
+  $actions = @()
+  $actionPlan = Get-JsonProperty $Handoff "browserActionPlan" "UI handoff"
+  foreach ($step in @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")) {
+    $actions += [PSCustomObject]@{
+      name = [string](Get-JsonProperty $step "name" "UI browser evidence action")
+      expected_state = [string](Get-JsonProperty $step "expectedState" "UI browser evidence action")
+      selector = [string](Get-JsonProperty $step "selector" "UI browser evidence action")
+      status = if ($Outcome -eq "passed") { "passed" } elseif ($Outcome -eq "failed") { "failed" } else { $unavailable }
+      duration_ms = $unavailable
+    }
+  }
+
+  return [PSCustomObject]@{
+    artifact = [string](Get-JsonProperty $contract "artifactName" "UI browser evidence artifact")
+    generated_at = (Get-Date).ToUniversalTime().ToString("o")
+    mode = "browser_live_e2e"
+    outcome = $Outcome
+    provenance = [PSCustomObject]@{
+      script = "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1"
+      handoff_artifact = "web/admin-ui/src/billingExecuteSmokeContract.serializable.json"
+      handoff_fresh = $true
+    }
+    blockers = @($Blockers)
+    matrix = [PSCustomObject]@{
+      browser_tooling = $ToolingStatus
+      admin_ui_reachable = [bool]$AdminUiProbe.Reachable
+      control_plane_health_reachable = [bool]$ControlPlaneProbe.Reachable
+      session_material_present = $SessionMaterialPresent
+      session_material_echoed = $false
+      mutation_opt_in_enabled = $MutationEnabled
+    }
+    durations = [PSCustomObject]@{
+      service_readiness_duration_ms = $ServiceReadinessDurationMs
+      submit_latency_ms = $unavailable
+      dry_run_plan_duration_ms = $unavailable
+      execute_apply_duration_ms = $unavailable
+      idempotent_replay_duration_ms = $unavailable
+      refund_refusal_duration_ms = $unavailable
+      ledger_refresh_duration_ms = $unavailable
+    }
+    duration_field_names = [PSCustomObject]@{
+      service_readiness_duration_ms = [string](Get-JsonProperty $durationFields "serviceReadinessDurationMs" "UI browser evidence duration fields")
+      submit_latency_ms = [string](Get-JsonProperty $durationFields "submitLatencyMs" "UI browser evidence duration fields")
+      dry_run_plan_duration_ms = [string](Get-JsonProperty $durationFields "dryRunPlanDurationMs" "UI browser evidence duration fields")
+      execute_apply_duration_ms = [string](Get-JsonProperty $durationFields "executeApplyDurationMs" "UI browser evidence duration fields")
+      idempotent_replay_duration_ms = [string](Get-JsonProperty $durationFields "idempotentReplayDurationMs" "UI browser evidence duration fields")
+      refund_refusal_duration_ms = [string](Get-JsonProperty $durationFields "refundRefusalDurationMs" "UI browser evidence duration fields")
+      ledger_refresh_duration_ms = [string](Get-JsonProperty $durationFields "ledgerRefreshDurationMs" "UI browser evidence duration fields")
+    }
+    actions = $actions
+    secret_safe = [PSCustomObject]@{
+      session_material_echoed = $false
+      request_material_echoed = $false
+      metadata_material_echoed = $false
+      contract_forbidden_markers_checked = $true
+    }
+  }
+}
+
+function Assert-BrowserEvidenceArtifactShape {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  Assert-BrowserEvidenceArtifactContract $Handoff
+  $contract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
+  $requiredTopLevel = Get-JsonStringArray (Get-JsonProperty $contract "requiredTopLevelFields" "UI browser evidence artifact") "UI browser evidence top-level fields"
+  foreach ($field in $requiredTopLevel) {
+    [void](Get-JsonProperty $Artifact $field "browser evidence artifact")
+  }
+
+  $outcomes = Get-JsonProperty $contract "outcomes" "UI browser evidence artifact"
+  $allowedOutcomes = @()
+  foreach ($name in @("blocked", "failed", "passed")) {
+    $allowedOutcomes += [string](Get-JsonProperty $outcomes $name "UI browser evidence outcomes")
+  }
+  if ($allowedOutcomes -notcontains [string]$Artifact.outcome) {
+    throw "browser evidence artifact outcome '$($Artifact.outcome)' is not allowed"
+  }
+
+  $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
+  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    $field = [string](Get-JsonProperty $durationFields $name "UI browser evidence duration fields")
+    [void](Get-JsonProperty $Artifact.durations $field "browser evidence durations")
+  }
+
+  Assert-True ((Get-JsonProperty $Artifact.secret_safe "session_material_echoed" "browser evidence secret-safe") -eq $false) "browser evidence must not echo session material"
+  $json = $Artifact | ConvertTo-Json -Depth 32 -Compress
+  Assert-SecretSafeContent -Content $json -Context "browser evidence artifact"
+}
+
+function Write-BrowserEvidenceArtifactDryRun {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Blockers,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+  )
+
+  Assert-BrowserEvidenceArtifactContract $Handoff
+  $blockedArtifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "blocked" -Blockers $Blockers -ToolingStatus $ToolingStatus -AdminUiProbe $AdminUiProbe -ControlPlaneProbe $ControlPlaneProbe -MutationEnabled $MutationEnabled -SessionMaterialPresent $SessionMaterialPresent -ServiceReadinessDurationMs $ServiceReadinessDurationMs
+  $passArtifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe ([PSCustomObject]@{ Reachable = $true }) -ControlPlaneProbe ([PSCustomObject]@{ Reachable = $true }) -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 0
+  $failArtifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "failed" -Blockers @("state_mismatch") -ToolingStatus "available" -AdminUiProbe ([PSCustomObject]@{ Reachable = $true }) -ControlPlaneProbe ([PSCustomObject]@{ Reachable = $true }) -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 0
+
+  Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $blockedArtifact
+  Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $passArtifact
+  Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $failArtifact
+
+  $summary = $blockedArtifact | ConvertTo-Json -Depth 32 -Compress
+  Write-SafeHost "Browser ledger execute evidence artifact dry-run:"
+  Write-SafeHost "browser_evidence_artifact=$($blockedArtifact.artifact)"
+  Write-SafeHost "browser_evidence_outcome=$($blockedArtifact.outcome)"
+  Write-SafeHost "browser_evidence_blockers=$($blockedArtifact.blockers -join '+')"
+  Write-SafeHost "browser_evidence_secret_safe=true"
+  Write-SafeHost "browser_evidence_json=$summary"
+}
+
 function Assert-BrowserLiveSmokeHarnessPreflight {
   param([Parameter(Mandatory = $true)]$Handoff)
 
@@ -1121,6 +1285,18 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   $serviceTimer.Stop()
   $serviceBlocker = Get-ServiceBlockerMarker -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
   $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+  $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
+  $mutationEnabled = Test-BrowserMutationOptIn $runbook
+  $liveBlockers = @()
+  if ($serviceBlocker -ne "none") {
+    $liveBlockers += @($serviceBlocker.Split("+") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+  }
+  if (-not $sessionMaterialPresent) {
+    $liveBlockers += "session_material_missing"
+  }
+  if (-not $mutationEnabled) {
+    $liveBlockers += "live_mutation_opt_in_missing"
+  }
   $readiness = "ready"
   if ($serviceBlocker -ne "none") {
     $readiness = $unavailableMarker
@@ -1146,6 +1322,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-SafeHost "$submitLatencyMarker=$unavailableMarker"
   Write-SafeHost "$ledgerRefreshMarker=$unavailableMarker"
   Write-BrowserLiveRunbookGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
+  Write-BrowserEvidenceArtifactDryRun -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
 }
 
 function Assert-AdminSourceMarkers {

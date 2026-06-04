@@ -3337,6 +3337,36 @@ describe("App", () => {
       ],
       usesDataTestIdsOnly: true,
     });
+    expect(parsed.browserEvidenceArtifact).toEqual({
+      artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      durationFields: {
+        dryRunPlanDurationMs: "dry_run_plan_duration_ms",
+        executeApplyDurationMs: "execute_apply_duration_ms",
+        idempotentReplayDurationMs: "idempotent_replay_duration_ms",
+        ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+        refundRefusalDurationMs: "refund_refusal_duration_ms",
+        serviceReadinessDurationMs: "service_readiness_duration_ms",
+        submitLatencyMs: "submit_latency_ms",
+      },
+      outcomes: {
+        blocked: "blocked",
+        failed: "failed",
+        passed: "passed",
+      },
+      requiredTopLevelFields: [
+        "artifact",
+        "generated_at",
+        "mode",
+        "outcome",
+        "provenance",
+        "blockers",
+        "matrix",
+        "durations",
+        "actions",
+        "secret_safe",
+      ],
+      unavailableMarker: "unavailable",
+    });
     expect(parsed.browserLiveRunbook).toEqual({
       blockerClassifications: {
         adminUiUnreachable: "admin_ui_unreachable",
