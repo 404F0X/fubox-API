@@ -71,6 +71,7 @@
       "mode",
       "outcome",
       "provenance",
+      "freshness",
       "blockers",
       "matrix",
       "durations",
@@ -171,6 +172,21 @@
       "freshnessMarker": "artifact_roundtrip_fresh",
       "outputMarker": "browser_runner_evidence_json",
       "writeMode": "json_roundtrip_only"
+    },
+    "artifactWriteRead": {
+      "defaultWritesArtifact": false,
+      "defaultPath": "artifacts/billing_execute_browser_live_e2e_evidence.json",
+      "env": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
+      "flag": "-BrowserEvidenceArtifactWriteOptIn",
+      "pathEnv": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
+      "requiredValue": "1",
+      "staleRefusal": {
+        "maxGeneratedAgeMinutes": 30,
+        "requireCurrentGitCommit": true,
+        "requireFreshnessMarker": true,
+        "requireHandoffFresh": true
+      },
+      "writeMode": "explicit_opt_in_only"
     },
     "defaultMode": "runner_readiness_only",
     "durationCaptureNames": {

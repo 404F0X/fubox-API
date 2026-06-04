@@ -7,6 +7,8 @@ param(
   [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [int]$TimeoutSeconds = 10,
   [int]$BrowserProbeTimeoutMilliseconds = 750,
+  [string]$BrowserEvidenceArtifactPath = "artifacts/billing_execute_browser_live_e2e_evidence.json",
+  [switch]$BrowserEvidenceArtifactWriteOptIn,
   [switch]$BrowserMutationOptIn,
   [switch]$BrowserPreflight,
   [switch]$ContractOnly,
@@ -41,6 +43,8 @@ if ($env:CONTROL_PLANE_ADMIN_PASSWORD) { $AdminPassword = $env:CONTROL_PLANE_ADM
 if ($env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $script:AdminSessionToken = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN }
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS) { $BrowserProbeTimeoutMilliseconds = [int]$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH) { $BrowserEvidenceArtifactPath = $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE -eq "1") { $BrowserEvidenceArtifactWriteOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_CONTRACT_ONLY -eq "1") { $ContractOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS -eq "1") { $KeepSmokeRows = $true }
@@ -175,6 +179,40 @@ function Read-Json {
   } catch {
     throw "expected JSON response, got: $(Redact-SecretLikeString $Content)"
   }
+}
+
+function Get-CurrentGitCommit {
+  try {
+    $commit = & git -C $repoRoot rev-parse HEAD 2>$null
+    if (-not [string]::IsNullOrWhiteSpace($commit)) {
+      return [string]$commit.Trim()
+    }
+  } catch {
+  }
+  return "unavailable"
+}
+
+function Resolve-BoundedEvidenceArtifactPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    throw "browser evidence artifact path is empty"
+  }
+
+  $repoRootString = [System.IO.Path]::GetFullPath([string]$repoRoot)
+  $candidate = $Path
+  if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+    $candidate = Join-Path $repoRootString $candidate
+  }
+  $fullPath = [System.IO.Path]::GetFullPath($candidate)
+  $repoPrefix = $repoRootString.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+  if (-not ($fullPath.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase))) {
+    throw "browser evidence artifact path must stay inside repo"
+  }
+  if ([System.IO.Directory]::Exists($fullPath)) {
+    throw "browser evidence artifact path must be a file"
+  }
+  return $fullPath
 }
 
 function Assert-Equal {
@@ -1107,7 +1145,7 @@ function Assert-BrowserEvidenceArtifactContract {
   Assert-Equal (Get-JsonProperty $contract "unavailableMarker" "UI browser evidence artifact") "unavailable" "UI browser evidence unavailable marker"
 
   $requiredTopLevel = Get-JsonStringArray (Get-JsonProperty $contract "requiredTopLevelFields" "UI browser evidence artifact") "UI browser evidence top-level fields"
-  Assert-StringSetEqual $requiredTopLevel @("artifact", "generated_at", "mode", "outcome", "provenance", "blockers", "matrix", "durations", "actions", "secret_safe") "UI browser evidence top-level fields"
+  Assert-StringSetEqual $requiredTopLevel @("artifact", "generated_at", "mode", "outcome", "provenance", "freshness", "blockers", "matrix", "durations", "actions", "secret_safe") "UI browser evidence top-level fields"
 
   $outcomes = Get-JsonProperty $contract "outcomes" "UI browser evidence artifact"
   foreach ($name in @("blocked", "failed", "passed")) {
@@ -1133,12 +1171,25 @@ function New-BrowserEvidenceArtifact {
     [Parameter(Mandatory = $true)]$ControlPlaneProbe,
     [Parameter(Mandatory = $true)][bool]$MutationEnabled,
     [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
-    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs,
+    [string]$GeneratedAt = "",
+    [string]$GitCommit = "",
+    [bool]$HandoffFresh = $true
   )
 
   $contract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
   $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
   $unavailable = [string](Get-JsonProperty $contract "unavailableMarker" "UI browser evidence artifact")
+  $runner = Get-JsonProperty $Handoff "browserRunnerReadiness" "UI handoff"
+  $roundTrip = Get-JsonProperty $runner "artifactRoundTrip" "UI browser runner artifact round-trip"
+  $artifactWriteRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
+  $staleRefusal = Get-JsonProperty $artifactWriteRead "staleRefusal" "UI browser runner artifact stale refusal"
+  if ([string]::IsNullOrWhiteSpace($GeneratedAt)) {
+    $GeneratedAt = (Get-Date).ToUniversalTime().ToString("o")
+  }
+  if ([string]::IsNullOrWhiteSpace($GitCommit)) {
+    $GitCommit = Get-CurrentGitCommit
+  }
   $actions = @()
   $actionPlan = Get-JsonProperty $Handoff "browserActionPlan" "UI handoff"
   foreach ($step in @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")) {
@@ -1147,19 +1198,28 @@ function New-BrowserEvidenceArtifact {
       expected_state = [string](Get-JsonProperty $step "expectedState" "UI browser evidence action")
       selector = [string](Get-JsonProperty $step "selector" "UI browser evidence action")
       status = if ($Outcome -eq "passed") { "passed" } elseif ($Outcome -eq "failed") { "failed" } else { $unavailable }
+      outcome = if ($Outcome -eq "passed") { "passed" } elseif ($Outcome -eq "failed") { "failed" } else { $unavailable }
       duration_ms = $unavailable
     }
   }
 
   return [PSCustomObject]@{
     artifact = [string](Get-JsonProperty $contract "artifactName" "UI browser evidence artifact")
-    generated_at = (Get-Date).ToUniversalTime().ToString("o")
+    generated_at = $GeneratedAt
     mode = "browser_live_e2e"
     outcome = $Outcome
     provenance = [PSCustomObject]@{
       script = "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1"
       handoff_artifact = "web/admin-ui/src/billingExecuteSmokeContract.serializable.json"
       handoff_fresh = $true
+      git_commit = $GitCommit
+    }
+    freshness = [PSCustomObject]@{
+      marker = [string](Get-JsonProperty $roundTrip "freshnessMarker" "UI browser runner artifact round-trip")
+      handoff_fresh = $HandoffFresh
+      git_commit = $GitCommit
+      require_current_git_commit = [bool](Get-JsonProperty $staleRefusal "requireCurrentGitCommit" "UI browser runner artifact stale refusal")
+      max_generated_age_minutes = [int](Get-JsonProperty $staleRefusal "maxGeneratedAgeMinutes" "UI browser runner artifact stale refusal")
     }
     blockers = @($Blockers)
     matrix = [PSCustomObject]@{
@@ -1226,9 +1286,69 @@ function Assert-BrowserEvidenceArtifactShape {
     [void](Get-JsonProperty $Artifact.durations $field "browser evidence durations")
   }
 
+  foreach ($action in @(Get-JsonProperty $Artifact "actions" "browser evidence artifact")) {
+    [void](Get-JsonProperty $action "name" "browser evidence action")
+    [void](Get-JsonProperty $action "outcome" "browser evidence action")
+    [void](Get-JsonProperty $action "duration_ms" "browser evidence action")
+  }
+
   Assert-True ((Get-JsonProperty $Artifact.secret_safe "session_material_echoed" "browser evidence secret-safe") -eq $false) "browser evidence must not echo session material"
   $json = $Artifact | ConvertTo-Json -Depth 32 -Compress
   Assert-SecretSafeContent -Content $json -Context "browser evidence artifact"
+}
+
+function Assert-BrowserEvidenceArtifactFreshness {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $Artifact
+  $runner = Get-JsonProperty $Handoff "browserRunnerReadiness" "UI handoff"
+  $roundTrip = Get-JsonProperty $runner "artifactRoundTrip" "UI browser runner artifact round-trip"
+  $artifactWriteRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
+  $staleRefusal = Get-JsonProperty $artifactWriteRead "staleRefusal" "UI browser runner artifact stale refusal"
+  $freshness = Get-JsonProperty $Artifact "freshness" "browser evidence artifact"
+
+  Assert-Equal (Get-JsonProperty $freshness "marker" "browser evidence freshness") (Get-JsonProperty $roundTrip "freshnessMarker" "UI browser runner artifact round-trip") "browser evidence freshness marker"
+  Assert-True ((Get-JsonProperty $freshness "handoff_fresh" "browser evidence freshness") -eq $true) "browser evidence handoff must be fresh"
+  Assert-True ((Get-JsonProperty $Artifact.provenance "handoff_fresh" "browser evidence provenance") -eq $true) "browser evidence provenance handoff must be fresh"
+
+  if ([bool](Get-JsonProperty $staleRefusal "requireCurrentGitCommit" "UI browser runner artifact stale refusal")) {
+    Assert-Equal (Get-JsonProperty $freshness "git_commit" "browser evidence freshness") (Get-CurrentGitCommit) "browser evidence git commit freshness"
+  }
+
+  $generatedAt = [DateTime]::Parse([string](Get-JsonProperty $Artifact "generated_at" "browser evidence artifact")).ToUniversalTime()
+  $maxAgeMinutes = [int](Get-JsonProperty $staleRefusal "maxGeneratedAgeMinutes" "UI browser runner artifact stale refusal")
+  $age = (Get-Date).ToUniversalTime() - $generatedAt
+  if ($age.TotalMinutes -gt $maxAgeMinutes) {
+    throw "browser evidence artifact is stale by generated_at"
+  }
+}
+
+function Assert-StaleBrowserEvidenceArtifactRefusal {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $probe = [PSCustomObject]@{ Reachable = $true }
+  $oldGeneratedAt = (Get-Date).ToUniversalTime().AddHours(-2).ToString("o")
+  $missingFreshnessArtifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 0
+  $missingFreshnessArtifact.PSObject.Properties.Remove("freshness")
+  $staleArtifacts = @(
+    (New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 0 -GitCommit "old-commit"),
+    (New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 0 -GeneratedAt $oldGeneratedAt),
+    (New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 0 -HandoffFresh $false),
+    $missingFreshnessArtifact
+  )
+
+  foreach ($artifact in $staleArtifacts) {
+    $refused = $false
+    try {
+      Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $artifact
+    } catch {
+      $refused = $true
+    }
+    Assert-True $refused "stale browser evidence artifact must be refused"
+  }
 }
 
 function Write-BrowserEvidenceArtifactDryRun {
@@ -1287,6 +1407,16 @@ function Assert-BrowserRunnerReadinessContract {
   Assert-Equal (Get-JsonProperty $roundTrip "outputMarker" "UI browser runner artifact round-trip") "browser_runner_evidence_json" "UI browser runner artifact round-trip output marker"
   Assert-Equal (Get-JsonProperty $roundTrip "writeMode" "UI browser runner artifact round-trip") "json_roundtrip_only" "UI browser runner artifact round-trip write mode"
 
+  $writeRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
+  Assert-True ((Get-JsonProperty $writeRead "defaultWritesArtifact" "UI browser runner artifact write/read") -eq $false) "UI browser runner must not write artifact by default"
+  Assert-Equal (Get-JsonProperty $writeRead "defaultPath" "UI browser runner artifact write/read") "artifacts/billing_execute_browser_live_e2e_evidence.json" "UI browser runner artifact default path"
+  Assert-Equal (Get-JsonProperty $writeRead "env" "UI browser runner artifact write/read") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE" "UI browser runner artifact write env"
+  Assert-Equal (Get-JsonProperty $writeRead "flag" "UI browser runner artifact write/read") "-BrowserEvidenceArtifactWriteOptIn" "UI browser runner artifact write flag"
+  Assert-Equal (Get-JsonProperty $writeRead "pathEnv" "UI browser runner artifact write/read") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH" "UI browser runner artifact path env"
+  Assert-Equal (Get-JsonProperty $writeRead "requiredValue" "UI browser runner artifact write/read") "1" "UI browser runner artifact write env value"
+  Assert-Equal (Get-JsonProperty $writeRead "writeMode" "UI browser runner artifact write/read") "explicit_opt_in_only" "UI browser runner artifact write mode"
+  [void](Resolve-BoundedEvidenceArtifactPath ([string](Get-JsonProperty $writeRead "defaultPath" "UI browser runner artifact write/read")))
+
   $durationCaptureNames = Get-JsonProperty $runner "durationCaptureNames" "UI browser runner readiness"
   $evidenceContract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
   $durationFields = Get-JsonProperty $evidenceContract "durationFields" "UI browser evidence artifact"
@@ -1301,6 +1431,16 @@ function Assert-BrowserRunnerReadinessContract {
       throw "UI browser runner readiness field '$name' must be machine readable"
     }
   }
+}
+
+function Test-BrowserEvidenceArtifactWriteOptIn {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runner = Get-JsonProperty $Handoff "browserRunnerReadiness" "UI handoff"
+  $writeRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
+  $envName = [string](Get-JsonProperty $writeRead "env" "UI browser runner artifact write/read")
+  $requiredValue = [string](Get-JsonProperty $writeRead "requiredValue" "UI browser runner artifact write/read")
+  return $BrowserEvidenceArtifactWriteOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
 }
 
 function Get-ActionSelectorReadiness {
@@ -1359,6 +1499,21 @@ function Write-BrowserRunnerReadinessGate {
   $artifactJson = $artifact | ConvertTo-Json -Depth 32 -Compress
   $roundTripArtifact = Read-Json $artifactJson
   Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $roundTripArtifact
+  Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $roundTripArtifact
+  Assert-StaleBrowserEvidenceArtifactRefusal -Handoff $Handoff
+
+  $writeRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
+  $writeEnabled = Test-BrowserEvidenceArtifactWriteOptIn $Handoff
+  $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
+  if ($writeEnabled) {
+    $artifactDirectory = Split-Path -Path $artifactPath -Parent
+    if (-not (Test-Path $artifactDirectory)) {
+      New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+    }
+    Set-Content -Path $artifactPath -Value $artifactJson -Encoding UTF8
+    $readBack = Read-JsonFile $artifactPath
+    Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $readBack
+  }
 
   Write-SafeHost "Browser ledger execute runner readiness gate:"
   Write-SafeHost "$([string](Get-JsonProperty $readinessFields "actionsAllowed" "UI browser runner readiness fields"))=$(Format-BoolMarker $actionsAllowed)"
@@ -1370,6 +1525,11 @@ function Write-BrowserRunnerReadinessGate {
   Write-SafeHost "$([string](Get-JsonProperty $readinessFields "selectorReadiness" "UI browser runner readiness fields"))=$selectorReadiness"
   Write-SafeHost "$([string](Get-JsonProperty $readinessFields "noMutationDefault" "UI browser runner readiness fields"))=true"
   Write-SafeHost "$([string](Get-JsonProperty $roundTrip "freshnessMarker" "UI browser runner artifact round-trip"))=true"
+  Write-SafeHost "browser_artifact_write_enabled=$(Format-BoolMarker $writeEnabled)"
+  Write-SafeHost "browser_artifact_write_mode=$([string](Get-JsonProperty $writeRead "writeMode" "UI browser runner artifact write/read"))"
+  Write-SafeHost "browser_artifact_path_bounded=true"
+  Write-SafeHost "browser_artifact_readback_fresh=$(Format-BoolMarker $writeEnabled)"
+  Write-SafeHost "browser_artifact_stale_refusal=true"
   Write-SafeHost "$([string](Get-JsonProperty $roundTrip "outputMarker" "UI browser runner artifact round-trip"))=$artifactJson"
 }
 
