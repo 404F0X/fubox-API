@@ -366,6 +366,19 @@ Do not close unrelated gaps from this smoke alone. In particular, Admin UI real
 execute submit flow, broader billing-ledger executor integration, staging release
 approval, and any Gateway/routing live smokes remain separate acceptance items.
 
+### 11.7 OpenAPI Semantic Validator And Client Generation
+
+The default OpenAPI drift gate is lightweight and contract-only. Full semantic
+validation and generated-client inspection are a separate E11 acceptance item;
+use `docs/E11-007_LEDGER_EXECUTE_OPENAPI_VALIDATION_RUNBOOK.md`.
+
+That runbook records recommended Redocly/OpenAPI Generator validator commands,
+client generation commands, missing-tool/offline blocker semantics, and the
+generated ledger execute/executor summary fields that must remain secret-safe.
+A clean run can close the E11 OpenAPI semantic/client-generation gap only. It
+does not close live Postgres, success audit live evidence, Admin UI E2E, or
+billing-ledger runtime writer gaps.
+
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook
 
 This section is the acceptance entry for TODO lane `E13-005-S10`. The detailed
