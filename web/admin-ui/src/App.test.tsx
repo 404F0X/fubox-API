@@ -8,12 +8,14 @@ import {
   ledgerAdjustmentExecuteLiveSmokeHandoff,
   ledgerAdjustmentExecuteLiveSmokeSerializableHandoff,
 } from "./billingExecuteSmokeContract";
+import ledgerAdjustmentExecuteLiveSmokeSerializableHandoffArtifact from "./billingExecuteSmokeContract.serializable.json";
 
 vi.setConfig({ testTimeout: 15000 });
 
 const ledgerExecuteSmoke = ledgerAdjustmentExecuteLiveSmokeContract;
 const ledgerExecuteSmokeHandoff = ledgerAdjustmentExecuteLiveSmokeHandoff;
 const ledgerExecuteSmokeSerializableHandoff = ledgerAdjustmentExecuteLiveSmokeSerializableHandoff;
+const ledgerExecuteSmokeSerializableHandoffArtifact = ledgerAdjustmentExecuteLiveSmokeSerializableHandoffArtifact;
 
 const AUTH_HEADER_NAME = ["Author", "ization"].join("");
 const BEARER_SCHEME = ["Bear", "er"].join("");
@@ -3094,6 +3096,8 @@ describe("App", () => {
 
     expect(serializedHandoff).not.toContain("undefined");
     expect(parsed).toEqual(handoff);
+    expect(ledgerExecuteSmokeSerializableHandoffArtifact).toEqual(handoff);
+    expect(JSON.parse(JSON.stringify(ledgerExecuteSmokeSerializableHandoffArtifact))).toEqual(handoff);
     expect(parsed.selectors).toEqual(ledgerExecuteSmoke.selectors);
     expect(parsed.statusMarkers).toEqual(ledgerExecuteSmoke.markers);
     expect(parsed.forbiddenSensitiveMarkers).toEqual(ledgerExecuteSmoke.forbiddenSensitiveMarkers);

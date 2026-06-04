@@ -15,6 +15,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $fixturePath = Join-Path $repoRoot "tests\fixtures\control-plane\ledger_adjustment_execute_live_smoke.json"
 $dryRunContractPath = Join-Path $repoRoot "tests\fixtures\control-plane\ledger_adjustment_dry_run_contract.json"
+$uiSmokeHandoffPath = Join-Path $repoRoot "web\admin-ui\src\billingExecuteSmokeContract.serializable.json"
 $adminSourcePath = Join-Path $repoRoot "apps\control-plane\src\admin.rs"
 
 $script:Failures = @()
@@ -391,6 +392,246 @@ function Assert-S4ContractFixture {
   Assert-True ($Contract.execute.audit_insert_failure_rolls_back_ledger_write -eq $true) "S4 fixture audit rollback"
   Assert-True ($Contract.execute.idempotent_replay_does_not_write_ledger_or_audit -eq $true) "S4 fixture idempotent no-op"
   Assert-True ($Contract.execute_contract.error_code -eq "future_writer_required") "S4 execute_contract must remain blocked"
+}
+
+function Get-JsonProperty {
+  param(
+    [Parameter(Mandatory = $true)]$Object,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Context
+  )
+
+  if ($null -eq $Object) {
+    throw "$Context is null"
+  }
+
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    throw "$Context missing '$Name'"
+  }
+
+  return $property.Value
+}
+
+function Assert-JsonNullProperty {
+  param(
+    [Parameter(Mandatory = $true)]$Object,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Context
+  )
+
+  if ($null -eq $Object) {
+    throw "$Context is null"
+  }
+
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    throw "$Context missing '$Name'"
+  }
+  if ($null -ne $property.Value) {
+    throw "$Context expected '$Name' to be null"
+  }
+}
+
+function Get-JsonStringArray {
+  param(
+    [AllowNull()]$Value,
+    [Parameter(Mandatory = $true)][string]$Context
+  )
+
+  $items = @($Value)
+  if ($items.Count -eq 0) {
+    throw "$Context must not be empty"
+  }
+
+  $strings = @()
+  foreach ($item in $items) {
+    $text = [string]$item
+    if ([string]::IsNullOrWhiteSpace($text)) {
+      throw "$Context contains a blank value"
+    }
+    $strings += $text
+  }
+  return $strings
+}
+
+function Assert-StringSetEqual {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Actual,
+    [Parameter(Mandatory = $true)][string[]]$Expected,
+    [Parameter(Mandatory = $true)][string]$Message
+  )
+
+  $actualSorted = @($Actual | Sort-Object)
+  $expectedSorted = @($Expected | Sort-Object)
+  Assert-Equal ($actualSorted -join "|") ($expectedSorted -join "|") $Message
+  Assert-Equal @($Actual | Select-Object -Unique).Count $Actual.Count "$Message uniqueness"
+}
+
+function Get-UiSmokeSelector {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  $selectors = Get-JsonProperty $Handoff "selectors" "UI handoff"
+  $selector = [string](Get-JsonProperty $selectors $Name "UI handoff selectors")
+  if ($selector -notmatch '^ledger-adjustment-[a-z0-9-]+$') {
+    throw "UI handoff selector '$Name' must be a stable ledger-adjustment data-testid, got '$selector'"
+  }
+  return $selector
+}
+
+function Get-UiSmokeStatusMarker {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  $markers = Get-JsonProperty $Handoff "statusMarkers" "UI handoff"
+  $marker = [string](Get-JsonProperty $markers $Name "UI handoff status markers")
+  if ($marker -notmatch '^[a-z0-9_]+$') {
+    throw "UI handoff status marker '$Name' must be a stable machine marker, got '$marker'"
+  }
+  return $marker
+}
+
+function Get-UiSmokeReadinessState {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  $states = Get-JsonProperty $Handoff "readinessStates" "UI handoff"
+  return Get-JsonProperty $states $Name "UI handoff readiness states"
+}
+
+function Assert-HandoffMarkerValue {
+  param(
+    [Parameter(Mandatory = $true)]$Markers,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [AllowNull()]$Expected,
+    [Parameter(Mandatory = $true)][string]$Context
+  )
+
+  if ($null -eq $Expected) {
+    Assert-JsonNullProperty $Markers $Name $Context
+  } else {
+    Assert-Equal (Get-JsonProperty $Markers $Name $Context) $Expected "$Context $Name"
+  }
+}
+
+function Assert-UiSmokeReadinessState {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$ExpectedStatus,
+    [Parameter(Mandatory = $true)][bool]$ExpectedExecuteButtonEnabled,
+    [Parameter(Mandatory = $true)][bool]$ExpectedContractCheckNetworkCall,
+    [Parameter(Mandatory = $true)][bool]$ExpectedDryRunFresh,
+    [AllowNull()]$ExpectedExecuteOutcome,
+    [AllowNull()]$ExpectedExecuteResultFresh,
+    [Parameter(Mandatory = $true)][bool]$ExpectedExecuteWriteNetworkCall,
+    [AllowNull()]$ExpectedLedgerRefreshStatus
+  )
+
+  $state = Get-UiSmokeReadinessState $Handoff $Name
+  Assert-Equal (Get-JsonProperty $state "expectedStatus" "UI handoff readiness state '$Name'") $ExpectedStatus "UI handoff readiness state '$Name' status"
+  Assert-True ([bool](Get-JsonProperty $state "executeButtonEnabled" "UI handoff readiness state '$Name'") -eq $ExpectedExecuteButtonEnabled) "UI handoff readiness state '$Name' execute button flag"
+
+  $markerKeys = Get-JsonStringArray (Get-JsonProperty $Handoff "readinessMarkerKeys" "UI handoff") "UI handoff readiness marker keys"
+  $markers = Get-JsonProperty $state "markers" "UI handoff readiness state '$Name'"
+  Assert-StringSetEqual @($markers.PSObject.Properties.Name) $markerKeys "UI handoff readiness state '$Name' marker keys"
+
+  Assert-HandoffMarkerValue $markers "contractCheckNetworkCall" $ExpectedContractCheckNetworkCall "UI handoff readiness state '$Name'"
+  Assert-HandoffMarkerValue $markers "dryRunFresh" $ExpectedDryRunFresh "UI handoff readiness state '$Name'"
+  Assert-HandoffMarkerValue $markers "executeOutcome" $ExpectedExecuteOutcome "UI handoff readiness state '$Name'"
+  Assert-HandoffMarkerValue $markers "executeResultFresh" $ExpectedExecuteResultFresh "UI handoff readiness state '$Name'"
+  Assert-HandoffMarkerValue $markers "executeWriteNetworkCall" $ExpectedExecuteWriteNetworkCall "UI handoff readiness state '$Name'"
+  Assert-HandoffMarkerValue $markers "ledgerRefreshStatus" $ExpectedLedgerRefreshStatus "UI handoff readiness state '$Name'"
+}
+
+function Assert-UiLiveSmokeSerializableHandoff {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $raw = Get-Content -Path $uiSmokeHandoffPath -Raw
+  if ($raw.Contains("undefined")) {
+    throw "UI smoke handoff artifact must not contain undefined; use JSON null for absent optional markers"
+  }
+
+  $serialization = Get-JsonProperty $Handoff "serialization" "UI handoff"
+  Assert-Equal (Get-JsonProperty $serialization "format" "UI handoff serialization") "json" "UI handoff serialization format"
+  Assert-JsonNullProperty $serialization "absentOptionalMarker" "UI handoff serialization"
+
+  $requiredMarkerKeys = @(
+    "contractCheckNetworkCall",
+    "dryRunFresh",
+    "executeOutcome",
+    "executeResultFresh",
+    "executeWriteNetworkCall",
+    "ledgerRefreshStatus"
+  )
+  $markerKeys = Get-JsonStringArray (Get-JsonProperty $Handoff "readinessMarkerKeys" "UI handoff") "UI handoff readiness marker keys"
+  $serializationMarkerKeys = Get-JsonStringArray (Get-JsonProperty $serialization "requiredReadinessMarkerKeys" "UI handoff serialization") "UI handoff serialization marker keys"
+  Assert-StringSetEqual $markerKeys $requiredMarkerKeys "UI handoff readiness marker keys"
+  Assert-StringSetEqual $serializationMarkerKeys $requiredMarkerKeys "UI handoff serialization marker keys"
+
+  $scriptUsage = Get-JsonProperty $Handoff "scriptUsage" "UI handoff"
+  Assert-True ([bool](Get-JsonProperty $scriptUsage "useDataTestIdsOnly" "UI handoff script usage")) "UI handoff script usage must require data-testid selectors"
+  Assert-True ([bool](Get-JsonProperty $scriptUsage "readStatusFromReadinessRegion" "UI handoff script usage")) "UI handoff script usage must read readiness status markers"
+  Assert-True ([bool](Get-JsonProperty $scriptUsage "assertNoForbiddenMarkersInDocument" "UI handoff script usage")) "UI handoff script usage must assert forbidden markers"
+  Assert-Equal (Get-JsonProperty $scriptUsage "selectorsSource" "UI handoff script usage") "ledgerAdjustmentExecuteLiveSmokeContract.selectors" "UI handoff selector source"
+  Assert-Equal (Get-JsonProperty $scriptUsage "statusMarkersSource" "UI handoff script usage") "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates" "UI handoff status source"
+
+  $selectorNames = @(
+    "contractCheckNetworkCall",
+    "dryRunFresh",
+    "executeButton",
+    "executeContractButton",
+    "executeContractMode",
+    "executeEndpoint",
+    "executeOutcome",
+    "executeResultFresh",
+    "executeWriteNetworkCall",
+    "ledgerRefreshStatus",
+    "readiness"
+  )
+  $selectorValues = @($selectorNames | ForEach-Object { Get-UiSmokeSelector $Handoff $_ })
+  Assert-StringSetEqual $selectorValues $selectorValues "UI handoff selector values"
+
+  $statusMarkerNames = @(
+    "contractCheckNetworkCall",
+    "dryRunFresh",
+    "executeContractMode",
+    "executeEndpoint",
+    "executeOutcome",
+    "executeResultFresh",
+    "executeWriteNetworkCall",
+    "ledgerEntriesRefreshAfterExecute"
+  )
+  [void]@($statusMarkerNames | ForEach-Object { Get-UiSmokeStatusMarker $Handoff $_ })
+
+  $forbiddenMarkers = Get-JsonStringArray (Get-JsonProperty $Handoff "forbiddenSensitiveMarkers" "UI handoff") "UI handoff forbidden sensitive markers"
+  foreach ($forbidden in @("Authorization", "Cookie", "token", "credential", "operation_key", "raw metadata", "raw executor error detail", "dedupe material")) {
+    if ($forbiddenMarkers -notcontains $forbidden) {
+      throw "UI handoff forbidden markers missing '$forbidden'"
+    }
+  }
+
+  Assert-UiSmokeReadinessState $Handoff "dryRunRequired" "dry run required" $false $false $false $null $null $false $null
+  Assert-UiSmokeReadinessState $Handoff "executePreflight" "execute preflight" $true $false $true $null $null $false $null
+  Assert-UiSmokeReadinessState $Handoff "contractBlocked" "blocked" $true $true $true $null $null $false $null
+  Assert-UiSmokeReadinessState $Handoff "blocked" "blocked" $true $false $true $null $null $true $null
+  Assert-UiSmokeReadinessState $Handoff "failed" "failed" $true $false $true $null $null $true $null
+  Assert-UiSmokeReadinessState $Handoff "stalePlan" "stale plan" $false $false $false $null $null $false $null
+  Assert-UiSmokeReadinessState $Handoff "appliedRefreshSuccess" "applied" $true $false $true "applied" $true $true "success"
+  Assert-UiSmokeReadinessState $Handoff "appliedRefreshError" "applied" $true $false $true "applied" $true $true "error"
+  Assert-UiSmokeReadinessState $Handoff "idempotentRefreshSuccess" "idempotent" $true $false $true "idempotent" $true $true "success"
+  Assert-UiSmokeReadinessState $Handoff "idempotentRefreshError" "idempotent" $true $false $true "idempotent" $true $true "error"
+
+  $roundTrip = ($Handoff | ConvertTo-Json -Depth 32 -Compress) | ConvertFrom-Json
+  Assert-UiSmokeReadinessState $roundTrip "dryRunRequired" "dry run required" $false $false $false $null $null $false $null
+  Assert-UiSmokeReadinessState $roundTrip "appliedRefreshSuccess" "applied" $true $false $true "applied" $true $true "success"
 }
 
 function Assert-AdminSourceMarkers {
@@ -774,6 +1015,10 @@ try {
 
   Check "S4 execute fixture remains transactional" {
     Assert-S4ContractFixture (Read-JsonFile $dryRunContractPath)
+  }
+
+  Check "Admin UI ledger execute smoke selector handoff consumption contract" {
+    Assert-UiLiveSmokeSerializableHandoff (Read-JsonFile $uiSmokeHandoffPath)
   }
 
   Check "control-plane source contains transactional execute boundary" {

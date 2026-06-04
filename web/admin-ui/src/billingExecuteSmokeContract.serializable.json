@@ -1,0 +1,186 @@
+{
+  "forbiddenSensitiveMarkers": [
+    "Authorization",
+    "Cookie",
+    "token",
+    "credential",
+    "operation_key",
+    "raw metadata",
+    "raw executor error detail",
+    "dedupe material"
+  ],
+  "readinessStates": {
+    "appliedRefreshError": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "applied",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": "applied",
+        "executeResultFresh": true,
+        "executeWriteNetworkCall": true,
+        "ledgerRefreshStatus": "error"
+      }
+    },
+    "appliedRefreshSuccess": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "applied",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": "applied",
+        "executeResultFresh": true,
+        "executeWriteNetworkCall": true,
+        "ledgerRefreshStatus": "success"
+      }
+    },
+    "blocked": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "blocked",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": null,
+        "executeResultFresh": null,
+        "executeWriteNetworkCall": true,
+        "ledgerRefreshStatus": null
+      }
+    },
+    "contractBlocked": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "blocked",
+      "markers": {
+        "contractCheckNetworkCall": true,
+        "dryRunFresh": true,
+        "executeOutcome": null,
+        "executeResultFresh": null,
+        "executeWriteNetworkCall": false,
+        "ledgerRefreshStatus": null
+      }
+    },
+    "dryRunRequired": {
+      "executeButtonEnabled": false,
+      "expectedStatus": "dry run required",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": false,
+        "executeOutcome": null,
+        "executeResultFresh": null,
+        "executeWriteNetworkCall": false,
+        "ledgerRefreshStatus": null
+      }
+    },
+    "executePreflight": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "execute preflight",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": null,
+        "executeResultFresh": null,
+        "executeWriteNetworkCall": false,
+        "ledgerRefreshStatus": null
+      }
+    },
+    "failed": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "failed",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": null,
+        "executeResultFresh": null,
+        "executeWriteNetworkCall": true,
+        "ledgerRefreshStatus": null
+      }
+    },
+    "idempotentRefreshError": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "idempotent",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": "idempotent",
+        "executeResultFresh": true,
+        "executeWriteNetworkCall": true,
+        "ledgerRefreshStatus": "error"
+      }
+    },
+    "idempotentRefreshSuccess": {
+      "executeButtonEnabled": true,
+      "expectedStatus": "idempotent",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": true,
+        "executeOutcome": "idempotent",
+        "executeResultFresh": true,
+        "executeWriteNetworkCall": true,
+        "ledgerRefreshStatus": "success"
+      }
+    },
+    "stalePlan": {
+      "executeButtonEnabled": false,
+      "expectedStatus": "stale plan",
+      "markers": {
+        "contractCheckNetworkCall": false,
+        "dryRunFresh": false,
+        "executeOutcome": null,
+        "executeResultFresh": null,
+        "executeWriteNetworkCall": false,
+        "ledgerRefreshStatus": null
+      }
+    }
+  },
+  "readinessMarkerKeys": [
+    "contractCheckNetworkCall",
+    "dryRunFresh",
+    "executeOutcome",
+    "executeResultFresh",
+    "executeWriteNetworkCall",
+    "ledgerRefreshStatus"
+  ],
+  "scriptUsage": {
+    "assertNoForbiddenMarkersInDocument": true,
+    "readStatusFromReadinessRegion": true,
+    "selectorsSource": "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
+    "statusMarkersSource": "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
+    "useDataTestIdsOnly": true
+  },
+  "selectors": {
+    "contractCheckFresh": "ledger-adjustment-contract-check-fresh",
+    "contractCheckNetworkCall": "ledger-adjustment-contract-check-network-call",
+    "executeButton": "ledger-adjustment-execute-button",
+    "executeContractButton": "ledger-adjustment-execute-contract-button",
+    "executeContractMode": "ledger-adjustment-execute-contract-mode",
+    "executeEndpoint": "ledger-adjustment-execute-endpoint",
+    "executeFlags": "ledger-adjustment-execute-flags",
+    "executeOutcome": "ledger-adjustment-execute-outcome",
+    "executeResultFresh": "ledger-adjustment-execute-result-fresh",
+    "executeWriteNetworkCall": "ledger-adjustment-execute-write-network-call",
+    "ledgerRefreshStatus": "ledger-adjustment-ledger-refresh-status",
+    "readiness": "ledger-adjustment-execute-readiness",
+    "dryRunFresh": "ledger-adjustment-dry-run-fresh"
+  },
+  "statusMarkers": {
+    "contractCheckNetworkCall": "contract_check_network_call",
+    "dryRunFresh": "fresh_dry_run",
+    "executeContractMode": "execute_contract_mode",
+    "executeEndpoint": "execute_endpoint",
+    "executeOutcome": "execute_outcome",
+    "executeResultFresh": "execute_result_fresh",
+    "executeWriteNetworkCall": "execute_write_network_call",
+    "ledgerEntriesRefreshAfterExecute": "ledger_entries_refresh_after_execute"
+  },
+  "serialization": {
+    "absentOptionalMarker": null,
+    "format": "json",
+    "requiredReadinessMarkerKeys": [
+      "contractCheckNetworkCall",
+      "dryRunFresh",
+      "executeOutcome",
+      "executeResultFresh",
+      "executeWriteNetworkCall",
+      "ledgerRefreshStatus"
+    ]
+  }
+}
