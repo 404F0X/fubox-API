@@ -13,6 +13,30 @@
     "negative_signal_behavior": "sanitize to missing and use fallback",
     "overflow_behavior": "required_tokens_i64 clamps to i64::MAX"
   },
+  "runtime_source_guard": {
+    "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+    "trusted_signal_runtime_sources": [],
+    "trusted_signal_runtime_status": "not wired until a tokenizer/read-model numeric source is available",
+    "raw_prompt_or_input_estimation_allowed": false,
+    "forbidden_raw_prompt_estimators": [
+      ".len()",
+      ".chars()",
+      ".bytes()",
+      "split_whitespace",
+      ".tokenize(",
+      "tokenize_raw",
+      "token_count",
+      "raw_prompt",
+      "raw_input"
+    ],
+    "endpoints": [
+      "openai_chat",
+      "openai_responses",
+      "openai_embeddings",
+      "anthropic_messages",
+      "gemini_native"
+    ]
+  },
   "endpoint_mappings": [
     {
       "endpoint": "openai_chat",

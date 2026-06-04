@@ -13549,6 +13549,104 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_runtime_uses_missing_tokenizer_until_trusted_source_is_wired() {
+        let main_source = include_str!("main.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let guard = &fixture["runtime_source_guard"];
+        let expected_signal = guard["current_runtime_signal"]
+            .as_str()
+            .expect("runtime source guard should define current signal");
+        let forbidden_patterns = guard["forbidden_raw_prompt_estimators"]
+            .as_array()
+            .expect("runtime source guard should define forbidden patterns");
+
+        for (section, section_name, endpoint_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "GatewayTpmEstimateEndpoint::OpenAiChat",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "GatewayTpmEstimateEndpoint::OpenAiResponses",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "GatewayTpmEstimateEndpoint::OpenAiEmbeddings",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "GatewayTpmEstimateEndpoint::AnthropicMessages",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "GatewayTpmEstimateEndpoint::GeminiNative",
+            ),
+        ] {
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+
+            assert!(
+                estimate_section.contains(endpoint_marker),
+                "{section_name} TPM estimate must use expected endpoint marker"
+            );
+            assert!(
+                estimate_section.contains(expected_signal),
+                "{section_name} TPM estimate must use explicit missing-tokenizer fallback"
+            );
+            assert!(
+                estimate_section.contains("GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS"),
+                "{section_name} TPM estimate must use the bounded conservative fallback constant"
+            );
+            for forbidden in [
+                "GatewayTpmEstimateSignals::trusted_prompt_tokens(",
+                "GatewayTpmEstimateSignals::trusted_input_tokens(",
+                "GatewayTpmEstimateSignals::new(",
+            ] {
+                assert!(
+                    !estimate_section.contains(forbidden),
+                    "{section_name} runtime must not pass trusted token signals until a trusted tokenizer/read-model source is wired: {forbidden}"
+                );
+            }
+            for forbidden in forbidden_patterns
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+            {
+                assert!(
+                    !estimate_section.contains(forbidden),
+                    "{section_name} runtime must not estimate TPM from raw prompt/input material: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_reservation_chat_tpm_estimate_feeds_plan_metadata_and_db_capacity() {
         let route = test_route_with_rate_limit(
             uuid::Uuid::from_u128(151),
