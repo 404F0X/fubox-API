@@ -4,6 +4,7 @@ param(
   [string]$MockProviderBaseUrl = "http://127.0.0.1:18080",
   [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [string]$DatabaseUrl = "",
+  [string]$EvidenceReportPath = "",
   [int]$TimeoutSeconds = 12,
   [int]$DbPollSeconds = 12,
   [switch]$Live,
@@ -12,6 +13,7 @@ param(
   [switch]$SkipComposePs,
   [switch]$SkipMockProviderHealth,
   [switch]$SelfTestExitSemantics,
+  [switch]$SelfTestEvidenceReportContract,
   [switch]$SimulateLivePreflightBlocker,
   [switch]$SimulateEvidenceMismatch
 )
@@ -25,6 +27,7 @@ $script:Failures = @()
 $script:Blockers = @()
 $script:RunId = "pp-proof-" + ([guid]::NewGuid().ToString("N"))
 $script:TrackedCases = @()
+$script:CaseReportByName = @{}
 
 function Test-TruthyEnv {
   param([AllowNull()][string]$Value)
@@ -42,6 +45,7 @@ if ($env:MOCK_PROVIDER_BASE_URL) { $MockProviderBaseUrl = $env:MOCK_PROVIDER_BAS
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if ($env:DATABASE_URL) { $DatabaseUrl = $env:DATABASE_URL }
 if ((-not $DatabaseUrl) -and $env:POSTGRES_URL) { $DatabaseUrl = $env:POSTGRES_URL }
+if ($env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH) { $EvidenceReportPath = $env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) { $Live = $true }
 if (Test-TruthyEnv $env:E13_PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) { $Live = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_CONTRACT_ONLY) { $ContractOnly = $true }
@@ -132,6 +136,7 @@ function Check-LivePrecondition {
 
 function Exit-WithEvidenceStatus {
   if ($script:Blockers.Count -gt 0) {
+    [void](Write-EvidenceReportIfRequested -Status "blocked" -ExitCode 2)
     Write-SafeHost ""
     Write-SafeHost "Prompt protection Postgres proof is externally blocked:"
     foreach ($blocker in $script:Blockers) {
@@ -141,6 +146,7 @@ function Exit-WithEvidenceStatus {
   }
 
   if ($script:Failures.Count -gt 0) {
+    [void](Write-EvidenceReportIfRequested -Status "failed" -ExitCode 1)
     Write-SafeHost ""
     Write-SafeHost "Prompt protection Postgres proof failed:"
     foreach ($failure in $script:Failures) {
@@ -209,6 +215,46 @@ function Invoke-ExitSemanticsSelfTest {
     -ExpectedExitCode 1
 
   Write-SafeHost "Prompt protection Postgres proof exit semantics self-test passed."
+}
+
+function Invoke-EvidenceReportContractSelfTest {
+  $previousBlockers = $script:Blockers
+  $previousFailures = $script:Failures
+  $previousCaseReportByName = $script:CaseReportByName
+
+  try {
+    $script:Blockers = @()
+    $script:Failures = @()
+    $script:CaseReportByName = @{}
+
+    foreach ($proofCase in @(Get-ProofCases "pp-proof-report-contract")) {
+      Set-EndpointEvidenceReport `
+        -Case $proofCase `
+        -EvidenceStatus "passed" `
+        -RequestHash ("a" * 64) `
+        -ObservedHttpStatus 400 `
+        -ProviderAttemptsCount 0 `
+        -PromptProtectionReason "prompt_injection_detected"
+    }
+    $passed = New-EvidenceReport -Status "passed" -ExitCode 0
+    Assert-EvidenceReportContract -Report $passed -ExpectedStatus "passed" -ExpectedExitCode 0 -RequirePassedEndpoints
+
+    $script:CaseReportByName = @{}
+    $script:Failures = @("[FAIL] simulated evidence mismatch - provider_attempts_count expected 0, got 1")
+    $failed = New-EvidenceReport -Status "failed" -ExitCode 1
+    Assert-EvidenceReportContract -Report $failed -ExpectedStatus "failed" -ExpectedExitCode 1
+
+    $script:Failures = @()
+    $script:Blockers = @("[BLOCKED] simulated live preflight blocker - Gateway/Postgres/psql/compose unavailable")
+    $blocked = New-EvidenceReport -Status "blocked" -ExitCode 2
+    Assert-EvidenceReportContract -Report $blocked -ExpectedStatus "blocked" -ExpectedExitCode 2
+  } finally {
+    $script:Blockers = $previousBlockers
+    $script:Failures = $previousFailures
+    $script:CaseReportByName = $previousCaseReportByName
+  }
+
+  Write-SafeHost "Prompt protection Postgres proof evidence report contract self-test passed."
 }
 
 function Invoke-SimulatedLivePreflightBlocker {
@@ -569,6 +615,291 @@ function Write-LiveEvidenceEnvelope {
   Write-SafeHost ""
 }
 
+function ConvertTo-ReportSafeText {
+  param([AllowNull()][string]$Text)
+
+  if ($null -eq $Text) {
+    return ""
+  }
+
+  $safe = Redact-SecretLikeString $Text
+  $safe = $safe -replace '(?i)https?://[^\s"''<>]+', '[URL_OMITTED]'
+  $safe = $safe -replace '(?i)\b[A-Za-z0-9+.-]+://[^\s"''<>]+', '[CONNECTION_VALUE_OMITTED]'
+  $safe = $safe -replace '(?i)Authorization', '[AUTH_METADATA]'
+  $safe = $safe -replace '(?i)Bearer', '[AUTH_SCHEME]'
+  $safe = $safe -replace '(?i)Cookie', '[SESSION_METADATA]'
+  $safe = $safe -replace '(?i)GATEWAY_AUTH_TOKEN', 'gateway credential input'
+  $safe = $safe -replace '(?i)\btoken\b', 'credential'
+  $safe = $safe -replace 'Ignore previous instructions', '[RAW_PROMPT_OMITTED]'
+  $safe = $safe -replace 'pp-proof-[a-z0-9-]{8,64}', '[PROOF_RUN_ID_OMITTED]'
+  $safe = $safe -replace 'pp-proof-\[a-z0-9-\]\{8,64\}', '[PATTERN_VALUE_OMITTED]'
+  $safe = $safe -replace 'sk-[A-Za-z0-9._~+\-/=]+', '[PROVIDER_SECRET_OMITTED]'
+  if ($safe.Length -gt 240) {
+    $safe = $safe.Substring(0, 240) + "...[truncated]"
+  }
+  return $safe
+}
+
+function New-EndpointEvidenceReport {
+  param(
+    [Parameter(Mandatory = $true)]$Case,
+    [string]$EvidenceStatus = "not_run",
+    [string]$RequestHash = "",
+    [AllowNull()]$ObservedHttpStatus = $null,
+    [AllowNull()]$ProviderAttemptsCount = $null,
+    [string]$PromptProtectionReason = ""
+  )
+
+  $providerAttemptsValue = $null
+  if ($null -ne $ProviderAttemptsCount -and -not [string]::IsNullOrWhiteSpace([string]$ProviderAttemptsCount)) {
+    $providerAttemptsValue = [int]$ProviderAttemptsCount
+  }
+
+  return [ordered]@{
+    name = [string]$Case.Name
+    endpoint = [string]$Case.Endpoint
+    expected_scope = [string]$Case.ExpectedScope
+    evidence_status = [string]$EvidenceStatus
+    request = [ordered]@{
+      request_body_hash = [string]$RequestHash
+      raw_request_payload_omitted = $true
+    }
+    response = [ordered]@{
+      expected_http_status = 400
+      expected_error_code = "prompt_protection_rejected"
+      expected_error_stage = "request_preflight"
+      observed_http_status = $ObservedHttpStatus
+    }
+    request_log = [ordered]@{
+      expected_status = "rejected"
+      expected_http_status = 400
+      expected_error_code = "prompt_protection_rejected"
+      request_body_hash_present = (-not [string]::IsNullOrWhiteSpace($RequestHash))
+      redaction_status = "hash_only"
+      payload_stored = $false
+      payload_object_ref_present = $false
+    }
+    provider_side_effects = [ordered]@{
+      provider_attempts_count = $providerAttemptsValue
+      expected_provider_attempts_count = 0
+      has_provider_key = $false
+      has_canonical_model = $false
+      has_resolved_provider = $false
+      has_resolved_channel = $false
+      route_policy_version = $null
+    }
+    prompt_protection = [ordered]@{
+      expected_mode = "enforce"
+      expected_action = "reject"
+      reason = [string]$PromptProtectionReason
+      accepted_reason_values = @("prompt_injection_detected", "configured_prompt_rule_rejected")
+      scopes = @([string]$Case.ExpectedScope)
+    }
+    secret_safe_omissions = [ordered]@{
+      raw_payload_omitted = $true
+      raw_pattern_values_omitted = $true
+      raw_transport_metadata_omitted = $true
+      credential_values_omitted = $true
+      database_connection_values_omitted = $true
+      provider_secret_values_omitted = $true
+    }
+  }
+}
+
+function Set-EndpointEvidenceReport {
+  param(
+    [Parameter(Mandatory = $true)]$Case,
+    [string]$EvidenceStatus = "not_run",
+    [string]$RequestHash = "",
+    [AllowNull()]$ObservedHttpStatus = $null,
+    [AllowNull()]$ProviderAttemptsCount = $null,
+    [string]$PromptProtectionReason = ""
+  )
+
+  $script:CaseReportByName[[string]$Case.Name] = New-EndpointEvidenceReport `
+    -Case $Case `
+    -EvidenceStatus $EvidenceStatus `
+    -RequestHash $RequestHash `
+    -ObservedHttpStatus $ObservedHttpStatus `
+    -ProviderAttemptsCount $ProviderAttemptsCount `
+    -PromptProtectionReason $PromptProtectionReason
+}
+
+function New-ReportIssueObjects {
+  param(
+    [object[]]$Issues = @(),
+    [string]$Kind = "issue"
+  )
+
+  $result = New-Object System.Collections.Generic.List[object]
+  $index = 0
+  foreach ($issue in @($Issues | Select-Object -First 8)) {
+    [void]$result.Add([ordered]@{
+        index = $index
+        kind = $Kind
+        message = ConvertTo-ReportSafeText ([string]$issue)
+      })
+    $index += 1
+  }
+  return @($result.ToArray())
+}
+
+function New-EvidenceReport {
+  param(
+    [Parameter(Mandatory = $true)][string]$Status,
+    [Parameter(Mandatory = $true)][int]$ExitCode
+  )
+
+  $endpointReports = New-Object System.Collections.Generic.List[object]
+  foreach ($proofCase in @(Get-ProofCases "pp-proof-report")) {
+    if ($script:CaseReportByName.ContainsKey([string]$proofCase.Name)) {
+      [void]$endpointReports.Add($script:CaseReportByName[[string]$proofCase.Name])
+    } else {
+      [void]$endpointReports.Add((New-EndpointEvidenceReport -Case $proofCase))
+    }
+  }
+
+  return [ordered]@{
+    schema_version = "prompt_protection_postgres_proof_evidence_report.v1"
+    status = [string]$Status
+    exit_code = [int]$ExitCode
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    live_requested = [bool]$Live
+    preflight_only = [bool]$PreflightOnly
+    report_bounds = [ordered]@{
+      endpoint_count = 4
+      max_issue_count = 8
+      max_issue_message_chars = 240
+      raw_values_policy = "omitted"
+    }
+    exit_semantics = [ordered]@{
+      pass = 0
+      evidence_mismatch = 1
+      external_blocker = 2
+    }
+    endpoints = @($endpointReports.ToArray())
+    blockers = @(New-ReportIssueObjects -Issues $script:Blockers -Kind "external_blocker")
+    failures = @(New-ReportIssueObjects -Issues $script:Failures -Kind "evidence_mismatch")
+    secret_safety = [ordered]@{
+      raw_prompt_omitted = $true
+      raw_request_payload_omitted = $true
+      raw_transport_metadata_omitted = $true
+      credential_values_omitted = $true
+      database_connection_values_omitted = $true
+      raw_pattern_values_omitted = $true
+      provider_secret_values_omitted = $true
+    }
+  }
+}
+
+function Assert-EvidenceReportSecretSafe {
+  param([Parameter(Mandatory = $true)][string]$Json)
+
+  foreach ($marker in @(
+      "Ignore previous instructions",
+      "dev_test_key_123456789",
+      "Authorization",
+      "Bearer",
+      "Cookie",
+      "http://",
+      "https://",
+      "postgres://",
+      "postgresql://",
+      "sk-",
+      $GatewayAuthToken,
+      $DatabaseUrl
+    )) {
+    if ([string]::IsNullOrWhiteSpace($marker)) {
+      continue
+    }
+    if ($Json.Contains($marker)) {
+      throw "evidence report leaked forbidden marker"
+    }
+  }
+}
+
+function Assert-EvidenceReportContract {
+  param(
+    [Parameter(Mandatory = $true)]$Report,
+    [Parameter(Mandatory = $true)][string]$ExpectedStatus,
+    [Parameter(Mandatory = $true)][int]$ExpectedExitCode,
+    [switch]$RequirePassedEndpoints
+  )
+
+  if ([string]$Report.schema_version -ne "prompt_protection_postgres_proof_evidence_report.v1") {
+    throw "evidence report schema mismatch"
+  }
+  if ([string]$Report.status -ne $ExpectedStatus) {
+    throw "evidence report status mismatch"
+  }
+  if ([int]$Report.exit_code -ne $ExpectedExitCode) {
+    throw "evidence report exit_code mismatch"
+  }
+  if ([int]$Report.report_bounds.endpoint_count -ne 4) {
+    throw "evidence report endpoint bound mismatch"
+  }
+  if ([int]$Report.exit_semantics.pass -ne 0 -or [int]$Report.exit_semantics.evidence_mismatch -ne 1 -or [int]$Report.exit_semantics.external_blocker -ne 2) {
+    throw "evidence report exit semantics mismatch"
+  }
+
+  $endpoints = @($Report.endpoints)
+  if ($endpoints.Count -ne 4) {
+    throw "evidence report must include four endpoints"
+  }
+  foreach ($endpoint in $endpoints) {
+    if ([string]::IsNullOrWhiteSpace([string]$endpoint.name)) { throw "endpoint report missing name" }
+    if ([string]::IsNullOrWhiteSpace([string]$endpoint.endpoint)) { throw "endpoint report missing endpoint" }
+    if ([string]::IsNullOrWhiteSpace([string]$endpoint.expected_scope)) { throw "endpoint report missing expected_scope" }
+    if ([string]$endpoint.response.expected_error_code -ne "prompt_protection_rejected") { throw "endpoint response error contract mismatch" }
+    if ([string]$endpoint.response.expected_error_stage -ne "request_preflight") { throw "endpoint response stage contract mismatch" }
+    if ([string]$endpoint.request_log.redaction_status -ne "hash_only") { throw "endpoint request log redaction contract mismatch" }
+    if ($endpoint.provider_side_effects.expected_provider_attempts_count -ne 0) { throw "endpoint provider attempts contract mismatch" }
+    if ($endpoint.provider_side_effects.has_provider_key -ne $false) { throw "endpoint provider key contract mismatch" }
+    if ($endpoint.secret_safe_omissions.raw_payload_omitted -ne $true) { throw "endpoint raw payload omission contract mismatch" }
+    if ($endpoint.secret_safe_omissions.raw_pattern_values_omitted -ne $true) { throw "endpoint raw pattern omission contract mismatch" }
+
+    if ($RequirePassedEndpoints) {
+      if ([string]$endpoint.evidence_status -ne "passed") { throw "endpoint evidence status was not passed" }
+      if ([string]::IsNullOrWhiteSpace([string]$endpoint.request.request_body_hash)) { throw "passed endpoint missing request_body_hash" }
+      if ([int]$endpoint.provider_side_effects.provider_attempts_count -ne 0) { throw "passed endpoint provider_attempts_count was not zero" }
+    }
+  }
+
+  $json = $Report | ConvertTo-Json -Depth 32 -Compress
+  Assert-EvidenceReportSecretSafe -Json $json
+}
+
+function Write-EvidenceReportIfRequested {
+  param(
+    [Parameter(Mandatory = $true)][string]$Status,
+    [Parameter(Mandatory = $true)][int]$ExitCode
+  )
+
+  if (-not $Live -or [string]::IsNullOrWhiteSpace($EvidenceReportPath)) {
+    return $true
+  }
+
+  try {
+    $report = New-EvidenceReport -Status $Status -ExitCode $ExitCode
+    $requirePassedEndpoints = [string]$Status -eq "passed"
+    Assert-EvidenceReportContract -Report $report -ExpectedStatus $Status -ExpectedExitCode $ExitCode -RequirePassedEndpoints:$requirePassedEndpoints
+    $json = $report | ConvertTo-Json -Depth 32
+    Assert-EvidenceReportSecretSafe -Json $json
+
+    $resolvedReportPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EvidenceReportPath)
+    $parent = Split-Path -Parent $resolvedReportPath
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    Set-Content -LiteralPath $resolvedReportPath -Encoding UTF8 -Value $json
+    Write-SafeHost "Prompt protection Postgres proof evidence report written."
+    return $true
+  } catch {
+    Write-SafeHost ("[WARN] prompt protection evidence report write failed - {0}" -f (ConvertTo-ReportSafeText $_.Exception.Message))
+    return $false
+  }
+}
+
 function Assert-NoForbiddenMarkers {
   param(
     [AllowNull()][string]$Content,
@@ -647,7 +978,12 @@ function Assert-RunbookContract {
       "sql_evidence_fields",
       "Request log hash-only fields",
       "Provider key/upstream not-called fields",
-      "Secret-safe omission fields"
+      "Secret-safe omission fields",
+      "prompt_protection_postgres_proof_evidence_report.v1",
+      "-EvidenceReportPath",
+      "-SelfTestEvidenceReportContract",
+      "report_status",
+      "report_exit_code"
     )) {
     if (-not $runbook.Contains($needle)) {
       throw "runbook missing '$needle'"
@@ -674,6 +1010,11 @@ function Assert-ScriptContract {
       "simulated evidence mismatch",
       "Write-LiveEvidenceEnvelope",
       "prompt_protection_postgres_proof_evidence_envelope.v1",
+      "prompt_protection_postgres_proof_evidence_report.v1",
+      "EvidenceReportPath",
+      "SelfTestEvidenceReportContract",
+      "Write-EvidenceReportIfRequested",
+      "Assert-EvidenceReportContract",
       "request_log_hash_only_fields",
       "provider_key_upstream_not_called_fields",
       "secret_safe_omission_fields"
@@ -915,6 +1256,7 @@ function Assert-RequestLogEvidence {
   }
 
   Assert-NoForbiddenMarkers (($row | ConvertTo-Json -Depth 32 -Compress)) "$($Case.Name) request log DB evidence"
+  return $row
 }
 
 function Invoke-ContractChecks {
@@ -945,6 +1287,10 @@ function Invoke-LiveProof {
   Exit-WithEvidenceStatus
 
   if ($PreflightOnly) {
+    if (-not (Write-EvidenceReportIfRequested -Status "preflight_passed" -ExitCode 0)) {
+      Add-Failure "[FAIL] evidence report write - report could not be written"
+      Exit-WithEvidenceStatus
+    }
     Write-SafeHost "Prompt protection Postgres proof live preflight passed; evidence requests were not sent."
     return
   }
@@ -953,6 +1299,7 @@ function Invoke-LiveProof {
   Write-SafeHost "Running live prompt-protection Postgres proof for $($cases.Count) endpoints."
   foreach ($proofCase in $cases) {
     $hash = Get-Sha256Hex $proofCase.Body
+    Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "started" -RequestHash $hash
     $script:TrackedCases += [PSCustomObject]@{
       Name = $proofCase.Name
       Endpoint = $proofCase.Endpoint
@@ -962,28 +1309,50 @@ function Invoke-LiveProof {
 
     try {
       $response = Invoke-GatewayRequest $proofCase $proofCase.Body
+      $responseEvidencePassed = $true
       try {
         Assert-ResponseEvidence $proofCase $response
       } catch {
+        $responseEvidencePassed = $false
         if ($response.StatusCode -eq 401 -or $response.StatusCode -eq 403) {
+          Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "blocked" -RequestHash $hash -ObservedHttpStatus ([int]$response.StatusCode)
           Add-Blocker "[BLOCKED] $($proofCase.Name) auth/profile precondition - $($_.Exception.Message)"
           continue
         }
+        Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "failed" -RequestHash $hash -ObservedHttpStatus ([int]$response.StatusCode)
         Add-Failure "[FAIL] $($proofCase.Name) response evidence - $($_.Exception.Message)"
       }
 
       try {
-        Assert-RequestLogEvidence $proofCase $hash
+        $row = Assert-RequestLogEvidence $proofCase $hash
+        $endpointEvidenceStatus = "passed"
+        if (-not $responseEvidencePassed) {
+          $endpointEvidenceStatus = "failed"
+        }
+        Set-EndpointEvidenceReport `
+          -Case $proofCase `
+          -EvidenceStatus $endpointEvidenceStatus `
+          -RequestHash $hash `
+          -ObservedHttpStatus ([int]$response.StatusCode) `
+          -ProviderAttemptsCount ([int]$row.provider_attempts_count) `
+          -PromptProtectionReason ([string]$row.prompt_protection_reason)
         Write-SafeHost "[OK] $($proofCase.Name) provider_attempts_count=0 hash=$hash"
       } catch {
+        Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "failed" -RequestHash $hash -ObservedHttpStatus ([int]$response.StatusCode)
         Add-Failure "[FAIL] $($proofCase.Name) Postgres evidence - $($_.Exception.Message)"
       }
     } catch {
+      Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "blocked" -RequestHash $hash
       Add-Blocker "[BLOCKED] $($proofCase.Name) live request/query could not run - $($_.Exception.Message)"
     }
   }
 
   Exit-WithEvidenceStatus
+
+  if (-not (Write-EvidenceReportIfRequested -Status "passed" -ExitCode 0)) {
+    Add-Failure "[FAIL] evidence report write - report could not be written"
+    Exit-WithEvidenceStatus
+  }
 
   Write-SafeHost ""
   Write-SafeHost "Prompt protection Postgres proof passed."
@@ -1003,6 +1372,11 @@ if ($SimulateEvidenceMismatch) {
 
 if ($SelfTestExitSemantics) {
   Invoke-ExitSemanticsSelfTest
+  exit 0
+}
+
+if ($SelfTestEvidenceReportContract) {
+  Invoke-EvidenceReportContractSelfTest
   exit 0
 }
 

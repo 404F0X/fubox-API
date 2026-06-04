@@ -148,6 +148,54 @@ Live preflight without evidence requests:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -PreflightOnly
 ```
 
+Evidence report opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath .tmp\prompt-protection-postgres-proof-report.json
+
+$env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH = ".tmp\prompt-protection-postgres-proof-report.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live
+```
+
+Evidence report contract self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportContract
+```
+
+The default contract-only command does not write a live evidence report. A
+report is written only when live proof is explicitly requested and
+`-EvidenceReportPath` or `PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH` is set.
+
+The report schema is `prompt_protection_postgres_proof_evidence_report.v1`.
+The root `report_status` maps to the JSON `status` field and is one of
+`passed`, `failed`, `blocked`, or `preflight_passed`. The root
+`report_exit_code` maps to `exit_code`: `0` for pass/preflight pass, `1` for
+evidence mismatch, and `2` for external blocker. The report includes bounded
+`blockers` and `failures` arrays with redacted messages.
+
+Each endpoint report records:
+
+- `name`, endpoint label, and expected prompt-protection scope.
+- `request_body_hash` and `raw_request_payload_omitted=true`.
+- Expected response `400 prompt_protection_rejected` at `request_preflight` and
+  the observed HTTP status when a request was sent.
+- Request-log hash-only fields: `redaction_status=hash_only`,
+  `payload_stored=false`, and `payload_object_ref_present=false`.
+- Provider key/upstream not-called fields:
+  `provider_attempts_count=0`, `has_provider_key=false`,
+  `has_canonical_model=false`, `has_resolved_provider=false`,
+  `has_resolved_channel=false`, and `route_policy_version=null`.
+- Prompt-protection `mode=enforce`, `action=reject`, accepted reason values, and
+  observed safe reason/scope when DB evidence is available.
+- Secret-safe omission markers for raw payload, raw pattern values, transport
+  metadata, credentials, database connection values, and provider secret values.
+
+The report must not contain raw prompt text, request bodies, transport header
+values, credential values, database connection strings, regex pattern values, or
+provider secrets. It is intended as the artifact to attach to a passing live run
+alongside the command, timestamp, commit, and four request hashes.
+
 Live/preflight evidence envelope:
 
 Every `-Live` run, including `-Live -PreflightOnly`, prints a bounded evidence
@@ -194,6 +242,8 @@ Useful live environment overrides:
   status inspection.
 - `PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_MOCK_PROVIDER_HEALTH=1`: skip
   mock-provider health check.
+- `PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH`: optional live evidence report
+  output path. Ignored by default contract-only runs.
 
 Script exit semantics:
 

@@ -406,7 +406,7 @@ audit live evidence, Admin UI E2E, or billing-ledger runtime writer gaps.
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
 This section is the acceptance entry for TODO lanes `E13-005-S10` through
-`E13-005-S14`. The detailed live proof is documented in
+`E13-005-S15`. The detailed live proof is documented in
 `docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
 
 The proof covers prompt-protection reject no-side-effect evidence for:
@@ -443,6 +443,15 @@ secret-safe omission fields. It must not print URL values, tokens, DSNs,
 Authorization, Cookie, raw prompt text, regex pattern values, request bodies, or
 provider secrets.
 
+Live evidence reports are opt-in with `-EvidenceReportPath` or
+`PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH`; default contract-only gates must
+not write one. The report schema is
+`prompt_protection_postgres_proof_evidence_report.v1` and records per-endpoint
+request hash, expected/observed response status, hash-only request-log fields,
+provider_attempts/not-called fields, prompt-protection safe reason/scope,
+secret-safe omission markers, bounded blocker/failure arrays, and exit `0/1/2`
+status.
+
 Default script contract/preflight command:
 
 ```powershell
@@ -464,6 +473,16 @@ This self-test does not connect to live services. It child-runs the default
 contract path and requires exit `0`, child-runs
 `-SimulateLivePreflightBlocker` and requires exit `2`, and child-runs
 `-SimulateEvidenceMismatch` and requires exit `1`.
+
+Evidence report contract self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportContract
+```
+
+This self-test does not connect to live services or write a live report. It
+validates simulated pass, evidence mismatch, and external blocker reports for
+the four endpoint catalog entries and verifies the report JSON is secret-safe.
 
 Live opt-in commands:
 
