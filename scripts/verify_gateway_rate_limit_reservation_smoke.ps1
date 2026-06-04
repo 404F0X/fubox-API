@@ -22,6 +22,7 @@ $script:Failures = @()
 $script:OriginalProviderKeyStates = @()
 $script:ProviderKeyStateCaptured = $false
 $script:SmokeSuffix = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$script:PerformanceEvidenceReportWritten = $false
 
 if ($env:GATEWAY_BASE_URL) { $GatewayBaseUrl = $env:GATEWAY_BASE_URL }
 if ($env:GATEWAY_AUTH_TOKEN) { $GatewayAuthToken = $env:GATEWAY_AUTH_TOKEN }
@@ -83,6 +84,10 @@ function Check {
 function Exit-WithFailuresIfAny {
   if ($script:Failures.Count -eq 0) {
     return
+  }
+
+  if ($script:Fixture -and -not $script:PerformanceEvidenceReportWritten) {
+    Write-PerformanceEvidenceReport -Status "blocked" -UnavailableReason "preflight_or_contract_blocked"
   }
 
   Write-SafeHost ""
@@ -210,7 +215,7 @@ function Invoke-ComposePsql {
       -c $Sql
 
     if ($LASTEXITCODE -ne 0) {
-      throw "psql failed with exit code $LASTEXITCODE"
+      throw "[BLOCKED] psql failed with exit code $LASTEXITCODE"
     }
 
     return (($output | Out-String).Trim())
@@ -268,6 +273,151 @@ function New-GatewayHeaders {
     $headers["x-ai-profile"] = $ProfileRef.Trim()
   }
   return $headers
+}
+
+function Get-SmokeMode {
+  if ($DryRun) {
+    return "dry-run"
+  }
+  if ($PreflightOnly) {
+    return "preflight"
+  }
+  return "live"
+}
+
+function New-SecretSafeCommandSummary {
+  return [ordered]@{
+    script = "scripts/verify_gateway_rate_limit_reservation_smoke.ps1"
+    mode = Get-SmokeMode
+    dry_run = [bool]$DryRun
+    preflight_only = [bool]$PreflightOnly
+    live_requests_enabled = [bool](-not $DryRun -and -not $PreflightOnly)
+    gateway_base_url_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayBaseUrl))
+    gateway_auth_token_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayAuthToken))
+    gateway_profile_ref_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayProfileRef))
+    compose_file_configured = [bool](-not [string]::IsNullOrWhiteSpace($ComposeFile))
+    skip_compose_ps = [bool]$SkipComposePs
+    timeout_seconds = [int]$TimeoutSeconds
+    db_poll_seconds = [int]$DbPollSeconds
+    lock_hold_seconds = [int]$LockHoldSeconds
+    lock_warmup_milliseconds = [int]$LockWarmupMilliseconds
+    raw_values_in_output = $false
+  }
+}
+
+function New-PerformanceUnavailableMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$Reason
+  )
+
+  return [ordered]@{
+    available = $false
+    reason = $Reason
+  }
+}
+
+function New-PerformanceEvidenceReport {
+  param(
+    [Parameter(Mandatory = $true)][string]$Status,
+    [Parameter(Mandatory = $true)][string]$UnavailableReason
+  )
+
+  $contract = $script:Fixture.performance_evidence_contract
+  $schema = "gateway_rate_limit_reservation_performance_evidence_v1"
+  if ($contract -and -not [string]::IsNullOrWhiteSpace([string]$contract.schema)) {
+    $schema = [string]$contract.schema
+  }
+
+  $expectedAcquireCount = 3
+  $expectedReleaseCount = 1
+  $expectedNotAppliedCount = 1
+  $expectedFallbackCount = 1
+  if ($contract) {
+    if ($contract.expected_minimum_counts.acquire -ne $null) { $expectedAcquireCount = [int]$contract.expected_minimum_counts.acquire }
+    if ($contract.expected_minimum_counts.release -ne $null) { $expectedReleaseCount = [int]$contract.expected_minimum_counts.release }
+    if ($contract.expected_minimum_counts.not_applied -ne $null) { $expectedNotAppliedCount = [int]$contract.expected_minimum_counts.not_applied }
+    if ($contract.expected_minimum_counts.fallback -ne $null) { $expectedFallbackCount = [int]$contract.expected_minimum_counts.fallback }
+  }
+
+  $unavailable = New-PerformanceUnavailableMarker -Reason $UnavailableReason
+  $liveRequestsSent = [bool](-not $DryRun -and -not $PreflightOnly -and $Status.StartsWith("live_"))
+  $closureEligible = [bool]($Status -eq "live_completed" -and $UnavailableReason -eq "live_observed")
+  return [ordered]@{
+    schema = $schema
+    mode = Get-SmokeMode
+    status = $Status
+    live_requests_sent = $liveRequestsSent
+    closure_eligible = $closureEligible
+    bounded_scope = [ordered]@{
+      provider_key_scope = "fixture_bounded_provider_key_ids"
+      request_log_query_limit = 10
+      max_affected_rows_per_acquire = [int]$script:Fixture.postgres_scope.max_affected_rows_per_acquire
+      max_live_cases = 3
+    }
+    performance = [ordered]@{
+      concurrency = [ordered]@{
+        expected_contender_jobs = 1
+        lock_hold_seconds = [int]$LockHoldSeconds
+        lock_warmup_milliseconds = [int]$LockWarmupMilliseconds
+        observed_contender_jobs = $null
+        unavailable = $unavailable
+      }
+      latency_or_ttft = [ordered]@{
+        gateway_latency_ms = $null
+        ttft_ms = $null
+        unavailable = $unavailable
+      }
+      not_applied_or_fallback_rate = [ordered]@{
+        expected_not_applied_count_min = $expectedNotAppliedCount
+        expected_fallback_count_min = $expectedFallbackCount
+        observed_not_applied_count = $null
+        observed_fallback_count = $null
+        observed_rate = $null
+        unavailable = $unavailable
+      }
+      reservation_counts = [ordered]@{
+        expected_acquire_count_min = $expectedAcquireCount
+        expected_release_count_min = $expectedReleaseCount
+        observed_acquire_count = $null
+        observed_release_count = $null
+        unavailable = $unavailable
+      }
+    }
+    secret_safe_command_summary = New-SecretSafeCommandSummary
+    blockers = @($script:Failures | ForEach-Object { Redact-SecretLikeString ([string]$_) })
+    secret_safety = [ordered]@{
+      auth_material_in_output = $false
+      provider_secret_in_output = $false
+      request_material_in_output = $false
+      endpoint_material_in_output = $false
+      window_state_material_in_output = $false
+    }
+  }
+}
+
+function Assert-PerformanceEvidenceSecretSafe {
+  param([Parameter(Mandatory = $true)]$Report)
+
+  $text = ($Report | ConvertTo-Json -Depth 32 -Compress)
+  Assert-NoSecretLeak -Content $text -Label "rate-limit performance evidence"
+}
+
+function Write-PerformanceEvidenceReport {
+  param(
+    [Parameter(Mandatory = $true)][string]$Status,
+    [Parameter(Mandatory = $true)][string]$UnavailableReason
+  )
+
+  if ($script:PerformanceEvidenceReportWritten) {
+    return
+  }
+
+  $report = New-PerformanceEvidenceReport -Status $Status -UnavailableReason $UnavailableReason
+  Assert-PerformanceEvidenceSecretSafe $report
+  $script:PerformanceEvidenceReportWritten = $true
+  Write-SafeHost ""
+  Write-SafeHost "Gateway rate-limit reservation performance evidence:"
+  Write-SafeHost ($report | ConvertTo-Json -Depth 32 -Compress)
 }
 
 function ProviderKeyIdListSql {
@@ -614,6 +764,42 @@ function Assert-FixtureContract {
   if ($Fixture.live_cases.concurrent_over_limit_not_applied_final_429.expected_error_code -ne "rate_limit_exceeded") {
     throw "concurrency case must expect rate_limit_exceeded"
   }
+  if ($Fixture.performance_evidence_contract.schema -ne "gateway_rate_limit_reservation_performance_evidence_v1") {
+    throw "performance evidence contract schema must be stable"
+  }
+  if ([bool]$Fixture.performance_evidence_contract.live_default_enabled -ne $false) {
+    throw "performance evidence contract must document default non-live test entry"
+  }
+  foreach ($field in @(
+      "schema",
+      "mode",
+      "status",
+      "bounded_scope",
+      "performance",
+      "secret_safe_command_summary",
+      "blockers",
+      "secret_safety"
+    )) {
+    if (@($Fixture.performance_evidence_contract.required_top_level_fields | Where-Object { $_ -eq $field }).Count -ne 1) {
+      throw "performance evidence contract missing top-level field '$field'"
+    }
+  }
+  foreach ($field in @(
+      "concurrency",
+      "latency_or_ttft",
+      "not_applied_or_fallback_rate",
+      "reservation_counts"
+    )) {
+    if (@($Fixture.performance_evidence_contract.required_performance_fields | Where-Object { $_ -eq $field }).Count -ne 1) {
+      throw "performance evidence contract missing performance field '$field'"
+    }
+  }
+  if ([int]$Fixture.performance_evidence_contract.bounded_scope.request_log_query_limit -ne 10) {
+    throw "performance evidence contract request log query limit must remain bounded"
+  }
+  if ([int]$Fixture.performance_evidence_contract.bounded_scope.max_affected_rows_per_acquire -ne 1) {
+    throw "performance evidence contract must preserve <=1 affected row acquire semantics"
+  }
 }
 
 function Assert-ComposeServicesRunning {
@@ -621,12 +807,12 @@ function Assert-ComposeServicesRunning {
   try {
     $running = @(Invoke-Docker compose -f $ComposeFile ps --services --status running)
     if ($LASTEXITCODE -ne 0) {
-      throw "docker compose ps failed with exit code $LASTEXITCODE"
+      throw "[BLOCKED] docker compose ps failed with exit code $LASTEXITCODE"
     }
 
     foreach ($service in @($script:Fixture.compose.required_services)) {
       if ($running -notcontains $service) {
-        throw "service '$service' is not running; start the local compose stack or use -DryRun"
+        throw "[BLOCKED] service '$service' is not running; start the local compose stack or use -DryRun"
       }
     }
   } finally {
@@ -642,7 +828,12 @@ function Assert-ScriptStructure {
       "not_applied",
       "release.status",
       "Assert-NoSecretLeak",
-      "Restore-OriginalProviderKeyStates"
+      "Restore-OriginalProviderKeyStates",
+      "Write-PerformanceEvidenceReport",
+      "gateway_rate_limit_reservation_performance_evidence_v1",
+      "latency_or_ttft",
+      "not_applied_or_fallback_rate",
+      "secret_safe_command_summary"
     )) {
     if (-not $source.Contains($needle)) {
       throw "script source is missing smoke marker '$needle'"
@@ -869,6 +1060,7 @@ try {
 
   if ($DryRun) {
     Exit-WithFailuresIfAny
+    Write-PerformanceEvidenceReport -Status "contract_only" -UnavailableReason "dry_run_no_runtime_requests"
     Write-SafeHost ""
     Write-SafeHost "Gateway rate-limit reservation smoke dry-run passed; runtime requests were not sent."
     exit 0
@@ -892,6 +1084,7 @@ try {
 
   if ($PreflightOnly) {
     Exit-WithFailuresIfAny
+    Write-PerformanceEvidenceReport -Status "preflight_passed" -UnavailableReason "preflight_only_no_runtime_requests"
     Write-SafeHost ""
     Write-SafeHost "Gateway rate-limit reservation smoke preflight passed; runtime requests were not sent."
     exit 0
@@ -925,6 +1118,8 @@ try {
 }
 
 Exit-WithFailuresIfAny
+
+Write-PerformanceEvidenceReport -Status "live_completed" -UnavailableReason "live_performance_measurement_not_collected"
 
 Write-SafeHost ""
 Write-SafeHost "Gateway rate-limit reservation live Postgres smoke passed."

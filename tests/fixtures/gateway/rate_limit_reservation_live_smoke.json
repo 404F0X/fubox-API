@@ -70,6 +70,53 @@
       "expected_rejection_schema": "gateway_rate_limit_reservation_rejection_v1"
     }
   },
+  "performance_evidence_contract": {
+    "schema": "gateway_rate_limit_reservation_performance_evidence_v1",
+    "default_test_entry_mode": "dry-run",
+    "live_default_enabled": false,
+    "closure_eligible_without_live": false,
+    "required_top_level_fields": [
+      "schema",
+      "mode",
+      "status",
+      "bounded_scope",
+      "performance",
+      "secret_safe_command_summary",
+      "blockers",
+      "secret_safety"
+    ],
+    "required_performance_fields": [
+      "concurrency",
+      "latency_or_ttft",
+      "not_applied_or_fallback_rate",
+      "reservation_counts"
+    ],
+    "expected_minimum_counts": {
+      "acquire": 3,
+      "release": 1,
+      "not_applied": 1,
+      "fallback": 1
+    },
+    "bounded_scope": {
+      "request_log_query_limit": 10,
+      "max_affected_rows_per_acquire": 1,
+      "max_live_cases": 3,
+      "provider_key_scope": "fixture_bounded_provider_key_ids"
+    },
+    "unavailable_markers": [
+      "dry_run_no_runtime_requests",
+      "preflight_only_no_runtime_requests",
+      "preflight_or_contract_blocked",
+      "live_performance_measurement_not_collected"
+    ],
+    "secret_safe_command_summary": {
+      "omits_gateway_auth_token": true,
+      "omits_gateway_base_url": true,
+      "omits_raw_profile_ref": true,
+      "omits_request_body": true,
+      "omits_provider_key_secret": true
+    }
+  },
   "log_safety": {
     "forbidden_markers": [
       "dev_test_key_123456789",
