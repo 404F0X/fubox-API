@@ -98,6 +98,18 @@ function Test-PathUnderRoot {
   return $fullPath.StartsWith($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Format-BoundedPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $full = [System.IO.Path]::GetFullPath($Path)
+  $repoPrefix = $repoRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+  if ($full.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $full.Substring($repoPrefix.Length)
+  }
+
+  return "[outside_repo:" + [System.IO.Path]::GetFileName($full) + "]"
+}
+
 function Assert-PathUnderRepo {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -107,7 +119,7 @@ function Assert-PathUnderRepo {
   $repoPrefix = $repoRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
   $full = [System.IO.Path]::GetFullPath($Path)
   if (-not $full.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "$Label must stay under repository root: $full"
+    throw "$Label must stay under repository root: $(Format-BoundedPath $full)"
   }
 }
 
@@ -117,13 +129,13 @@ Assert-PathUnderRepo -Path $OpenApiPath -Label "OpenApiPath"
 Assert-PathUnderRepo -Path $TempRoot -Label "TempRoot"
 Assert-PathUnderRepo -Path $NpmCache -Label "NpmCache"
 if (-not (Test-PathUnderRoot -Path $TempRoot -Root $tmpRoot)) {
-  throw "TempRoot must stay under repository .tmp: $TempRoot"
+  throw "TempRoot must stay under repository .tmp: $(Format-BoundedPath $TempRoot)"
 }
 if (
   -not (Test-PathUnderRoot -Path $NpmCache -Root $toolCacheRoot) -and
   -not (Test-PathUnderRoot -Path $NpmCache -Root $tmpRoot)
 ) {
-  throw "NpmCache must stay under repository .tool-cache or .tmp: $NpmCache"
+  throw "NpmCache must stay under repository .tool-cache or .tmp: $(Format-BoundedPath $NpmCache)"
 }
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
@@ -171,6 +183,54 @@ function Get-EvidenceReportPath {
   param([string]$Root = $TempRoot)
 
   return Join-Path $Root "ledger-adjustment-openapi-semantic-evidence.json"
+}
+
+function Assert-WrapperOwnedArtifactPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  $full = [System.IO.Path]::GetFullPath($Path)
+  if (-not (Test-PathUnderRoot -Path $full -Root $TempRoot)) {
+    throw "$Label must stay under wrapper TempRoot: $(Format-BoundedPath $full)"
+  }
+}
+
+function Get-WrapperOwnedArtifactPaths {
+  return @(
+    (Get-EvidenceReportPath),
+    (Join-Path $TempRoot "openapi-typescript"),
+    (Join-Path $TempRoot "typescript-fetch"),
+    (Join-Path $TempRoot "self-test-default-lightweight-no-evidence"),
+    (Join-Path $TempRoot "self-test-generated-client-pass"),
+    (Join-Path $TempRoot "self-test-generated-client-missing-required"),
+    (Join-Path $TempRoot "self-test-semantic-evidence-pass"),
+    (Join-Path $TempRoot "self-test-semantic-evidence-failure"),
+    (Join-Path $TempRoot "self-test-semantic-evidence-blocker"),
+    (Join-Path $TempRoot "self-test-cleanup-marker.txt"),
+    (Join-Path $TempRoot "self-test-wrapper-owned-cleanup-marker.txt")
+  )
+}
+
+function Remove-WrapperOwnedTempArtifacts {
+  foreach ($path in @(Get-WrapperOwnedArtifactPaths)) {
+    Assert-WrapperOwnedArtifactPath -Path $path -Label "wrapper-owned artifact cleanup path"
+    Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+  }
+
+  if (Test-Path $TempRoot -PathType Container) {
+    $remaining = @(Get-ChildItem -LiteralPath $TempRoot -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($remaining.Count -eq 0) {
+      Remove-Item -Force $TempRoot -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Clear-StaleEvidenceReport {
+  $path = Get-EvidenceReportPath
+  Assert-WrapperOwnedArtifactPath -Path $path -Label "stale evidence report path"
+  Remove-Item -Force $path -ErrorAction SilentlyContinue
 }
 
 function Get-BoundedSafeLines {
@@ -249,9 +309,10 @@ function Write-EvidenceReport {
   }
 
   $path = Get-EvidenceReportPath
+  Assert-WrapperOwnedArtifactPath -Path $path -Label "evidence report path"
   New-Item -ItemType Directory -Force (Split-Path -Parent $path) | Out-Null
   ($report | ConvertTo-Json -Depth 8) | Set-Content -Path $path -Encoding ascii
-  Write-SafeHost "[OK] evidence report: $path"
+  Write-SafeHost "[OK] evidence report: $(Format-BoundedPath $path)"
 }
 
 function Assert-EvidenceReportContract {
@@ -1231,7 +1292,8 @@ function Invoke-SelfTestChild {
     [string]$ChildTempRoot = $TempRoot,
     [string]$ChildNpmCache = $NpmCache,
     [Parameter(Mandatory = $true)][int]$ExpectedExitCode,
-    [string[]]$ExpectedEvidenceClassifications = @()
+    [string[]]$ExpectedEvidenceClassifications = @(),
+    [switch]$ExpectedEvidenceAbsent
   )
 
   $ps = Get-PowerShellRunner
@@ -1283,13 +1345,30 @@ function Invoke-SelfTestChild {
       -Path (Get-EvidenceReportPath -Root $ChildTempRoot) `
       -ExpectedClassifications $ExpectedEvidenceClassifications
   }
+
+  if ($ExpectedEvidenceAbsent) {
+    $evidencePath = Get-EvidenceReportPath -Root $ChildTempRoot
+    if (Test-Path $evidencePath) {
+      Add-Failure "[FAIL] self-test $Name - evidence report remained at $(Format-BoundedPath $evidencePath)"
+    } else {
+      Write-SafeHost "[OK] self-test $Name left no evidence report"
+    }
+  }
 }
 
 function Invoke-SelfTest {
   Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic wrapper self-test"
   Write-SafeHost "Self-test uses only the lightweight gate and simulated outcomes; it does not run npm tools, generate clients, or call live services."
 
-  Invoke-SelfTestChild -Name "default lightweight path" -Arguments @() -ExpectedExitCode 0
+  $defaultNoEvidenceRoot = Join-Path $TempRoot "self-test-default-lightweight-no-evidence"
+  New-Item -ItemType Directory -Force $defaultNoEvidenceRoot | Out-Null
+  Set-Content -Path (Get-EvidenceReportPath -Root $defaultNoEvidenceRoot) -Value "stale evidence should be removed" -Encoding ascii
+  Invoke-SelfTestChild `
+    -Name "default lightweight path clears stale evidence" `
+    -Arguments @() `
+    -ChildTempRoot $defaultNoEvidenceRoot `
+    -ExpectedExitCode 0 `
+    -ExpectedEvidenceAbsent
   Invoke-SelfTestChild -Name "simulated external blocker" -Arguments @("-SimulateExternalBlocker") -ExpectedExitCode 2
   Invoke-SelfTestChild -Name "simulated schema mismatch" -Arguments @("-SimulateSchemaMismatch") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "simulated client mismatch" -Arguments @("-SimulateClientMismatch") -ExpectedExitCode 1
@@ -1316,24 +1395,47 @@ function Invoke-SelfTest {
     -ExpectedExitCode 2 `
     -ExpectedEvidenceClassifications @("blocker")
   Invoke-SelfTestChild -Name "temp root repo escape rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "..\ledger-openapi-outside") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "source temp root rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "scripts\ledger-openapi-semantic") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "git temp root rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot ".git\ledger-openapi-semantic") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "npm cache repo escape rejected" -Arguments @() -ChildNpmCache (Join-Path $repoRoot "..\ledger-openapi-cache-outside") -ExpectedExitCode 1
 
   $cleanupProbe = Join-Path $TempRoot "self-test-cleanup-marker.txt"
+  $cleanupEvidence = Get-EvidenceReportPath
+  $cleanupOwnedDir = Join-Path $TempRoot "openapi-typescript"
+  $cleanupNonOwnedProbe = Join-Path $TempRoot "self-test-non-owned-cleanup-marker.txt"
   New-Item -ItemType Directory -Force $TempRoot | Out-Null
-  Set-Content -Path $cleanupProbe -Value "cleanup marker" -Encoding ascii
-  Invoke-SelfTestChild -Name "artifact cleanup removes temp root" -Arguments @("-Clean") -ExpectedExitCode 0
+  New-Item -ItemType Directory -Force $cleanupOwnedDir | Out-Null
+  Set-Content -Path $cleanupProbe -Value "wrapper-owned cleanup marker" -Encoding ascii
+  Set-Content -Path $cleanupEvidence -Value "stale evidence should be removed by clean" -Encoding ascii
+  Set-Content -Path $cleanupNonOwnedProbe -Value "non-owned marker should survive child clean" -Encoding ascii
+  Invoke-SelfTestChild -Name "artifact cleanup removes wrapper-owned artifacts" -Arguments @("-Clean") -ExpectedExitCode 0 -ExpectedEvidenceAbsent
   if (Test-Path $cleanupProbe) {
-    Add-Failure "[FAIL] self-test artifact cleanup - temp marker remained after -Clean"
+    Add-Failure "[FAIL] self-test artifact cleanup - wrapper-owned marker remained after -Clean"
+  } elseif (Test-Path $cleanupEvidence) {
+    Add-Failure "[FAIL] self-test artifact cleanup - stale evidence report remained after -Clean"
+  } elseif (Test-Path $cleanupOwnedDir) {
+    Add-Failure "[FAIL] self-test artifact cleanup - generated client artifact remained after -Clean"
+  } elseif (-not (Test-Path $cleanupNonOwnedProbe)) {
+    Add-Failure "[FAIL] self-test artifact cleanup - non-owned temp marker was removed by -Clean"
   } else {
-    Write-SafeHost "[OK] self-test artifact cleanup removed temp marker"
+    Write-SafeHost "[OK] self-test artifact cleanup removed wrapper-owned artifacts and preserved non-owned temp marker"
+  }
+  Remove-Item -Force $cleanupNonOwnedProbe -ErrorAction SilentlyContinue
+  if (Test-Path $TempRoot -PathType Container) {
+    $remaining = @(Get-ChildItem -LiteralPath $TempRoot -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($remaining.Count -eq 0) {
+      Remove-Item -Force $TempRoot -ErrorAction SilentlyContinue
+    }
   }
 
   Exit-WithResult
 }
 
 if ($Clean) {
-  Remove-Item -Recurse -Force $TempRoot -ErrorAction SilentlyContinue
-  Write-SafeHost "[OK] cleaned temp artifacts: $TempRoot"
+  Remove-WrapperOwnedTempArtifacts
+  Write-SafeHost "[OK] cleaned wrapper-owned temp artifacts under: $(Format-BoundedPath $TempRoot)"
+} else {
+  Clear-StaleEvidenceReport
 }
 
 if (-not (Test-Path $OpenApiPath)) {
@@ -1346,9 +1448,9 @@ if ($SelfTest) {
 }
 
 Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic wrapper"
-Write-SafeHost "OpenAPI: $OpenApiPath"
-Write-SafeHost "TempRoot: $TempRoot"
-Write-SafeHost "NpmCache: $NpmCache"
+Write-SafeHost "OpenAPI: $(Format-BoundedPath $OpenApiPath)"
+Write-SafeHost "TempRoot: $(Format-BoundedPath $TempRoot)"
+Write-SafeHost "NpmCache: $(Format-BoundedPath $NpmCache)"
 Write-SafeHost "Package download allowed: $([bool]$AllowPackageDownload)"
 
 Invoke-ContractGate

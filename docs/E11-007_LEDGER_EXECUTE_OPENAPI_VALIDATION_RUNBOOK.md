@@ -99,7 +99,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 Expected result:
 
 - Exit `0` for the self-test command when every child case behaves as expected.
-- Child case `default lightweight path` returns exit `0`.
+- Child case `default lightweight path clears stale evidence` returns exit `0`,
+  removes a pre-existing stale evidence report, and does not write a new
+  evidence report.
 - Child case `simulated external blocker` returns exit `2`.
 - Child cases `simulated schema mismatch` and `simulated client mismatch` return
   exit `1`.
@@ -118,11 +120,14 @@ Expected result:
   and writes a bounded evidence report with classification `failure`.
 - Child case `simulated semantic validator evidence blocker` returns exit `2`
   and writes a bounded evidence report with classification `blocker`.
-- Child cases `temp root repo escape rejected` and `npm cache repo escape
-  rejected` return exit `1`, proving custom paths cannot write outside the
-  allowed repository roots.
-- Child case `artifact cleanup removes temp root` returns exit `0` and removes a
-  marker under `.tmp\ledger-adjustment-openapi-semantic`.
+- Child cases `temp root repo escape rejected`, `source temp root rejected`,
+  `git temp root rejected`, and `npm cache repo escape rejected` return exit
+  `1`, proving custom paths cannot write or clean outside the allowed temp/tool
+  roots.
+- Child case `artifact cleanup removes wrapper-owned artifacts` returns exit
+  `0`, removes stale evidence and wrapper-owned generated artifacts under
+  `.tmp\ledger-adjustment-openapi-semantic`, and preserves a non-owned marker in
+  the temp root.
 - Output remains secret-safe; it must not print raw Authorization/Cookie values,
   bearer tokens, credentials, raw operation keys, package credentials, API keys,
   or raw metadata.
@@ -156,10 +161,10 @@ The first three direct simulated commands are expected to return `2`, `1`, and
 returns `0`; the sensitive-command failure returns `1`. The generated-client
 inspection commands return `0` and `1`. The semantic evidence commands return
 `0`, `1`, and `2`. They prove wrapper failure-path classification, bounded
-evidence, path/output hardening, and redaction only. They do not run Redocly,
-OpenAPI Generator, `openapi-typescript`, generated-client inspection against
-real generated output, or any live Postgres checks. Do not use simulated passes
-to close the real semantic/client-generation gap.
+evidence lifecycle, path/output hardening, and redaction only. They do not run
+Redocly, OpenAPI Generator, `openapi-typescript`, generated-client inspection
+against real generated output, or any live Postgres checks. Do not use simulated
+passes to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -202,9 +207,11 @@ the wrapper writes bounded evidence to:
 .tmp\ledger-adjustment-openapi-semantic\ledger-adjustment-openapi-semantic-evidence.json
 ```
 
-The report is not written by the default lightweight path. It is written for
-real opt-in external checks and for the simulated semantic evidence self-test
-paths.
+The report is not written by the default lightweight path. On startup the
+wrapper removes any stale report at this path before running the lightweight
+gate, so a default run cannot be mistaken for fresh validator evidence. The
+report is written only for real opt-in external checks and for the simulated
+semantic evidence self-test paths.
 
 The report schema is `ledger_openapi_semantic_evidence.v1` and contains only
 bounded fields:
@@ -249,6 +256,17 @@ Interpret report outcomes as follows:
 Do not close the semantic validator gap from a report with outcome `blocker`.
 Do not close it from a simulated report; the simulated report proves wrapper
 classification and redaction only.
+
+Evidence lifecycle contract:
+
+- The evidence report path is derived from the already validated `TempRoot`.
+- `TempRoot` must be inside the repository and under `.tmp`.
+- Source paths, `.git`, repo-external paths, and other non-temp locations are
+  refused before any write or clean operation.
+- Evidence and cleanup path output is bounded to repo-relative paths or an
+  outside-repo marker.
+- `-Clean` removes stale evidence and known wrapper-owned artifacts only; it
+  must not remove arbitrary files another worker placed under the temp root.
 
 Recommended preflight:
 
@@ -543,11 +561,22 @@ Remove-Item -Recurse -Force .tmp\openapi-admin-typescript-fetch -ErrorAction Sil
 The wrapper writes generated artifacts under
 `.tmp\ledger-adjustment-openapi-semantic` unless `-TempRoot` or
 `CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT` is supplied. The temp root must stay
-inside the repository and under repository `.tmp`; this keeps `-Clean` from
-deleting source, `.git`, or another worker's files. The wrapper npm cache
+inside the repository and under repository `.tmp`; source directories, `.git`,
+repo-external paths, and other non-temp paths are refused. The wrapper npm cache
 defaults to `.tool-cache\npm`; if overridden with `-NpmCache` or
 `CONTROL_PLANE_LEDGER_OPENAPI_NPM_CACHE`, it must stay inside repository
 `.tool-cache` or `.tmp`.
+
+`-Clean` is intentionally scoped. It removes only wrapper-owned artifacts under
+the validated temp root:
+
+- `ledger-adjustment-openapi-semantic-evidence.json`
+- wrapper-generated `openapi-typescript` and `typescript-fetch` directories
+- wrapper self-test artifact directories and markers
+
+It does not delete source files, `.git`, repo-external paths, non-temp paths, or
+arbitrary files that are not on the wrapper-owned artifact allowlist. If the temp
+root is empty after those removals, the wrapper may remove the empty directory.
 
 External tool output and displayed command lines are redacted before printing.
 The wrapper must not print raw Authorization/Cookie values, bearer tokens,
