@@ -263,6 +263,64 @@ function Invoke-EvidenceReportContractSelfTest {
     if ($passed.performance_envelope.latency_envelope_closure_eligible -ne $true) {
       throw "live passed evidence report latency envelope was not closure eligible"
     }
+    if ([string]$passed.audit_handoff_bridge.closure_gate.classification -ne "pass") {
+      throw "live passed audit bridge was not pass classified"
+    }
+    if ($passed.audit_handoff_bridge.closure_gate.closure_eligible -ne $true) {
+      throw "live passed audit bridge was not closure eligible"
+    }
+
+    $script:Failures = @("[FAIL] simulated live evidence mismatch - provider_attempts_count expected 0, got 1")
+    $liveFailed = New-EvidenceReport -Status "failed" -ExitCode 1 -ReportMode "live" -ProvenanceKind "live"
+    Assert-EvidenceReportContract -Report $liveFailed -ExpectedStatus "failed" -ExpectedExitCode 1 -ExpectedMode "live" -ExpectedProvenanceKind "live"
+    if ([string]$liveFailed.audit_handoff_bridge.closure_gate.classification -ne "fail") {
+      throw "live failed audit bridge was not fail classified"
+    }
+    $script:Failures = @()
+
+    $staleBridge = New-AuditHandoffBridge `
+      -EndpointReports @($passed.endpoints) `
+      -Status "passed" `
+      -ExitCode 0 `
+      -GeneratedAt ([string]$passed.generated_at_utc) `
+      -RepoCommit "unavailable" `
+      -Mode "live" `
+      -Kind "live" `
+      -CloseLiveGapEligible $false `
+      -LatencyEnvelopeClosureEligible $true
+    if ([string]$staleBridge.closure_gate.classification -ne "fail") {
+      throw "stale audit bridge was not fail classified"
+    }
+    if (@($staleBridge.closure_gate.gaps) -notcontains "freshness_replay_refused") {
+      throw "stale audit bridge missing freshness replay gap"
+    }
+
+    $missingDurationReports = New-Object System.Collections.Generic.List[object]
+    foreach ($proofCase in @(Get-ProofCases "pp-proof-missing-duration-contract")) {
+      [void]$missingDurationReports.Add((New-EndpointEvidenceReport `
+            -Case $proofCase `
+            -EvidenceStatus "passed" `
+            -RequestHash ("b" * 64) `
+            -ObservedHttpStatus 400 `
+            -ProviderAttemptsCount 0 `
+            -PromptProtectionReason "prompt_injection_detected"))
+    }
+    $missingDurationBridge = New-AuditHandoffBridge `
+      -EndpointReports @($missingDurationReports.ToArray()) `
+      -Status "passed" `
+      -ExitCode 0 `
+      -GeneratedAt ([string]$passed.generated_at_utc) `
+      -RepoCommit ("1234567890abcdef1234567890abcdef12345678") `
+      -Mode "live" `
+      -Kind "live" `
+      -CloseLiveGapEligible $true `
+      -LatencyEnvelopeClosureEligible $false
+    if ([string]$missingDurationBridge.closure_gate.classification -ne "blocker") {
+      throw "missing duration audit bridge was not blocker classified"
+    }
+    if (@($missingDurationBridge.closure_gate.gaps) -notcontains "duration_unavailable") {
+      throw "missing duration audit bridge missing duration gap"
+    }
 
     $script:CaseReportByName = @{}
     $script:Live = $true
@@ -954,6 +1012,17 @@ function Get-SecretSafeOmissionFieldLines {
   )
 }
 
+function Get-PreflightAuditClosureMatrixLines {
+  return @(
+    "preflight_to_audit_closure_gate:",
+    "- gateway: blocker_if_unreachable; values omitted",
+    "- postgres: blocker_if_schema_or_psql_unavailable; values omitted",
+    "- mock_provider: blocker_if_unreachable_unless_explicitly_skipped; values omitted",
+    "- session_virtual_key: blocker_if_missing; values omitted",
+    "- closure_pass_requires: current live report, provider_attempts_count=0, duration_available=true, latency_envelope.within_bounds=true, current provenance"
+  )
+}
+
 function Write-LiveEvidenceEnvelope {
   $cases = @(Get-ProofCases "pp-proof-envelope")
 
@@ -980,6 +1049,9 @@ function Write-LiveEvidenceEnvelope {
     Write-SafeHost $line
   }
   foreach ($line in @(Get-SecretSafeOmissionFieldLines)) {
+    Write-SafeHost $line
+  }
+  foreach ($line in @(Get-PreflightAuditClosureMatrixLines)) {
     Write-SafeHost $line
   }
   Write-SafeHost ""
@@ -1407,7 +1479,7 @@ function New-AuditHandoffBridge {
   $classification = "blocker"
   if ($CloseLiveGapEligible -and $LatencyEnvelopeClosureEligible -and $uniqueGaps.Count -eq 0) {
     $classification = "pass"
-  } elseif ($script:Failures.Count -gt 0 -or [string]$Status -eq "failed" -or $providerAttemptsNonzero) {
+  } elseif ($fail -or $RepoCommit -eq "unavailable" -or $script:Failures.Count -gt 0 -or [string]$Status -eq "failed" -or $providerAttemptsNonzero) {
     $classification = "fail"
   }
 
@@ -1437,6 +1509,20 @@ function New-AuditHandoffBridge {
       classification = [string]$classification
       closure_eligible = [bool]($classification -eq "pass")
       gaps = $closureGaps
+    }
+    preflight_blocker_matrix = [ordered]@{
+      gateway = "blocker_if_unreachable"
+      postgres = "blocker_if_schema_or_psql_unavailable"
+      mock_provider = "blocker_if_unreachable_unless_explicitly_skipped"
+      session_virtual_key = "blocker_if_missing"
+      closure_pass_requires = @(
+        "current_live_report",
+        "provider_attempts_count=0",
+        "duration_available=true",
+        "latency_envelope.within_bounds=true",
+        "current_provenance"
+      )
+      raw_values_omitted = $true
     }
     admin_ui_readback = [ordered]@{
       schema = "prompt_protection_evidence_readback_v1"
@@ -1886,6 +1972,24 @@ function Assert-EvidenceReportContract {
   }
   if ([string]$Report.audit_handoff_bridge.closure_gate.schema -ne "prompt_protection_audit_closure_gate_v1") {
     throw "audit handoff bridge closure gate schema mismatch"
+  }
+  if ($null -eq $Report.audit_handoff_bridge.preflight_blocker_matrix) {
+    throw "audit handoff bridge missing preflight blocker matrix"
+  }
+  if ([string]$Report.audit_handoff_bridge.preflight_blocker_matrix.gateway -ne "blocker_if_unreachable") {
+    throw "audit handoff bridge gateway blocker matrix mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.preflight_blocker_matrix.postgres -ne "blocker_if_schema_or_psql_unavailable") {
+    throw "audit handoff bridge postgres blocker matrix mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.preflight_blocker_matrix.mock_provider -ne "blocker_if_unreachable_unless_explicitly_skipped") {
+    throw "audit handoff bridge mock provider blocker matrix mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.preflight_blocker_matrix.session_virtual_key -ne "blocker_if_missing") {
+    throw "audit handoff bridge session blocker matrix mismatch"
+  }
+  if ($Report.audit_handoff_bridge.preflight_blocker_matrix.raw_values_omitted -ne $true) {
+    throw "audit handoff bridge blocker matrix raw value omission mismatch"
   }
   if (@("pass", "blocker", "fail") -notcontains [string]$Report.audit_handoff_bridge.closure_gate.classification) {
     throw "audit handoff bridge classification mismatch"

@@ -4568,6 +4568,23 @@ fn ledger_adjustment_billing_ledger_live_probe_executor_boundary_contract() -> V
             "production_writer_unchanged_required": true,
             "dual_commit_allowed": false
         },
+        "live_db_rollback_executor_gate": {
+            "schema_version": "control_plane_billing_ledger_live_db_rollback_executor_gate.v1",
+            "default_requested": false,
+            "explicit_flag": "-ExecuteRollbackOnlyLiveProbe",
+            "explicit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_ONLY_EXECUTOR_PROBE",
+            "requires_sql_bridge_pass": true,
+            "requires_artifact_write_read": true,
+            "bounded_statement_kinds_required": true,
+            "bind_marker_counts_required": true,
+            "row_count_actual_expected_required": true,
+            "per_step_duration_required": true,
+            "rollback_observed_required": true,
+            "commit_forbidden": true,
+            "production_cutover_allowed": false,
+            "dual_commit_allowed": false,
+            "raw_sql_output_failure": true
+        },
         "safe_output_contract": {
             "database_url_output": "omitted",
             "env_value_output": "omitted",
@@ -15698,6 +15715,22 @@ mod tests {
             json!(true)
         );
         assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_rollback_executor_gate"]["schema_version"],
+            json!("control_plane_billing_ledger_live_db_rollback_executor_gate.v1")
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_rollback_executor_gate"]["explicit_flag"],
+            json!("-ExecuteRollbackOnlyLiveProbe")
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_rollback_executor_gate"]["requires_artifact_write_read"],
+            json!(true)
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_rollback_executor_gate"]["raw_sql_output_failure"],
+            json!(true)
+        );
+        assert_eq!(
             contract["live_probe_executor_boundary_contract"]["safe_output_contract"]["raw_database_url_echoed"],
             json!(false)
         );
@@ -17139,6 +17172,16 @@ mod tests {
                 ["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
                 ["bind_marker_counts"]["mark_probe_idempotency"],
             json!(4)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_executor_boundary_contract"]["live_db_rollback_executor_gate"]["explicit_flag"],
+            json!("-ExecuteRollbackOnlyLiveProbe")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_executor_boundary_contract"]["live_db_rollback_executor_gate"]["commit_forbidden"],
+            json!(true)
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]

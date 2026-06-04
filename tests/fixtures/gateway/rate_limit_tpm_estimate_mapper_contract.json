@@ -1166,6 +1166,133 @@
       "maybe"
     ]
   },
+  "trusted_numeric_source_provider_implementation_boundary_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_provider_boundary_v1",
+    "implementation_status": "trusted tokenizer/read-model provider skeleton only; production request path and live DB/provider smoke are not wired",
+    "provider_trait": "GatewayTrustedNumericSourceProvider",
+    "provider_method": "trusted_numeric_tokens",
+    "input_fields": [
+      "endpoint",
+      "source_type",
+      "token_kind"
+    ],
+    "forbidden_input_fields": [
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "provider_endpoint",
+      "current_window_state"
+    ],
+    "safe_summary_fields": [
+      "trusted_source_provider.schema",
+      "trusted_source_provider.status",
+      "trusted_source_provider.endpoint",
+      "trusted_source_provider.source_type",
+      "trusted_source_provider.token_kind",
+      "trusted_source_provider.tokens",
+      "trusted_source_provider.provider_invoked",
+      "trusted_source_provider.fallback_required",
+      "trusted_source_provider.availability_marker",
+      "trusted_source_provider.estimate_duration_marker",
+      "trusted_source_provider.source_marker",
+      "trusted_source_provider.token_count_marker",
+      "trusted_source_provider.clamped_zero_to_one",
+      "trusted_source_provider.clamped_to_i64_max",
+      "trusted_source_provider.error_reason",
+      "trusted_source_provider.material_in_output",
+      "trusted_source_provider.provider_side_effect_required"
+    ],
+    "states": [
+      {
+        "name": "provider_disabled",
+        "status": "disabled",
+        "tokens": null,
+        "provider_invoked": false,
+        "fallback_required": true
+      },
+      {
+        "name": "provider_missing",
+        "status": "missing",
+        "tokens": null,
+        "provider_invoked": false,
+        "fallback_required": true
+      },
+      {
+        "name": "provider_available",
+        "status": "available",
+        "tokens": 321,
+        "provider_invoked": true,
+        "fallback_required": false,
+        "clamped_zero_to_one": false,
+        "clamped_to_i64_max": false
+      },
+      {
+        "name": "provider_zero_clamped",
+        "status": "available",
+        "tokens": 1,
+        "provider_invoked": true,
+        "fallback_required": false,
+        "clamped_zero_to_one": true,
+        "clamped_to_i64_max": false
+      },
+      {
+        "name": "provider_overflow_clamped",
+        "status": "available",
+        "tokens": 9223372036854775807,
+        "provider_invoked": true,
+        "fallback_required": false,
+        "clamped_zero_to_one": false,
+        "clamped_to_i64_max": true
+      },
+      {
+        "name": "provider_negative_error",
+        "status": "error",
+        "tokens": null,
+        "provider_invoked": true,
+        "fallback_required": true,
+        "error_reason": "negative_tokens"
+      }
+    ],
+    "marker_names": {
+      "availability": "gateway_tpm_trusted_numeric_source_available",
+      "estimate_duration": "gateway_tpm_trusted_numeric_source_estimate_duration_ms",
+      "source": "gateway_tpm_trusted_numeric_source_type",
+      "token_count": "gateway_tpm_trusted_numeric_source_token_count"
+    },
+    "ordering_contract": [
+      "prompt-protection allow",
+      "trusted numeric production wiring guard",
+      "trusted numeric provider boundary",
+      "trusted numeric runtime adapter boundary",
+      "TPM estimate",
+      "rate-limit reservation acquire",
+      "provider side effect"
+    ],
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\"",
+      "maybe"
+    ]
+  },
   "trusted_numeric_source_runtime_adapter_boundary_contract": {
     "schema": "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1",
     "implementation_status": "runtime adapter boundary only; concrete tokenizer/read-model providers and live DB/provider smoke are not wired",

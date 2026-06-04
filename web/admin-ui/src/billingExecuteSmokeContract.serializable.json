@@ -237,6 +237,58 @@
       "ready": "ready"
     }
   },
+  "browserLivePassArtifactReadbackGate": {
+    "artifactName": "billing_execute_browser_live_e2e_evidence.v1",
+    "defaultMode": "live_pass_artifact_readback_gate",
+    "defaultReadsArtifact": false,
+    "defaultSubmitsLiveMutation": false,
+    "durationFields": {
+      "browserLaunchDurationMs": "browser_launch_duration_ms",
+      "contextSetupDurationMs": "context_setup_duration_ms",
+      "dryRunPlanDurationMs": "dry_run_plan_duration_ms",
+      "executeApplyDurationMs": "execute_apply_duration_ms",
+      "idempotentReplayDurationMs": "idempotent_replay_duration_ms",
+      "ledgerRefreshDurationMs": "ledger_refresh_duration_ms",
+      "pageReadyDurationMs": "page_ready_duration_ms",
+      "refundRefusalDurationMs": "refund_refusal_duration_ms",
+      "selectorSnapshotDurationMs": "selector_snapshot_duration_ms",
+      "serviceReadinessDurationMs": "service_readiness_duration_ms",
+      "submitLatencyMs": "submit_latency_ms"
+    },
+    "expectedActionOutcomes": {
+      "dry_run_plan": "executePreflight",
+      "execute_apply": "applied",
+      "idempotent_replay": "idempotent",
+      "ledger_refresh": "success",
+      "refund_refusal": "blocked"
+    },
+    "requiredArtifactFreshness": {
+      "requireCurrentGitCommit": true,
+      "requireFreshnessMarker": true,
+      "requireHandoffFresh": true,
+      "requireReadBack": true
+    },
+    "requiredReadiness": {
+      "adminUiReachable": true,
+      "browserLaunchReady": true,
+      "contextReady": true,
+      "controlPlaneHealthReachable": true,
+      "mutationOptInEnabled": true,
+      "pageReady": true,
+      "selectorSnapshotReady": true,
+      "sessionMaterialPresent": true
+    },
+    "secretSafeOmission": {
+      "echoRequestMaterial": false,
+      "echoSessionMaterial": false,
+      "echoUrlCredentials": false
+    },
+    "statusMarkers": {
+      "blocked": "blocked",
+      "fail": "fail",
+      "pass": "pass"
+    }
+  },
   "browserMutationPassArtifactClosure": {
     "artifactName": "billing_execute_browser_live_e2e_evidence.v1",
     "defaultClosesLiveGap": false,

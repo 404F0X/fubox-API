@@ -845,6 +845,7 @@ function Assert-UiSmokeHandoffFreshness {
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
+      "browserLivePassArtifactReadbackGate: ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract",
       "browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
       "browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
@@ -864,6 +865,7 @@ function Assert-UiSmokeHandoffFreshness {
       "browserActionPlan",
       "browserDomActionRunner",
       "browserLiveRunnerExecutionBridge",
+      "browserLivePassArtifactReadbackGate",
       "browserMutationPassArtifactClosure",
       "browserPlaywrightLaunchReadiness",
       "browserEvidenceArtifact",
@@ -874,6 +876,7 @@ function Assert-UiSmokeHandoffFreshness {
       "playwright_launch_readiness_only",
       "mutation_pass_artifact_closure_gate",
       "live_runner_execution_bridge",
+      "live_pass_artifact_readback_gate",
       "bridge_allowed",
       "-BrowserLiveRunnerExecutionOptIn",
       "closure_eligible",
@@ -1512,6 +1515,111 @@ function Write-BrowserLiveRunnerExecutionBridgeGate {
   }
 }
 
+function Assert-BrowserLivePassArtifactReadbackGateContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $gate = Get-JsonProperty $Handoff "browserLivePassArtifactReadbackGate" "UI handoff"
+  Assert-Equal (Get-JsonProperty $gate "artifactName" "UI browser live pass artifact readback gate") "billing_execute_browser_live_e2e_evidence.v1" "UI browser readback gate artifact name"
+  Assert-Equal (Get-JsonProperty $gate "defaultMode" "UI browser live pass artifact readback gate") "live_pass_artifact_readback_gate" "UI browser readback gate default mode"
+  Assert-True ((Get-JsonProperty $gate "defaultReadsArtifact" "UI browser live pass artifact readback gate") -eq $false) "UI browser readback gate must not read artifact by default"
+  Assert-True ((Get-JsonProperty $gate "defaultSubmitsLiveMutation" "UI browser live pass artifact readback gate") -eq $false) "UI browser readback gate must not mutate by default"
+
+  $statusMarkers = Get-JsonProperty $gate "statusMarkers" "UI browser live pass artifact readback gate"
+  foreach ($name in @("blocked", "fail", "pass")) {
+    $marker = [string](Get-JsonProperty $statusMarkers $name "UI browser readback gate status markers")
+    if ($marker -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser readback gate status marker '$name' must be machine readable"
+    }
+  }
+
+  $expectedActionOutcomes = Get-JsonProperty $gate "expectedActionOutcomes" "UI browser live pass artifact readback gate"
+  foreach ($name in @("dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh")) {
+    [void](Get-JsonProperty $expectedActionOutcomes $name "UI browser readback gate action outcomes")
+  }
+
+  $durationFields = Get-JsonProperty $gate "durationFields" "UI browser live pass artifact readback gate"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    [void](Get-JsonProperty $durationFields $name "UI browser readback gate duration fields")
+  }
+
+  $secretSafeOmission = Get-JsonProperty $gate "secretSafeOmission" "UI browser live pass artifact readback gate"
+  foreach ($name in @("echoRequestMaterial", "echoSessionMaterial", "echoUrlCredentials")) {
+    Assert-True ((Get-JsonProperty $secretSafeOmission $name "UI browser readback gate secret-safe omission") -eq $false) "UI browser readback gate must omit $name"
+  }
+}
+
+function Get-BrowserLivePassArtifactReadbackState {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [AllowNull()]$Artifact,
+    [Parameter(Mandatory = $true)][bool]$ReadbackAvailable
+  )
+
+  if (-not $ReadbackAvailable -or $null -eq $Artifact) {
+    return "blocked"
+  }
+  if (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $Artifact) {
+    return "pass"
+  }
+  return "fail"
+}
+
+function Write-BrowserLivePassArtifactReadbackGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent
+  )
+
+  Assert-BrowserLivePassArtifactReadbackGateContract $Handoff
+  $gate = Get-JsonProperty $Handoff "browserLivePassArtifactReadbackGate" "UI handoff"
+  $statusMarkers = Get-JsonProperty $gate "statusMarkers" "UI browser live pass artifact readback gate"
+  $writeEnabled = Test-BrowserEvidenceArtifactWriteOptIn $Handoff
+  $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
+  $readbackArtifact = $null
+  $readbackAvailable = $false
+  if ($writeEnabled -and (Test-Path $artifactPath)) {
+    $readbackArtifact = Read-JsonFile $artifactPath
+    $readbackAvailable = $true
+  }
+
+  $probe = [PSCustomObject]@{ Reachable = $true }
+  $syntheticPass = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 1
+  Set-SyntheticPassActionEvidence -Handoff $Handoff -Artifact $syntheticPass
+  $syntheticFail = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome "passed" -Blockers @() -ToolingStatus "available" -AdminUiProbe $probe -ControlPlaneProbe $probe -MutationEnabled $true -SessionMaterialPresent $true -ServiceReadinessDurationMs 1
+  Set-SyntheticPassActionEvidence -Handoff $Handoff -Artifact $syntheticFail
+  $syntheticFail.actions[0].duration_ms = "unavailable"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $null -ReadbackAvailable $false) "blocked" "browser readback gate missing artifact state"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $syntheticPass -ReadbackAvailable $true) "pass" "browser readback gate synthetic pass state"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $syntheticFail -ReadbackAvailable $true) "fail" "browser readback gate synthetic fail state"
+
+  $state = Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $readbackArtifact -ReadbackAvailable $readbackAvailable
+  $status = [string](Get-JsonProperty $statusMarkers $state "UI browser readback gate status markers")
+  $blockers = @()
+  if (-not $writeEnabled) { $blockers += "artifact_write_opt_in_missing" }
+  if (-not $readbackAvailable) { $blockers += "artifact_readback_missing" }
+  if (-not $MutationEnabled) { $blockers += "live_mutation_opt_in_missing" }
+  if (-not $SessionMaterialPresent) { $blockers += "session_material_missing" }
+  if ($state -eq "fail") { $blockers += "artifact_closure_failed" }
+  $blockerSummary = if ($blockers.Count -gt 0) { $blockers -join "+" } else { "none" }
+
+  Write-SafeHost "Browser ledger execute live pass artifact readback gate:"
+  Write-SafeHost "browser_live_pass_readback_status=$status"
+  Write-SafeHost "browser_live_pass_readback_state=$state"
+  Write-SafeHost "browser_live_pass_readback_blockers=$blockerSummary"
+  Write-SafeHost "browser_live_pass_readback_default_reads=false"
+  Write-SafeHost "browser_live_pass_readback_default_mutation=false"
+  Write-SafeHost "browser_live_pass_readback_artifact_path_bounded=true"
+  Write-SafeHost "browser_live_pass_readback_artifact_path=$artifactPath"
+  Write-SafeHost "browser_live_pass_readback_available=$(Format-BoolMarker $readbackAvailable)"
+  Write-SafeHost "browser_live_pass_readback_write_enabled=$(Format-BoolMarker $writeEnabled)"
+  Write-SafeHost "browser_live_pass_readback_session_present=$(Format-BoolMarker $SessionMaterialPresent)"
+  Write-SafeHost "browser_live_pass_readback_mutation_enabled=$(Format-BoolMarker $MutationEnabled)"
+  Write-SafeHost "browser_live_pass_readback_secret_url_credentials_echoed=false"
+  Write-SafeHost "browser_live_pass_readback_secret_session_echoed=false"
+  Write-SafeHost "browser_live_pass_readback_request_material_echoed=false"
+}
+
 function Test-BrowserMutationOptIn {
   param([Parameter(Mandatory = $true)]$Runbook)
 
@@ -2107,6 +2215,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserMutationPassArtifactClosureGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserLiveRunnerExecutionBridgeGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
+  Write-BrowserLivePassArtifactReadbackGate -Handoff $Handoff -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
 }
 
 function Assert-AdminSourceMarkers {

@@ -481,6 +481,11 @@ Package materialization executor boundary:
   `package_cache_bytes`, `package_download_allowed`,
   `package_probe_duration_ms`, `duration_ms`, bounded command summary, and a
   redacted output tail.
+- Each materialization record also includes a safe wrapper materialization
+  command, a per-package `npm cache add <package> --cache <repo-local-cache>`
+  command, bounded cache path/size, and a closure preflight blocker note. These
+  command summaries must be secret-safe and must not include registry tokens or
+  credentials.
 - The npm cache path must remain under repository `.tool-cache` or `.tmp`;
   repo-external paths, source paths, and `.git` are refused before materializing.
 - After a successful `npm cache add`, the wrapper performs a bounded
@@ -522,6 +527,13 @@ Real-tool readiness gate:
 - Missing marker, stale marker, incomplete marker package list, missing cache
   entry, or incomplete cache readback writes `real_tool_readiness` blocker
   evidence and exits `2`.
+- The readiness blocker is a materialized package cache closure preflight. For
+  each package/tool row it records `closure_preflight_reason`, materialization
+  marker path/status, bounded cache path/size, probe duration, package/cache
+  provenance, and safe materialization commands.
+- Typical blocker reasons are missing local tool preflight, missing/stale
+  `.ledger-openapi-package-materialization.json`, incomplete marker package
+  list, or `npm cache ls <package> --offline` returning no usable cache entry.
 - Each readiness evidence record includes tool availability, package provenance,
   cache path, cache size, package readback duration, tool preflight duration,
   `readiness_marker_status`, and redacted output tail.
@@ -541,6 +553,23 @@ Readiness dry-run command:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolReadiness
 ```
+
+Materialized package cache closure preflight:
+
+```powershell
+# Preflight only; no package download and no validator/generator execution.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -RealToolReadiness
+
+# Materialization boundary; may download packages only because both opt-ins are present.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -MaterializePackageCache -AllowPackageDownload
+```
+
+When the cache is not ready, copy the wrapper materialization command from the
+blocker evidence instead of running ad hoc npm commands. Package-level
+`npm cache add` commands are included only as bounded diagnostic material; the
+wrapper command owns marker creation and cache readback. A simulated or stale
+materialization marker can prove refusal behavior, but it cannot close the real
+semantic/client-generation gap.
 
 Real-tool execution bridge:
 

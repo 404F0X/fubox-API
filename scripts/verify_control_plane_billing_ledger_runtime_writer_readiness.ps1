@@ -2,6 +2,7 @@ param(
   [switch]$Live,
   [switch]$LiveExecutionProbe,
   [switch]$RunLiveDbExecutorProbe,
+  [switch]$ExecuteRollbackOnlyLiveProbe,
   [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
   [switch]$SimulateStaleProbeArtifact,
@@ -11,6 +12,7 @@ param(
   [switch]$SimulateCommitObserved,
   [switch]$SimulateProductionWriterReplaced,
   [switch]$SimulateDualCommitObserved,
+  [switch]$SimulateRawSqlOutput,
   [switch]$WriteProbeArtifact,
   [switch]$ReadProbeArtifact,
   [AllowNull()][string]$ArtifactPath,
@@ -43,6 +45,7 @@ $artifactWriteEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_WRITE"
 $artifactReadEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_READ"
 $artifactPathEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_PATH"
 $liveDbExecutorProbeEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_DB_EXECUTOR_PROBE"
+$rollbackOnlyExecutorEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_ONLY_EXECUTOR_PROBE"
 $runtimeSchemaEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_SCHEMA_AVAILABLE"
 $runtimeToolEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_TOOL_AVAILABLE"
 
@@ -1095,6 +1098,101 @@ function New-LiveDbExecutorSqlBridgeReadinessArtifact {
   }
 }
 
+function New-LiveDbRollbackOnlyExecutorGate {
+  param(
+    [Parameter(Mandatory = $true)][bool]$ExecutionRequested,
+    [Parameter(Mandatory = $true)]$SqlBridge,
+    [Parameter(Mandatory = $true)]$ReadbackGate,
+    [Parameter(Mandatory = $true)]$ArtifactWrite,
+    [Parameter(Mandatory = $true)]$ArtifactRead,
+    [Parameter(Mandatory = $true)][bool]$RawSqlOutputObserved
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if (-not $ExecutionRequested) {
+    [void]$blockers.Add("rollback_only_executor_not_requested")
+  }
+  if (-not [bool]$ArtifactWrite.performed) {
+    [void]$blockers.Add("artifact_write_missing")
+  }
+  if (-not [bool]$ArtifactRead.performed) {
+    [void]$blockers.Add("artifact_read_missing")
+  }
+  if ([string]$SqlBridge.classification -eq "blocker") {
+    foreach ($blocker in @($SqlBridge.blockers)) {
+      [void]$blockers.Add([string]$blocker)
+    }
+  }
+  if ([string]$ReadbackGate.classification -eq "blocker") {
+    foreach ($refusal in @($ReadbackGate.refusals)) {
+      [void]$blockers.Add([string]$refusal)
+    }
+  }
+  if ([string]$SqlBridge.classification -eq "fail") {
+    foreach ($failure in @($SqlBridge.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+  if ([string]$ReadbackGate.classification -eq "fail") {
+    foreach ($failure in @($ReadbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+  if ($RawSqlOutputObserved) {
+    [void]$failures.Add("raw_sql_output_observed")
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($blockers.Count -eq 0 -and [string]$SqlBridge.classification -eq "pass" -and [string]$ReadbackGate.classification -eq "pass") {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = "control_plane_billing_ledger_live_db_rollback_executor_gate.v1"
+    classification = $classification
+    requested = $ExecutionRequested
+    default_db_write_performed = $false
+    executor_mode = "rollback_only_probe"
+    bounded_statement_kinds = $SqlBridge.bounded_statement_kinds
+    bind_marker_counts = $SqlBridge.bind_marker_counts
+    row_count_evidence = $ReadbackGate.row_count_evidence
+    timing_evidence = $ReadbackGate.transaction_timing_durations
+    rollback_no_commit_proof = $ReadbackGate.rollback_no_commit_proof
+    rollback_only = $true
+    commit_forbidden = $true
+    production_writer_replaced = $false
+    production_source_of_truth_switch_allowed = $false
+    dual_commit_allowed = $false
+    artifact_handoff = [ordered]@{
+      write_performed = [bool]$ArtifactWrite.performed
+      read_performed = [bool]$ArtifactRead.performed
+      relative_path = [string]$ArtifactRead.relative_path
+    }
+    provenance = [ordered]@{
+      sql_bridge_schema = [string]$SqlBridge.schema_version
+      readback_gate_schema = [string]$ReadbackGate.schema_version
+      raw_sql_output_observed = $RawSqlOutputObserved
+      database_url_output = "presence_marker_only"
+    }
+    blockers = @($blockers | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    safe_output = [ordered]@{
+      raw_sql_output = "omitted"
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
 function New-LiveExecutionHandoff {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -1266,6 +1364,7 @@ $featureAvailable = [bool]$RuntimeWriterAvailable -or (Test-TruthyEnv ([Environm
 $runtimeSchemaAvailable = [bool]$RuntimeSchemaAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($runtimeSchemaEnvVar)))
 $runtimeToolAvailable = [bool]$RuntimeToolAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($runtimeToolEnvVar)))
 $liveDbExecutorProbeRequested = [bool]$RunLiveDbExecutorProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($liveDbExecutorProbeEnvVar)))
+$rollbackOnlyExecutorRequested = [bool]$ExecuteRollbackOnlyLiveProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($rollbackOnlyExecutorEnvVar)))
 $artifactWriteRequested = [bool]$WriteProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactWriteEnvVar)))
 $artifactReadRequested = [bool]$ReadProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactReadEnvVar)))
 $artifactPathValue = if ([string]::IsNullOrWhiteSpace($ArtifactPath)) { [Environment]::GetEnvironmentVariable($artifactPathEnvVar) } else { $ArtifactPath }
@@ -1318,6 +1417,7 @@ $readbackArtifact = $artifactReadResult.artifact
 $liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifact $readbackArtifact -MissingRowCount ([bool]$SimulateMissingRowCountReadback) -MissingTiming ([bool]$SimulateMissingTimingReadback) -MissingRollbackProof ([bool]$SimulateMissingRollbackProofReadback)
 $liveDbExecutorProbeCommandBoundary = New-LiveDbExecutorProbeCommandBoundary -ProbeRequested $liveDbExecutorProbeRequested -LiveOptIn $liveOptIn -Mode ([string]$mode.Mode) -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -FeatureAvailable $featureAvailable -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -ReadbackGate $liveProbeMeasurementReadbackGate
 $liveDbExecutorSqlBridgeReadinessArtifact = New-LiveDbExecutorSqlBridgeReadinessArtifact -CommandBoundary $liveDbExecutorProbeCommandBoundary -ReadbackGate $liveProbeMeasurementReadbackGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable
+$liveDbRollbackOnlyExecutorGate = New-LiveDbRollbackOnlyExecutorGate -ExecutionRequested $rollbackOnlyExecutorRequested -SqlBridge $liveDbExecutorSqlBridgeReadinessArtifact -ReadbackGate $liveProbeMeasurementReadbackGate -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -RawSqlOutputObserved ([bool]$SimulateRawSqlOutput)
 
 $summary = [ordered]@{
   schema_version = [string]$readinessContract.schema_version
@@ -1442,6 +1542,7 @@ $summary = [ordered]@{
   live_probe_measurement_readback_gate = $liveProbeMeasurementReadbackGate
   live_db_executor_probe_command_boundary = $liveDbExecutorProbeCommandBoundary
   live_db_executor_sql_bridge_readiness_artifact = $liveDbExecutorSqlBridgeReadinessArtifact
+  live_db_rollback_only_executor_gate = $liveDbRollbackOnlyExecutorGate
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version

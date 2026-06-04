@@ -596,6 +596,36 @@ function Get-PackageMaterializationMarkerPath {
   return Join-Path $NpmCache ".ledger-openapi-package-materialization.json"
 }
 
+function Get-SafeWrapperMaterializationCommand {
+  return "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -MaterializePackageCache -AllowPackageDownload"
+}
+
+function Get-SafePackageMaterializationCommand {
+  param([Parameter(Mandatory = $true)][string]$Package)
+
+  return "npm cache add $Package --cache $(Format-BoundedPath $NpmCache)"
+}
+
+function Get-PackageClosurePreflightReason {
+  param(
+    [Parameter(Mandatory = $true)][object]$Entry,
+    [Parameter(Mandatory = $true)][object]$MarkerStatus,
+    [Parameter(Mandatory = $true)][object]$CacheProbe,
+    [Parameter(Mandatory = $true)][string]$PreflightStatus
+  )
+
+  if ($PreflightStatus -ne "passed") {
+    return "required tool preflight failed for $($Entry.name)"
+  }
+  if ([string]$MarkerStatus.Status -ne "current") {
+    return "materialization marker $($MarkerStatus.Status) at $($MarkerStatus.Path)"
+  }
+  if ([string]$CacheProbe.Classification -ne "pass") {
+    return "package cache readback $($CacheProbe.Status) for $($Entry.package)"
+  }
+  return "ready"
+}
+
 function Get-MaterializationMarkerStatus {
   param([Parameter(Mandatory = $true)][string[]]$Packages)
 
@@ -2864,7 +2894,17 @@ function Add-OpenApiPackageMaterializationEvidence {
     $classification = "blocker"
     $exitCode = 2
     $command = "npm cache add $package not run"
-    $output = @($toolOutput)
+    $output = @(
+      $toolOutput +
+      @(
+        "package=$package",
+        "wrapper_materialization_command=$(Get-SafeWrapperMaterializationCommand)",
+        "package_materialization_command=$(Get-SafePackageMaterializationCommand -Package $package)",
+        "package_cache_path=$(Format-BoundedPath $NpmCache)",
+        "package_cache_bytes=$(Get-BoundedDirectorySizeBytes -Path $NpmCache)",
+        "closure_preflight=blocked_until_current_materialization_marker_and_cache_readback"
+      )
+    )
     $blockerReason = ""
     $cacheStatus = Get-NpmPackageCacheStatus
     $packageVersion = Get-PackageVersionMarker -PackageCacheStatus $cacheStatus -ToolVersion ""
@@ -3021,10 +3061,26 @@ function Add-RealToolReadinessEvidence {
 
     $classification = if ($preflightStatus -eq "passed" -and $markerStatus.Status -eq "current" -and $cacheProbe.Classification -eq "pass") { "pass" } else { "blocker" }
     $exitCode = if ($classification -eq "pass") { 0 } else { 2 }
+    $closureReason = Get-PackageClosurePreflightReason -Entry $entry -MarkerStatus $markerStatus -CacheProbe $cacheProbe -PreflightStatus $preflightStatus
+    $readinessOutput = @(
+      $toolOutput +
+      @($markerStatus.Output) +
+      @($cacheProbe.Output) +
+      @(
+        "package=$($entry.package)",
+        "closure_preflight_reason=$closureReason",
+        "wrapper_materialization_command=$(Get-SafeWrapperMaterializationCommand)",
+        "package_materialization_command=$(Get-SafePackageMaterializationCommand -Package ([string]$entry.package))",
+        "package_cache_path=$(Format-BoundedPath $NpmCache)",
+        "package_cache_bytes=$(Get-BoundedDirectorySizeBytes -Path $NpmCache)",
+        "materialization_marker_path=$($markerStatus.Path)",
+        "materialization_marker_status=$($markerStatus.Status)"
+      )
+    )
     $blockerReason = ""
     if ($classification -eq "blocker") {
       $allReady = $false
-      $blockerReason = "materialized package cache readiness failed before real tool execution"
+      $blockerReason = "closure preflight blocked: $closureReason; materialize with $(Get-SafeWrapperMaterializationCommand)"
       Add-Blocker "[BLOCKED] real-tool readiness $($entry.name) - $blockerReason"
     }
 
@@ -3037,7 +3093,7 @@ function Add-RealToolReadinessEvidence {
       -Classification $classification `
       -ExitCode $exitCode `
       -Command "real-tool readiness readback for $($entry.name)" `
-      -Output ($toolOutput + @($markerStatus.Output) + @($cacheProbe.Output)) `
+      -Output $readinessOutput `
       -BlockerReason $blockerReason `
       -ProvenanceMode $(if ($SimulatedCurrent -or $SimulatedStale) { "simulated" } else { "real" }) `
       -ToolPath $toolPath `

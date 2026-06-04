@@ -3613,6 +3613,20 @@ describe("App", () => {
       },
       current_commit: "1234567890abcdef1234567890abcdef12345678",
       generated_at_utc: "2026-06-04T14:05:00.000Z",
+      preflight_blocker_matrix: {
+        closure_pass_requires: [
+          "current_live_report",
+          "provider_attempts_count=0",
+          "duration_available=true",
+          "latency_envelope.within_bounds=true",
+          "current_provenance",
+        ],
+        gateway: "blocker_if_unreachable",
+        mock_provider: "blocker_if_unreachable_unless_explicitly_skipped",
+        postgres: "blocker_if_schema_or_psql_unavailable",
+        raw_values_omitted: true,
+        session_virtual_key: "blocker_if_missing",
+      },
       raw_report_path: "C:\\secret\\prompt-bridge-proof-report-hidden.json",
       report_path_marker: "safe_artifact_path_configured",
       schema_version: "prompt_protection_audit_handoff_bridge.v1",
@@ -3643,6 +3657,13 @@ describe("App", () => {
       proofMode: "live / live",
       providerAttempts: "0",
       schema: "prompt_protection_evidence_readback_v1",
+    });
+    expect(bridge.preflight_blocker_matrix).toMatchObject({
+      gateway: "blocker_if_unreachable",
+      postgres: "blocker_if_schema_or_psql_unavailable",
+      mock_provider: "blocker_if_unreachable_unless_explicitly_skipped",
+      session_virtual_key: "blocker_if_missing",
+      raw_values_omitted: true,
     });
 
     const exported = JSON.stringify(gate);
@@ -4314,6 +4335,26 @@ describe("App", () => {
         blocked: "blocked",
         bridgeAllowed: "bridge_allowed",
         ready: "ready",
+      },
+    });
+    expect(parsed.browserLivePassArtifactReadbackGate).toEqual({
+      artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      defaultMode: "live_pass_artifact_readback_gate",
+      defaultReadsArtifact: false,
+      defaultSubmitsLiveMutation: false,
+      durationFields: parsed.browserEvidenceArtifact.durationFields,
+      expectedActionOutcomes: parsed.browserMutationPassArtifactClosure.expectedActionOutcomes,
+      requiredArtifactFreshness: parsed.browserMutationPassArtifactClosure.requiredArtifactFreshness,
+      requiredReadiness: parsed.browserMutationPassArtifactClosure.requiredReadiness,
+      secretSafeOmission: {
+        echoRequestMaterial: false,
+        echoSessionMaterial: false,
+        echoUrlCredentials: false,
+      },
+      statusMarkers: {
+        blocked: "blocked",
+        fail: "fail",
+        pass: "pass",
       },
     });
     expect(parsed.browserMutationPassArtifactClosure).toEqual({

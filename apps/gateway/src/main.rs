@@ -14944,6 +14944,142 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_trusted_source_provider_boundary_does_not_change_runtime_ordering() {
+        let main_source = include_str!("main.rs");
+        let tpm_estimate_source = include_str!("tpm_estimate.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let provider = &fixture["trusted_numeric_source_provider_implementation_boundary_contract"];
+
+        assert_eq!(
+            provider["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_provider_boundary_v1")
+        );
+        for required_marker in [
+            "GatewayTrustedNumericSourceProvider",
+            "GatewayTrustedNumericSourceProviderInput",
+            "GatewayTrustedNumericSourceProviderOutput",
+            "gateway_trusted_numeric_source_provider_boundary(",
+            "gateway_trusted_numeric_source_provider_availability(",
+        ] {
+            assert!(
+                tpm_estimate_source.contains(required_marker),
+                "trusted provider boundary helper should exist for future wiring: {required_marker}"
+            );
+        }
+        for field in [
+            "trusted_source_provider.tokens",
+            "trusted_source_provider.estimate_duration_marker",
+            "trusted_source_provider.source_marker",
+            "trusted_source_provider.token_count_marker",
+            "trusted_source_provider.material_in_output",
+            "trusted_source_provider.provider_side_effect_required",
+        ] {
+            assert!(
+                provider["safe_summary_fields"]
+                    .as_array()
+                    .expect("provider safe summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "trusted provider summary should include {field}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(
+                section,
+                estimate_marker,
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+            for helper in [
+                "GatewayTrustedNumericSourceProvider",
+                "gateway_trusted_numeric_source_provider_boundary(",
+                "gateway_trusted_numeric_source_provider_availability(",
+                "trusted_numeric_tokens(",
+                "GatewayTrustedNumericSourceRuntimeAdapter",
+                "gateway_trusted_numeric_source_runtime_adapter_boundary(",
+                "gateway_trusted_numeric_source_env_config_read(",
+                "gateway_tpm_signals_for_readiness(",
+            ] {
+                assert!(
+                    !estimate_section.contains(helper),
+                    "{section_name} runtime must not call trusted numeric provider by default: {helper}"
+                );
+            }
+            for forbidden in [
+                ".len()",
+                ".chars()",
+                ".bytes()",
+                "split_whitespace",
+                ".tokenize(",
+                "tokenize_raw",
+                "token_count",
+            ] {
+                assert!(
+                    !estimate_section.contains(forbidden),
+                    "{section_name} runtime must not infer trusted TPM tokens from raw request material: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_trusted_source_runtime_adapter_boundary_does_not_change_runtime_ordering()
      {
         let main_source = include_str!("main.rs");

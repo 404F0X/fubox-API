@@ -23,6 +23,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SC
     "gateway_tpm_trusted_numeric_source_runtime_evidence_artifact_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_production_wiring_guard_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_provider_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV: &str =
@@ -200,6 +202,51 @@ impl GatewayTrustedNumericSourceAdapterOutput {
             tokens,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProviderInput {
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+}
+
+impl GatewayTrustedNumericSourceProviderInput {
+    pub(crate) const fn new(
+        endpoint: GatewayTpmEstimateEndpoint,
+        source_type: GatewayTrustedNumericSourceType,
+        token_kind: GatewayTrustedNumericTokenKind,
+    ) -> Self {
+        Self {
+            endpoint,
+            source_type,
+            token_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProviderOutput {
+    pub(crate) tokens: Option<i128>,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceProviderOutput {
+    pub(crate) const fn new(tokens: Option<i128>) -> Self {
+        Self {
+            tokens,
+            material_in_output: false,
+            provider_side_effect_required: false,
+        }
+    }
+}
+
+pub(crate) trait GatewayTrustedNumericSourceProvider {
+    fn trusted_numeric_tokens(
+        &self,
+        input: GatewayTrustedNumericSourceProviderInput,
+    ) -> GatewayTrustedNumericSourceProviderOutput;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +520,42 @@ impl GatewayTrustedNumericSourceEnvConfigValueStatus {
             Self::Disabled => "disabled",
             Self::Enabled => "enabled",
             Self::Invalid => "invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProviderStatus {
+    Disabled,
+    Missing,
+    Available,
+    Error,
+}
+
+impl GatewayTrustedNumericSourceProviderStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Missing => "missing",
+            Self::Available => "available",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProviderErrorReason {
+    NegativeTokens,
+    MaterialInOutput,
+    ProviderSideEffectRequired,
+}
+
+impl GatewayTrustedNumericSourceProviderErrorReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NegativeTokens => "negative_tokens",
+            Self::MaterialInOutput => "material_in_output",
+            Self::ProviderSideEffectRequired => "provider_side_effect_required",
         }
     }
 }
@@ -770,6 +853,69 @@ pub(crate) struct GatewayTrustedNumericSourceEnvConfigSummary {
     pub(crate) source_marker: &'static str,
     pub(crate) token_count_marker: &'static str,
     pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProviderEvidence {
+    pub(crate) status: GatewayTrustedNumericSourceProviderStatus,
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) tokens: Option<u64>,
+    pub(crate) provider_invoked: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) clamped_zero_to_one: bool,
+    pub(crate) clamped_to_i64_max: bool,
+    pub(crate) error_reason: Option<GatewayTrustedNumericSourceProviderErrorReason>,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceProviderEvidence {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceProviderSummary {
+        GatewayTrustedNumericSourceProviderSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA,
+            status: self.status.as_str(),
+            endpoint: self.endpoint.as_str(),
+            source_type: self.source_type.as_str(),
+            token_kind: self.token_kind.as_str(),
+            tokens: self.tokens,
+            provider_invoked: self.provider_invoked,
+            fallback_required: self.fallback_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            clamped_zero_to_one: self.clamped_zero_to_one,
+            clamped_to_i64_max: self.clamped_to_i64_max,
+            error_reason: self
+                .error_reason
+                .map(GatewayTrustedNumericSourceProviderErrorReason::as_str),
+            material_in_output: self.material_in_output,
+            provider_side_effect_required: self.provider_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceProviderSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) endpoint: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) token_kind: &'static str,
+    pub(crate) tokens: Option<u64>,
+    pub(crate) provider_invoked: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) clamped_zero_to_one: bool,
+    pub(crate) clamped_to_i64_max: bool,
+    pub(crate) error_reason: Option<&'static str>,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1677,6 +1823,125 @@ pub(crate) fn gateway_trusted_numeric_source_production_wiring_guard(
         artifact_readback_required: ready,
         reservation_acquire_evidence_required: ready,
         material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_provider_boundary(
+    enabled: bool,
+    input: GatewayTrustedNumericSourceProviderInput,
+    provider: Option<&dyn GatewayTrustedNumericSourceProvider>,
+) -> GatewayTrustedNumericSourceProviderEvidence {
+    if !enabled {
+        return gateway_trusted_numeric_source_provider_fallback(
+            GatewayTrustedNumericSourceProviderStatus::Disabled,
+            input,
+            false,
+            None,
+        );
+    }
+    let Some(provider) = provider else {
+        return gateway_trusted_numeric_source_provider_fallback(
+            GatewayTrustedNumericSourceProviderStatus::Missing,
+            input,
+            false,
+            None,
+        );
+    };
+    let output = provider.trusted_numeric_tokens(input);
+    if output.provider_side_effect_required {
+        return gateway_trusted_numeric_source_provider_fallback(
+            GatewayTrustedNumericSourceProviderStatus::Error,
+            input,
+            true,
+            Some(GatewayTrustedNumericSourceProviderErrorReason::ProviderSideEffectRequired),
+        );
+    }
+    if output.material_in_output {
+        return gateway_trusted_numeric_source_provider_fallback(
+            GatewayTrustedNumericSourceProviderStatus::Error,
+            input,
+            true,
+            Some(GatewayTrustedNumericSourceProviderErrorReason::MaterialInOutput),
+        );
+    }
+    let Some(tokens) = output.tokens else {
+        return gateway_trusted_numeric_source_provider_fallback(
+            GatewayTrustedNumericSourceProviderStatus::Missing,
+            input,
+            true,
+            None,
+        );
+    };
+    if tokens < 0 {
+        return gateway_trusted_numeric_source_provider_fallback(
+            GatewayTrustedNumericSourceProviderStatus::Error,
+            input,
+            true,
+            Some(GatewayTrustedNumericSourceProviderErrorReason::NegativeTokens),
+        );
+    }
+    let clamped_zero_to_one = tokens == 0;
+    let clamped_to_i64_max = tokens > i128::from(i64::MAX);
+    let tokens = if clamped_zero_to_one {
+        1
+    } else if clamped_to_i64_max {
+        i64::MAX as u64
+    } else {
+        tokens as u64
+    };
+
+    GatewayTrustedNumericSourceProviderEvidence {
+        status: GatewayTrustedNumericSourceProviderStatus::Available,
+        endpoint: input.endpoint,
+        source_type: input.source_type,
+        token_kind: input.token_kind,
+        tokens: Some(tokens),
+        provider_invoked: true,
+        fallback_required: false,
+        clamped_zero_to_one,
+        clamped_to_i64_max,
+        error_reason: None,
+        material_in_output: false,
+        provider_side_effect_required: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_provider_availability(
+    evidence: &GatewayTrustedNumericSourceProviderEvidence,
+) -> GatewayTrustedNumericSourceAvailability {
+    if evidence.status != GatewayTrustedNumericSourceProviderStatus::Available {
+        return gateway_trusted_numeric_source_availability_from_adapter(None);
+    }
+    gateway_trusted_numeric_source_availability_from_adapter(Some(
+        GatewayTrustedNumericSourceAdapterOutput::new(
+            evidence.source_type,
+            evidence.token_kind,
+            evidence
+                .tokens
+                .map(|tokens| tokens.min(i64::MAX as u64) as i64),
+        ),
+    ))
+}
+
+fn gateway_trusted_numeric_source_provider_fallback(
+    status: GatewayTrustedNumericSourceProviderStatus,
+    input: GatewayTrustedNumericSourceProviderInput,
+    provider_invoked: bool,
+    error_reason: Option<GatewayTrustedNumericSourceProviderErrorReason>,
+) -> GatewayTrustedNumericSourceProviderEvidence {
+    GatewayTrustedNumericSourceProviderEvidence {
+        status,
+        endpoint: input.endpoint,
+        source_type: input.source_type,
+        token_kind: input.token_kind,
+        tokens: None,
+        provider_invoked,
+        fallback_required: true,
+        clamped_zero_to_one: false,
+        clamped_to_i64_max: false,
+        error_reason,
+        material_in_output: false,
+        provider_side_effect_required: false,
     }
 }
 
@@ -5347,6 +5612,295 @@ mod tests {
             assert!(
                 !serialized.contains(&forbidden.to_ascii_lowercase()),
                 "trusted numeric production wiring summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_provider_implementation_boundary()
+    {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_provider_implementation_boundary_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA)
+        );
+        assert_eq!(
+            contract["provider_trait"].as_str(),
+            Some("GatewayTrustedNumericSourceProvider")
+        );
+        assert_eq!(
+            contract["provider_method"].as_str(),
+            Some("trusted_numeric_tokens")
+        );
+
+        let input_fields = contract["input_fields"]
+            .as_array()
+            .expect("provider input fields should be an array");
+        for field in ["endpoint", "source_type", "token_kind"] {
+            assert!(
+                input_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "provider input should include {field}"
+            );
+        }
+        for forbidden in contract["forbidden_input_fields"]
+            .as_array()
+            .expect("provider forbidden input fields should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !input_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(forbidden)),
+                "provider input must not include raw field: {forbidden}"
+            );
+        }
+
+        for field in [
+            "trusted_source_provider.tokens",
+            "trusted_source_provider.provider_invoked",
+            "trusted_source_provider.estimate_duration_marker",
+            "trusted_source_provider.source_marker",
+            "trusted_source_provider.token_count_marker",
+            "trusted_source_provider.clamped_zero_to_one",
+            "trusted_source_provider.clamped_to_i64_max",
+            "trusted_source_provider.error_reason",
+            "trusted_source_provider.material_in_output",
+            "trusted_source_provider.provider_side_effect_required",
+        ] {
+            assert!(
+                contract["safe_summary_fields"]
+                    .as_array()
+                    .expect("provider summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "provider summary should include {field}"
+            );
+        }
+
+        for required_state in [
+            "provider_disabled",
+            "provider_missing",
+            "provider_available",
+            "provider_zero_clamped",
+            "provider_overflow_clamped",
+            "provider_negative_error",
+        ] {
+            assert!(
+                contract["states"]
+                    .as_array()
+                    .expect("provider states should be an array")
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "provider boundary contract missing state: {required_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_provider_boundary_controls_safe_tokens() {
+        use std::cell::Cell;
+
+        struct Provider {
+            calls: Cell<usize>,
+            output: GatewayTrustedNumericSourceProviderOutput,
+        }
+
+        impl GatewayTrustedNumericSourceProvider for Provider {
+            fn trusted_numeric_tokens(
+                &self,
+                input: GatewayTrustedNumericSourceProviderInput,
+            ) -> GatewayTrustedNumericSourceProviderOutput {
+                self.calls.set(self.calls.get().saturating_add(1));
+                assert_eq!(input.endpoint, GatewayTpmEstimateEndpoint::OpenAiChat);
+                assert_eq!(
+                    input.source_type,
+                    GatewayTrustedNumericSourceType::Tokenizer
+                );
+                assert_eq!(
+                    input.token_kind,
+                    GatewayTrustedNumericTokenKind::PromptTokens
+                );
+                self.output
+            }
+        }
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("provider states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing provider state: {name}"))
+        }
+
+        fn assert_provider_summary(
+            summary: &GatewayTrustedNumericSourceProviderSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.tokens, expected["tokens"].as_u64());
+            assert_eq!(
+                summary.provider_invoked,
+                expected["provider_invoked"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            if let Some(clamped) = expected["clamped_zero_to_one"].as_bool() {
+                assert_eq!(summary.clamped_zero_to_one, clamped);
+            }
+            if let Some(clamped) = expected["clamped_to_i64_max"].as_bool() {
+                assert_eq!(summary.clamped_to_i64_max, clamped);
+            }
+            assert_eq!(
+                summary.error_reason,
+                expected["error_reason"]
+                    .as_str()
+                    .map(|reason| match reason {
+                        "negative_tokens" => "negative_tokens",
+                        other => panic!("unexpected provider error reason: {other}"),
+                    })
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert!(!summary.material_in_output);
+            assert!(!summary.provider_side_effect_required);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_provider_implementation_boundary_contract"];
+        let input = GatewayTrustedNumericSourceProviderInput::new(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+        );
+        let available_provider = Provider {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceProviderOutput::new(Some(321)),
+        };
+
+        let disabled = gateway_trusted_numeric_source_provider_boundary(
+            false,
+            input,
+            Some(&available_provider),
+        );
+        assert_provider_summary(
+            &disabled.safe_summary(),
+            state(contract, "provider_disabled"),
+        );
+        assert_eq!(available_provider.calls.get(), 0);
+
+        let missing = gateway_trusted_numeric_source_provider_boundary(true, input, None);
+        assert_provider_summary(&missing.safe_summary(), state(contract, "provider_missing"));
+
+        let available = gateway_trusted_numeric_source_provider_boundary(
+            true,
+            input,
+            Some(&available_provider),
+        );
+        assert_provider_summary(
+            &available.safe_summary(),
+            state(contract, "provider_available"),
+        );
+        assert_eq!(available_provider.calls.get(), 1);
+        let available_availability =
+            gateway_trusted_numeric_source_provider_availability(&available);
+        let available_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({ "max_completion_tokens": 79 }),
+            gateway_tpm_signals_from_trusted_numeric_source(&available_availability, 256),
+        );
+        assert_eq!(
+            available_plan.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(available_plan.estimate.required_tokens, 400);
+
+        let zero_provider = Provider {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceProviderOutput::new(Some(0)),
+        };
+        let zero =
+            gateway_trusted_numeric_source_provider_boundary(true, input, Some(&zero_provider));
+        assert_provider_summary(
+            &zero.safe_summary(),
+            state(contract, "provider_zero_clamped"),
+        );
+
+        let overflow_provider = Provider {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceProviderOutput::new(Some(i128::from(i64::MAX) + 1)),
+        };
+        let overflow =
+            gateway_trusted_numeric_source_provider_boundary(true, input, Some(&overflow_provider));
+        assert_provider_summary(
+            &overflow.safe_summary(),
+            state(contract, "provider_overflow_clamped"),
+        );
+
+        let negative_provider = Provider {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceProviderOutput::new(Some(-7)),
+        };
+        let negative =
+            gateway_trusted_numeric_source_provider_boundary(true, input, Some(&negative_provider));
+        assert_provider_summary(
+            &negative.safe_summary(),
+            state(contract, "provider_negative_error"),
+        );
+        let negative_availability = gateway_trusted_numeric_source_provider_availability(&negative);
+        let fallback_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({ "max_completion_tokens": 79 }),
+            gateway_tpm_signals_from_trusted_numeric_source(&negative_availability, 256),
+        );
+        assert_eq!(
+            fallback_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(fallback_plan.estimate.required_tokens, 335);
+
+        let serialized = serde_json::to_string(&json!({
+            "provider": [
+                disabled.safe_summary(),
+                missing.safe_summary(),
+                available.safe_summary(),
+                zero.safe_summary(),
+                overflow.safe_summary(),
+                negative.safe_summary()
+            ]
+        }))
+        .expect("provider summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric provider summary leaked forbidden marker: {forbidden}"
             );
         }
     }

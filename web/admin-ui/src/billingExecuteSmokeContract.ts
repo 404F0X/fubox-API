@@ -448,12 +448,34 @@ export const ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract = {
   },
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract = {
+  artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+  defaultMode: "live_pass_artifact_readback_gate",
+  defaultReadsArtifact: false,
+  defaultSubmitsLiveMutation: false,
+  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+  expectedActionOutcomes: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.expectedActionOutcomes,
+  requiredArtifactFreshness: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.requiredArtifactFreshness,
+  requiredReadiness: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.requiredReadiness,
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
+  statusMarkers: {
+    blocked: "blocked",
+    fail: "fail",
+    pass: "pass",
+  },
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
   browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
   browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract,
+  browserLivePassArtifactReadbackGate: ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract,
   browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract,
   browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,

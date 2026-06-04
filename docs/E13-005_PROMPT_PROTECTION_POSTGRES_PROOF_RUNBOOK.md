@@ -279,12 +279,28 @@ Performance envelope guidance:
   `freshnessReplay=current_live_proof`. Missing Gateway, Postgres, or
   mock-provider preflight produces a `blocker` bridge. Evidence mismatch or
   non-zero provider attempts produces `fail`.
+- `audit_handoff_bridge.preflight_blocker_matrix` is emitted for live proof and
+  live preflight reports. It lists only blocker classes:
+  `gateway=blocker_if_unreachable`,
+  `postgres=blocker_if_schema_or_psql_unavailable`,
+  `mock_provider=blocker_if_unreachable_unless_explicitly_skipped`, and
+  `session_virtual_key=blocker_if_missing`. It also repeats the safe closure
+  requirements: current live report, `provider_attempts_count=0`,
+  `duration_available=true`, `latency_envelope.within_bounds=true`, and current
+  provenance. It never includes URL, token, DSN, header, cookie, report path,
+  raw prompt, raw body, regex pattern, or provider secret values.
 - Stale proof, simulated proof, missing performance evidence, missing
   `provider_attempts`, or non-empty closure gaps cannot close the audit/live
   proof gap. They remain visible as bounded bridge gaps such as
   `current_live_proof_missing`, `freshness_replay_refused`,
   `duration_unavailable`, `latency_envelope_missing_or_ineligible`, or
   `provider_attempts_missing`.
+- `-Live -PreflightOnly` can write a bridge when an evidence report path is
+  explicitly configured, but its gate remains `blocker` because endpoint HTTP/DB
+  evidence has not run. A simulated live pass self-test requires bridge
+  `classification=pass`; simulated live failure requires `fail`; stale commit
+  evidence requires `fail`; missing duration/latency evidence requires
+  `blocker`.
 
 Each endpoint report records:
 
