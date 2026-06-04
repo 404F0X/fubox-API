@@ -922,6 +922,7 @@ export type LedgerAdjustmentExecuteContractFlags = {
   };
   dry_run_constraints_enforced_before_refusal?: string[];
   future_writer_required?: boolean;
+  ledger_executor_refusal_summary_contract?: LedgerExecutorRefusalSummaryContract;
   ledger_executor_summary_contract?: LedgerExecutorSummaryContract;
   ledger_write: boolean;
   ledger_writer_contract?: {
@@ -957,6 +958,7 @@ export type LedgerAdjustmentExecuteContractFlags = {
     rollback_on_audit_insert_failure?: boolean;
     rollback_on_ledger_write_failure?: boolean;
     rollback_on_refund_remaining_change?: boolean;
+    rollback_executor_summary_contract?: LedgerExecutorRollbackSummaryContract;
     unbounded_scan_allowed?: boolean;
   };
   upstream_call: boolean;
@@ -973,6 +975,7 @@ export type LedgerAdjustmentExecuteContractFlags = {
 
 export type LedgerAdjustmentExecuteContractResponse = {
   execute_contract: LedgerAdjustmentExecuteContractFlags;
+  ledger_executor_summary?: LedgerExecutorSummary;
   mode: "execute_contract";
   validated_plan: LedgerAdjustmentDryRunResponse;
 };
@@ -986,8 +989,26 @@ export type LedgerExecutorSummaryContract = {
   error_detail_output?: string;
   operation_key_output?: string;
   raw_metadata_echoed?: boolean;
+  raw_executor_error_detail_echoed?: boolean;
   response_field?: string;
   schema_version?: string;
+};
+
+export type LedgerExecutorRefusalSummaryContract = LedgerExecutorSummaryContract & {
+  preflight_refusal?: LedgerExecutorRefusalContractSummary;
+  rollback_refusal?: LedgerExecutorRefusalContractSummary;
+  supported_outcomes?: string[];
+};
+
+export type LedgerExecutorRollbackSummaryContract = LedgerExecutorSummaryContract & LedgerExecutorRefusalContractSummary & {
+  outcome?: string;
+};
+
+export type LedgerExecutorRefusalContractSummary = {
+  committed?: boolean;
+  refused_statement_count?: number | string;
+  rolled_back?: boolean;
+  row_count_mismatch?: boolean | string;
 };
 
 export type LedgerExecutorSummary = {
@@ -1002,6 +1023,7 @@ export type LedgerExecutorSummary = {
   operation?: string;
   operation_key_output?: string;
   outcome?: string;
+  raw_executor_error_detail_echoed?: boolean;
   refused_statement_count?: number;
   rolled_back?: boolean;
   row_count_mismatch?: boolean;
@@ -1025,6 +1047,7 @@ export type LedgerAdjustmentExecuteTransactionContract = {
   rollback_on_audit_insert_failure?: boolean;
   rollback_on_ledger_write_failure?: boolean;
   rollback_on_refund_remaining_change?: boolean;
+  rollback_executor_summary_contract?: LedgerExecutorRollbackSummaryContract;
   unbounded_scan_allowed?: boolean;
   write_performed?: boolean;
   writer?: string;

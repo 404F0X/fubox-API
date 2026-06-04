@@ -1057,6 +1057,7 @@ function stubAdminFetch(
                     "refund_remaining_amount_checked",
                   ],
                   future_writer_required: true,
+                  ledger_executor_refusal_summary_contract: ledgerExecutorRefusalSummaryContract(),
                   ledger_executor_summary_contract: ledgerExecutorSummaryContract(),
                   ledger_writer_contract: {
                     future_writer: "transactional_admin_ledger_adjustment_writer",
@@ -1092,11 +1093,13 @@ function stubAdminFetch(
                     rollback_on_audit_insert_failure: true,
                     rollback_on_ledger_write_failure: true,
                     rollback_on_refund_remaining_change: true,
+                    rollback_executor_summary_contract: ledgerExecutorRollbackSummaryContract(),
                     unbounded_scan_allowed: false,
                   },
                   upstream_call: false,
                   validated_before_refusal: true,
                 },
+                ledger_executor_summary: ledgerExecutorRefusalSummary("refund", "refused_preflight", false, 0, false),
                 mode: "execute_contract",
                 validated_plan: validatedPlan,
               },
@@ -1220,6 +1223,58 @@ function ledgerExecutorSummaryContract() {
   };
 }
 
+function ledgerExecutorRefusalSummaryContract() {
+  return {
+    credential_material_echoed: false,
+    dedupe_material_echoed: false,
+    error_detail: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-refusal-contract-hidden")}`,
+    error_detail_output: "omitted",
+    operation_key: "operation-key-refusal-contract-hidden",
+    operation_key_output: "omitted",
+    preflight_refusal: {
+      committed: false,
+      refused_statement_count: 0,
+      rolled_back: false,
+      row_count_mismatch: false,
+    },
+    raw_executor_error_detail: "raw executor refusal contract error hidden",
+    raw_executor_error_detail_echoed: false,
+    raw_metadata: "raw executor refusal contract metadata hidden",
+    raw_metadata_echoed: false,
+    response_field: "ledger_executor_summary",
+    rollback_refusal: {
+      committed: false,
+      refused_statement_count: "one_or_more",
+      rolled_back: true,
+      row_count_mismatch: "boolean_only",
+    },
+    schema_version: "billing_ledger_postgres_executor_summary.v1",
+    supported_outcomes: ["refused_preflight", "refused_rollback"],
+  };
+}
+
+function ledgerExecutorRollbackSummaryContract() {
+  return {
+    committed: false,
+    credential_material_echoed: false,
+    dedupe_material_echoed: false,
+    error_detail: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-rollback-contract-hidden")}`,
+    error_detail_output: "omitted",
+    operation_key: "operation-key-rollback-contract-hidden",
+    operation_key_output: "omitted",
+    outcome: "refused_rollback",
+    raw_executor_error_detail: "raw executor rollback contract error hidden",
+    raw_executor_error_detail_echoed: false,
+    raw_metadata: "raw executor rollback contract metadata hidden",
+    raw_metadata_echoed: false,
+    refused_statement_count: "one_or_more",
+    response_field: "ledger_executor_summary",
+    rolled_back: true,
+    row_count_mismatch: "boolean_only",
+    schema_version: "billing_ledger_postgres_executor_summary.v1",
+  };
+}
+
 function ledgerExecutorSummary(outcome: "applied" | "idempotent") {
   const writePerformed = outcome === "applied";
 
@@ -1244,6 +1299,41 @@ function ledgerExecutorSummary(outcome: "applied" | "idempotent") {
     schema_version: "billing_ledger_postgres_executor_summary.v1",
     statement_count: writePerformed ? 1 : 0,
     total_rows_affected: writePerformed ? 1 : 0,
+  };
+}
+
+function ledgerExecutorRefusalSummary(
+  operation: string,
+  outcome: "refused_preflight" | "refused_rollback",
+  rolledBack: boolean,
+  refusedStatementCount: number,
+  rowCountMismatch: boolean,
+) {
+  const hasRefusedStatement = refusedStatementCount > 0;
+
+  return {
+    committed: false,
+    dedupe_material_echoed: false,
+    error_detail: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-executor-refusal-hidden")}`,
+    error_detail_output: "omitted",
+    executed_statement_count: 0,
+    executor: "control_plane_transactional_admin_ledger_adjustment_writer",
+    final_statement_kind: hasRefusedStatement ? "statement_refusal" : null,
+    final_statement_order: hasRefusedStatement ? 1 : null,
+    omitted_material: ["operation key", "dedupe material", "raw metadata", "credential material", "raw executor error detail"],
+    operation,
+    operation_key: "operation-key-refusal-hidden",
+    operation_key_output: "omitted",
+    outcome,
+    raw_executor_error_detail: "raw executor refusal error detail hidden",
+    raw_executor_error_detail_echoed: false,
+    raw_metadata: "raw executor refusal metadata hidden",
+    refused_statement_count: refusedStatementCount,
+    rolled_back: rolledBack,
+    row_count_mismatch: rowCountMismatch,
+    schema_version: "billing_ledger_postgres_executor_summary.v1",
+    statement_count: refusedStatementCount,
+    total_rows_affected: 0,
   };
 }
 
@@ -1317,6 +1407,7 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
       rollback_on_audit_insert_failure: true,
       rollback_on_ledger_write_failure: true,
       rollback_on_refund_remaining_change: true,
+      rollback_executor_summary_contract: ledgerExecutorRollbackSummaryContract(),
       unbounded_scan_allowed: false,
       write_performed: writePerformed,
       writer: "control_plane_transactional_admin_ledger_adjustment_writer",
@@ -2680,11 +2771,40 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 3, name: "Writer / Audit Summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Safe Output Summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Executor Summary Contract" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Refusal Executor Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Refusal Summary Contract" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Rollback Executor Summary Contract" })).toBeInTheDocument();
     expect(screen.getByText("read_committed_or_stronger")).toBeInTheDocument();
     expect(screen.getByText("digest_marker_only")).toBeInTheDocument();
     expect(screen.getByText("transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
-    expect(screen.getByText("billing_ledger_postgres_executor_summary.v1")).toBeInTheDocument();
-    expect(screen.getByText("ledger_executor_summary")).toBeInTheDocument();
+    expect(screen.getAllByText("billing_ledger_postgres_executor_summary.v1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ledger_executor_summary").length).toBeGreaterThan(0);
+    const refusalSummaryPanel = screen
+      .getByRole("heading", { level: 3, name: "Refusal Executor Summary" })
+      .closest("article");
+    expect(refusalSummaryPanel).not.toBeNull();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("refund")).toBeInTheDocument();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("refused_preflight")).toBeInTheDocument();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("Committed")).toBeInTheDocument();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("Rolled back")).toBeInTheDocument();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("Refused statements")).toBeInTheDocument();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("Failure output")).toBeInTheDocument();
+    expect(within(refusalSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
+    const refusalContractPanel = screen
+      .getByRole("heading", { level: 3, name: "Refusal Summary Contract" })
+      .closest("article");
+    expect(refusalContractPanel).not.toBeNull();
+    expect(within(refusalContractPanel as HTMLElement).getByText("refused_preflight, refused_rollback")).toBeInTheDocument();
+    expect(within(refusalContractPanel as HTMLElement).getByText("Preflight refused statements")).toBeInTheDocument();
+    expect(within(refusalContractPanel as HTMLElement).getByText("Rollback refused statements")).toBeInTheDocument();
+    const rollbackContractPanel = screen
+      .getByRole("heading", { level: 3, name: "Rollback Executor Summary Contract" })
+      .closest("article");
+    expect(rollbackContractPanel).not.toBeNull();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("refused_rollback")).toBeInTheDocument();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("one_or_more")).toBeInTheDocument();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("boolean_only")).toBeInTheDocument();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("Failure output")).toBeInTheDocument();
     expect(screen.getByText("Compatible fields")).toBeInTheDocument();
     expect(screen.getByText("Constraints checked")).toBeInTheDocument();
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
@@ -2724,12 +2844,24 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
     expect(document.body.textContent).not.toContain("operation_key");
     expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
+    expect(document.body.textContent).not.toContain("operation-key-refusal-hidden");
+    expect(document.body.textContent).not.toContain("operation-key-refusal-contract-hidden");
+    expect(document.body.textContent).not.toContain("operation-key-rollback-contract-hidden");
     expect(document.body.textContent).not.toContain("error_detail");
     expect(document.body.textContent).not.toContain("ledger-executor-contract-hidden");
+    expect(document.body.textContent).not.toContain("ledger-executor-refusal-hidden");
+    expect(document.body.textContent).not.toContain("ledger-refusal-contract-hidden");
+    expect(document.body.textContent).not.toContain("ledger-rollback-contract-hidden");
     expect(document.body.textContent).not.toContain("credential_material");
     expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
     expect(document.body.textContent).not.toContain("raw executor contract metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor refusal metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor refusal contract metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor rollback contract metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor refusal error detail hidden");
+    expect(document.body.textContent).not.toContain("raw executor refusal contract error hidden");
+    expect(document.body.textContent).not.toContain("raw executor rollback contract error hidden");
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(
@@ -2789,6 +2921,13 @@ describe("App", () => {
     expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
     expect(within(executorSummaryPanel as HTMLElement).getAllByText("1").length).toBeGreaterThanOrEqual(4);
     expect(screen.getByRole("heading", { level: 3, name: "Executor Summary Contract" })).toBeInTheDocument();
+    const rollbackContractPanel = screen
+      .getByRole("heading", { level: 3, name: "Rollback Executor Summary Contract" })
+      .closest("article");
+    expect(rollbackContractPanel).not.toBeNull();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("refused_rollback")).toBeInTheDocument();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("one_or_more")).toBeInTheDocument();
+    expect(within(rollbackContractPanel as HTMLElement).getByText("boolean_only")).toBeInTheDocument();
     expect(screen.getAllByText("00000000...").length).toBeGreaterThan(0);
     expect(screen.getAllByText("control_plane_transactional_admin_ledger_adjustment_writer").length).toBeGreaterThan(0);
     expect(screen.getAllByText("6").length).toBeGreaterThan(0);

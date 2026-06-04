@@ -11,6 +11,8 @@ import {
   type LedgerAdjustmentDryRunResponse,
   type LedgerAdjustmentExecuteResult,
   type LedgerAdjustmentFutureExecuteResponse,
+  type LedgerExecutorRefusalSummaryContract,
+  type LedgerExecutorRollbackSummaryContract,
   type LedgerExecutorSummary,
   type LedgerExecutorSummaryContract,
   type LedgerEntryListFilters,
@@ -961,6 +963,7 @@ function LedgerAdjustmentExecuteContractResult({
   const flags = executeFlags(result);
   const snapshotPolicy = executeAuditSnapshotPolicy(result);
   const contract = result.kind === "future_execute" ? undefined : result.response.execute_contract;
+  const refusalSummary = result.kind === "future_execute" ? undefined : result.response.ledger_executor_summary;
   const reasons = executeBlockedReasons(result, fresh);
   const isExecuteResult = result.kind === "future_execute";
 
@@ -990,6 +993,7 @@ function LedgerAdjustmentExecuteContractResult({
           ["Audit snapshot", snapshotPolicy],
         ]}
       />
+      <LedgerExecutorSummaryPanel heading="Refusal Executor Summary" summary={refusalSummary} />
       {contract ? <LedgerAdjustmentExecuteV2Summary contract={contract} /> : null}
       {result.kind === "future_execute" ? <LedgerAdjustmentExecutedSummary response={result.response} /> : null}
     </section>
@@ -1001,6 +1005,7 @@ function LedgerAdjustmentExecutedSummary({ response }: { response: LedgerAdjustm
   const executorContract = response.ledger_executor_summary_contract;
   const executorSummary = response.ledger_executor_summary;
   const transaction = response.transaction_contract;
+  const rollbackExecutorContract = transaction?.rollback_executor_summary_contract;
   const refund = response.refund_remaining_summary;
 
   return (
@@ -1050,6 +1055,7 @@ function LedgerAdjustmentExecutedSummary({ response }: { response: LedgerAdjustm
 
       <LedgerExecutorSummaryPanel summary={executorSummary} />
       <LedgerExecutorSummaryContractPanel contract={executorContract} />
+      <LedgerExecutorRollbackContractPanel contract={rollbackExecutorContract} />
 
       <article>
         <h3>Transaction Summary</h3>
@@ -1104,6 +1110,8 @@ function LedgerAdjustmentExecuteV2Summary({
   const writer = contract.ledger_writer_contract;
   const audit = contract.audit_contract;
   const executorContract = contract.ledger_executor_summary_contract;
+  const refusalExecutorContract = contract.ledger_executor_refusal_summary_contract;
+  const rollbackExecutorContract = transaction?.rollback_executor_summary_contract;
   const requestLog = contract.request_log_contract;
   const safeOutput = contract.safe_output_contract;
 
@@ -1174,6 +1182,8 @@ function LedgerAdjustmentExecuteV2Summary({
       </article>
 
       <LedgerExecutorSummaryContractPanel contract={executorContract} />
+      <LedgerExecutorRefusalSummaryContractPanel contract={refusalExecutorContract} />
+      <LedgerExecutorRollbackContractPanel contract={rollbackExecutorContract} />
     </div>
   );
 }
@@ -1202,14 +1212,89 @@ function LedgerExecutorSummaryContractPanel({ contract }: { contract: LedgerExec
   );
 }
 
-function LedgerExecutorSummaryPanel({ summary }: { summary: LedgerExecutorSummary | null | undefined }) {
+function LedgerExecutorRefusalSummaryContractPanel({
+  contract,
+}: {
+  contract: LedgerExecutorRefusalSummaryContract | null | undefined;
+}) {
+  if (!contract) {
+    return null;
+  }
+
+  const preflight = contract.preflight_refusal;
+  const rollback = contract.rollback_refusal;
+
+  return (
+    <article>
+      <h3>Refusal Summary Contract</h3>
+      <Fields
+        items={[
+          ["Schema", safeExecutorField(contract.schema_version)],
+          ["Response field", safeExecutorField(contract.response_field)],
+          ["Supported outcomes", safeExecutorList(contract.supported_outcomes)],
+          ["Private operation output", safeExecutorField(contract.operation_key_output)],
+          ["Failure output", safeExecutorField(contract.error_detail_output)],
+          ["Executor failure echoed", String(contract.raw_executor_error_detail_echoed ?? false)],
+          ["Replay marker echoed", String(contract.dedupe_material_echoed ?? false)],
+          ["Unsafe metadata echoed", String(contract.raw_metadata_echoed ?? false)],
+          ["Sensitive material echoed", String(contract.credential_material_echoed ?? false)],
+          ["Preflight committed", String(preflight?.committed ?? "-")],
+          ["Preflight rolled back", String(preflight?.rolled_back ?? "-")],
+          ["Preflight refused statements", safeExecutorSummaryValue(preflight?.refused_statement_count)],
+          ["Preflight row count mismatch", safeExecutorSummaryValue(preflight?.row_count_mismatch)],
+          ["Rollback committed", String(rollback?.committed ?? "-")],
+          ["Rollback rolled back", String(rollback?.rolled_back ?? "-")],
+          ["Rollback refused statements", safeExecutorSummaryValue(rollback?.refused_statement_count)],
+          ["Rollback row count mismatch", safeExecutorSummaryValue(rollback?.row_count_mismatch)],
+        ]}
+      />
+    </article>
+  );
+}
+
+function LedgerExecutorRollbackContractPanel({ contract }: { contract: LedgerExecutorRollbackSummaryContract | null | undefined }) {
+  if (!contract) {
+    return null;
+  }
+
+  return (
+    <article>
+      <h3>Rollback Executor Summary Contract</h3>
+      <Fields
+        items={[
+          ["Schema", safeExecutorField(contract.schema_version)],
+          ["Response field", safeExecutorField(contract.response_field)],
+          ["Outcome", safeExecutorField(contract.outcome)],
+          ["Committed", String(contract.committed ?? "-")],
+          ["Rolled back", String(contract.rolled_back ?? "-")],
+          ["Refused statements", safeExecutorSummaryValue(contract.refused_statement_count)],
+          ["Row count mismatch", safeExecutorSummaryValue(contract.row_count_mismatch)],
+          ["Private operation output", safeExecutorField(contract.operation_key_output)],
+          ["Failure output", safeExecutorField(contract.error_detail_output)],
+          ["Executor failure echoed", String(contract.raw_executor_error_detail_echoed ?? false)],
+          ["Replay marker echoed", String(contract.dedupe_material_echoed ?? false)],
+          ["Unsafe metadata echoed", String(contract.raw_metadata_echoed ?? false)],
+          ["Sensitive material echoed", String(contract.credential_material_echoed ?? false)],
+        ]}
+      />
+    </article>
+  );
+}
+
+function LedgerExecutorSummaryPanel({
+  heading = "Ledger Executor Summary",
+  summary,
+}: {
+  heading?: string;
+  summary: LedgerExecutorSummary | null | undefined;
+}) {
   if (!summary) {
     return null;
   }
 
   return (
     <article>
-      <h3>Ledger Executor Summary</h3>
+      <h3>{heading}</h3>
       <Fields
         items={[
           ["Schema", safeExecutorField(summary.schema_version)],
@@ -1227,6 +1312,7 @@ function LedgerExecutorSummaryPanel({ summary }: { summary: LedgerExecutorSummar
           ["Final statement kind", safeExecutorField(summary.final_statement_kind)],
           ["Failure output", safeExecutorField(summary.error_detail_output)],
           ["Row count mismatch", String(summary.row_count_mismatch ?? "-")],
+          ["Executor failure echoed", String(summary.raw_executor_error_detail_echoed ?? false)],
           ["Replay marker echoed", String(summary.dedupe_material_echoed ?? false)],
           ["Omitted categories", String(summary.omitted_material?.length ?? 0)],
         ]}
@@ -1260,8 +1346,24 @@ function safeExecutorField(value: unknown): string {
   return /^[a-z0-9_.:-]{1,160}$/i.test(safeValue) ? safeValue : "[redacted]";
 }
 
+function safeExecutorList(value: string[] | null | undefined): string {
+  if (!value?.length) {
+    return "-";
+  }
+
+  return value.map((entry) => safeExecutorField(entry)).join(", ");
+}
+
 function safeExecutorNumber(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? safeFieldValue(value) : "-";
+}
+
+function safeExecutorSummaryValue(value: boolean | number | string | null | undefined): string {
+  if (typeof value === "number") {
+    return safeExecutorNumber(value);
+  }
+
+  return safeExecutorField(value);
 }
 
 type LedgerAdjustmentExecuteDisplayFlags = {
