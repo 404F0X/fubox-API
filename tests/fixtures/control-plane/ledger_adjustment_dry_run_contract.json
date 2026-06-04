@@ -629,6 +629,25 @@
       "raw_env_value_echoed": false,
       "secret_value_echoed": false
     },
+    "env_config_summary_contract": {
+      "source": "billing_ledger_writer_cutover_env_config_injection",
+      "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+      "env_present": "boolean",
+      "env_value_output": "omitted",
+      "raw_env_value_echoed": false,
+      "secret_value_echoed": false,
+      "missing_defaults_disabled": true,
+      "blank_defaults_disabled": true,
+      "invalid_defaults_disabled": true,
+      "explicit_ready_required": true,
+      "explicit_ready_configured": "true_only_for_explicit_valid_ready",
+      "ready_summary_allowed": "true_only_for_explicit_valid_ready",
+      "invalid_value_enters_ready": false,
+      "current_execution_source_of_truth": "control_plane_local_sql_writer",
+      "production_writer_replaced": false,
+      "billing_ledger_writer_commit_allowed_in_this_contract": false,
+      "dual_commit_allowed": false
+    },
     "mode_parser_contract": {
       "parser": "billing_ledger_writer_cutover_mode_parser.v1",
       "default_mode": "disabled",
