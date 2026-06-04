@@ -197,10 +197,12 @@ wired into the test/release gates in S8.
 ### 11.1 Default Contract-Only Commands
 
 These commands must not require Docker, Postgres, Redis, or a running Control
-Plane. They verify the smoke fixture, S4 transaction contract markers, and the
-test/release opt-in contract.
+Plane. They verify the smoke fixture, S4 transaction contract markers, the
+OpenAPI executor summary contract, and the test/release opt-in contract.
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_contract.ps1
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_execute_smoke.ps1 -ContractOnly
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -ControlPlaneLedgerAdjustmentExecuteSmokeOnly
@@ -212,7 +214,8 @@ Expected result:
 
 - Direct smoke and `scripts/test.ps1` smoke-only return exit code `0`.
 - `release_check.ps1 -Checks smoke` reports `mode.smoke=dry-run+contract` and
-  includes `scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -ContractOnly`.
+  includes `scripts/verify_control_plane_ledger_adjustment_openapi_contract.ps1`
+  and `scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -ContractOnly`.
 - No live ledger rows or audit rows are written.
 
 ### 11.2 Live Opt-In Commands

@@ -77,6 +77,8 @@ function Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke {
 
   Write-Host "Control Plane ledger adjustment execute smoke mode: $mode"
   Invoke-CheckedScript `
+    -Path "$PSScriptRoot\verify_control_plane_ledger_adjustment_openapi_contract.ps1"
+  Invoke-CheckedScript `
     -Path "$PSScriptRoot\verify_control_plane_ledger_adjustment_execute_smoke.ps1" `
     -Parameters (Get-ControlPlaneLedgerAdjustmentExecuteSmokeParameters)
 }

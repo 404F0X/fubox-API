@@ -555,6 +555,7 @@ function Invoke-SmokeCheck {
 
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_compose_smoke.ps1" -Arguments @("-DryRun")))
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_gateway_rate_limit_reservation_smoke.ps1" -Arguments @("-DryRun")))
+  [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_openapi_contract.ps1"))
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1" -Arguments @("-ContractOnly")))
 
   $missingSdkTools = New-Object System.Collections.Generic.List[string]
@@ -565,7 +566,7 @@ function Invoke-SmokeCheck {
     [void]$missingSdkTools.Add("npm")
   }
 
-  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks plus Control Plane ledger adjustment execute contract-only checks; SDK dry-run runs when node and npm are available.")
+  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks plus Control Plane ledger adjustment execute OpenAPI and contract-only checks; SDK dry-run runs when node and npm are available.")
   if ($RunRuntimeSmoke) {
     $notes += "runtime smoke was requested explicitly."
   }
