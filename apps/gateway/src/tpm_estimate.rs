@@ -14,6 +14,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA: &st
     "gateway_tpm_trusted_numeric_source_config_preflight_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_CONFIG_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_config_guard_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ENV_CONFIG_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_env_config_read_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV: &str =
@@ -293,6 +295,39 @@ impl GatewayTrustedNumericSourceRuntimeConfigInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceEnvConfigInput<'a> {
+    pub(crate) tokenizer_opt_in_value: Option<&'a str>,
+    pub(crate) read_model_opt_in_value: Option<&'a str>,
+    pub(crate) tokenizer_adapter_available: bool,
+    pub(crate) read_model_adapter_available: bool,
+}
+
+impl<'a> GatewayTrustedNumericSourceEnvConfigInput<'a> {
+    pub(crate) const fn new(
+        tokenizer_opt_in_value: Option<&'a str>,
+        read_model_opt_in_value: Option<&'a str>,
+        tokenizer_adapter_available: bool,
+        read_model_adapter_available: bool,
+    ) -> Self {
+        Self {
+            tokenizer_opt_in_value,
+            read_model_opt_in_value,
+            tokenizer_adapter_available,
+            read_model_adapter_available,
+        }
+    }
+
+    pub(crate) const fn missing_by_default() -> Self {
+        Self {
+            tokenizer_opt_in_value: None,
+            read_model_opt_in_value: None,
+            tokenizer_adapter_available: false,
+            read_model_adapter_available: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceReadinessStatus {
     Unavailable,
     Available,
@@ -367,6 +402,46 @@ impl GatewayTrustedNumericSourceRuntimeConfigBlocker {
         match self {
             Self::OptInMissing => "opt_in_missing",
             Self::AdapterUnavailable => "adapter_unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceEnvConfigStatus {
+    Disabled,
+    Blocked,
+    Ready,
+    Refused,
+}
+
+impl GatewayTrustedNumericSourceEnvConfigStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceEnvConfigValueStatus {
+    Missing,
+    Blank,
+    Disabled,
+    Enabled,
+    Invalid,
+}
+
+impl GatewayTrustedNumericSourceEnvConfigValueStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Blank => "blank",
+            Self::Disabled => "disabled",
+            Self::Enabled => "enabled",
+            Self::Invalid => "invalid",
         }
     }
 }
@@ -559,6 +634,72 @@ pub(crate) struct GatewayTrustedNumericSourceRuntimeConfigSummary {
     pub(crate) preflight_read_model_config_enabled: bool,
     pub(crate) preflight_tokenizer_provider_available: bool,
     pub(crate) preflight_read_model_provider_available: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceEnvConfigRead {
+    pub(crate) status: GatewayTrustedNumericSourceEnvConfigStatus,
+    pub(crate) tokenizer_value_status: GatewayTrustedNumericSourceEnvConfigValueStatus,
+    pub(crate) read_model_value_status: GatewayTrustedNumericSourceEnvConfigValueStatus,
+    pub(crate) tokenizer_secret_like_value_omitted: bool,
+    pub(crate) read_model_secret_like_value_omitted: bool,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) invalid_value_refused: bool,
+    pub(crate) runtime_config: GatewayTrustedNumericSourceRuntimeConfigGuard,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceEnvConfigRead {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceEnvConfigSummary {
+        GatewayTrustedNumericSourceEnvConfigSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ENV_CONFIG_SCHEMA,
+            status: self.status.as_str(),
+            tokenizer_opt_in_env: GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV,
+            read_model_opt_in_env: GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV,
+            tokenizer_value_status: self.tokenizer_value_status.as_str(),
+            read_model_value_status: self.read_model_value_status.as_str(),
+            tokenizer_secret_like_value_omitted: self.tokenizer_secret_like_value_omitted,
+            read_model_secret_like_value_omitted: self.read_model_secret_like_value_omitted,
+            raw_value_omitted: self.raw_value_omitted,
+            invalid_value_refused: self.invalid_value_refused,
+            runtime_config_status: self.runtime_config.status.as_str(),
+            adapter_invocation_allowed: self.runtime_config.adapter_invocation_allowed,
+            fallback_required: self.runtime_config.fallback_required,
+            tokenizer_adapter_available: self.runtime_config.tokenizer_adapter_available,
+            read_model_adapter_available: self.runtime_config.read_model_adapter_available,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceEnvConfigSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) tokenizer_opt_in_env: &'static str,
+    pub(crate) read_model_opt_in_env: &'static str,
+    pub(crate) tokenizer_value_status: &'static str,
+    pub(crate) read_model_value_status: &'static str,
+    pub(crate) tokenizer_secret_like_value_omitted: bool,
+    pub(crate) read_model_secret_like_value_omitted: bool,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) invalid_value_refused: bool,
+    pub(crate) runtime_config_status: &'static str,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) tokenizer_adapter_available: bool,
+    pub(crate) read_model_adapter_available: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
     pub(crate) material_in_output: bool,
 }
 
@@ -1157,6 +1298,114 @@ pub(crate) fn gateway_trusted_numeric_source_runtime_config_guard(
         preflight_input,
         material_in_output: false,
     }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_env_config_read(
+    input: GatewayTrustedNumericSourceEnvConfigInput<'_>,
+) -> GatewayTrustedNumericSourceEnvConfigRead {
+    let tokenizer = parse_trusted_numeric_source_opt_in_value(input.tokenizer_opt_in_value);
+    let read_model = parse_trusted_numeric_source_opt_in_value(input.read_model_opt_in_value);
+    let invalid_value_refused = tokenizer.invalid || read_model.invalid;
+    let runtime_config = if invalid_value_refused {
+        gateway_trusted_numeric_source_runtime_config_guard(
+            GatewayTrustedNumericSourceRuntimeConfigInput::disabled_by_default(),
+        )
+    } else {
+        gateway_trusted_numeric_source_runtime_config_guard(
+            GatewayTrustedNumericSourceRuntimeConfigInput::new(
+                tokenizer.enabled,
+                read_model.enabled,
+                input.tokenizer_adapter_available,
+                input.read_model_adapter_available,
+            ),
+        )
+    };
+    let status = if invalid_value_refused {
+        GatewayTrustedNumericSourceEnvConfigStatus::Refused
+    } else {
+        match runtime_config.status {
+            GatewayTrustedNumericSourceRuntimeConfigStatus::Disabled => {
+                GatewayTrustedNumericSourceEnvConfigStatus::Disabled
+            }
+            GatewayTrustedNumericSourceRuntimeConfigStatus::Blocked => {
+                GatewayTrustedNumericSourceEnvConfigStatus::Blocked
+            }
+            GatewayTrustedNumericSourceRuntimeConfigStatus::Ready => {
+                GatewayTrustedNumericSourceEnvConfigStatus::Ready
+            }
+        }
+    };
+
+    GatewayTrustedNumericSourceEnvConfigRead {
+        status,
+        tokenizer_value_status: tokenizer.status,
+        read_model_value_status: read_model.status,
+        tokenizer_secret_like_value_omitted: tokenizer.secret_like,
+        read_model_secret_like_value_omitted: read_model.secret_like,
+        raw_value_omitted: true,
+        invalid_value_refused,
+        runtime_config,
+        material_in_output: false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedTrustedNumericSourceOptIn {
+    status: GatewayTrustedNumericSourceEnvConfigValueStatus,
+    enabled: bool,
+    invalid: bool,
+    secret_like: bool,
+}
+
+fn parse_trusted_numeric_source_opt_in_value(
+    value: Option<&str>,
+) -> ParsedTrustedNumericSourceOptIn {
+    let Some(value) = value else {
+        return ParsedTrustedNumericSourceOptIn {
+            status: GatewayTrustedNumericSourceEnvConfigValueStatus::Missing,
+            enabled: false,
+            invalid: false,
+            secret_like: false,
+        };
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return ParsedTrustedNumericSourceOptIn {
+            status: GatewayTrustedNumericSourceEnvConfigValueStatus::Blank,
+            enabled: false,
+            invalid: false,
+            secret_like: false,
+        };
+    }
+    let normalized = trimmed.to_ascii_lowercase();
+    match normalized.as_str() {
+        "true" | "1" | "yes" | "on" => ParsedTrustedNumericSourceOptIn {
+            status: GatewayTrustedNumericSourceEnvConfigValueStatus::Enabled,
+            enabled: true,
+            invalid: false,
+            secret_like: false,
+        },
+        "false" | "0" | "no" | "off" => ParsedTrustedNumericSourceOptIn {
+            status: GatewayTrustedNumericSourceEnvConfigValueStatus::Disabled,
+            enabled: false,
+            invalid: false,
+            secret_like: false,
+        },
+        _ => ParsedTrustedNumericSourceOptIn {
+            status: GatewayTrustedNumericSourceEnvConfigValueStatus::Invalid,
+            enabled: false,
+            invalid: true,
+            secret_like: trusted_numeric_source_config_value_looks_secret_like(&normalized),
+        },
+    }
+}
+
+fn trusted_numeric_source_config_value_looks_secret_like(value: &str) -> bool {
+    value.contains("sk-")
+        || value.contains("bearer")
+        || value.contains("secret")
+        || value.contains("token")
+        || value.contains("key")
 }
 
 pub(crate) fn gateway_trusted_numeric_source_runtime_adapter_boundary(
@@ -3258,6 +3507,251 @@ mod tests {
             assert!(
                 !serialized.contains(&forbidden.to_ascii_lowercase()),
                 "trusted numeric runtime config guard leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_env_config_read_boundary() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_env_config_read_boundary_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ENV_CONFIG_SCHEMA)
+        );
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+        assert_eq!(
+            contract["opt_in_env"]["tokenizer"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV)
+        );
+        assert_eq!(
+            contract["opt_in_env"]["read_model"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV)
+        );
+
+        for value in ["true", "1", "yes", "on"] {
+            assert!(
+                contract["accepted_true_values"]
+                    .as_array()
+                    .expect("accepted true values should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(value)),
+                "env/config read boundary should accept true value {value}"
+            );
+        }
+        for value in ["false", "0", "no", "off", "missing", "blank"] {
+            assert!(
+                contract["accepted_false_values"]
+                    .as_array()
+                    .expect("accepted false values should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(value)),
+                "env/config read boundary should accept false/default value {value}"
+            );
+        }
+
+        let summary_fields = contract["safe_summary_fields"]
+            .as_array()
+            .expect("env/config safe summary fields should be an array");
+        for field in [
+            "trusted_source_env_config.tokenizer_value_status",
+            "trusted_source_env_config.read_model_value_status",
+            "trusted_source_env_config.raw_value_omitted",
+            "trusted_source_env_config.invalid_value_refused",
+            "trusted_source_env_config.adapter_invocation_allowed",
+            "trusted_source_env_config.availability_marker",
+            "trusted_source_env_config.preflight_duration_marker",
+            "trusted_source_env_config.estimate_duration_marker",
+            "trusted_source_env_config.source_marker",
+            "trusted_source_env_config.token_count_marker",
+            "trusted_source_env_config.material_in_output",
+        ] {
+            assert!(
+                summary_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "env/config read summary should include {field}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("env/config states should be an array");
+        for required_state in [
+            "missing_defaults_disabled",
+            "blank_defaults_disabled",
+            "false_defaults_disabled",
+            "true_opt_in_adapter_unavailable_blocks",
+            "true_opt_in_adapter_available_ready",
+            "invalid_value_refused",
+            "secret_like_value_refused_without_echo",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "env/config read boundary missing state: {required_state}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "env/config read boundary should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_env_config_read_controls_guard() {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("env/config states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing env/config state: {name}"))
+        }
+
+        fn assert_env_config_summary(
+            summary: &GatewayTrustedNumericSourceEnvConfigSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ENV_CONFIG_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.tokenizer_value_status,
+                expected["tokenizer_value_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.read_model_value_status,
+                expected["read_model_value_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.runtime_config_status,
+                expected["runtime_config_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.adapter_invocation_allowed,
+                expected["adapter_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.invalid_value_refused,
+                expected["invalid_value_refused"].as_bool().unwrap()
+            );
+            if let Some(secret_like) = expected["tokenizer_secret_like_value_omitted"].as_bool() {
+                assert_eq!(summary.tokenizer_secret_like_value_omitted, secret_like);
+            }
+            assert!(summary.raw_value_omitted);
+            assert_eq!(
+                summary.tokenizer_opt_in_env,
+                GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV
+            );
+            assert_eq!(
+                summary.read_model_opt_in_env,
+                GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_env_config_read_boundary_contract"];
+        let cases = [
+            (
+                "missing_defaults_disabled",
+                GatewayTrustedNumericSourceEnvConfigInput::missing_by_default(),
+            ),
+            (
+                "blank_defaults_disabled",
+                GatewayTrustedNumericSourceEnvConfigInput::new(Some(""), Some(" "), false, false),
+            ),
+            (
+                "false_defaults_disabled",
+                GatewayTrustedNumericSourceEnvConfigInput::new(
+                    Some("false"),
+                    Some("0"),
+                    false,
+                    false,
+                ),
+            ),
+            (
+                "true_opt_in_adapter_unavailable_blocks",
+                GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, false, false),
+            ),
+            (
+                "true_opt_in_adapter_available_ready",
+                GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, true, false),
+            ),
+            (
+                "invalid_value_refused",
+                GatewayTrustedNumericSourceEnvConfigInput::new(Some("maybe"), None, true, false),
+            ),
+            (
+                "secret_like_value_refused_without_echo",
+                GatewayTrustedNumericSourceEnvConfigInput::new(
+                    Some("sk-live-secret"),
+                    None,
+                    true,
+                    false,
+                ),
+            ),
+        ];
+        let mut summaries = Vec::new();
+        for (name, input) in cases {
+            let read = gateway_trusted_numeric_source_env_config_read(input);
+            assert_env_config_summary(&read.safe_summary(), state(contract, name));
+            summaries.push(read.safe_summary());
+        }
+
+        let serialized = serde_json::to_string(&json!({
+            "env_config": summaries
+        }))
+        .expect("trusted numeric env/config summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric env/config read summary leaked forbidden marker: {forbidden}"
             );
         }
     }
