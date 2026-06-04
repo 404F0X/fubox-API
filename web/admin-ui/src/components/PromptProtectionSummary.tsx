@@ -7,10 +7,12 @@ type PromptProtectionSummaryData = {
   configuredHitCount: string;
   configuredPatternTypes: string;
   configuredRuleCount: string;
+  currentCommit: string;
   defaultHitCount: string;
   detectedAction: string;
   durationAvailability: string;
   effectiveAction: string;
+  generatedAt: string;
   hitCount: string;
   hitKinds: string;
   latencyClosure: string;
@@ -18,8 +20,11 @@ type PromptProtectionSummaryData = {
   mode: string;
   omittedMaterial: string;
   providerAttempts: string;
+  proofClosure: string;
+  provenanceMode: string;
   reason: string;
   scopes: string;
+  staleSimulatedMarker: string;
 };
 
 const PROMPT_PROTECTION_KEYS = new Set([
@@ -122,6 +127,26 @@ export function PromptProtectionSummary({
           <dd>{summary.liveBlockerStatus}</dd>
         </div>
         <div>
+          <dt>Artifact generated</dt>
+          <dd>{summary.generatedAt}</dd>
+        </div>
+        <div>
+          <dt>Current commit</dt>
+          <dd>{summary.currentCommit}</dd>
+        </div>
+        <div>
+          <dt>Proof mode</dt>
+          <dd>{summary.provenanceMode}</dd>
+        </div>
+        <div>
+          <dt>Proof closure</dt>
+          <dd>{summary.proofClosure}</dd>
+        </div>
+        <div>
+          <dt>Stale/simulated marker</dt>
+          <dd>{summary.staleSimulatedMarker}</dd>
+        </div>
+        <div>
           <dt>Omitted material</dt>
           <dd>{summary.omittedMaterial}</dd>
         </div>
@@ -163,10 +188,12 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
     configuredHitCount: numberField(record.configured_hit_count),
     configuredPatternTypes: countMapField(record.configured_pattern_types),
     configuredRuleCount: configuredRuleCount(record.configured_rules),
+    currentCommit: currentCommitField(record),
     defaultHitCount: numberField(record.default_hit_count),
     detectedAction: enumField(record.detected_action),
     durationAvailability: durationAvailabilityField(record),
     effectiveAction: enumField(record.effective_action),
+    generatedAt: generatedAtField(record),
     hitCount: numberField(record.hit_count),
     hitKinds: countMapField(record.hit_kinds),
     latencyClosure: latencyClosureField(record),
@@ -174,8 +201,11 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
     mode: enumField(record.mode),
     omittedMaterial: omittedMaterialField(record),
     providerAttempts: providerAttemptsField(record),
+    proofClosure: proofClosureField(record),
+    provenanceMode: provenanceModeField(record),
     reason: enumField(record.reason),
     scopes: listField(record.scopes),
+    staleSimulatedMarker: staleSimulatedMarkerField(record),
   };
 }
 
@@ -412,4 +442,118 @@ function liveBlockerStatusField(record: Record<string, JsonValue>): string {
   }
 
   return enumField(record.performance_envelope.live_blocker_status);
+}
+
+function generatedAtField(record: Record<string, JsonValue>): string {
+  const direct = isoDateField(record.generated_at_utc);
+
+  if (direct !== "-") {
+    return direct;
+  }
+
+  if (isJsonRecord(record.provenance)) {
+    return isoDateField(record.provenance.generated_at_utc);
+  }
+
+  if (isJsonRecord(record.freshness)) {
+    return isoDateField(record.freshness.generated_at_utc);
+  }
+
+  return "-";
+}
+
+function currentCommitField(record: Record<string, JsonValue>): string {
+  if (isJsonRecord(record.freshness)) {
+    const commit = commitField(record.freshness.repo_head_commit);
+
+    if (commit !== "-") {
+      return commit;
+    }
+  }
+
+  if (isJsonRecord(record.provenance) && isJsonRecord(record.provenance.repo)) {
+    return commitField(record.provenance.repo.head_commit);
+  }
+
+  return "-";
+}
+
+function provenanceModeField(record: Record<string, JsonValue>): string {
+  if (!isJsonRecord(record.provenance)) {
+    return "-";
+  }
+
+  const mode = enumField(record.provenance.mode);
+  const kind = enumField(record.provenance.kind);
+
+  if (mode === "-" && kind === "-") {
+    return "-";
+  }
+
+  if (mode === "-") {
+    return kind;
+  }
+
+  return kind === "-" ? mode : `${mode} / ${kind}`;
+}
+
+function proofClosureField(record: Record<string, JsonValue>): string {
+  if (!isJsonRecord(record.freshness)) {
+    return "-";
+  }
+
+  const eligible = record.freshness.live_evidence_closure_eligible;
+
+  if (eligible === true) {
+    return "eligible";
+  }
+
+  if (eligible === false) {
+    return "not eligible";
+  }
+
+  return "-";
+}
+
+function staleSimulatedMarkerField(record: Record<string, JsonValue>): string {
+  if (!isJsonRecord(record.freshness)) {
+    return "-";
+  }
+
+  const marker = record.freshness.stale_or_simulated_report_closes_live_gap;
+
+  if (marker === false) {
+    return "cannot close live gap";
+  }
+
+  if (marker === true) {
+    return "[redacted]";
+  }
+
+  return "-";
+}
+
+function isoDateField(value: JsonValue | undefined): string {
+  if (typeof value !== "string") {
+    return "-";
+  }
+
+  const trimmed = value.trim();
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/.exec(trimmed);
+
+  return match ? safeFieldValue(`${match[1]}Z`) : "-";
+}
+
+function commitField(value: JsonValue | undefined): string {
+  if (typeof value !== "string") {
+    return "-";
+  }
+
+  const trimmed = value.trim().toLowerCase();
+
+  if (trimmed === "unavailable") {
+    return "unavailable";
+  }
+
+  return /^[0-9a-f]{40}$/.test(trimmed) ? trimmed.slice(0, 12) : "-";
 }

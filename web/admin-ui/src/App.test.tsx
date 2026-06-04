@@ -256,6 +256,29 @@ function stubAdminFetch(
         [AUTH_HEADER_NAME]: bearerPlaceholder("prompt-performance-header-hidden"),
       },
     },
+    freshness: {
+      generated_at_utc: "2026-06-04T13:30:00.000Z",
+      live_evidence_closure_eligible: false,
+      proof_run_id_hash: "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+      raw_report_path: "C:\\secret\\prompt-proof-report-hidden.json",
+      repo_head_commit: "abcdef1234567890abcdef1234567890abcdef12",
+      stale_or_simulated_report_closes_live_gap: false,
+    },
+    generated_at_utc: "2026-06-04T13:30:00.000Z",
+    provenance: {
+      command_line: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-artifact-command-hidden")}`,
+      generated_at_utc: "2026-06-04T13:30:00.000Z",
+      kind: "simulated",
+      mode: "contract",
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-artifact-provider-hidden"),
+        report_path: "C:\\secret\\prompt-proof-report-hidden.json",
+      },
+      repo: {
+        head_commit: "abcdef1234567890abcdef1234567890abcdef12",
+      },
+    },
     raw_pattern: "secret-like prompt protection pattern hidden",
     raw_pattern_values_omitted: true,
     raw_payload_omitted: true,
@@ -2469,6 +2492,11 @@ describe("App", () => {
     expect(within(promptProtectionPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("blocked")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("raw payload, raw pattern values")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
     expect(screen.getByText("settle")).toBeInTheDocument();
@@ -2494,6 +2522,11 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-command-hidden"));
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-header-hidden"));
     expect(document.body.textContent).not.toContain("postgres://prompt-performance-dsn-hidden");
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-proof-report-hidden.json");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-artifact-command-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-artifact-dsn-hidden");
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-artifact-provider-hidden"));
+    expect(document.body.textContent).not.toContain("feedfacefeedface");
     expect(screen.queryByText("provider-key-1")).not.toBeInTheDocument();
     expect(screen.queryByText("settle:request-1")).not.toBeInTheDocument();
     expect(screen.queryByText("price-version-1")).not.toBeInTheDocument();
@@ -2659,6 +2692,11 @@ describe("App", () => {
     expect(within(auditPromptPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("blocked")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("not eligible")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
     expect(document.body.textContent).toContain("manual_disabled");
     expect(document.body.textContent).toContain("client-ip-hash");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
@@ -2681,6 +2719,11 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-command-hidden"));
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-header-hidden"));
     expect(document.body.textContent).not.toContain("postgres://prompt-performance-dsn-hidden");
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-proof-report-hidden.json");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-artifact-command-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-artifact-dsn-hidden");
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-artifact-provider-hidden"));
+    expect(document.body.textContent).not.toContain("feedfacefeedface");
     expect(document.body.textContent).not.toContain("prompt_protection");
     expect(document.body.textContent).not.toContain("raw_headers");
     expect(document.body.textContent).not.toContain('"payload"');
