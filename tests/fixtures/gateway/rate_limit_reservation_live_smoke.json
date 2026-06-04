@@ -1,0 +1,93 @@
+{
+  "scenario": "gateway_rate_limit_reservation_live_postgres_smoke",
+  "script": "scripts/verify_gateway_rate_limit_reservation_smoke.ps1",
+  "compose": {
+    "file": "deploy/docker-compose/docker-compose.yml",
+    "required_services": [
+      "postgres",
+      "gateway",
+      "mock-provider"
+    ]
+  },
+  "gateway": {
+    "base_path": "/v1/chat/completions",
+    "auth_token_env": "GATEWAY_AUTH_TOKEN",
+    "strict_profile_ref": "Fallback Live Strict Smoke"
+  },
+  "required_capacity": {
+    "requests_per_minute": 1,
+    "tokens_per_minute": 128,
+    "concurrency": 1
+  },
+  "postgres_scope": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "bounded_provider_key_ids": [
+      "00000000-0000-0000-0000-000000000075",
+      "00000000-0000-0000-0000-000000000111",
+      "00000000-0000-0000-0000-000000000112"
+    ],
+    "max_affected_rows_per_acquire": 1
+  },
+  "live_cases": {
+    "acquire_updates_bounded_counters": {
+      "model": "mock-gpt-4o-mini",
+      "provider_key_id": "00000000-0000-0000-0000-000000000075",
+      "expected_http_status": 200,
+      "expected_db_acquire_status": "applied",
+      "expected_release_attempted": false,
+      "expected_used_after": {
+        "rpm": 1,
+        "tpm": 128,
+        "concurrency": 1
+      }
+    },
+    "fallback_releases_failed_attempt": {
+      "model": "mock-gpt-4o-mini-fallback-429",
+      "profile_ref": "Fallback Live Strict Smoke",
+      "failing_provider_key_id": "00000000-0000-0000-0000-000000000112",
+      "fallback_provider_key_id": "00000000-0000-0000-0000-000000000111",
+      "expected_http_status": 200,
+      "expected_fallback_reason": "provider_429",
+      "expected_db_acquire_status": "applied",
+      "expected_db_release_status": "applied",
+      "expected_failed_key_used_after_release": {
+        "rpm": 0,
+        "tpm": 0,
+        "concurrency": 0
+      }
+    },
+    "concurrent_over_limit_not_applied_final_429": {
+      "model": "mock-gpt-4o-mini-fallback-429",
+      "profile_ref": "Fallback Live Strict Smoke",
+      "locked_provider_key_ids": [
+        "00000000-0000-0000-0000-000000000112",
+        "00000000-0000-0000-0000-000000000111"
+      ],
+      "expected_http_status": 429,
+      "expected_error_code": "rate_limit_exceeded",
+      "expected_db_acquire_status": "not_applied",
+      "expected_skip_schema": "gateway_rate_limit_reservation_skip_v1",
+      "expected_rejection_schema": "gateway_rate_limit_reservation_rejection_v1"
+    }
+  },
+  "log_safety": {
+    "forbidden_markers": [
+      "dev_test_key_123456789",
+      "authorization",
+      "bearer",
+      "encrypted_secret",
+      "ciphertext",
+      "master_key_id",
+      "current_window_state",
+      "raw_headers",
+      "request_body",
+      "response_body",
+      "payload",
+      "sk-live-secret",
+      "hmac-sha256-v1:850e131450a7c691b8300375967287a7532bdab7d922dbc2db974f5a0f1bea2a",
+      "dev-fallback-strict-success-key-fingerprint",
+      "dev-fallback-strict-429-key-fingerprint"
+    ]
+  },
+  "notes": "Live mode mutates only provider_keys rpm/tpm/concurrency limits and current_window_state for the listed dev smoke keys, then restores the original values in a finally block. Dry-run validates fixture/script/seed markers only."
+}
