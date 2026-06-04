@@ -10,6 +10,12 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_availability_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_readiness_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_config_preflight_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER: &str =
+    "gateway_tpm_trusted_numeric_source_available";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER: &str =
+    "gateway_tpm_trusted_numeric_source_preflight_duration_ms";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum GatewayTpmEstimateEndpoint {
@@ -203,6 +209,39 @@ impl GatewayTrustedNumericSourceReadinessInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceConfigPreflightInput {
+    pub(crate) tokenizer_config_enabled: bool,
+    pub(crate) tokenizer_provider_available: bool,
+    pub(crate) read_model_config_enabled: bool,
+    pub(crate) read_model_provider_available: bool,
+}
+
+impl GatewayTrustedNumericSourceConfigPreflightInput {
+    pub(crate) const fn new(
+        tokenizer_config_enabled: bool,
+        tokenizer_provider_available: bool,
+        read_model_config_enabled: bool,
+        read_model_provider_available: bool,
+    ) -> Self {
+        Self {
+            tokenizer_config_enabled,
+            tokenizer_provider_available,
+            read_model_config_enabled,
+            read_model_provider_available,
+        }
+    }
+
+    pub(crate) const fn disabled_by_default() -> Self {
+        Self {
+            tokenizer_config_enabled: false,
+            tokenizer_provider_available: false,
+            read_model_config_enabled: false,
+            read_model_provider_available: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceReadinessStatus {
     Unavailable,
     Available,
@@ -213,6 +252,38 @@ impl GatewayTrustedNumericSourceReadinessStatus {
         match self {
             Self::Unavailable => "unavailable",
             Self::Available => "available",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceConfigPreflightStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceConfigPreflightStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceConfigPreflightBlocker {
+    ConfigDisabled,
+    ProviderUnavailable,
+}
+
+impl GatewayTrustedNumericSourceConfigPreflightBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigDisabled => "config_disabled",
+            Self::ProviderUnavailable => "provider_unavailable",
         }
     }
 }
@@ -272,6 +343,66 @@ pub(crate) struct GatewayTrustedNumericSourceReadinessSummary {
     pub(crate) read_model_enabled: bool,
     pub(crate) feature_available: bool,
     pub(crate) fallback_required: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceConfigPreflight {
+    pub(crate) status: GatewayTrustedNumericSourceConfigPreflightStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceConfigPreflightBlocker>,
+    pub(crate) tokenizer_config_enabled: bool,
+    pub(crate) read_model_config_enabled: bool,
+    pub(crate) tokenizer_provider_available: bool,
+    pub(crate) read_model_provider_available: bool,
+    pub(crate) feature_enabled: bool,
+    pub(crate) feature_available: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) readiness: GatewayTrustedNumericSourceReadiness,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceConfigPreflight {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceConfigPreflightSummary {
+        GatewayTrustedNumericSourceConfigPreflightSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceConfigPreflightBlocker::as_str),
+            tokenizer_config_enabled: self.tokenizer_config_enabled,
+            read_model_config_enabled: self.read_model_config_enabled,
+            tokenizer_provider_available: self.tokenizer_provider_available,
+            read_model_provider_available: self.read_model_provider_available,
+            feature_enabled: self.feature_enabled,
+            feature_available: self.feature_available,
+            fallback_required: self.fallback_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            readiness_status: self.readiness.status.as_str(),
+            tokenizer_status: self.readiness.tokenizer_status.as_str(),
+            read_model_status: self.readiness.read_model_status.as_str(),
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceConfigPreflightSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) tokenizer_config_enabled: bool,
+    pub(crate) read_model_config_enabled: bool,
+    pub(crate) tokenizer_provider_available: bool,
+    pub(crate) read_model_provider_available: bool,
+    pub(crate) feature_enabled: bool,
+    pub(crate) feature_available: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) duration_marker: &'static str,
+    pub(crate) readiness_status: &'static str,
+    pub(crate) tokenizer_status: &'static str,
+    pub(crate) read_model_status: &'static str,
     pub(crate) material_in_output: bool,
 }
 
@@ -462,6 +593,47 @@ pub(crate) fn gateway_trusted_numeric_source_readiness(
         read_model_enabled: input.read_model_enabled,
         feature_available,
         fallback_required: !feature_available,
+        material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_config_preflight(
+    input: GatewayTrustedNumericSourceConfigPreflightInput,
+) -> GatewayTrustedNumericSourceConfigPreflight {
+    let readiness =
+        gateway_trusted_numeric_source_readiness(GatewayTrustedNumericSourceReadinessInput::new(
+            input.tokenizer_config_enabled,
+            input.tokenizer_provider_available,
+            input.read_model_config_enabled,
+            input.read_model_provider_available,
+        ));
+    let feature_enabled = input.tokenizer_config_enabled || input.read_model_config_enabled;
+    let status = match (feature_enabled, readiness.feature_available) {
+        (false, _) => GatewayTrustedNumericSourceConfigPreflightStatus::Disabled,
+        (true, true) => GatewayTrustedNumericSourceConfigPreflightStatus::Ready,
+        (true, false) => GatewayTrustedNumericSourceConfigPreflightStatus::Blocked,
+    };
+    let blocker = match status {
+        GatewayTrustedNumericSourceConfigPreflightStatus::Disabled => {
+            Some(GatewayTrustedNumericSourceConfigPreflightBlocker::ConfigDisabled)
+        }
+        GatewayTrustedNumericSourceConfigPreflightStatus::Blocked => {
+            Some(GatewayTrustedNumericSourceConfigPreflightBlocker::ProviderUnavailable)
+        }
+        GatewayTrustedNumericSourceConfigPreflightStatus::Ready => None,
+    };
+
+    GatewayTrustedNumericSourceConfigPreflight {
+        status,
+        blocker,
+        tokenizer_config_enabled: input.tokenizer_config_enabled,
+        read_model_config_enabled: input.read_model_config_enabled,
+        tokenizer_provider_available: input.tokenizer_provider_available,
+        read_model_provider_available: input.read_model_provider_available,
+        feature_enabled,
+        feature_available: readiness.feature_available,
+        fallback_required: !readiness.feature_available,
+        readiness,
         material_in_output: false,
     }
 }
@@ -1708,6 +1880,382 @@ mod tests {
             assert!(
                 !serialized.contains(raw_marker),
                 "trusted numeric source readiness output leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_config_preflight_gate() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_config_preflight_gate_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(
+            contract["implementation_status"].as_str(),
+            Some(
+                "config/preflight gate only; tokenizer/read-model implementations are not wired into runtime"
+            )
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+        assert_eq!(
+            contract["availability_marker"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER)
+        );
+        assert_eq!(
+            contract["duration_marker"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER)
+        );
+
+        let config_flags = contract["config_flags"]
+            .as_array()
+            .expect("preflight config flags should be an array");
+        for flag in [
+            "GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED",
+            "GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED",
+        ] {
+            assert!(
+                config_flags
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(flag)),
+                "preflight config contract should define flag: {flag}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("preflight states should be an array");
+        for required_state in [
+            "default_disabled",
+            "tokenizer_enabled_provider_unavailable",
+            "read_model_enabled_provider_unavailable",
+            "tokenizer_available_ready",
+            "read_model_available_ready",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "preflight gate contract missing state: {required_state}"
+            );
+        }
+
+        let evidence_fields = contract["smoke_evidence_projection_fields"]
+            .as_array()
+            .expect("preflight smoke evidence projection fields should be an array");
+        for field in [
+            "trusted_source_preflight.schema",
+            "trusted_source_preflight.status",
+            "trusted_source_preflight.blocker",
+            "trusted_source_preflight.feature_enabled",
+            "trusted_source_preflight.feature_available",
+            "trusted_source_preflight.fallback_required",
+            "trusted_source_preflight.availability_marker",
+            "trusted_source_preflight.duration_marker",
+            "trusted_source_preflight.material_in_output",
+        ] {
+            assert!(
+                evidence_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "preflight smoke evidence should include {field}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "preflight gate contract should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_config_preflight_controls_fallback() {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("preflight states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing preflight state: {name}"))
+        }
+
+        fn assert_preflight_summary(
+            summary: &GatewayTrustedNumericSourceConfigPreflightSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.blocker,
+                expected["blocker"].as_str().map(|blocker| match blocker {
+                    "config_disabled" => "config_disabled",
+                    "provider_unavailable" => "provider_unavailable",
+                    other => panic!("unexpected blocker in fixture: {other}"),
+                })
+            );
+            assert_eq!(
+                summary.tokenizer_config_enabled,
+                expected["tokenizer_config_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.read_model_config_enabled,
+                expected["read_model_config_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.tokenizer_provider_available,
+                expected["tokenizer_provider_available"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.read_model_provider_available,
+                expected["read_model_provider_available"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.feature_enabled,
+                expected["feature_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.feature_available,
+                expected["feature_available"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.readiness_status,
+                expected["readiness_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.tokenizer_status,
+                expected["tokenizer_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.read_model_status,
+                expected["read_model_status"].as_str().unwrap()
+            );
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_config_preflight_gate_contract"];
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+        let available_input = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::ReadModel,
+                GatewayTrustedNumericTokenKind::InputTokens,
+                Some(222),
+            ),
+        ));
+
+        let disabled = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::disabled_by_default(),
+        );
+        assert_eq!(
+            disabled.status,
+            GatewayTrustedNumericSourceConfigPreflightStatus::Disabled
+        );
+        assert_eq!(
+            disabled.blocker,
+            Some(GatewayTrustedNumericSourceConfigPreflightBlocker::ConfigDisabled)
+        );
+        assert!(!disabled.feature_enabled);
+        assert!(!disabled.feature_available);
+        assert!(disabled.fallback_required);
+        assert_preflight_summary(
+            &disabled.safe_summary(),
+            state(contract, "default_disabled"),
+        );
+        let disabled_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "sk-live raw prompt must not influence preflight" }],
+                "max_completion_tokens": 79
+            }),
+            gateway_tpm_signals_for_readiness(&disabled.readiness, &available_prompt, 256),
+        );
+        assert_eq!(
+            disabled_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(disabled_plan.estimate.required_tokens, 335);
+        assert!(disabled_plan.estimate.used_conservative_fallback);
+
+        let tokenizer_blocked = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, false, false, false),
+        );
+        assert_eq!(
+            tokenizer_blocked.status,
+            GatewayTrustedNumericSourceConfigPreflightStatus::Blocked
+        );
+        assert_eq!(
+            tokenizer_blocked.blocker,
+            Some(GatewayTrustedNumericSourceConfigPreflightBlocker::ProviderUnavailable)
+        );
+        assert!(tokenizer_blocked.feature_enabled);
+        assert!(!tokenizer_blocked.feature_available);
+        assert!(tokenizer_blocked.fallback_required);
+        assert_preflight_summary(
+            &tokenizer_blocked.safe_summary(),
+            state(contract, "tokenizer_enabled_provider_unavailable"),
+        );
+        let tokenizer_blocked_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiResponses,
+            &json!({
+                "input": "raw response input must not influence preflight",
+                "max_output_tokens": 128
+            }),
+            gateway_tpm_signals_for_readiness(&tokenizer_blocked.readiness, &available_prompt, 256),
+        );
+        assert_eq!(
+            tokenizer_blocked_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(tokenizer_blocked_plan.estimate.required_tokens, 384);
+        assert!(tokenizer_blocked_plan.estimate.used_conservative_fallback);
+
+        let read_model_blocked = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(false, false, true, false),
+        );
+        assert_eq!(
+            read_model_blocked.status,
+            GatewayTrustedNumericSourceConfigPreflightStatus::Blocked
+        );
+        assert_eq!(
+            read_model_blocked.blocker,
+            Some(GatewayTrustedNumericSourceConfigPreflightBlocker::ProviderUnavailable)
+        );
+        assert_preflight_summary(
+            &read_model_blocked.safe_summary(),
+            state(contract, "read_model_enabled_provider_unavailable"),
+        );
+
+        let tokenizer_ready = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, true, false, false),
+        );
+        assert_eq!(
+            tokenizer_ready.status,
+            GatewayTrustedNumericSourceConfigPreflightStatus::Ready
+        );
+        assert_eq!(tokenizer_ready.blocker, None);
+        assert!(tokenizer_ready.feature_enabled);
+        assert!(tokenizer_ready.feature_available);
+        assert!(!tokenizer_ready.fallback_required);
+        assert_preflight_summary(
+            &tokenizer_ready.safe_summary(),
+            state(contract, "tokenizer_available_ready"),
+        );
+        let tokenizer_ready_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "raw prompt must not appear in preflight summary" }],
+                "max_completion_tokens": 79
+            }),
+            gateway_tpm_signals_for_readiness(&tokenizer_ready.readiness, &available_prompt, 256),
+        );
+        assert_eq!(
+            tokenizer_ready_plan.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(tokenizer_ready_plan.estimate.required_tokens, 400);
+        assert!(!tokenizer_ready_plan.estimate.used_conservative_fallback);
+
+        let read_model_ready = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(false, false, true, true),
+        );
+        assert_eq!(
+            read_model_ready.status,
+            GatewayTrustedNumericSourceConfigPreflightStatus::Ready
+        );
+        assert_eq!(read_model_ready.blocker, None);
+        assert!(read_model_ready.feature_available);
+        assert!(!read_model_ready.fallback_required);
+        assert_preflight_summary(
+            &read_model_ready.safe_summary(),
+            state(contract, "read_model_available_ready"),
+        );
+        let read_model_ready_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw embedding input must not appear in preflight summary" }),
+            gateway_tpm_signals_for_readiness(&read_model_ready.readiness, &available_input, 256),
+        );
+        assert_eq!(
+            read_model_ready_plan.estimate.source,
+            RateLimitTpmEstimateSource::TotalTokens
+        );
+        assert_eq!(read_model_ready_plan.estimate.required_tokens, 222);
+        assert!(!read_model_ready_plan.estimate.used_conservative_fallback);
+
+        let serialized = serde_json::to_string(&json!({
+            "preflight": [
+                disabled.safe_summary(),
+                tokenizer_blocked.safe_summary(),
+                read_model_blocked.safe_summary(),
+                tokenizer_ready.safe_summary(),
+                read_model_ready.safe_summary()
+            ],
+            "plans": [
+                disabled_plan.safe_summary(),
+                tokenizer_blocked_plan.safe_summary(),
+                tokenizer_ready_plan.safe_summary(),
+                read_model_ready_plan.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric config preflight summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric source config preflight output leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in [
+            "raw prompt",
+            "raw response input",
+            "raw embedding input",
+            "request_body",
+            "body_length",
+            "string_length",
+            "\"messages\"",
+            "\"content\"",
+            "\"input\"",
+        ] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "trusted numeric source config preflight output leaked raw marker: {raw_marker}"
             );
         }
     }
