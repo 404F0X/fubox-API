@@ -478,6 +478,140 @@
       "\"input\""
     ]
   },
+  "trusted_numeric_source_runtime_adapter_boundary_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1",
+    "implementation_status": "runtime adapter boundary only; concrete tokenizer/read-model providers and live DB/provider smoke are not wired",
+    "runtime_wiring_changed": false,
+    "adapter_trait": "GatewayTrustedNumericSourceRuntimeAdapter",
+    "adapter_method": "lookup_trusted_numeric_source",
+    "input_type": "GatewayTrustedNumericSourceRuntimeAdapterInput",
+    "output_type": "GatewayTrustedNumericSourceRuntimeAdapterOutput",
+    "input_fields": [
+      "endpoint",
+      "preflight",
+      "conservative_fallback_tokens"
+    ],
+    "forbidden_input_fields": [
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "provider_endpoint",
+      "current_window_state"
+    ],
+    "marker_names": {
+      "availability": "gateway_tpm_trusted_numeric_source_available",
+      "preflight_duration": "gateway_tpm_trusted_numeric_source_preflight_duration_ms",
+      "estimate_duration": "gateway_tpm_trusted_numeric_source_estimate_duration_ms",
+      "source": "gateway_tpm_trusted_numeric_source_type",
+      "token_count": "gateway_tpm_trusted_numeric_source_token_count"
+    },
+    "evidence_fields": [
+      "trusted_source_adapter.schema",
+      "trusted_source_adapter.status",
+      "trusted_source_adapter.endpoint",
+      "trusted_source_adapter.preflight_status",
+      "trusted_source_adapter.availability_status",
+      "trusted_source_adapter.source_type",
+      "trusted_source_adapter.token_kind",
+      "trusted_source_adapter.token_count",
+      "trusted_source_adapter.adapter_invoked",
+      "trusted_source_adapter.fallback_required",
+      "trusted_source_adapter.conservative_fallback_tokens",
+      "trusted_source_adapter.availability_marker",
+      "trusted_source_adapter.preflight_duration_marker",
+      "trusted_source_adapter.estimate_duration_marker",
+      "trusted_source_adapter.source_marker",
+      "trusted_source_adapter.token_count_marker",
+      "trusted_source_adapter.material_in_output",
+      "trusted_source_adapter.provider_side_effect_required"
+    ],
+    "states": [
+      {
+        "name": "disabled_skips_adapter",
+        "preflight_state": "default_disabled",
+        "status": "disabled",
+        "preflight_status": "disabled",
+        "availability_status": "unavailable",
+        "adapter_invoked": false,
+        "fallback_required": true,
+        "material_in_output": false,
+        "provider_side_effect_required": false
+      },
+      {
+        "name": "blocked_skips_adapter",
+        "preflight_state": "tokenizer_enabled_provider_unavailable",
+        "status": "blocked",
+        "preflight_status": "blocked",
+        "availability_status": "unavailable",
+        "adapter_invoked": false,
+        "fallback_required": true,
+        "material_in_output": false,
+        "provider_side_effect_required": false
+      },
+      {
+        "name": "ready_invokes_adapter_available",
+        "preflight_state": "tokenizer_available_ready",
+        "status": "ready",
+        "preflight_status": "ready",
+        "availability_status": "available",
+        "source_type": "tokenizer",
+        "token_kind": "prompt_tokens",
+        "token_count": 321,
+        "adapter_invoked": true,
+        "fallback_required": false,
+        "material_in_output": false,
+        "provider_side_effect_required": false
+      },
+      {
+        "name": "ready_adapter_unavailable_blocks",
+        "preflight_state": "tokenizer_available_ready",
+        "status": "blocked",
+        "preflight_status": "ready",
+        "availability_status": "unavailable",
+        "adapter_invoked": true,
+        "fallback_required": true,
+        "material_in_output": false,
+        "provider_side_effect_required": false
+      }
+    ],
+    "ordering_contract": [
+      "prompt-protection allow",
+      "trusted numeric runtime adapter boundary",
+      "TPM estimate",
+      "rate-limit reservation acquire",
+      "provider side effect"
+    ],
+    "side_effect_contract": {
+      "reservation_acquire": false,
+      "provider_attempt": false,
+      "provider_key_open": false,
+      "upstream_call": false,
+      "billing_side_effect": false
+    },
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\""
+    ]
+  },
   "trusted_numeric_source_opt_in_runtime_evidence_gate_contract": {
     "schema": "gateway_tpm_trusted_numeric_source_opt_in_evidence_v1",
     "implementation_status": "opt-in evidence gate only; tokenizer/read-model implementations and live DB/provider smoke are not wired",

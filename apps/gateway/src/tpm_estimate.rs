@@ -12,6 +12,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_readiness_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_config_preflight_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_opt_in_evidence_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RESERVATION_PROJECTION_SCHEMA: &str =
@@ -414,6 +416,134 @@ pub(crate) struct GatewayTrustedNumericSourceConfigPreflightSummary {
     pub(crate) tokenizer_status: &'static str,
     pub(crate) read_model_status: &'static str,
     pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeAdapterInput<'a> {
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) preflight: &'a GatewayTrustedNumericSourceConfigPreflight,
+    pub(crate) conservative_fallback_tokens: i64,
+}
+
+impl<'a> GatewayTrustedNumericSourceRuntimeAdapterInput<'a> {
+    pub(crate) const fn new(
+        endpoint: GatewayTpmEstimateEndpoint,
+        preflight: &'a GatewayTrustedNumericSourceConfigPreflight,
+        conservative_fallback_tokens: i64,
+    ) -> Self {
+        Self {
+            endpoint,
+            preflight,
+            conservative_fallback_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeAdapterOutput {
+    pub(crate) availability: GatewayTrustedNumericSourceAvailability,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceRuntimeAdapterOutput {
+    pub(crate) const fn new(availability: GatewayTrustedNumericSourceAvailability) -> Self {
+        Self {
+            availability,
+            material_in_output: false,
+            provider_side_effect_required: false,
+        }
+    }
+}
+
+pub(crate) trait GatewayTrustedNumericSourceRuntimeAdapter {
+    fn lookup_trusted_numeric_source(
+        &self,
+        input: GatewayTrustedNumericSourceRuntimeAdapterInput<'_>,
+    ) -> GatewayTrustedNumericSourceRuntimeAdapterOutput;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceRuntimeAdapterStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceRuntimeAdapterStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+    pub(crate) status: GatewayTrustedNumericSourceRuntimeAdapterStatus,
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) preflight_status: GatewayTrustedNumericSourceConfigPreflightStatus,
+    pub(crate) availability: GatewayTrustedNumericSourceAvailability,
+    pub(crate) adapter_invoked: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) conservative_fallback_tokens: i64,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceRuntimeAdapterSummary {
+        GatewayTrustedNumericSourceRuntimeAdapterSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA,
+            status: self.status.as_str(),
+            endpoint: self.endpoint.as_str(),
+            preflight_status: self.preflight_status.as_str(),
+            availability_status: self.availability.status.as_str(),
+            source_type: self
+                .availability
+                .source_type
+                .map(GatewayTrustedNumericSourceType::as_str),
+            token_kind: self
+                .availability
+                .token_kind
+                .map(GatewayTrustedNumericTokenKind::as_str),
+            token_count: self.availability.tokens,
+            adapter_invoked: self.adapter_invoked,
+            fallback_required: self.fallback_required,
+            conservative_fallback_tokens: self.conservative_fallback_tokens,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            material_in_output: self.material_in_output,
+            provider_side_effect_required: self.provider_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeAdapterSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) endpoint: &'static str,
+    pub(crate) preflight_status: &'static str,
+    pub(crate) availability_status: &'static str,
+    pub(crate) source_type: Option<&'static str>,
+    pub(crate) token_kind: Option<&'static str>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) adapter_invoked: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) conservative_fallback_tokens: i64,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -840,6 +970,73 @@ pub(crate) fn gateway_trusted_numeric_source_config_preflight(
         fallback_required: !readiness.feature_available,
         readiness,
         material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_runtime_adapter_boundary(
+    input: GatewayTrustedNumericSourceRuntimeAdapterInput<'_>,
+    adapter: Option<&dyn GatewayTrustedNumericSourceRuntimeAdapter>,
+) -> GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+    if input.preflight.status == GatewayTrustedNumericSourceConfigPreflightStatus::Disabled {
+        return gateway_trusted_numeric_source_runtime_adapter_fallback_evidence(
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Disabled,
+            input,
+            false,
+        );
+    }
+    if input.preflight.status == GatewayTrustedNumericSourceConfigPreflightStatus::Blocked {
+        return gateway_trusted_numeric_source_runtime_adapter_fallback_evidence(
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked,
+            input,
+            false,
+        );
+    }
+
+    let Some(adapter) = adapter else {
+        return gateway_trusted_numeric_source_runtime_adapter_fallback_evidence(
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked,
+            input,
+            false,
+        );
+    };
+    let output = adapter.lookup_trusted_numeric_source(input);
+    let available = output.availability.status
+        == GatewayTrustedNumericSourceAvailabilityStatus::Available
+        && !output.material_in_output
+        && !output.provider_side_effect_required;
+
+    GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+        status: if available {
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready
+        } else {
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked
+        },
+        endpoint: input.endpoint,
+        preflight_status: input.preflight.status,
+        fallback_required: !available || output.availability.fallback_required,
+        availability: output.availability,
+        adapter_invoked: true,
+        conservative_fallback_tokens: input.conservative_fallback_tokens,
+        material_in_output: output.material_in_output,
+        provider_side_effect_required: output.provider_side_effect_required,
+    }
+}
+
+fn gateway_trusted_numeric_source_runtime_adapter_fallback_evidence(
+    status: GatewayTrustedNumericSourceRuntimeAdapterStatus,
+    input: GatewayTrustedNumericSourceRuntimeAdapterInput<'_>,
+    adapter_invoked: bool,
+) -> GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+    GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+        status,
+        endpoint: input.endpoint,
+        preflight_status: input.preflight.status,
+        availability: gateway_trusted_numeric_source_availability_from_adapter(None),
+        adapter_invoked,
+        fallback_required: true,
+        conservative_fallback_tokens: input.conservative_fallback_tokens,
+        material_in_output: false,
+        provider_side_effect_required: false,
     }
 }
 
@@ -2546,6 +2743,370 @@ mod tests {
             assert!(
                 !serialized.contains(raw_marker),
                 "trusted numeric source config preflight output leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_runtime_adapter_boundary() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_runtime_adapter_boundary_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA)
+        );
+        assert_eq!(
+            contract["adapter_trait"].as_str(),
+            Some("GatewayTrustedNumericSourceRuntimeAdapter")
+        );
+        assert_eq!(
+            contract["adapter_method"].as_str(),
+            Some("lookup_trusted_numeric_source")
+        );
+        assert_eq!(
+            contract["input_type"].as_str(),
+            Some("GatewayTrustedNumericSourceRuntimeAdapterInput")
+        );
+        assert_eq!(
+            contract["output_type"].as_str(),
+            Some("GatewayTrustedNumericSourceRuntimeAdapterOutput")
+        );
+
+        let input_fields = contract["input_fields"]
+            .as_array()
+            .expect("runtime adapter input fields should be an array");
+        for field in ["endpoint", "preflight", "conservative_fallback_tokens"] {
+            assert!(
+                input_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "runtime adapter input should include {field}"
+            );
+        }
+        for field in contract["forbidden_input_fields"]
+            .as_array()
+            .expect("forbidden input fields should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !input_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "runtime adapter input must not accept raw field: {field}"
+            );
+        }
+
+        for (marker_name, marker_value) in [
+            (
+                "availability",
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            ),
+            (
+                "preflight_duration",
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            ),
+            (
+                "estimate_duration",
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            ),
+            ("source", GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER),
+            (
+                "token_count",
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            ),
+        ] {
+            assert_eq!(
+                contract["marker_names"][marker_name].as_str(),
+                Some(marker_value),
+                "runtime adapter boundary should define marker {marker_name}"
+            );
+        }
+
+        let evidence_fields = contract["evidence_fields"]
+            .as_array()
+            .expect("runtime adapter evidence fields should be an array");
+        for field in [
+            "trusted_source_adapter.status",
+            "trusted_source_adapter.preflight_status",
+            "trusted_source_adapter.availability_status",
+            "trusted_source_adapter.source_type",
+            "trusted_source_adapter.token_count",
+            "trusted_source_adapter.adapter_invoked",
+            "trusted_source_adapter.availability_marker",
+            "trusted_source_adapter.preflight_duration_marker",
+            "trusted_source_adapter.estimate_duration_marker",
+            "trusted_source_adapter.source_marker",
+            "trusted_source_adapter.token_count_marker",
+            "trusted_source_adapter.material_in_output",
+            "trusted_source_adapter.provider_side_effect_required",
+        ] {
+            assert!(
+                evidence_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "runtime adapter evidence should include {field}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("runtime adapter states should be an array");
+        for required_state in [
+            "disabled_skips_adapter",
+            "blocked_skips_adapter",
+            "ready_invokes_adapter_available",
+            "ready_adapter_unavailable_blocks",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "runtime adapter boundary missing state: {required_state}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "runtime adapter boundary should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_runtime_adapter_boundary_controls_invocation() {
+        use std::cell::Cell;
+
+        struct SpyAdapter {
+            calls: Cell<usize>,
+            availability: GatewayTrustedNumericSourceAvailability,
+        }
+
+        impl GatewayTrustedNumericSourceRuntimeAdapter for SpyAdapter {
+            fn lookup_trusted_numeric_source(
+                &self,
+                input: GatewayTrustedNumericSourceRuntimeAdapterInput<'_>,
+            ) -> GatewayTrustedNumericSourceRuntimeAdapterOutput {
+                self.calls.set(self.calls.get().saturating_add(1));
+                assert_eq!(input.endpoint, GatewayTpmEstimateEndpoint::OpenAiChat);
+                assert_eq!(input.conservative_fallback_tokens, 256);
+                GatewayTrustedNumericSourceRuntimeAdapterOutput::new(self.availability)
+            }
+        }
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("runtime adapter states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing runtime adapter state: {name}"))
+        }
+
+        fn assert_adapter_summary(
+            summary: &GatewayTrustedNumericSourceRuntimeAdapterSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.preflight_status,
+                expected["preflight_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.availability_status,
+                expected["availability_status"].as_str().unwrap()
+            );
+            assert_eq!(summary.source_type, expected["source_type"].as_str());
+            assert_eq!(summary.token_kind, expected["token_kind"].as_str());
+            assert_eq!(summary.token_count, expected["token_count"].as_u64());
+            assert_eq!(
+                summary.adapter_invoked,
+                expected["adapter_invoked"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert_eq!(
+                summary.material_in_output,
+                expected["material_in_output"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.provider_side_effect_required,
+                expected["provider_side_effect_required"].as_bool().unwrap()
+            );
+            assert!(!summary.material_in_output);
+            assert!(!summary.provider_side_effect_required);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_runtime_adapter_boundary_contract"];
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+        let unavailable = gateway_trusted_numeric_source_availability_from_adapter(None);
+        let adapter = SpyAdapter {
+            calls: Cell::new(0),
+            availability: available_prompt,
+        };
+        let unavailable_adapter = SpyAdapter {
+            calls: Cell::new(0),
+            availability: unavailable,
+        };
+
+        let disabled_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::disabled_by_default(),
+        );
+        let disabled = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &disabled_preflight,
+                256,
+            ),
+            Some(&adapter),
+        );
+        assert_eq!(
+            disabled.status,
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Disabled
+        );
+        assert_eq!(adapter.calls.get(), 0);
+        assert_adapter_summary(
+            &disabled.safe_summary(),
+            state(contract, "disabled_skips_adapter"),
+        );
+
+        let blocked_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, false, false, false),
+        );
+        let blocked = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &blocked_preflight,
+                256,
+            ),
+            Some(&adapter),
+        );
+        assert_eq!(
+            blocked.status,
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked
+        );
+        assert_eq!(adapter.calls.get(), 0);
+        assert_adapter_summary(
+            &blocked.safe_summary(),
+            state(contract, "blocked_skips_adapter"),
+        );
+
+        let ready_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, true, false, false),
+        );
+        let ready = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &ready_preflight,
+                256,
+            ),
+            Some(&adapter),
+        );
+        assert_eq!(
+            ready.status,
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready
+        );
+        assert_eq!(adapter.calls.get(), 1);
+        assert_adapter_summary(
+            &ready.safe_summary(),
+            state(contract, "ready_invokes_adapter_available"),
+        );
+
+        let ready_unavailable = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &ready_preflight,
+                256,
+            ),
+            Some(&unavailable_adapter),
+        );
+        assert_eq!(
+            ready_unavailable.status,
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked
+        );
+        assert_eq!(unavailable_adapter.calls.get(), 1);
+        assert_adapter_summary(
+            &ready_unavailable.safe_summary(),
+            state(contract, "ready_adapter_unavailable_blocks"),
+        );
+
+        let ready_without_adapter = gateway_trusted_numeric_source_runtime_adapter_boundary(
+            GatewayTrustedNumericSourceRuntimeAdapterInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &ready_preflight,
+                256,
+            ),
+            None,
+        );
+        assert_eq!(
+            ready_without_adapter.status,
+            GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked
+        );
+        assert!(!ready_without_adapter.adapter_invoked);
+        assert!(ready_without_adapter.fallback_required);
+
+        let serialized = serde_json::to_string(&json!({
+            "trusted_source_adapter": [
+                disabled.safe_summary(),
+                blocked.safe_summary(),
+                ready.safe_summary(),
+                ready_unavailable.safe_summary(),
+                ready_without_adapter.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric runtime adapter summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric source runtime adapter evidence leaked forbidden marker: {forbidden}"
             );
         }
     }
