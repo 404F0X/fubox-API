@@ -79,6 +79,7 @@
       "schema",
       "mode",
       "status",
+      "measurements_available",
       "bounded_scope",
       "performance",
       "trusted_numeric_source_handoff",
@@ -110,7 +111,8 @@
       "dry_run_no_runtime_requests",
       "preflight_only_no_runtime_requests",
       "preflight_or_contract_blocked",
-      "live_performance_measurement_not_collected"
+      "live_observed",
+      "measurements_available"
     ],
     "secret_safe_command_summary": {
       "omits_gateway_auth_token": true,

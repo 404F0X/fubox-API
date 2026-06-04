@@ -488,6 +488,14 @@ export const ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContra
     installCommand: "npm --prefix web/admin-ui exec playwright install chromium",
     installHintOnly: true,
   },
+  sessionHandoff: {
+    echoCookie: false,
+    echoHeaderValue: false,
+    echoToken: false,
+    env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+    header: "X-Admin-Session",
+    requiredForActions: true,
+  },
   requiredForPassAttempt: {
     adminUiReachable: true,
     artifactReadbackFresh: true,

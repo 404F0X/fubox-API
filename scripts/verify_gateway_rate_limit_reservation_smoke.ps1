@@ -24,6 +24,16 @@ $script:ProviderKeyStateCaptured = $false
 $script:SmokeSuffix = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $script:PerformanceEvidenceReportWritten = $false
 $script:MissingServices = @()
+$script:ObservedAcquireCount = 0
+$script:ObservedReleaseCount = 0
+$script:ObservedNotAppliedCount = 0
+$script:ObservedFallbackCount = 0
+$script:ObservedRequestLogRows = 0
+$script:ObservedProviderAttemptRows = 0
+$script:ObservedGatewayLatencyMilliseconds = @()
+$script:ObservedContenderJobs = 0
+$script:ObservedContenderDurationMilliseconds = $null
+$script:ObservedContenderStartedAt = $null
 
 if ($env:GATEWAY_BASE_URL) { $GatewayBaseUrl = $env:GATEWAY_BASE_URL }
 if ($env:GATEWAY_AUTH_TOKEN) { $GatewayAuthToken = $env:GATEWAY_AUTH_TOKEN }
@@ -344,14 +354,39 @@ function New-PerformanceEvidenceReport {
     if ($contract.expected_minimum_counts.fallback -ne $null) { $expectedFallbackCount = [int]$contract.expected_minimum_counts.fallback }
   }
 
-  $unavailable = New-PerformanceUnavailableMarker -Reason $UnavailableReason
   $liveRequestsSent = [bool](-not $DryRun -and -not $PreflightOnly -and $Status.StartsWith("live_"))
-  $closureEligible = [bool]($Status -eq "live_completed" -and $UnavailableReason -eq "live_observed")
+  $measurementsAvailable = [bool](
+    $Status -eq "live_completed" `
+      -and $script:ObservedGatewayLatencyMilliseconds.Count -gt 0 `
+      -and $script:ObservedRequestLogRows -gt 0 `
+      -and $script:ObservedProviderAttemptRows -gt 0 `
+      -and $script:ObservedContenderJobs -ge 1 `
+      -and $script:ObservedAcquireCount -ge $expectedAcquireCount `
+      -and $script:ObservedReleaseCount -ge $expectedReleaseCount `
+      -and $script:ObservedNotAppliedCount -ge $expectedNotAppliedCount `
+      -and $script:ObservedFallbackCount -ge $expectedFallbackCount
+  )
+  $unavailableReasonForReport = $UnavailableReason
+  if ($measurementsAvailable) {
+    $unavailableReasonForReport = "measurements_available"
+  }
+  $unavailable = New-PerformanceUnavailableMarker -Reason $unavailableReasonForReport
+  $availableMarker = [ordered]@{ available = $true; reason = "measurements_available" }
+  $measurementMarker = if ($measurementsAvailable) { $availableMarker } else { $unavailable }
+  $gatewayLatencyMs = $null
+  if ($script:ObservedGatewayLatencyMilliseconds.Count -gt 0) {
+    $gatewayLatencyMs = [int][Math]::Round(($script:ObservedGatewayLatencyMilliseconds | Measure-Object -Average).Average)
+  }
+  $notAppliedFallbackTotal = $script:ObservedNotAppliedCount + $script:ObservedFallbackCount
+  $attemptTotal = [Math]::Max(1, $script:ObservedAcquireCount)
+  $notAppliedFallbackRate = [double]($notAppliedFallbackTotal / $attemptTotal)
+  $closureEligible = [bool]($Status -eq "live_completed" -and $measurementsAvailable)
   return [ordered]@{
     schema = $schema
     mode = Get-SmokeMode
     status = $Status
     live_requests_sent = $liveRequestsSent
+    measurements_available = $measurementsAvailable
     closure_eligible = $closureEligible
     bounded_scope = [ordered]@{
       provider_key_scope = "fixture_bounded_provider_key_ids"
@@ -364,36 +399,37 @@ function New-PerformanceEvidenceReport {
         expected_contender_jobs = 1
         lock_hold_seconds = [int]$LockHoldSeconds
         lock_warmup_milliseconds = [int]$LockWarmupMilliseconds
-        observed_contender_jobs = $null
-        unavailable = $unavailable
+        observed_contender_jobs = if ($script:ObservedContenderJobs -gt 0) { [int]$script:ObservedContenderJobs } else { $null }
+        observed_contender_duration_ms = $script:ObservedContenderDurationMilliseconds
+        unavailable = $measurementMarker
       }
       latency_or_ttft = [ordered]@{
-        gateway_latency_ms = $null
+        gateway_latency_ms = $gatewayLatencyMs
         ttft_ms = $null
-        unavailable = $unavailable
+        unavailable = if ($null -ne $gatewayLatencyMs) { $availableMarker } else { $unavailable }
       }
       row_count = [ordered]@{
         request_log_query_limit = 10
         provider_attempt_query_join = "request_logs_left_join_provider_attempts"
         max_affected_rows_per_acquire = [int]$script:Fixture.postgres_scope.max_affected_rows_per_acquire
-        observed_request_log_rows = $null
-        observed_provider_attempt_rows = $null
-        unavailable = $unavailable
+        observed_request_log_rows = if ($script:ObservedRequestLogRows -gt 0) { [int]$script:ObservedRequestLogRows } else { $null }
+        observed_provider_attempt_rows = if ($script:ObservedProviderAttemptRows -gt 0) { [int]$script:ObservedProviderAttemptRows } else { $null }
+        unavailable = if ($script:ObservedRequestLogRows -gt 0) { $availableMarker } else { $unavailable }
       }
       not_applied_or_fallback_rate = [ordered]@{
         expected_not_applied_count_min = $expectedNotAppliedCount
         expected_fallback_count_min = $expectedFallbackCount
-        observed_not_applied_count = $null
-        observed_fallback_count = $null
-        observed_rate = $null
-        unavailable = $unavailable
+        observed_not_applied_count = if ($script:ObservedNotAppliedCount -gt 0) { [int]$script:ObservedNotAppliedCount } else { $null }
+        observed_fallback_count = if ($script:ObservedFallbackCount -gt 0) { [int]$script:ObservedFallbackCount } else { $null }
+        observed_rate = if ($notAppliedFallbackTotal -gt 0) { $notAppliedFallbackRate } else { $null }
+        unavailable = if ($notAppliedFallbackTotal -gt 0) { $availableMarker } else { $unavailable }
       }
       reservation_counts = [ordered]@{
         expected_acquire_count_min = $expectedAcquireCount
         expected_release_count_min = $expectedReleaseCount
-        observed_acquire_count = $null
-        observed_release_count = $null
-        unavailable = $unavailable
+        observed_acquire_count = if ($script:ObservedAcquireCount -gt 0) { [int]$script:ObservedAcquireCount } else { $null }
+        observed_release_count = if ($script:ObservedReleaseCount -gt 0) { [int]$script:ObservedReleaseCount } else { $null }
+        unavailable = if ($script:ObservedAcquireCount -gt 0) { $availableMarker } else { $unavailable }
       }
     }
     trusted_numeric_source_handoff = [ordered]@{
@@ -711,6 +747,49 @@ function Assert-RateLimitEvidenceSecretSafe {
   Assert-NoSecretLeak -Content (Get-RateLimitEvidenceText -ResponseContent $ResponseContent -Rows $Rows) -Label $Label
 }
 
+function Record-LiveRequestLatency {
+  param([Parameter(Mandatory = $true)][int]$LatencyMilliseconds)
+
+  $script:ObservedGatewayLatencyMilliseconds += [int]$LatencyMilliseconds
+}
+
+function Record-LiveRows {
+  param([Parameter(Mandatory = $true)]$Rows)
+
+  $rowsArray = @($Rows)
+  $script:ObservedRequestLogRows += @($rowsArray | Select-Object -ExpandProperty request_id -Unique).Count
+  $script:ObservedProviderAttemptRows += @(Get-AttemptRows $rowsArray).Count
+}
+
+function Record-RateLimitReservationMetadata {
+  param([Parameter(Mandatory = $true)]$Metadata)
+
+  if (-not $Metadata -or -not $Metadata.rate_limit_reservation) {
+    return
+  }
+  $reservation = $Metadata.rate_limit_reservation
+  if ($reservation.db_execution -and $reservation.db_execution.acquire -and $reservation.db_execution.acquire.status -eq "applied") {
+    $script:ObservedAcquireCount += 1
+  }
+  if ($reservation.db_execution -and $reservation.db_execution.release -and $reservation.db_execution.release.status -eq "applied") {
+    $script:ObservedReleaseCount += 1
+  }
+}
+
+function Record-RateLimitRejectionSnapshot {
+  param([Parameter(Mandatory = $true)]$Snapshot)
+
+  if (-not $Snapshot -or -not $Snapshot.rate_limit_reservation_rejection) {
+    return
+  }
+  $rejection = $Snapshot.rate_limit_reservation_rejection
+  foreach ($skipEvent in @($rejection.skip_events)) {
+    if ($skipEvent.rate_limit_reservation.db_execution.acquire.status -eq "not_applied") {
+      $script:ObservedNotAppliedCount += 1
+    }
+  }
+}
+
 function Get-AttemptRows {
   param([Parameter(Mandatory = $true)]$Rows)
 
@@ -819,6 +898,7 @@ function Assert-FixtureContract {
       "schema",
       "mode",
       "status",
+      "measurements_available",
       "bounded_scope",
       "performance",
       "trusted_numeric_source_handoff",
@@ -886,8 +966,13 @@ function Assert-ScriptStructure {
       "gateway_rate_limit_reservation_performance_evidence_v1",
       "latency_or_ttft",
       "row_count",
+      "observed_request_log_rows",
+      "observed_provider_attempt_rows",
+      "observed_contender_duration_ms",
       "not_applied_or_fallback_rate",
       "trusted_numeric_source_handoff",
+      "measurements_available",
+      "live_observed",
       "copyable_preflight_command",
       "secret_safe_command_summary"
     )) {
@@ -924,6 +1009,7 @@ commit;
 "@
 
   $docker = Get-DockerCommand
+  $script:ObservedContenderStartedAt = Get-Date
   return Start-Job -ScriptBlock {
     param($RepoRoot, $DockerCommand, $ComposeFile, $Sql)
     Set-Location $RepoRoot
@@ -951,7 +1037,11 @@ function Complete-ContenderJob {
     if ($Job.State -ne "Completed") {
       throw "concurrent provider-key contender ended in state $($Job.State)"
     }
+    $script:ObservedContenderJobs += 1
   } finally {
+    if ($script:ObservedContenderStartedAt) {
+      $script:ObservedContenderDurationMilliseconds = [int]((Get-Date) - $script:ObservedContenderStartedAt).TotalMilliseconds
+    }
     Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
   }
 }
@@ -967,12 +1057,16 @@ function Invoke-TrackedChatRequest {
   $body = New-ChatBody -Model $Model -Content $Content
   $json = ConvertTo-RequestJson $body
   $hash = Get-Sha256Hex $json
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
   $response = Invoke-GatewayRequest -JsonBody $json -Headers (New-GatewayHeaders $ProfileRef) -TimeoutSec $TimeoutSec
+  $timer.Stop()
+  Record-LiveRequestLatency -LatencyMilliseconds ([int]$timer.ElapsedMilliseconds)
   return [PSCustomObject]@{
     Body = $body
     Json = $json
     Hash = $hash
     Response = $response
+    LatencyMilliseconds = [int]$timer.ElapsedMilliseconds
   }
 }
 
@@ -991,10 +1085,12 @@ function Check-AcquireUpdatesBoundedCounters {
     -Concurrency ([int]$case.expected_used_after.concurrency)
 
   $rows = @(Wait-RequestLogRowsByHash $tracked.Hash)
+  Record-LiveRows -Rows $rows
   $attempts = @(Get-AttemptRows $rows)
   if ($attempts.Count -lt 1) {
     throw "provider_attempts row was not recorded for acquire update"
   }
+  Record-RateLimitReservationMetadata -Metadata $attempts[0].metadata
   Assert-DbAcquireStatus $attempts[0] ([string]$case.expected_db_acquire_status)
   if ([bool]$attempts[0].metadata.rate_limit_reservation.db_execution.release_attempted -ne [bool]$case.expected_release_attempted) {
     throw "completed acquire smoke should not release successful reservation"
@@ -1016,6 +1112,7 @@ function Check-FallbackReleasesFailedAttempt {
   Assert-Contains $tracked.Response.Content "chat.completion" "fallback release response"
 
   $rows = @(Wait-RequestLogRowsByHash $tracked.Hash)
+  Record-LiveRows -Rows $rows
   $attempts = @(Get-AttemptRows $rows)
   if ($attempts.Count -lt 2) {
     throw "fallback release expected at least two provider_attempts, got $($attempts.Count)"
@@ -1033,6 +1130,11 @@ function Check-FallbackReleasesFailedAttempt {
   }
   Assert-DbAcquireStatus $failedAttempt[0] ([string]$case.expected_db_acquire_status)
   Assert-DbReleaseStatus $failedAttempt[0] ([string]$case.expected_db_release_status)
+  Record-RateLimitReservationMetadata -Metadata $failedAttempt[0].metadata
+  Record-RateLimitReservationMetadata -Metadata $fallbackAttempt[0].metadata
+  if (-not [string]::IsNullOrWhiteSpace([string]$failedAttempt[0].fallback_reason)) {
+    $script:ObservedFallbackCount += 1
+  }
   Assert-ProviderKeyCounters `
     -ProviderKeyId $failedKeyId `
     -Rpm ([int]$case.expected_failed_key_used_after_release.rpm) `
@@ -1063,11 +1165,13 @@ function Check-ConcurrentOverLimitNotAppliedFinal429 {
   Assert-Contains $tracked.Response.Content ([string]$case.expected_error_code) "concurrent over-limit response"
 
   $rows = @(Wait-RequestLogRowsByHash $tracked.Hash)
+  Record-LiveRows -Rows $rows
   $attempts = @(Get-AttemptRows $rows)
   if ($attempts.Count -ne 0) {
     throw "concurrent over-limit final 429 should not create provider_attempts; got $($attempts.Count)"
   }
   $requestRow = $rows[0]
+  Record-RateLimitRejectionSnapshot -Snapshot $requestRow.route_decision_snapshot
   if ([int]$requestRow.request_http_status -ne [int]$case.expected_http_status) {
     throw "request log HTTP status expected $($case.expected_http_status), got '$($requestRow.request_http_status)'"
   }
@@ -1175,7 +1279,7 @@ try {
 
 Exit-WithFailuresIfAny
 
-Write-PerformanceEvidenceReport -Status "live_completed" -UnavailableReason "live_performance_measurement_not_collected"
+Write-PerformanceEvidenceReport -Status "live_completed" -UnavailableReason "live_observed"
 
 Write-SafeHost ""
 Write-SafeHost "Gateway rate-limit reservation live Postgres smoke passed."

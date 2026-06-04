@@ -246,6 +246,10 @@ function Get-EvidenceReportPath {
   return Join-Path $Root "ledger-adjustment-openapi-semantic-evidence.json"
 }
 
+function Get-OpenApiGeneratorTransientConfigPath {
+  return Join-Path $repoRoot "openapitools.json"
+}
+
 function Assert-WrapperOwnedArtifactPath {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -297,11 +301,25 @@ function Remove-WrapperOwnedTempArtifacts {
     Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
   }
 
+  Clear-OpenApiGeneratorTransientConfig
+
   if (Test-Path $TempRoot -PathType Container) {
     $remaining = @(Get-ChildItem -LiteralPath $TempRoot -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($remaining.Count -eq 0) {
       Remove-Item -Force $TempRoot -ErrorAction SilentlyContinue
     }
+  }
+}
+
+function Clear-OpenApiGeneratorTransientConfig {
+  $path = Get-OpenApiGeneratorTransientConfigPath
+  if (-not (Test-Path $path -PathType Leaf)) {
+    return
+  }
+
+  $raw = Get-Content -Path $path -Raw -ErrorAction SilentlyContinue
+  if ($raw -match '"generator-cli"\s*:') {
+    Remove-Item -Force $path -ErrorAction SilentlyContinue
   }
 }
 
@@ -3138,14 +3156,18 @@ function Invoke-Redocly {
 }
 
 function Invoke-OpenApiGeneratorValidate {
-  Invoke-NpmTool `
-    -Package "@openapitools/openapi-generator-cli" `
-    -ToolArguments @("openapi-generator-cli", "validate", "-i", $OpenApiPath) `
-    -ToolName "openapi-generator-cli" `
-    -EvidenceKind "semantic_validator" `
-    -VersionToolArguments @("openapi-generator-cli", "version") `
-    -Label "OpenAPI Generator semantic validation" `
-    -RequireJava
+  try {
+    Invoke-NpmTool `
+      -Package "@openapitools/openapi-generator-cli" `
+      -ToolArguments @("openapi-generator-cli", "validate", "-i", $OpenApiPath) `
+      -ToolName "openapi-generator-cli" `
+      -EvidenceKind "semantic_validator" `
+      -VersionToolArguments @("openapi-generator-cli", "version") `
+      -Label "OpenAPI Generator semantic validation" `
+      -RequireJava
+  } finally {
+    Clear-OpenApiGeneratorTransientConfig
+  }
 }
 
 function Invoke-OpenApiTypescript {
@@ -3198,24 +3220,28 @@ function Invoke-TypescriptFetch {
   Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $outDir | Out-Null
 
-  $result = Invoke-NpmTool `
-    -Package "@openapitools/openapi-generator-cli" `
-    -ToolArguments @(
-      "openapi-generator-cli",
-      "generate",
-      "-i",
-      $OpenApiPath,
-      "-g",
-      "typescript-fetch",
-      "-o",
-      $outDir,
-      "--additional-properties=typescriptThreePlus=true,enumUnknownDefaultCase=true"
-    ) `
-    -ToolName "openapi-generator-cli" `
-    -EvidenceKind "client_generation" `
-    -VersionToolArguments @("openapi-generator-cli", "version") `
-    -Label "OpenAPI Generator typescript-fetch client generation" `
-    -RequireJava
+  try {
+    $result = Invoke-NpmTool `
+      -Package "@openapitools/openapi-generator-cli" `
+      -ToolArguments @(
+        "openapi-generator-cli",
+        "generate",
+        "-i",
+        $OpenApiPath,
+        "-g",
+        "typescript-fetch",
+        "-o",
+        $outDir,
+        "--additional-properties=typescriptThreePlus=true,enumUnknownDefaultCase=true"
+      ) `
+      -ToolName "openapi-generator-cli" `
+      -EvidenceKind "client_generation" `
+      -VersionToolArguments @("openapi-generator-cli", "version") `
+      -Label "OpenAPI Generator typescript-fetch client generation" `
+      -RequireJava
+  } finally {
+    Clear-OpenApiGeneratorTransientConfig
+  }
 
   if ($script:Blockers.Count -eq 0 -and $null -ne $result -and $result.ExitCode -eq 0) {
     if (-not (Assert-RealGeneratedClientOutputPresent -Path $outDir -Label "typescript-fetch controlled real generated-client output")) {
@@ -3537,11 +3563,13 @@ function Invoke-SelfTest {
   $cleanupEvidence = Get-EvidenceReportPath
   $cleanupOwnedDir = Join-Path $TempRoot "openapi-typescript"
   $cleanupNonOwnedProbe = Join-Path $TempRoot "self-test-non-owned-cleanup-marker.txt"
+  $cleanupOpenApiTools = Get-OpenApiGeneratorTransientConfigPath
   New-Item -ItemType Directory -Force $TempRoot | Out-Null
   New-Item -ItemType Directory -Force $cleanupOwnedDir | Out-Null
   Set-Content -Path $cleanupProbe -Value "wrapper-owned cleanup marker" -Encoding ascii
   Set-Content -Path $cleanupEvidence -Value "stale evidence should be removed by clean" -Encoding ascii
   Set-Content -Path $cleanupNonOwnedProbe -Value "non-owned marker should survive child clean" -Encoding ascii
+  Set-Content -Path $cleanupOpenApiTools -Value '{ "generator-cli": { "version": "self-test" } }' -Encoding ascii
   Invoke-SelfTestChild -Name "artifact cleanup removes wrapper-owned artifacts" -Arguments @("-Clean") -ExpectedExitCode 0 -ExpectedEvidenceAbsent
   if (Test-Path $cleanupProbe) {
     Add-Failure "[FAIL] self-test artifact cleanup - wrapper-owned marker remained after -Clean"
@@ -3549,6 +3577,8 @@ function Invoke-SelfTest {
     Add-Failure "[FAIL] self-test artifact cleanup - stale evidence report remained after -Clean"
   } elseif (Test-Path $cleanupOwnedDir) {
     Add-Failure "[FAIL] self-test artifact cleanup - generated client artifact remained after -Clean"
+  } elseif (Test-Path $cleanupOpenApiTools) {
+    Add-Failure "[FAIL] self-test artifact cleanup - OpenAPI Generator transient config remained after -Clean"
   } elseif (-not (Test-Path $cleanupNonOwnedProbe)) {
     Add-Failure "[FAIL] self-test artifact cleanup - non-owned temp marker was removed by -Clean"
   } else {

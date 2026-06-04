@@ -3695,6 +3695,99 @@ describe("App", () => {
     expect(exported).not.toContain(BEARER_SCHEME);
   });
 
+  it("imports a current live prompt protection proof report into the audit closure gate", () => {
+    const liveReport = {
+      audit_handoff_bridge: {
+        admin_ui_readback: {
+          auditReadiness: "pass",
+          closureChecklist: [
+            "gateway_live_proof",
+            "postgres_audit_row",
+            "mock_provider_upstream_refusal",
+            "provider_attempts_zero",
+            "latency_envelope",
+            "current_provenance",
+            "duration_available",
+            "freshness_replay_classification",
+          ],
+          closureGaps: ["none"],
+          closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+          currentCommit: "1234567890ab",
+          durationAvailability: "total available",
+          freshnessReplay: "current_live_proof",
+          latencyEnvelope: "eligible",
+          omittedMaterial: "raw payload, raw pattern values",
+          proofClosure: "eligible",
+          proofEvidence: ["provider_attempts_count", "latency_envelope", "provenance"],
+          proofMode: "live / live",
+          providerAttempts: "0",
+          schema: "prompt_protection_evidence_readback_v1",
+        },
+        closure_gate: {
+          classification: "pass",
+          closure_eligible: true,
+          gaps: ["none"],
+          schema: "prompt_protection_audit_closure_gate_v1",
+        },
+        schema_version: "prompt_protection_audit_handoff_bridge.v1",
+      },
+      endpoints: [
+        {
+          evidence_status: "passed",
+          performance: {
+            duration_available: true,
+            latency_envelope: { within_bounds: true },
+          },
+          provider_side_effects: {
+            has_provider_key: false,
+            has_resolved_channel: false,
+            has_resolved_provider: false,
+            provider_attempts_count: 0,
+            route_policy_version: "policy-v1",
+          },
+          request_log: {
+            redaction_status: "hash_only",
+          },
+        },
+      ],
+      raw_report_path: "C:\\secret\\prompt-live-e2e-report-hidden.json",
+      schema_version: "prompt_protection_postgres_proof_evidence_report.v1",
+      secret_dsn: "postgres://prompt-live-e2e-dsn-hidden",
+      status: "passed",
+      token: bearerPlaceholder("prompt-live-e2e-token-hidden"),
+    };
+
+    const endpoint = liveReport.endpoints[0];
+    expect(endpoint.provider_side_effects).toMatchObject({
+      has_provider_key: false,
+      has_resolved_channel: false,
+      has_resolved_provider: false,
+      provider_attempts_count: 0,
+    });
+    expect(endpoint.provider_side_effects.route_policy_version).toBe("policy-v1");
+
+    const gate = promptProtectionAuditClosureGate(liveReport);
+    expect(gate).toMatchObject({
+      classification: "pass",
+      closureEligible: true,
+      gaps: [],
+      schema: "prompt_protection_audit_closure_gate_v1",
+    });
+    expect(gate?.readback).toMatchObject({
+      freshnessReplay: "current_live_proof",
+      latencyEnvelope: "eligible",
+      proofMode: "live / live",
+      providerAttempts: "0",
+      schema: "prompt_protection_evidence_readback_v1",
+    });
+
+    const exported = JSON.stringify(gate);
+    expect(exported).not.toContain("C:\\secret");
+    expect(exported).not.toContain("postgres://");
+    expect(exported).not.toContain("prompt-live-e2e");
+    expect(exported).not.toContain(BEARER_SCHEME);
+  });
+
   it("runs routing dry-run and renders selected candidates without secret material", async () => {
     const fetchMock = stubAdminFetch();
 
@@ -4396,6 +4489,14 @@ describe("App", () => {
         browser: "chromium",
         installCommand: "npm --prefix web/admin-ui exec playwright install chromium",
         installHintOnly: true,
+      },
+      sessionHandoff: {
+        echoCookie: false,
+        echoHeaderValue: false,
+        echoToken: false,
+        env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+        header: "X-Admin-Session",
+        requiredForActions: true,
       },
       requiredForPassAttempt: {
         adminUiReachable: true,

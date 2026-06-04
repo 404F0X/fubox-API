@@ -178,6 +178,13 @@ Expected pass evidence, when Gateway/Postgres/mock-provider/session are ready:
   Admin UI prompt-protection audit closure gate. It must preserve
   `providerAttempts=0`, `latencyEnvelope=eligible`, duration availability,
   `proofMode=live / live`, and `freshnessReplay=current_live_proof`.
+- Admin UI/audit readback may consume either the full proof report, the
+  `audit_handoff_bridge` object, or `audit_handoff_bridge.admin_ui_readback`.
+  The closure result is the same: `pass` only when current provenance,
+  `providerAttempts=0`, duration availability, and latency envelope eligibility
+  are present. `route_policy_version` may be populated in endpoint evidence and
+  does not prevent closure; provider/channel/key side-effect fields must remain
+  false.
 
 Expected blocker evidence, when Gateway/Postgres/mock-provider/session are not
 ready:

@@ -4589,9 +4589,15 @@ fn ledger_adjustment_billing_ledger_live_probe_executor_boundary_contract() -> V
             "schema_version": "control_plane_billing_ledger_real_live_db_rollback_attempt.v1",
             "explicit_flag": "-AttemptRealLiveDbProbe",
             "requires_psql_or_db_tool": true,
+            "preferred_executor": "docker_compose_postgres_psql",
+            "measurement_source": "docker_compose_postgres_psql_rollback_only",
             "requires_live_database_url": true,
             "requires_schema_tool_markers": true,
             "rollback_only": true,
+            "actual_row_counts_required": true,
+            "per_step_durations_required": true,
+            "rollback_observed_required": true,
+            "commit_observed_required": false,
             "raw_sql_output": "omitted",
             "copyable_command_output": "secret_safe_command_without_env_values"
         },
@@ -15759,6 +15765,14 @@ mod tests {
             json!("omitted")
         );
         assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["real_live_db_rollback_attempt"]["measurement_source"],
+            json!("docker_compose_postgres_psql_rollback_only")
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["real_live_db_rollback_attempt"]["actual_row_counts_required"],
+            json!(true)
+        );
+        assert_eq!(
             contract["live_probe_executor_boundary_contract"]["production_writer_cutover_preflight"]
                 ["source_of_truth_switch_performed"],
             json!(false)
@@ -17225,6 +17239,11 @@ mod tests {
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
                 ["live_probe_executor_boundary_contract"]["real_live_db_rollback_attempt"]["explicit_flag"],
             json!("-AttemptRealLiveDbProbe")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_executor_boundary_contract"]["real_live_db_rollback_attempt"]["measurement_source"],
+            json!("docker_compose_postgres_psql_rollback_only")
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]

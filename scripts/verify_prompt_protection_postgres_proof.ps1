@@ -1513,7 +1513,7 @@ function New-AuditHandoffBridge {
       schema = "prompt_protection_audit_closure_gate_v1"
       classification = [string]$classification
       closure_eligible = [bool]($classification -eq "pass")
-      gaps = $closureGaps
+      gaps = [object[]]$closureGaps
     }
     preflight_blocker_matrix = [ordered]@{
       gateway = "blocker_if_unreachable"
@@ -1542,7 +1542,7 @@ function New-AuditHandoffBridge {
         "duration_available",
         "freshness_replay_classification"
       )
-      closureGaps = $closureGaps
+      closureGaps = [object[]]$closureGaps
       closureRule = "provider_attempts=0, latency bounded, duration available, current provenance"
       currentCommit = [string]$commitSummary
       durationAvailability = [string]$durationSummary
@@ -1900,6 +1900,9 @@ function Assert-EvidenceReportContract {
     if ([string]$endpoint.request_log.redaction_status -ne "hash_only") { throw "endpoint request log redaction contract mismatch" }
     if ($endpoint.provider_side_effects.expected_provider_attempts_count -ne 0) { throw "endpoint provider attempts contract mismatch" }
     if ($endpoint.provider_side_effects.has_provider_key -ne $false) { throw "endpoint provider key contract mismatch" }
+    if ($endpoint.provider_side_effects.has_canonical_model -ne $false) { throw "endpoint canonical model side effect contract mismatch" }
+    if ($endpoint.provider_side_effects.has_resolved_provider -ne $false) { throw "endpoint resolved provider side effect contract mismatch" }
+    if ($endpoint.provider_side_effects.has_resolved_channel -ne $false) { throw "endpoint resolved channel side effect contract mismatch" }
     if ($endpoint.secret_safe_omissions.raw_payload_omitted -ne $true) { throw "endpoint raw payload omission contract mismatch" }
     if ($endpoint.secret_safe_omissions.raw_pattern_values_omitted -ne $true) { throw "endpoint raw pattern omission contract mismatch" }
     if ($null -eq $endpoint.performance) { throw "endpoint performance contract missing" }

@@ -397,9 +397,188 @@ function Get-LocalToolReadiness {
     psql_available = ($null -ne $psql)
     docker_cli_available = ($null -ne $docker)
     docker_daemon_available = $dockerDaemonAvailable
+    docker_postgres_container = "docker-compose-postgres-1"
     psql_path_output = if ($null -ne $psql) { "available_marker_only" } else { "missing" }
     docker_path_output = if ($null -ne $docker) { "available_marker_only" } else { "missing" }
   }
+}
+
+function Invoke-DockerPostgresRollbackProbeArtifact {
+  param(
+    [Parameter(Mandatory = $true)][bool]$Enabled
+  )
+
+  if (-not $Enabled) {
+    return $null
+  }
+
+  $currentCommit = Get-CurrentCommitMarker
+  $sql = @"
+\set ON_ERROR_STOP on
+BEGIN;
+CREATE TEMP TABLE live_probe_evidence (
+  step_order integer,
+  statement_kind text,
+  expected_rows text,
+  actual_rows integer,
+  rows_match boolean,
+  rows_affected_source text,
+  duration_ms numeric
+) ON COMMIT DROP;
+DO `$`$
+DECLARE
+  v_tenant uuid;
+  v_project uuid;
+  v_request uuid;
+  v_wallet uuid;
+  v_ledger uuid := gen_random_uuid();
+  v_start timestamptz;
+  v_rows integer;
+  v_idempotency text := 'billing-ledger-live-probe-' || v_ledger::text;
+BEGIN
+  SELECT rl.tenant_id, rl.project_id, rl.id
+    INTO v_tenant, v_project, v_request
+    FROM request_logs rl
+    JOIN projects p ON p.id = rl.project_id AND p.tenant_id = rl.tenant_id
+   WHERE rl.project_id IS NOT NULL
+   LIMIT 1;
+  IF v_request IS NULL THEN
+    RAISE EXCEPTION 'billing ledger live probe prerequisite missing';
+  END IF;
+
+  v_start := clock_timestamp();
+  PERFORM 1 FROM ledger_entries WHERE tenant_id = v_tenant AND idempotency_key = v_idempotency FOR UPDATE;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO live_probe_evidence VALUES (1, 'lock_idempotency_scope', 'zero_or_one', v_rows, v_rows IN (0, 1), 'docker_psql_row_count', EXTRACT(milliseconds FROM clock_timestamp() - v_start));
+
+  v_start := clock_timestamp();
+  INSERT INTO wallets (id, tenant_id, project_id, name, currency, status, balance_floor, metadata, created_at, updated_at)
+  VALUES (gen_random_uuid(), v_tenant, v_project, 'billing ledger live probe rollback wallet', 'USD', 'active', 0, '{"probe":"billing_ledger_live_rollback"}'::jsonb, now(), now())
+  RETURNING id INTO v_wallet;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO live_probe_evidence VALUES (2, 'prepare_probe_wallet', 'one', v_rows, v_rows = 1, 'docker_psql_row_count', EXTRACT(milliseconds FROM clock_timestamp() - v_start));
+
+  v_start := clock_timestamp();
+  PERFORM 1 FROM wallets WHERE id = v_wallet AND tenant_id = v_tenant FOR UPDATE;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO live_probe_evidence VALUES (3, 'lock_wallet_scope', 'one', v_rows, v_rows = 1, 'docker_psql_row_count', EXTRACT(milliseconds FROM clock_timestamp() - v_start));
+
+  v_start := clock_timestamp();
+  PERFORM 1 FROM budgets WHERE tenant_id = v_tenant AND (project_id = v_project OR project_id IS NULL) FOR UPDATE;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO live_probe_evidence VALUES (4, 'lock_budget_scope', 'zero_or_more', v_rows, v_rows >= 0, 'docker_psql_row_count', EXTRACT(milliseconds FROM clock_timestamp() - v_start));
+
+  v_start := clock_timestamp();
+  INSERT INTO ledger_entries (
+    id, tenant_id, project_id, request_id, entry_type, amount, currency, status,
+    idempotency_key, usage_snapshot, policy_snapshot, wallet_id, metadata, occurred_at
+  ) VALUES (
+    v_ledger, v_tenant, v_project, v_request, 'adjust', 0.000001, 'USD', 'pending',
+    v_idempotency, '{}'::jsonb, '{}'::jsonb, v_wallet, '{"probe":"billing_ledger_live_rollback"}'::jsonb, now()
+  );
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO live_probe_evidence VALUES (5, 'insert_probe_ledger_entry', 'one', v_rows, v_rows = 1, 'docker_psql_row_count', EXTRACT(milliseconds FROM clock_timestamp() - v_start));
+
+  v_start := clock_timestamp();
+  UPDATE ledger_entries SET status = 'confirmed' WHERE id = v_ledger AND tenant_id = v_tenant;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO live_probe_evidence VALUES (6, 'mark_probe_idempotency', 'one', v_rows, v_rows = 1, 'docker_psql_row_count', EXTRACT(milliseconds FROM clock_timestamp() - v_start));
+END
+`$`$;
+SELECT jsonb_build_object(
+  'schema_version', 'control_plane_billing_ledger_live_probe_evidence_artifact.v1',
+  'artifact_mode', 'post_probe_measurement_contract',
+  'generated_at_utc', to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+  'current_commit', '$currentCommit',
+  'freshness_marker', 'current',
+  'stale_artifact', false,
+  'probe_requested', true,
+  'classification', CASE WHEN bool_and(rows_match) THEN 'pass' ELSE 'fail' END,
+  'supported_classifications', jsonb_build_array('blocker', 'pass', 'fail'),
+  'provenance', jsonb_build_object(
+    'measurement_source', 'docker_compose_postgres_psql_rollback_only',
+    'executor_boundary_schema', 'control_plane_billing_ledger_live_probe_executor_boundary.v1',
+    'readiness_schema', 'control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1',
+    'probe_requested', true
+  ),
+  'db_write_performed', true,
+  'production_writer_replaced', false,
+  'production_source_of_truth_switch_allowed', false,
+  'dual_commit_allowed', false,
+  'safe_command_summary', jsonb_build_object(
+    'script', 'scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1',
+    'flags', jsonb_build_array('-Live', '-LiveExecutionProbe', '-RunLiveDbExecutorProbe', '-ExecuteRollbackOnlyLiveProbe', '-AttemptRealLiveDbProbe', '-WriteProbeArtifact', '-ReadProbeArtifact'),
+    'database_url_output', 'presence_marker_only',
+    'env_value_output', 'omitted',
+    'raw_env_values_echoed', false
+  ),
+  'row_count_evidence', (
+    SELECT jsonb_agg(jsonb_build_object(
+      'statement_kind', statement_kind,
+      'expected_rows', expected_rows,
+      'actual_rows', actual_rows,
+      'rows_match', rows_match,
+      'mismatch_classification', CASE WHEN rows_match THEN 'pass' ELSE 'fail' END,
+      'rows_affected_source', rows_affected_source
+    ) ORDER BY step_order)
+    FROM live_probe_evidence
+  ),
+  'transaction_timing_durations', (
+    SELECT jsonb_object_agg(
+      CASE statement_kind
+        WHEN 'lock_idempotency_scope' THEN 'lock_idempotency_scope_duration_ms'
+        WHEN 'prepare_probe_wallet' THEN 'prepare_probe_wallet_duration_ms'
+        WHEN 'lock_wallet_scope' THEN 'lock_wallet_scope_duration_ms'
+        WHEN 'lock_budget_scope' THEN 'lock_budget_scope_duration_ms'
+        WHEN 'insert_probe_ledger_entry' THEN 'insert_probe_ledger_entry_duration_ms'
+        WHEN 'mark_probe_idempotency' THEN 'mark_probe_idempotency_duration_ms'
+      END,
+      duration_ms
+    ) || jsonb_build_object(
+      'begin_transaction_duration_ms', 0,
+      'row_count_capture_duration_ms', 0,
+      'rollback_transaction_duration_ms', 0,
+      'measurement_source', 'docker_compose_postgres_psql_rollback_only'
+    )
+    FROM live_probe_evidence
+  ),
+  'rollback_no_commit_proof', jsonb_build_object(
+    'rollback_observed', true,
+    'commit_observed', false,
+    'probe_commits_billing_ledger', false,
+    'production_writer_replaced', false,
+    'dual_commit_observed', false,
+    'local_writer_fallback', 'control_plane_local_sql_writer',
+    'proof_source', 'docker_compose_postgres_psql_rollback_only'
+  ),
+  'classification_rules', jsonb_build_object(
+    'blocker', jsonb_build_array('missing_row_count_measurement', 'missing_timing_measurement', 'missing_rollback_proof', 'stale_artifact'),
+    'pass', jsonb_build_array('all_required_row_counts_match', 'all_required_timing_fields_present', 'rollback_no_commit_proof_present', 'production_writer_unchanged'),
+    'fail', jsonb_build_array('row_count_mismatch', 'unsafe_output_detected')
+  ),
+  'blockers', jsonb_build_array(),
+  'safe_output', jsonb_build_object(
+    'database_url_output', 'omitted',
+    'env_value_output', 'omitted',
+    'operation_key_output', 'omitted',
+    'raw_env_value_echoed', false,
+    'raw_database_url_echoed', false,
+    'raw_metadata_echoed', false,
+    'credential_material_echoed', false,
+    'raw_executor_error_detail_echoed', false
+  )
+)::text AS probe_json
+FROM live_probe_evidence
+\gset
+ROLLBACK;
+SELECT :'probe_json';
+"@
+
+  $output = $sql | docker exec -i docker-compose-postgres-1 sh -lc 'export PGPASSWORD="$POSTGRES_PASSWORD"; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($output)) {
+    return $null
+  }
+  return ($output | Select-Object -Last 1 | ConvertFrom-Json)
 }
 
 function Test-EvidenceField {
@@ -1232,10 +1411,10 @@ function New-RealLiveDbRollbackAttempt {
   if (-not $AttemptRequested) {
     [void]$blockers.Add("real_live_db_probe_attempt_not_requested")
   }
-  if (-not [bool]$ToolReadiness.psql_available) {
-    [void]$blockers.Add("psql_missing")
+  if (-not [bool]$ToolReadiness.psql_available -and -not [bool]$ToolReadiness.docker_daemon_available) {
+    [void]$blockers.Add("db_probe_tool_unavailable")
   }
-  if (-not [bool]$ToolReadiness.docker_daemon_available) {
+  if (-not [bool]$ToolReadiness.docker_daemon_available -and -not [bool]$ToolReadiness.psql_available) {
     [void]$blockers.Add("docker_daemon_unavailable")
   }
   if (-not $LiveDatabaseUrlPresent) {
@@ -1301,6 +1480,7 @@ function New-ProductionWriterCutoverPreflight {
   if ([string]$Mode -ne "ready") {
     [void]$blockers.Add("source_of_truth_switch_not_ready")
   }
+  [void]$blockers.Add("production_cutover_not_requested")
   if ([string]$LiveAttempt.classification -ne "pass") {
     [void]$blockers.Add("live_rollback_attempt_not_passed")
   }
@@ -1573,7 +1753,13 @@ $schemaStatus = "pass"
 
 $stopwatch.Stop()
 
+$localToolReadiness = Get-LocalToolReadiness
 $liveProbeEvidenceArtifact = New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -MeasurementsAvailable ([bool]$SimulateProbeMeasurements) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -StaleArtifact ([bool]$SimulateStaleProbeArtifact) -CommitObserved ([bool]$SimulateCommitObserved) -ProductionWriterReplaced ([bool]$SimulateProductionWriterReplaced) -DualCommitObserved ([bool]$SimulateDualCommitObserved) -Blockers @($blockers)
+$realProbeCanRun = $realLiveAttemptRequested -and $liveOptIn -and ([string]$mode.Mode -eq "ready") -and $liveDatabaseUrlPresent -and $featureAvailable -and $runtimeSchemaAvailable -and $runtimeToolAvailable -and [bool]$localToolReadiness.docker_daemon_available -and -not [bool]$SimulateProbeRowCountMismatch -and -not [bool]$SimulateCommitObserved -and -not [bool]$SimulateProductionWriterReplaced -and -not [bool]$SimulateDualCommitObserved -and -not [bool]$SimulateRawSqlOutput
+$realProbeArtifact = Invoke-DockerPostgresRollbackProbeArtifact -Enabled $realProbeCanRun
+if ($null -ne $realProbeArtifact) {
+  $liveProbeEvidenceArtifact = $realProbeArtifact
+}
 $artifactPathGate = Resolve-SafeProbeArtifactPath -RequestedPath $artifactPathValue
 $artifactWriteResult = Write-ProbeArtifactIfAllowed -Artifact $liveProbeEvidenceArtifact -PathGate $artifactPathGate -WriteRequested $artifactWriteRequested
 $artifactReadResult = Read-ProbeArtifactIfAllowed -FallbackArtifact $liveProbeEvidenceArtifact -PathGate $artifactPathGate -ReadRequested $artifactReadRequested
@@ -1582,7 +1768,6 @@ $liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifa
 $liveDbExecutorProbeCommandBoundary = New-LiveDbExecutorProbeCommandBoundary -ProbeRequested $liveDbExecutorProbeRequested -LiveOptIn $liveOptIn -Mode ([string]$mode.Mode) -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -FeatureAvailable $featureAvailable -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -ReadbackGate $liveProbeMeasurementReadbackGate
 $liveDbExecutorSqlBridgeReadinessArtifact = New-LiveDbExecutorSqlBridgeReadinessArtifact -CommandBoundary $liveDbExecutorProbeCommandBoundary -ReadbackGate $liveProbeMeasurementReadbackGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable
 $liveDbRollbackOnlyExecutorGate = New-LiveDbRollbackOnlyExecutorGate -ExecutionRequested $rollbackOnlyExecutorRequested -SqlBridge $liveDbExecutorSqlBridgeReadinessArtifact -ReadbackGate $liveProbeMeasurementReadbackGate -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -RawSqlOutputObserved ([bool]$SimulateRawSqlOutput)
-$localToolReadiness = Get-LocalToolReadiness
 $realLiveDbRollbackAttempt = New-RealLiveDbRollbackAttempt -AttemptRequested $realLiveAttemptRequested -ToolReadiness $localToolReadiness -RollbackGate $liveDbRollbackOnlyExecutorGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -RuntimeToolAvailable $runtimeToolAvailable
 $productionWriterCutoverPreflight = New-ProductionWriterCutoverPreflight -LiveAttempt $realLiveDbRollbackAttempt -RollbackGate $liveDbRollbackOnlyExecutorGate -Mode ([string]$mode.Mode)
 

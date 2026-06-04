@@ -273,24 +273,34 @@ function promptProtectionEvidenceReadbackFromImport(
     return null;
   }
 
-  if (value.schema !== "prompt_protection_evidence_readback_v1") {
-    return promptProtectionEvidenceReadback(value);
+  const record = value as Record<string, JsonValue>;
+
+  if (isJsonRecord(record.audit_handoff_bridge)) {
+    return promptProtectionEvidenceReadbackFromImport(record.audit_handoff_bridge);
+  }
+
+  if (isJsonRecord(record.admin_ui_readback)) {
+    return promptProtectionEvidenceReadbackFromImport(record.admin_ui_readback);
+  }
+
+  if (record.schema !== "prompt_protection_evidence_readback_v1") {
+    return promptProtectionEvidenceReadback(record);
   }
 
   return {
-    auditReadiness: enumField(value.auditReadiness),
-    closureChecklist: listItems(value.closureChecklist),
-    closureGaps: listItems(value.closureGaps),
-    closureRule: safeReadbackText(value.closureRule),
-    currentCommit: safeReadbackText(value.currentCommit),
-    durationAvailability: safeReadbackText(value.durationAvailability),
-    freshnessReplay: enumField(value.freshnessReplay),
-    latencyEnvelope: safeReadbackText(value.latencyEnvelope),
-    omittedMaterial: safeReadbackText(value.omittedMaterial),
-    proofClosure: safeReadbackText(value.proofClosure),
-    proofEvidence: listItems(value.proofEvidence),
-    proofMode: safeReadbackText(value.proofMode),
-    providerAttempts: safeReadbackText(value.providerAttempts),
+    auditReadiness: enumField(record.auditReadiness),
+    closureChecklist: listItems(record.closureChecklist),
+    closureGaps: listItems(record.closureGaps),
+    closureRule: safeReadbackText(record.closureRule),
+    currentCommit: safeReadbackText(record.currentCommit),
+    durationAvailability: safeReadbackText(record.durationAvailability),
+    freshnessReplay: enumField(record.freshnessReplay),
+    latencyEnvelope: safeReadbackText(record.latencyEnvelope),
+    omittedMaterial: safeReadbackText(record.omittedMaterial),
+    proofClosure: safeReadbackText(record.proofClosure),
+    proofEvidence: listItems(record.proofEvidence),
+    proofMode: safeReadbackText(record.proofMode),
+    providerAttempts: safeReadbackText(record.providerAttempts),
     schema: "prompt_protection_evidence_readback_v1",
   };
 }

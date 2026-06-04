@@ -884,6 +884,8 @@ function Assert-UiSmokeHandoffFreshness {
       "live_environment_bootstrap_attempt",
       "live_pass_artifact_readback_gate",
       "-BrowserAdminUiDevServerOptIn",
+      "sessionHandoff",
+      "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
       "bridge_allowed",
       "-BrowserLiveRunnerExecutionOptIn",
       "closure_eligible",
@@ -1334,6 +1336,30 @@ function Set-SyntheticPassActionEvidence {
   }
 }
 
+function Set-BrowserEvidenceFromRunnerResult {
+  param(
+    [Parameter(Mandatory = $true)]$Artifact,
+    [Parameter(Mandatory = $true)]$RunnerResult
+  )
+
+  foreach ($property in @($RunnerResult.durations.PSObject.Properties)) {
+    if ($Artifact.durations.PSObject.Properties.Name -contains $property.Name) {
+      $Artifact.durations.($property.Name) = $property.Value
+    }
+  }
+
+  foreach ($resultAction in @($RunnerResult.actions)) {
+    $name = [string]$resultAction.name
+    foreach ($artifactAction in @($Artifact.actions)) {
+      if ([string]$artifactAction.name -eq $name) {
+        $artifactAction.status = [string]$resultAction.status
+        $artifactAction.outcome = [string]$resultAction.outcome
+        $artifactAction.duration_ms = $resultAction.duration_ms
+      }
+    }
+  }
+}
+
 function Test-BrowserMutationPassArtifactClosure {
   param(
     [Parameter(Mandatory = $true)]$Handoff,
@@ -1647,6 +1673,14 @@ function Assert-BrowserLiveEnvironmentBootstrapAttemptContract {
   Assert-Equal (Get-JsonProperty $playwright "browser" "UI browser bootstrap Playwright") "chromium" "UI browser bootstrap Playwright browser"
   Assert-True ([bool](Get-JsonProperty $playwright "installHintOnly" "UI browser bootstrap Playwright")) "UI browser bootstrap must only hint browser install"
 
+  $sessionHandoff = Get-JsonProperty $attempt "sessionHandoff" "UI browser live environment bootstrap attempt"
+  Assert-Equal (Get-JsonProperty $sessionHandoff "env" "UI browser bootstrap session handoff") "CONTROL_PLANE_ADMIN_SESSION_TOKEN" "UI browser bootstrap session env"
+  Assert-Equal (Get-JsonProperty $sessionHandoff "header" "UI browser bootstrap session handoff") "X-Admin-Session" "UI browser bootstrap session header"
+  Assert-True ([bool](Get-JsonProperty $sessionHandoff "requiredForActions" "UI browser bootstrap session handoff")) "UI browser bootstrap must require session handoff for actions"
+  foreach ($name in @("echoCookie", "echoHeaderValue", "echoToken")) {
+    Assert-True ((Get-JsonProperty $sessionHandoff $name "UI browser bootstrap session handoff") -eq $false) "UI browser bootstrap session handoff must not echo $name"
+  }
+
   $required = Get-JsonProperty $attempt "requiredForPassAttempt" "UI browser live environment bootstrap attempt"
   foreach ($name in @("adminUiReachable", "artifactReadbackFresh", "artifactWriteOptIn", "browserToolingAvailable", "controlPlaneHealthReachable", "liveRunnerOptIn", "mutationOptIn", "sessionMaterialPresent")) {
     Assert-True ([bool](Get-JsonProperty $required $name "UI browser bootstrap pass requirements")) "UI browser bootstrap pass attempt must require $name"
@@ -1679,6 +1713,15 @@ function Test-BrowserAdminUiDevServerOptIn {
   $envName = [string](Get-JsonProperty $devServer "env" "UI browser bootstrap dev server")
   $requiredValue = [string](Get-JsonProperty $devServer "requiredValue" "UI browser bootstrap dev server")
   return $BrowserAdminUiDevServerOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Test-BrowserAdminSessionHandoffPresent {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $attempt = Get-JsonProperty $Handoff "browserLiveEnvironmentBootstrapAttempt" "UI handoff"
+  $sessionHandoff = Get-JsonProperty $attempt "sessionHandoff" "UI browser bootstrap session handoff"
+  $envName = [string](Get-JsonProperty $sessionHandoff "env" "UI browser bootstrap session handoff")
+  return -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName))
 }
 
 function Start-BrowserAdminUiDevServerBootstrap {
@@ -1871,6 +1914,311 @@ function Write-BrowserLiveEnvironmentBootstrapAttempt {
   }
 }
 
+function Invoke-BrowserLiveMutationPassAttempt {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$SourceLedgerEntryId
+  )
+
+  Assert-BrowserLiveEnvironmentBootstrapAttemptContract $Handoff
+  $toolingStatus = Get-BrowserToolingStatus
+  $serviceTimer = [Diagnostics.Stopwatch]::StartNew()
+  $adminUiProbeUrl = Join-SmokeProbeUrl $AdminUiBaseUrl "/"
+  $controlPlaneProbeUrl = Join-SmokeProbeUrl $ControlPlaneBaseUrl "/healthz"
+  $adminUiProbe = Invoke-ServiceReadinessProbe -Name "admin_ui" -Url $adminUiProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200, 304)
+  $adminUiDevServerBootstrap = Start-BrowserAdminUiDevServerBootstrap -Handoff $Handoff -InitialProbe $adminUiProbe
+  if ([bool]$adminUiDevServerBootstrap.Probe.Reachable) {
+    $adminUiProbe = $adminUiDevServerBootstrap.Probe
+  }
+  $controlPlaneProbe = Invoke-ServiceReadinessProbe -Name "control_plane_health" -Url $controlPlaneProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200)
+  $serviceTimer.Stop()
+
+  try {
+    $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
+    $mutationEnabled = Test-BrowserMutationOptIn $runbook
+    $sessionHandoffPresent = Test-BrowserAdminSessionHandoffPresent $Handoff
+    $writeEnabled = Test-BrowserEvidenceArtifactWriteOptIn $Handoff
+    $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
+    $blockers = @()
+    if ($toolingStatus -ne "available") { $blockers += "browser_tooling_unavailable" }
+    if (-not [bool]$adminUiProbe.Reachable) { $blockers += "admin_ui_unreachable" }
+    if (-not [bool]$controlPlaneProbe.Reachable) { $blockers += "control_plane_health_unreachable" }
+    if (-not $sessionHandoffPresent) { $blockers += "session_material_missing" }
+    if (-not $mutationEnabled) { $blockers += "live_mutation_opt_in_missing" }
+    if (-not $BrowserLiveRunnerExecutionOptIn) { $blockers += "live_runner_opt_in_missing" }
+    if (-not $writeEnabled) { $blockers += "artifact_write_opt_in_missing" }
+
+    $canRun = $blockers.Count -eq 0
+    $initialOutcome = if ($canRun) { "failed" } else { "blocked" }
+    $artifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome $initialOutcome -Blockers $blockers -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionHandoffPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    $runnerStatus = if ($canRun) { "running" } else { "blocked" }
+
+    if ($canRun) {
+      $nodeScript = @'
+const fs = require("fs");
+const { chromium } = require("@playwright/test");
+
+function now() {
+  return Date.now();
+}
+
+function elapsed(start) {
+  return Math.max(1, Date.now() - start);
+}
+
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name}_missing`);
+  }
+  return value;
+}
+
+function dataTestId(id) {
+  return `[data-testid="${id}"]`;
+}
+
+async function textIncludes(page, testId, expected, timeout = 15000) {
+  await page.waitForFunction(
+    ({ selector, expectedText }) => {
+      const node = document.querySelector(selector);
+      return Boolean(node && node.textContent && node.textContent.includes(expectedText));
+    },
+    { selector: dataTestId(testId), expectedText: expected },
+    { timeout },
+  );
+}
+
+async function clickIfVisible(locator) {
+  if (await locator.count()) {
+    await locator.first().click();
+    return true;
+  }
+  return false;
+}
+
+(async () => {
+  const adminUiBaseUrl = requireEnv("BROWSER_ADMIN_UI_BASE_URL");
+  const controlPlaneBaseUrl = requireEnv("BROWSER_CONTROL_PLANE_BASE_URL").replace(/\/+$/, "");
+  const sessionToken = requireEnv("CONTROL_PLANE_ADMIN_SESSION_TOKEN");
+  const sourceLedgerEntryId = requireEnv("BROWSER_LEDGER_SOURCE_ENTRY_ID");
+  const handoff = JSON.parse(fs.readFileSync(requireEnv("BROWSER_HANDOFF_PATH"), "utf8"));
+  const selectors = handoff.selectors;
+  const actions = [];
+  const durations = {
+    browser_launch_duration_ms: "unavailable",
+    context_setup_duration_ms: "unavailable",
+    page_ready_duration_ms: "unavailable",
+    selector_snapshot_duration_ms: "unavailable",
+    submit_latency_ms: "unavailable",
+    dry_run_plan_duration_ms: "unavailable",
+    execute_apply_duration_ms: "unavailable",
+    idempotent_replay_duration_ms: "unavailable",
+    refund_refusal_duration_ms: "unavailable",
+    ledger_refresh_duration_ms: "unavailable",
+  };
+
+  let start = now();
+  const browser = await chromium.launch({ headless: true });
+  durations.browser_launch_duration_ms = elapsed(start);
+  start = now();
+  const context = await browser.newContext({ baseURL: adminUiBaseUrl });
+  durations.context_setup_duration_ms = elapsed(start);
+
+  const controlPlaneOrigin = new URL(controlPlaneBaseUrl).origin;
+  await context.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const headers = { ...request.headers(), "x-admin-session": sessionToken };
+    delete headers.cookie;
+
+    if (url.pathname.startsWith("/api/control-plane/admin/")) {
+      const targetPath = url.pathname.replace(/^\/api\/control-plane/, "");
+      const response = await route.fetch({ headers, url: `${controlPlaneBaseUrl}${targetPath}${url.search}` });
+      await route.fulfill({ response });
+      return;
+    }
+
+    if (url.origin === controlPlaneOrigin && url.pathname.startsWith("/admin/")) {
+      await route.continue({ headers });
+      return;
+    }
+
+    await route.continue();
+  });
+
+  start = now();
+  const page = await context.newPage();
+  await page.goto(adminUiBaseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: /Billing/i }).click({ timeout: 15000 });
+  await page.getByRole("tab", { name: /Ledger Overview/i }).click({ timeout: 15000 });
+  durations.page_ready_duration_ms = elapsed(start);
+
+  start = now();
+  for (const key of [
+    "dryRunButton",
+    "executeButton",
+    "executeOutcome",
+    "executeResultFresh",
+    "ledgerRefreshStatus",
+    "amountInput",
+    "currencyInput",
+    "operationInput",
+    "relatedLedgerEntryInput",
+    "reasonInput",
+  ]) {
+    await page.locator(dataTestId(selectors[key])).waitFor({ timeout: 15000 });
+  }
+  durations.selector_snapshot_duration_ms = elapsed(start);
+
+  async function fillRefund(amount, reason) {
+    await page.locator(dataTestId(selectors.operationInput)).selectOption("refund");
+    await page.locator(dataTestId(selectors.amountInput)).fill(amount);
+    await page.locator(dataTestId(selectors.currencyInput)).fill("USD");
+    await page.locator(dataTestId(selectors.relatedLedgerEntryInput)).fill(sourceLedgerEntryId);
+    await page.locator(dataTestId(selectors.reasonInput)).fill(reason);
+  }
+
+  async function runDryRun(amount, reason) {
+    await fillRefund(amount, reason);
+    const actionStart = now();
+    await page.locator(dataTestId(selectors.dryRunButton)).click();
+    await textIncludes(page, selectors.dryRunFresh, "fresh_dry_run=true");
+    durations.dry_run_plan_duration_ms = elapsed(actionStart);
+    actions.push({ name: "dry_run_plan", status: "executePreflight", outcome: "executePreflight", duration_ms: durations.dry_run_plan_duration_ms });
+  }
+
+  await runDryRun("0.15000000", "browser live smoke apply");
+
+  start = now();
+  await page.locator(dataTestId(selectors.executeButton)).click();
+  await textIncludes(page, selectors.executeOutcome, "execute_outcome=applied", 20000);
+  await textIncludes(page, selectors.executeResultFresh, "execute_result_fresh=true", 20000);
+  await textIncludes(page, selectors.ledgerRefreshStatus, "ledger_entries_refresh_after_execute=success", 20000);
+  durations.execute_apply_duration_ms = elapsed(start);
+  durations.submit_latency_ms = durations.execute_apply_duration_ms;
+  durations.ledger_refresh_duration_ms = durations.execute_apply_duration_ms;
+  actions.push({ name: "execute_apply", status: "applied", outcome: "applied", duration_ms: durations.execute_apply_duration_ms });
+
+  start = now();
+  await page.locator(dataTestId(selectors.executeButton)).click();
+  await textIncludes(page, selectors.executeOutcome, "execute_outcome=idempotent", 20000);
+  await textIncludes(page, selectors.ledgerRefreshStatus, "ledger_entries_refresh_after_execute=success", 20000);
+  durations.idempotent_replay_duration_ms = elapsed(start);
+  actions.push({ name: "idempotent_replay", status: "idempotent", outcome: "idempotent", duration_ms: durations.idempotent_replay_duration_ms });
+
+  actions.push({ name: "ledger_refresh", status: "success", outcome: "success", duration_ms: durations.ledger_refresh_duration_ms });
+
+  await fillRefund("0.11000000", "browser live smoke refusal");
+  start = now();
+  await page.locator(dataTestId(selectors.dryRunButton)).click();
+  await textIncludes(page, selectors.dryRunFresh, "fresh_dry_run=true");
+  await page.locator(dataTestId(selectors.executeButton)).click();
+  await page.waitForFunction(
+    ({ selector }) => {
+      const node = document.querySelector(selector);
+      const text = node && node.textContent ? node.textContent : "";
+      return text.includes("remaining refundable amount") || text.includes("blocked");
+    },
+    { selector: dataTestId(selectors.readiness) },
+    { timeout: 20000 },
+  );
+  durations.refund_refusal_duration_ms = elapsed(start);
+  actions.push({ name: "refund_refusal", status: "blocked", outcome: "blocked", duration_ms: durations.refund_refusal_duration_ms });
+
+  await browser.close();
+  console.log(JSON.stringify({ actions, durations, outcome: "passed" }));
+})().catch((error) => {
+  console.log(JSON.stringify({
+    actions: [],
+    durations: {},
+    error: String(error && error.message ? error.message : error).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]"),
+    outcome: "failed",
+  }));
+  process.exitCode = 1;
+});
+'@
+
+      $tempScript = Join-Path ([System.IO.Path]::GetTempPath()) ("billing_execute_browser_runner_" + [guid]::NewGuid().ToString("N") + ".cjs")
+      Set-Content -Path $tempScript -Value $nodeScript -Encoding UTF8
+      $previousSession = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN
+      $previousAdminUi = $env:BROWSER_ADMIN_UI_BASE_URL
+      $previousBackend = $env:BROWSER_CONTROL_PLANE_BASE_URL
+      $previousHandoff = $env:BROWSER_HANDOFF_PATH
+      $previousSource = $env:BROWSER_LEDGER_SOURCE_ENTRY_ID
+      try {
+        $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN = $script:AdminSessionToken
+        $env:BROWSER_ADMIN_UI_BASE_URL = (Get-SafeSmokeUrlSummary $AdminUiBaseUrl "Admin UI URL")
+        $env:BROWSER_CONTROL_PLANE_BASE_URL = (Get-SafeSmokeUrlSummary $ControlPlaneBaseUrl "Control Plane backend URL")
+        $env:BROWSER_HANDOFF_PATH = $uiSmokeHandoffPath
+        $env:BROWSER_LEDGER_SOURCE_ENTRY_ID = $SourceLedgerEntryId
+        Push-Location (Join-Path $repoRoot "web\admin-ui")
+        try {
+          $runnerOutput = & node $tempScript 2>&1
+          $runnerExitCode = $LASTEXITCODE
+        } finally {
+          Pop-Location
+        }
+      } finally {
+        if ($null -eq $previousSession) { Remove-Item Env:\CONTROL_PLANE_ADMIN_SESSION_TOKEN -ErrorAction SilentlyContinue } else { $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN = $previousSession }
+        if ($null -eq $previousAdminUi) { Remove-Item Env:\BROWSER_ADMIN_UI_BASE_URL -ErrorAction SilentlyContinue } else { $env:BROWSER_ADMIN_UI_BASE_URL = $previousAdminUi }
+        if ($null -eq $previousBackend) { Remove-Item Env:\BROWSER_CONTROL_PLANE_BASE_URL -ErrorAction SilentlyContinue } else { $env:BROWSER_CONTROL_PLANE_BASE_URL = $previousBackend }
+        if ($null -eq $previousHandoff) { Remove-Item Env:\BROWSER_HANDOFF_PATH -ErrorAction SilentlyContinue } else { $env:BROWSER_HANDOFF_PATH = $previousHandoff }
+        if ($null -eq $previousSource) { Remove-Item Env:\BROWSER_LEDGER_SOURCE_ENTRY_ID -ErrorAction SilentlyContinue } else { $env:BROWSER_LEDGER_SOURCE_ENTRY_ID = $previousSource }
+        Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
+      }
+
+      $runnerJson = (($runnerOutput | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 1) | Out-String).Trim()
+      $runnerResult = Read-Json $runnerJson
+      $runnerStatus = [string]$runnerResult.outcome
+      if ($runnerStatus -eq "passed" -and $runnerExitCode -eq 0) {
+        $artifact.outcome = "passed"
+        $artifact.blockers = @()
+      } else {
+        $artifact.outcome = "failed"
+        $artifact.blockers = @("browser_live_runner_failed")
+      }
+      Set-BrowserEvidenceFromRunnerResult -Artifact $artifact -RunnerResult $runnerResult
+    }
+
+    Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $artifact
+    if ($artifact.outcome -eq "passed") {
+      Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $artifact
+      if (-not (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $artifact)) {
+        $artifact.outcome = "failed"
+        $artifact.blockers = @("artifact_closure_failed")
+      }
+    }
+
+    $artifactJson = $artifact | ConvertTo-Json -Depth 32 -Compress
+    if ($writeEnabled) {
+      $artifactDirectory = Split-Path -Path $artifactPath -Parent
+      if (-not (Test-Path $artifactDirectory)) {
+        New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+      }
+      Set-Content -Path $artifactPath -Value $artifactJson -Encoding UTF8
+      $readBack = Read-JsonFile $artifactPath
+      Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $readBack
+      if ($artifact.outcome -eq "passed") {
+        Assert-True (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $readBack) "browser live runner pass artifact readback must close"
+      }
+    }
+
+    Write-SafeHost "Browser ledger execute live mutation pass attempt:"
+    Write-SafeHost "browser_live_mutation_attempt_status=$runnerStatus"
+    Write-SafeHost "browser_live_mutation_attempt_artifact_outcome=$($artifact.outcome)"
+    Write-SafeHost "browser_live_mutation_attempt_blockers=$(if ($artifact.blockers.Count -gt 0) { $artifact.blockers -join '+' } else { 'none' })"
+    Write-SafeHost "browser_live_mutation_attempt_session_handoff_present=$(Format-BoolMarker $sessionHandoffPresent)"
+    Write-SafeHost "browser_live_mutation_attempt_session_material_echoed=false"
+    Write-SafeHost "browser_live_mutation_attempt_mutation_enabled=$(Format-BoolMarker $mutationEnabled)"
+    Write-SafeHost "browser_live_mutation_attempt_artifact_write_enabled=$(Format-BoolMarker $writeEnabled)"
+    Write-SafeHost "browser_live_mutation_attempt_artifact_path=$artifactPath"
+    Write-SafeHost "browser_live_mutation_attempt_artifact_json=$artifactJson"
+  } finally {
+    Stop-BrowserAdminUiDevServerBootstrap $adminUiDevServerBootstrap
+  }
+}
+
 function Test-BrowserMutationOptIn {
   param([Parameter(Mandatory = $true)]$Runbook)
 
@@ -1945,7 +2293,7 @@ function Write-BrowserLiveRunbookGate {
   $blockers = Get-JsonProperty $runbook "blockerClassifications" "UI browser live runbook"
   $evidenceNames = Get-JsonProperty $runbook "evidenceNames" "UI browser live runbook"
   $mutationEnabled = Test-BrowserMutationOptIn $runbook
-  $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+  $sessionMaterialPresent = Test-BrowserAdminSessionHandoffPresent $Handoff
   $liveBlockers = @()
   if ($ToolingStatus -ne "available") {
     $liveBlockers += [string](Get-JsonProperty $blockers "browserToolingUnavailable" "UI browser live runbook blocker classifications")
@@ -2428,7 +2776,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   $serviceTimer.Stop()
   try {
     $serviceBlocker = Get-ServiceBlockerMarker -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
-    $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+    $sessionMaterialPresent = Test-BrowserAdminSessionHandoffPresent $Handoff
     $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
     $mutationEnabled = Test-BrowserMutationOptIn $runbook
     $liveBlockers = @()
@@ -2925,6 +3273,19 @@ try {
 
   Check "concurrent execute refund race leaves one applied refund" {
     Assert-ConcurrentRefundRace
+  }
+
+  $browserLiveAttemptRequested = $BrowserLiveRunnerExecutionOptIn -or $BrowserEvidenceArtifactWriteOptIn -or $BrowserMutationOptIn -or $BrowserAdminUiDevServerOptIn -or (Test-BrowserAdminSessionHandoffPresent (Read-JsonFile $uiSmokeHandoffPath))
+  if ($browserLiveAttemptRequested) {
+    $browserSourceId = $null
+    Check "seed related confirmed debit for browser live mutation attempt" {
+      $browserSourceId = New-RelatedDebit -Amount "-0.25000000" -Label "browser-apply-source"
+      Set-Variable -Name browserSourceId -Value $browserSourceId -Scope Script
+    }
+
+    Check "browser live mutation pass artifact attempt" {
+      Invoke-BrowserLiveMutationPassAttempt -Handoff (Read-JsonFile $uiSmokeHandoffPath) -SourceLedgerEntryId $script:browserSourceId
+    }
   }
 
   Exit-WithFailuresOrBlockers

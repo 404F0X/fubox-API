@@ -23,6 +23,7 @@ tests/integration/sdk-smoke/node_modules/
 *.pid
 *.tmp
 .tool-cache/
+openapitools.json
 artifacts/
 tmp/
 temp/
