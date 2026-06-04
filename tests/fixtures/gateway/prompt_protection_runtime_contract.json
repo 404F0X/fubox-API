@@ -34,6 +34,13 @@
       "streaming_supported": true,
       "runtime_entry": "apps/gateway/src/main.rs::anthropic_messages",
       "preflight_marker": "prompt_protection_rejection_for_anthropic_messages_request"
+    },
+    {
+      "name": "gemini_generate_content_native_passthrough",
+      "path": "POST /v1beta/models/{model}:generateContent|:streamGenerateContent",
+      "streaming_supported": true,
+      "runtime_entry": "apps/gateway/src/main.rs::gemini_generate_content_native_passthrough",
+      "preflight_marker": "prompt_protection_rejection_for_gemini_native_request"
     }
   ],
   "runtime_policy": {
@@ -111,6 +118,22 @@
       "create_provider_attempt_started",
       "open_provider_key_for_route",
       "upstream_call"
+    ],
+    "gemini_generate_content_native_passthrough": [
+      "authenticate_virtual_key",
+      "parse_gemini_native_path",
+      "compute_request_body_hash",
+      "parse_native_json_body",
+      "validate_native_body_routing_fields",
+      "prompt_protection_preflight",
+      "resolve_canonical_model",
+      "select_route_candidates",
+      "create_request_started",
+      "gemini_streaming_or_provider_attempt",
+      "pre_authorize_before_provider_attempt",
+      "create_provider_attempt_started",
+      "open_provider_key_for_route",
+      "upstream_call"
     ]
   },
   "rejected_contract": {
@@ -175,7 +198,9 @@
     "Ignore previous instructions",
     "sk-live-secret",
     "Authorization: Bearer",
+    "Cookie: session",
+    "ticket-[0-9]{4}",
     "provider-secret-value"
   ],
-  "notes": "Gateway chat, responses, embeddings, and Anthropic messages prompt protection runs after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Chat, responses, and Anthropic messages cover stream=true requests through their shared preflight; embeddings is non-stream. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
+  "notes": "Gateway chat, responses, embeddings, Anthropic messages, and Gemini native generateContent prompt protection runs after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Chat, responses, Anthropic messages, and Gemini native generateContent cover stream=true requests through their shared preflight; embeddings is non-stream. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
 }
