@@ -15,7 +15,9 @@ param(
   [switch]$SimulateSchemaMismatch,
   [switch]$SimulateClientMismatch,
   [switch]$SimulateSensitiveOutputTail,
-  [switch]$SimulateSensitiveCommandFailure
+  [switch]$SimulateSensitiveCommandFailure,
+  [switch]$SimulateGeneratedClientInspectionPass,
+  [switch]$SimulateGeneratedClientMissingRequired
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +49,8 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SCHEMA_MISMATCH) {
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLIENT_MISMATCH) { $SimulateClientMismatch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_OUTPUT_TAIL) { $SimulateSensitiveOutputTail = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE) { $SimulateSensitiveCommandFailure = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_INSPECTION_PASS) { $SimulateGeneratedClientInspectionPass = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_MISSING_REQUIRED) { $SimulateGeneratedClientMissingRequired = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -418,6 +422,417 @@ function Assert-TreeContainsOneOf {
   Add-Failure "[FAIL] $Label - generated tree is missing one of: $($Needles -join ", ")"
 }
 
+function Get-GeneratedClientRequiredModels {
+  return @(
+    "LedgerAdjustmentExecuteResult",
+    "LedgerAdjustmentExecuteContractEnvelope",
+    "LedgerAdjustmentExecuteContract",
+    "LedgerAdjustmentExecutorSummaryContract",
+    "LedgerAdjustmentExecutorRefusalSummaryContract",
+    "LedgerAdjustmentExecutorRollbackSummaryContract",
+    "LedgerAdjustmentExecutorSummary"
+  )
+}
+
+function Get-GeneratedClientRequiredFieldGroups {
+  $groups = New-Object System.Collections.Generic.List[object]
+  foreach ($group in @(
+      @("ledger_executor_summary_contract", "ledgerExecutorSummaryContract"),
+      @("ledger_executor_summary", "ledgerExecutorSummary"),
+      @("transaction_contract", "transactionContract"),
+      @("rollback_executor_summary_contract", "rollbackExecutorSummaryContract"),
+      @("ledger_executor_refusal_summary_contract", "ledgerExecutorRefusalSummaryContract"),
+      @("preflight_refusal_summary", "preflightRefusalSummary"),
+      @("schema_version", "schemaVersion"),
+      @("response_field", "responseField"),
+      @("operation_key_output", "operationKeyOutput"),
+      @("error_detail_output", "errorDetailOutput"),
+      @("dedupe_material_echoed", "dedupeMaterialEchoed"),
+      @("raw_metadata_echoed", "rawMetadataEchoed"),
+      @("credential_material_echoed", "credentialMaterialEchoed"),
+      @("raw_executor_error_detail_echoed", "rawExecutorErrorDetailEchoed"),
+      @("committed"),
+      @("rolled_back", "rolledBack"),
+      @("statement_count", "statementCount"),
+      @("executed_statement_count", "executedStatementCount"),
+      @("refused_statement_count", "refusedStatementCount"),
+      @("total_rows_affected", "totalRowsAffected"),
+      @("final_statement_order", "finalStatementOrder"),
+      @("final_statement_kind", "finalStatementKind"),
+      @("row_count_mismatch", "rowCountMismatch"),
+      @("omitted_material", "omittedMaterial")
+    )) {
+    [void]$groups.Add([pscustomobject]@{ Candidates = @($group) })
+  }
+  return @($groups.ToArray())
+}
+
+function Get-GeneratedClientModelRequiredFieldGroups {
+  param([Parameter(Mandatory = $true)][string]$Model)
+
+  $groups = New-Object System.Collections.Generic.List[object]
+  $rawGroups = switch ($Model) {
+    "LedgerAdjustmentExecuteResult" {
+      @(
+        @("ledger_executor_summary_contract", "ledgerExecutorSummaryContract"),
+        @("ledger_executor_summary", "ledgerExecutorSummary"),
+        @("transaction_contract", "transactionContract"),
+        @("ledger_entry", "ledgerEntry"),
+        @("validated_plan", "validatedPlan")
+      )
+    }
+    "LedgerAdjustmentExecuteContractEnvelope" {
+      @(
+        @("ledger_executor_summary", "ledgerExecutorSummary"),
+        @("execute_contract", "executeContract")
+      )
+    }
+    "LedgerAdjustmentExecuteContract" {
+      @(
+        @("ledger_executor_summary_contract", "ledgerExecutorSummaryContract"),
+        @("ledger_executor_refusal_summary_contract", "ledgerExecutorRefusalSummaryContract"),
+        @("preflight_refusal_summary", "preflightRefusalSummary"),
+        @("rollback_executor_summary_contract", "rollbackExecutorSummaryContract")
+      )
+    }
+    "LedgerAdjustmentExecutorSummaryContract" {
+      @(
+        @("schema_version", "schemaVersion"),
+        @("response_field", "responseField"),
+        @("operation_key_output", "operationKeyOutput"),
+        @("error_detail_output", "errorDetailOutput"),
+        @("dedupe_material_echoed", "dedupeMaterialEchoed"),
+        @("raw_metadata_echoed", "rawMetadataEchoed"),
+        @("credential_material_echoed", "credentialMaterialEchoed")
+      )
+    }
+    "LedgerAdjustmentExecutorSummary" {
+      @(
+        @("schema_version", "schemaVersion"),
+        @("operation_key_output", "operationKeyOutput"),
+        @("error_detail_output", "errorDetailOutput"),
+        @("committed"),
+        @("rolled_back", "rolledBack"),
+        @("statement_count", "statementCount"),
+        @("executed_statement_count", "executedStatementCount"),
+        @("refused_statement_count", "refusedStatementCount"),
+        @("total_rows_affected", "totalRowsAffected"),
+        @("final_statement_order", "finalStatementOrder"),
+        @("final_statement_kind", "finalStatementKind"),
+        @("row_count_mismatch", "rowCountMismatch"),
+        @("omitted_material", "omittedMaterial")
+      )
+    }
+    default {
+      @()
+    }
+  }
+
+  foreach ($group in $rawGroups) {
+    [void]$groups.Add([pscustomobject]@{ Candidates = @($group) })
+  }
+  return @($groups.ToArray())
+}
+
+function Get-GeneratedClientForbiddenFieldPatterns {
+  return @(
+    "(?i)\bidempotency_key\b\s*[?:]",
+    "(?i)\bidempotencyKey\b\s*[?:]",
+    "(?i)\bauthorization\b\s*[?:]",
+    "(?i)\bcookie\b\s*[?:]",
+    "(?i)\bprovider_key\b\s*[?:]",
+    "(?i)\bproviderKey\b\s*[?:]",
+    "(?i)\boperation_key\b\s*[?:]",
+    "(?i)\boperationKey\b\s*[?:]",
+    "(?i)\bapi_key\b\s*[?:]",
+    "(?i)\bapiKey\b\s*[?:]",
+    "(?i)\braw_metadata\b\s*[?:]",
+    "(?i)\brawMetadata\b\s*[?:]",
+    "(?i)\braw_headers\b\s*[?:]",
+    "(?i)\brawHeaders\b\s*[?:]",
+    "(?i)\brequest_body\b\s*[?:]",
+    "(?i)\brequestBody\b\s*[?:]",
+    "(?i)\bpayload\b\s*[?:]",
+    "(?i)\bbody\b\s*[?:]",
+    "(?i)\bcredentials?\b\s*[?:]",
+    "(?i)\bsecrets?\b\s*[?:]",
+    "(?i)\btokens?\b\s*[?:]",
+    "(?i)Bearer\s+[A-Za-z0-9._~+/\-]+=*",
+    "sk-[A-Za-z0-9._~+/\-]{8,}"
+  )
+}
+
+function Test-GeneratedClientTextContainsField {
+  param(
+    [Parameter(Mandatory = $true)][string]$Text,
+    [Parameter(Mandatory = $true)][string]$Field
+  )
+
+  $pattern = "(?<![A-Za-z0-9_])" + [regex]::Escape($Field) + "(?![A-Za-z0-9_])"
+  return [regex]::IsMatch($Text, $pattern)
+}
+
+function Get-GeneratedClientFiles {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (Test-Path $Path -PathType Leaf) {
+    return @(Get-Item -Path $Path)
+  }
+
+  if (Test-Path $Path -PathType Container) {
+    return @(Get-ChildItem -Path $Path -Recurse -File -Include *.ts,*.tsx,*.js,*.json,*.md 2>$null)
+  }
+
+  return @()
+}
+
+function Get-GeneratedClientInspectionText {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string[]]$Models
+  )
+
+  $snippets = New-Object System.Collections.Generic.List[string]
+  foreach ($file in @(Get-GeneratedClientFiles -Path $Path)) {
+    $content = Get-Content -Path $file.FullName -Raw
+    $fileNameMatched = $false
+    foreach ($model in $Models) {
+      if ($file.Name.Contains($model)) {
+        $fileNameMatched = $true
+        break
+      }
+    }
+    if ($fileNameMatched) {
+      [void]$snippets.Add($content)
+      continue
+    }
+
+    $lines = @($content -split "`r?`n")
+    for ($index = 0; $index -lt $lines.Count; $index += 1) {
+      $matched = $false
+      foreach ($model in $Models) {
+        if ($lines[$index].Contains($model) -or $lines[$index].Contains("ledger_executor_summary") -or $lines[$index].Contains("ledgerExecutorSummary")) {
+          $matched = $true
+          break
+        }
+      }
+      if ($matched) {
+        $end = [Math]::Min($lines.Count - 1, $index + 140)
+        [void]$snippets.Add(($lines[$index..$end] -join "`n"))
+      }
+    }
+  }
+
+  return ($snippets.ToArray() -join "`n")
+}
+
+function Get-GeneratedClientModelText {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Model,
+    [Parameter(Mandatory = $true)][string[]]$Models
+  )
+
+  $snippets = New-Object System.Collections.Generic.List[string]
+  foreach ($file in @(Get-GeneratedClientFiles -Path $Path)) {
+    $content = Get-Content -Path $file.FullName -Raw
+    if ($file.Name.Contains($Model)) {
+      [void]$snippets.Add($content)
+      continue
+    }
+
+    $lines = @($content -split "`r?`n")
+    for ($index = 0; $index -lt $lines.Count; $index += 1) {
+      if (-not $lines[$index].Contains($Model)) {
+        continue
+      }
+
+      $end = [Math]::Min($lines.Count - 1, $index + 220)
+      for ($cursor = $index + 1; $cursor -le $end; $cursor += 1) {
+        foreach ($otherModel in $Models) {
+          if ($otherModel -eq $Model) {
+            continue
+          }
+          $boundary = "^\s*(?:""?" + [regex]::Escape($otherModel) + """?\s*:|export\s+(?:interface|type)\s+" + [regex]::Escape($otherModel) + "\b)"
+          if ($lines[$cursor] -match $boundary) {
+            $end = [Math]::Max($index, $cursor - 1)
+            break
+          }
+        }
+      }
+      [void]$snippets.Add(($lines[$index..$end] -join "`n"))
+    }
+  }
+
+  return ($snippets.ToArray() -join "`n")
+}
+
+function Assert-GeneratedClientInspectionContract {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  if (-not (Test-Path $Path)) {
+    Add-Failure "[FAIL] $Label - generated client path is missing: $Path"
+    return
+  }
+
+  $models = @(Get-GeneratedClientRequiredModels)
+  $files = @(Get-GeneratedClientFiles -Path $Path)
+  $allText = ($files | ForEach-Object { Get-Content -Path $_.FullName -Raw }) -join "`n"
+  $inspectionText = Get-GeneratedClientInspectionText -Path $Path -Models $models
+  if ([string]::IsNullOrWhiteSpace($inspectionText)) {
+    Add-Failure "[FAIL] $Label - generated client did not expose ledger execute inspection text"
+    return
+  }
+
+  foreach ($model in $models) {
+    if (-not $allText.Contains($model)) {
+      Add-Failure "[FAIL] $Label - generated client is missing model '$model'"
+    }
+  }
+
+  foreach ($group in @(Get-GeneratedClientRequiredFieldGroups)) {
+    $found = $false
+    foreach ($candidate in @($group.Candidates)) {
+      if (Test-GeneratedClientTextContainsField -Text $inspectionText -Field ([string]$candidate)) {
+        $found = $true
+        break
+      }
+    }
+    if (-not $found) {
+      Add-Failure "[FAIL] $Label - generated ledger execute contract is missing one of: $($group.Candidates -join ", ")"
+    }
+  }
+
+  foreach ($pattern in @(Get-GeneratedClientForbiddenFieldPatterns)) {
+    if ($inspectionText -match $pattern) {
+      Add-Failure "[FAIL] $Label - generated ledger execute contract contains forbidden secret-like field pattern '$pattern'"
+    }
+  }
+
+  foreach ($model in $models) {
+    $modelText = Get-GeneratedClientModelText -Path $Path -Model $model -Models $models
+    if ([string]::IsNullOrWhiteSpace($modelText)) {
+      Add-Failure "[FAIL] $Label - generated client is missing inspectable model text for '$model'"
+      continue
+    }
+
+    foreach ($group in @(Get-GeneratedClientModelRequiredFieldGroups -Model $model)) {
+      $found = $false
+      foreach ($candidate in @($group.Candidates)) {
+        if (Test-GeneratedClientTextContainsField -Text $modelText -Field ([string]$candidate)) {
+          $found = $true
+          break
+        }
+      }
+      if (-not $found) {
+        Add-Failure "[FAIL] $Label - generated model '$model' is missing one of: $($group.Candidates -join ", ")"
+      }
+    }
+
+    foreach ($pattern in @(Get-GeneratedClientForbiddenFieldPatterns)) {
+      if ($modelText -match $pattern) {
+        Add-Failure "[FAIL] $Label - generated model '$model' contains forbidden secret-like field pattern '$pattern'"
+      }
+    }
+  }
+}
+
+function Write-SimulatedGeneratedClientFixture {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$MissingRequired
+  )
+
+  Remove-Item -Recurse -Force $Path -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force $Path | Out-Null
+
+  $summaryField = if ($MissingRequired) { "" } else { "  ledger_executor_summary: LedgerAdjustmentExecutorSummary;" }
+  $content = @"
+export interface LedgerAdjustmentExecuteResult {
+  mode: "execute";
+  outcome: "applied" | "idempotent";
+  ledger_write: boolean;
+  audit_log_write: boolean;
+  ledger_executor_summary_contract: LedgerAdjustmentExecutorSummaryContract;
+$summaryField
+  transaction_contract: object;
+  ledger_entry: object;
+  validated_plan: object;
+}
+
+export interface LedgerAdjustmentExecuteContractEnvelope {
+  error: object;
+  data: {
+    mode: "execute_contract";
+    validated_plan: object;
+    ledger_executor_summary: LedgerAdjustmentExecutorSummary;
+    execute_contract: LedgerAdjustmentExecuteContract;
+  };
+}
+
+export interface LedgerAdjustmentExecuteContract {
+  ledger_executor_summary_contract: LedgerAdjustmentExecutorSummaryContract;
+  ledger_executor_refusal_summary_contract: LedgerAdjustmentExecutorRefusalSummaryContract;
+  preflight_refusal_summary: LedgerAdjustmentExecutorSummary;
+  transaction_contract: {
+    rollback_executor_summary_contract: LedgerAdjustmentExecutorRollbackSummaryContract;
+  };
+}
+
+export interface LedgerAdjustmentExecutorSummaryContract {
+  schema_version: "billing_ledger_postgres_executor_summary.v1";
+  response_field: "ledger_executor_summary";
+  operation_key_output: "omitted";
+  error_detail_output: "omitted";
+  dedupe_material_echoed: false;
+  raw_metadata_echoed: false;
+  credential_material_echoed: false;
+}
+
+export interface LedgerAdjustmentExecutorRefusalSummaryContract {
+  schema_version: "billing_ledger_postgres_executor_summary.v1";
+  response_field: "ledger_executor_summary";
+  raw_executor_error_detail_echoed: false;
+  operation_key_output: "omitted";
+  error_detail_output: "omitted";
+}
+
+export interface LedgerAdjustmentExecutorRollbackSummaryContract {
+  schema_version: "billing_ledger_postgres_executor_summary.v1";
+  response_field: "ledger_executor_summary";
+  raw_executor_error_detail_echoed: false;
+}
+
+export interface LedgerAdjustmentExecutorSummary {
+  schema_version: "billing_ledger_postgres_executor_summary.v1";
+  executor: "control_plane_transactional_admin_ledger_adjustment_writer";
+  operation: "adjust" | "refund";
+  outcome: "applied" | "idempotent" | "refused_preflight" | "refused_rollback";
+  operation_key_output: "omitted";
+  error_detail_output: "omitted";
+  committed: boolean;
+  rolled_back: boolean;
+  statement_count: number;
+  executed_statement_count: number;
+  refused_statement_count: number;
+  total_rows_affected: number;
+  final_statement_order: number | null;
+  final_statement_kind: string | null;
+  row_count_mismatch: boolean;
+  dedupe_material_echoed: false;
+  raw_metadata_echoed: false;
+  credential_material_echoed: false;
+  raw_executor_error_detail_echoed: false;
+  omitted_material: string[];
+}
+"@
+
+  Set-Content -Path (Join-Path $Path "ledger-execute-generated.ts") -Value $content -Encoding ascii
+}
+
 function Invoke-Redocly {
   Invoke-NpmTool `
     -Package "@redocly/cli" `
@@ -445,24 +860,7 @@ function Invoke-OpenApiTypescript {
     -Label "openapi-typescript client type generation"
 
   if ($script:Blockers.Count -eq 0) {
-    Assert-FileContains -Path $outFile -Label "openapi-typescript ledger execute contract" -Needles @(
-      "LedgerAdjustmentExecuteResult",
-      "LedgerAdjustmentExecuteContractEnvelope",
-      "LedgerAdjustmentExecuteContract",
-      "LedgerAdjustmentExecutorSummaryContract",
-      "LedgerAdjustmentExecutorRefusalSummaryContract",
-      "LedgerAdjustmentExecutorRollbackSummaryContract",
-      "LedgerAdjustmentExecutorSummary",
-      "ledger_executor_summary_contract",
-      "ledger_executor_summary",
-      "operation_key_output",
-      "error_detail_output",
-      "dedupe_material_echoed",
-      "raw_metadata_echoed",
-      "credential_material_echoed",
-      "raw_executor_error_detail_echoed",
-      "row_count_mismatch"
-    )
+    Assert-GeneratedClientInspectionContract -Path $outFile -Label "openapi-typescript ledger execute generated-client inspection"
   }
 }
 
@@ -488,28 +886,7 @@ function Invoke-TypescriptFetch {
     -RequireJava
 
   if ($script:Blockers.Count -eq 0) {
-    Assert-TreeContainsAny -Path $outDir -Label "typescript-fetch ledger execute models" -Needles @(
-      "LedgerAdjustmentExecuteResult",
-      "LedgerAdjustmentExecuteContractEnvelope",
-      "LedgerAdjustmentExecuteContract",
-      "LedgerAdjustmentExecutorSummaryContract",
-      "LedgerAdjustmentExecutorRefusalSummaryContract",
-      "LedgerAdjustmentExecutorRollbackSummaryContract",
-      "LedgerAdjustmentExecutorSummary"
-    )
-    foreach ($property in @(
-        @("ledgerExecutorSummaryContract", "ledger_executor_summary_contract"),
-        @("ledgerExecutorSummary", "ledger_executor_summary"),
-        @("operationKeyOutput", "operation_key_output"),
-        @("errorDetailOutput", "error_detail_output"),
-        @("dedupeMaterialEchoed", "dedupe_material_echoed"),
-        @("rawMetadataEchoed", "raw_metadata_echoed"),
-        @("credentialMaterialEchoed", "credential_material_echoed"),
-        @("rawExecutorErrorDetailEchoed", "raw_executor_error_detail_echoed"),
-        @("rowCountMismatch", "row_count_mismatch")
-      )) {
-      Assert-TreeContainsOneOf -Path $outDir -Label "typescript-fetch generated property contract" -Needles $property
-    }
+    Assert-GeneratedClientInspectionContract -Path $outDir -Label "typescript-fetch ledger execute generated-client inspection"
   }
 }
 
@@ -599,6 +976,8 @@ function Invoke-SelfTest {
   Invoke-SelfTestChild -Name "simulated client mismatch" -Arguments @("-SimulateClientMismatch") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "sensitive success output tail redacted" -Arguments @("-SimulateSensitiveOutputTail") -ExpectedExitCode 0
   Invoke-SelfTestChild -Name "sensitive failing command display redacted" -Arguments @("-SimulateSensitiveCommandFailure") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "simulated generated-client inspection pass" -Arguments @("-SimulateGeneratedClientInspectionPass") -ExpectedExitCode 0
+  Invoke-SelfTestChild -Name "simulated generated-client missing required field" -Arguments @("-SimulateGeneratedClientMissingRequired") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "temp root repo escape rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "..\ledger-openapi-outside") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "npm cache repo escape rejected" -Arguments @() -ChildNpmCache (Join-Path $repoRoot "..\ledger-openapi-cache-outside") -ExpectedExitCode 1
 
@@ -674,6 +1053,18 @@ if ($SimulateSensitiveCommandFailure) {
         "Write-Error 'Authorization: Bearer selftest-token-123456789 package_token=selftest-package-token raw_metadata={never-return}'; exit 9"
       ) `
       -Label "simulated sensitive command failure")
+  Exit-WithResult
+}
+if ($SimulateGeneratedClientInspectionPass) {
+  $path = Join-Path $TempRoot "self-test-generated-client-pass"
+  Write-SimulatedGeneratedClientFixture -Path $path
+  Assert-GeneratedClientInspectionContract -Path $path -Label "simulated generated-client inspection pass"
+  Exit-WithResult
+}
+if ($SimulateGeneratedClientMissingRequired) {
+  $path = Join-Path $TempRoot "self-test-generated-client-missing-required"
+  Write-SimulatedGeneratedClientFixture -Path $path -MissingRequired
+  Assert-GeneratedClientInspectionContract -Path $path -Label "simulated generated-client missing required field"
   Exit-WithResult
 }
 

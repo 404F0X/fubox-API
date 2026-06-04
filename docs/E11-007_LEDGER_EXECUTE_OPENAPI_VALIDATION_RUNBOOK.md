@@ -75,6 +75,8 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLIENT_MISMATCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_OUTPUT_TAIL=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_INSPECTION_PASS=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_MISSING_REQUIRED=1`
 
 Optional path/env overrides:
 
@@ -102,6 +104,11 @@ Expected result:
   proving successful child output tails are redacted.
 - Child case `sensitive failing command display redacted` returns exit `1` after
   proving failure output and displayed command lines are redacted.
+- Child case `simulated generated-client inspection pass` returns exit `0`
+  after proving a mock generated client contains the required ledger execute and
+  executor summary fields while omitting secret-like output fields.
+- Child case `simulated generated-client missing required field` returns exit
+  `1`, proving generated-client contract drift is a mismatch, not a blocker.
 - Child cases `temp root repo escape rejected` and `npm cache repo escape
   rejected` return exit `1`, proving custom paths cannot write outside the
   allowed repository roots.
@@ -123,6 +130,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSensitiveOutputTail
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSensitiveCommandFailure
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientInspectionPass
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientMissingRequired
 ```
 
 The first three direct simulated commands are expected to return `2`, `1`, and
@@ -130,8 +141,8 @@ The first three direct simulated commands are expected to return `2`, `1`, and
 returns `0`; the sensitive-command failure returns `1`. They prove wrapper
 failure-path classification, path/output hardening, and redaction only. They do
 not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
-inspection, or any live Postgres checks. Do not use simulated passes to close
-the real semantic/client-generation gap.
+inspection against real generated output, or any live Postgres checks. Do not
+use simulated passes to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -354,6 +365,11 @@ by generator, so use search rather than fixed paths.
 rg -n "LedgerAdjustmentExecuteResult|LedgerAdjustmentExecutorSummary|LedgerAdjustmentExecutorSummaryContract|LedgerAdjustmentExecutorRefusalSummaryContract|LedgerAdjustmentExecutorRollbackSummaryContract|ledgerExecutorSummary|ledger_executor_summary" .tmp\openapi .tmp\openapi-admin-typescript-fetch
 ```
 
+The wrapper performs this inspection automatically after `-OpenApiTypescript`,
+`-TypescriptFetch`, or `-ClientGeneration` succeeds. It inspects only the
+generated ledger execute/executor summary model snippets, not unrelated auth or
+request schemas elsewhere in a generated client.
+
 The generated client must preserve all of these contracts:
 
 - `LedgerAdjustmentExecuteResult` includes:
@@ -408,8 +424,8 @@ The generated client must preserve all of these contracts:
   `credential_material_echoed`, and `raw_executor_error_detail_echoed` are
   modeled as false-only or boolean-safe fields where present.
 
-The generated execute response models must not add examples or response fields
-that echo any of the following:
+The generated execute response and executor summary models must not add examples
+or response fields that echo any of the following:
 
 - raw idempotency key
 - raw dedupe material
@@ -424,6 +440,19 @@ that echo any of the following:
 Request schemas may still document rejected or accepted request inputs. This
 inspection is specifically about execute responses, execute refusal responses,
 and executor summary output.
+
+Generated-client inspection mismatch examples:
+
+- Missing `ledger_executor_summary` from `LedgerAdjustmentExecuteResult`.
+- Missing `rollback_executor_summary_contract` from
+  `LedgerAdjustmentExecuteContract.transaction_contract`.
+- Missing statement/row-count fields from `LedgerAdjustmentExecutorSummary`.
+- Adding response fields such as `idempotency_key`, `Authorization`, `Cookie`,
+  `provider_key`, `operation_key`, `payload`, `body`, `raw_metadata`, `secret`,
+  `credential`, `api_key`, or raw bearer/token material.
+
+Any generated-client inspection mismatch exits `1`. Missing local tools,
+offline package cache, or package download blockers exit `2`.
 
 ## Cleanup
 
