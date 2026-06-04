@@ -103,6 +103,38 @@
       "response_summary_field": "ledger_executor_summary",
       "success_audit_summary_field": "ledger_executor_summary",
       "success_audit_only_for_applied": true,
+      "failure_classification": [
+        {
+          "failure_kind": "adapter_unavailable",
+          "maps_to_summary_outcome": "refused_preflight",
+          "ui_status": "writer_unavailable",
+          "committed": false,
+          "rolled_back": false,
+          "refused_statement_count": 0,
+          "row_count_mismatch": false,
+          "error_detail_output": "omitted"
+        },
+        {
+          "failure_kind": "sqlx_validation_refusal",
+          "maps_to_summary_outcome": "refused_preflight",
+          "ui_status": "writer_preflight_refused",
+          "committed": false,
+          "rolled_back": false,
+          "refused_statement_count": 0,
+          "row_count_mismatch": false,
+          "error_detail_output": "omitted"
+        },
+        {
+          "failure_kind": "row_count_mismatch",
+          "maps_to_summary_outcome": "refused_rollback",
+          "ui_status": "writer_rollback_refused",
+          "committed": false,
+          "rolled_back": true,
+          "refused_statement_count": 1,
+          "row_count_mismatch": true,
+          "error_detail_output": "omitted"
+        }
+      ],
       "operation_key_bind_only": true,
       "operation_key_output": "omitted",
       "dedupe_material_echoed": false,
@@ -289,6 +321,38 @@
       "response_summary_field": "ledger_executor_summary",
       "success_audit_summary_field": "ledger_executor_summary",
       "success_audit_only_for_applied": true,
+      "failure_classification": [
+        {
+          "failure_kind": "adapter_unavailable",
+          "maps_to_summary_outcome": "refused_preflight",
+          "ui_status": "writer_unavailable",
+          "committed": false,
+          "rolled_back": false,
+          "refused_statement_count": 0,
+          "row_count_mismatch": false,
+          "error_detail_output": "omitted"
+        },
+        {
+          "failure_kind": "sqlx_validation_refusal",
+          "maps_to_summary_outcome": "refused_preflight",
+          "ui_status": "writer_preflight_refused",
+          "committed": false,
+          "rolled_back": false,
+          "refused_statement_count": 0,
+          "row_count_mismatch": false,
+          "error_detail_output": "omitted"
+        },
+        {
+          "failure_kind": "row_count_mismatch",
+          "maps_to_summary_outcome": "refused_rollback",
+          "ui_status": "writer_rollback_refused",
+          "committed": false,
+          "rolled_back": true,
+          "refused_statement_count": 1,
+          "row_count_mismatch": true,
+          "error_detail_output": "omitted"
+        }
+      ],
       "operation_key_bind_only": true,
       "operation_key_output": "omitted",
       "dedupe_material_echoed": false,
@@ -406,6 +470,38 @@
       "idempotent",
       "refused_preflight",
       "refused_rollback"
+    ],
+    "failure_classification": [
+      {
+        "failure_kind": "adapter_unavailable",
+        "maps_to_summary_outcome": "refused_preflight",
+        "ui_status": "writer_unavailable",
+        "committed": false,
+        "rolled_back": false,
+        "refused_statement_count": 0,
+        "row_count_mismatch": false,
+        "error_detail_output": "omitted"
+      },
+      {
+        "failure_kind": "sqlx_validation_refusal",
+        "maps_to_summary_outcome": "refused_preflight",
+        "ui_status": "writer_preflight_refused",
+        "committed": false,
+        "rolled_back": false,
+        "refused_statement_count": 0,
+        "row_count_mismatch": false,
+        "error_detail_output": "omitted"
+      },
+      {
+        "failure_kind": "row_count_mismatch",
+        "maps_to_summary_outcome": "refused_rollback",
+        "ui_status": "writer_rollback_refused",
+        "committed": false,
+        "rolled_back": true,
+        "refused_statement_count": 1,
+        "row_count_mismatch": true,
+        "error_detail_output": "omitted"
+      }
     ],
     "response_summary_field": "ledger_executor_summary",
     "success_audit_summary_field": "ledger_executor_summary",

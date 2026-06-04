@@ -3665,6 +3665,17 @@ fn ledger_adjustment_billing_ledger_writer_adapter_boundary_contract() -> Value 
             "success_audit_only_for_applied": true,
             "idempotent_or_refused_success_audit_write": false
         },
+        "failure_classification": [
+            ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+                "adapter_unavailable"
+            ),
+            ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+                "sqlx_validation_refusal"
+            ),
+            ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+                "row_count_mismatch"
+            )
+        ],
         "supported_outcomes": [
             "applied",
             "idempotent",
@@ -3680,6 +3691,67 @@ fn ledger_adjustment_billing_ledger_writer_adapter_boundary_contract() -> Value 
             "raw_executor_error_detail_echoed": false
         }
     })
+}
+
+fn ledger_adjustment_billing_ledger_writer_adapter_failure_classification(
+    failure_kind: &'static str,
+) -> Value {
+    match failure_kind {
+        "row_count_mismatch" => json!({
+            "failure_kind": "row_count_mismatch",
+            "failure_category": "runtime_writer_refusal",
+            "maps_to_summary_outcome": "refused_rollback",
+            "ui_status": "writer_rollback_refused",
+            "ui_message": "ledger writer rolled back after a bounded row-count refusal",
+            "committed": false,
+            "rolled_back": true,
+            "refused_statement_count": 1,
+            "row_count_mismatch": true,
+            "final_statement_kind": "row_count_enforcement",
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }),
+        "sqlx_validation_refusal" => json!({
+            "failure_kind": "sqlx_validation_refusal",
+            "failure_category": "adapter_preflight_refusal",
+            "maps_to_summary_outcome": "refused_preflight",
+            "ui_status": "writer_preflight_refused",
+            "ui_message": "ledger writer adapter refused before opening a transaction",
+            "committed": false,
+            "rolled_back": false,
+            "refused_statement_count": 0,
+            "row_count_mismatch": false,
+            "final_statement_kind": null,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }),
+        _ => json!({
+            "failure_kind": "adapter_unavailable",
+            "failure_category": "adapter_preflight_refusal",
+            "maps_to_summary_outcome": "refused_preflight",
+            "ui_status": "writer_unavailable",
+            "ui_message": "ledger writer adapter is unavailable",
+            "committed": false,
+            "rolled_back": false,
+            "refused_statement_count": 0,
+            "row_count_mismatch": false,
+            "final_statement_kind": null,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }),
+    }
 }
 
 fn ledger_adjustment_billing_ledger_writer_adapter_boundary(
@@ -3744,6 +3816,79 @@ fn ledger_adjustment_billing_ledger_writer_adapter_boundary(
                 "not_written"
             },
             "success_audit_executor_summary": success_audit_executor_summary,
+            "api_ui_summary_shape_preserved": true,
+            "raw_executor_error_detail_echoed": false
+        },
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_writer_adapter_refusal_boundary(
+    validated_plan: &Value,
+    failure_kind: &'static str,
+) -> Value {
+    let failure_classification =
+        ledger_adjustment_billing_ledger_writer_adapter_failure_classification(failure_kind);
+    let outcome = match failure_kind {
+        "row_count_mismatch" => "refused_rollback",
+        _ => "refused_preflight",
+    };
+    let target_operation = ledger_adjustment_billing_runtime_operation_mapping(validated_plan);
+    let writer_request = target_operation
+        .get("writer_request")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "variant": "unmapped",
+                "operation_key": "bind_only",
+                "public_operation_key_output": "omitted"
+            })
+        });
+    let response_executor_summary =
+        ledger_adjustment_billing_runtime_writer_response_summary(validated_plan, outcome);
+
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_ADAPTER_BOUNDARY_SCHEMA,
+        "source": "control_plane_execute_validated_plan",
+        "target": "billing_ledger_consistent_writer_runtime",
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "production_execute_path": "control_plane_local_sql_writer_remains_active",
+        "adapter_input": {
+            "source_operation": ledger_adjustment_validated_plan_operation(validated_plan),
+            "source_entry_type": ledger_adjustment_validated_plan_entry_type(validated_plan),
+            "billing_ledger_operation": target_operation
+                .get("billing_ledger_operation")
+                .cloned()
+                .unwrap_or_else(|| json!("unmapped")),
+            "writer_request": writer_request,
+            "operation_key": {
+                "runtime_bind_marker": "operation_key_bind",
+                "public_output": "omitted",
+                "raw_operation_key_echoed": false
+            },
+            "dedupe_material_echoed": false,
+            "metadata": {
+                "metadata_policy": "bounded_admin_adjustment_metadata_only",
+                "raw_metadata_echoed": false,
+                "credential_material_echoed": false
+            }
+        },
+        "adapter_failure": failure_classification,
+        "adapter_output": {
+            "outcome": outcome,
+            "response_summary_field": "ledger_executor_summary",
+            "response_executor_summary": response_executor_summary,
+            "success_audit_write": false,
+            "success_audit_summary_field": "not_written",
+            "success_audit_executor_summary": null,
             "api_ui_summary_shape_preserved": true,
             "raw_executor_error_detail_echoed": false
         },
@@ -11327,6 +11472,251 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_billing_runtime_adapter_refusal_boundary_classifies_failures_secret_safe()
+    {
+        let request_id = Uuid::from_u128(90);
+        let related_entry =
+            ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let refund_summary = validate_refund_remaining_amount(
+            "0.15000000",
+            &related_entry.amount,
+            "0.10000000",
+            1,
+            "USD",
+        )
+        .expect("refund should fit remaining amount");
+        let adjust_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "-0.10000000",
+            "USD",
+            Some(Uuid::from_u128(20)),
+            Some(Uuid::from_u128(40)),
+            Some(request_id),
+            None,
+            None,
+            false,
+        );
+        let refund_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Refund,
+            "0.15000000",
+            "USD",
+            related_entry.project_id,
+            related_entry.wallet_id,
+            related_entry.request_id,
+            Some(&related_entry),
+            Some(&refund_summary),
+            true,
+        );
+
+        let boundary_contract = ledger_adjustment_billing_ledger_writer_adapter_boundary_contract();
+        let classifications = boundary_contract["failure_classification"]
+            .as_array()
+            .expect("failure classifications should be listed");
+        assert_eq!(classifications.len(), 3);
+        assert!(classifications.iter().any(|classification| {
+            classification["failure_kind"] == json!("adapter_unavailable")
+                && classification["maps_to_summary_outcome"] == json!("refused_preflight")
+        }));
+        assert!(classifications.iter().any(|classification| {
+            classification["failure_kind"] == json!("sqlx_validation_refusal")
+                && classification["maps_to_summary_outcome"] == json!("refused_preflight")
+        }));
+        assert!(classifications.iter().any(|classification| {
+            classification["failure_kind"] == json!("row_count_mismatch")
+                && classification["maps_to_summary_outcome"] == json!("refused_rollback")
+                && classification["row_count_mismatch"] == json!(true)
+        }));
+
+        for (plan_label, plan, expected_variant) in [
+            (
+                "adjust",
+                &adjust_plan,
+                "ConsistentLedgerWriteRequest::AdminAdjustment",
+            ),
+            (
+                "refund",
+                &refund_plan,
+                "ConsistentLedgerWriteRequest::RefundPartial",
+            ),
+        ] {
+            for (
+                failure_kind,
+                expected_outcome,
+                expected_ui_status,
+                expected_rolled_back,
+                expected_refused_statement_count,
+                expected_row_count_mismatch,
+                expected_final_statement_kind,
+            ) in [
+                (
+                    "adapter_unavailable",
+                    "refused_preflight",
+                    "writer_unavailable",
+                    false,
+                    0,
+                    false,
+                    Value::Null,
+                ),
+                (
+                    "sqlx_validation_refusal",
+                    "refused_preflight",
+                    "writer_preflight_refused",
+                    false,
+                    0,
+                    false,
+                    Value::Null,
+                ),
+                (
+                    "row_count_mismatch",
+                    "refused_rollback",
+                    "writer_rollback_refused",
+                    true,
+                    1,
+                    true,
+                    json!("row_count_enforcement"),
+                ),
+            ] {
+                let expected_mapping =
+                    ledger_adjustment_billing_runtime_writer_mapping(plan, expected_outcome);
+                let refusal_boundary =
+                    ledger_adjustment_billing_ledger_writer_adapter_refusal_boundary(
+                        plan,
+                        failure_kind,
+                    );
+                let serialized = serde_json::to_string(&refusal_boundary)
+                    .expect("refusal boundary should serialize");
+
+                assert_eq!(
+                    refusal_boundary["schema_version"],
+                    json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_ADAPTER_BOUNDARY_SCHEMA),
+                    "{plan_label} {failure_kind} schema"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_input"]["writer_request"]["variant"],
+                    json!(expected_variant),
+                    "{plan_label} {failure_kind} writer request variant"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_input"]["writer_request"]["operation_key"],
+                    json!("bind_only"),
+                    "{plan_label} {failure_kind} operation key"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_failure"]["failure_kind"],
+                    json!(failure_kind),
+                    "{plan_label} {failure_kind} classification kind"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_failure"]["ui_status"],
+                    json!(expected_ui_status),
+                    "{plan_label} {failure_kind} ui status"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_failure"]["maps_to_summary_outcome"],
+                    json!(expected_outcome),
+                    "{plan_label} {failure_kind} summary outcome mapping"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_failure"]["error_detail_output"],
+                    json!("omitted"),
+                    "{plan_label} {failure_kind} failure detail"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["outcome"],
+                    json!(expected_outcome),
+                    "{plan_label} {failure_kind} adapter outcome"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"],
+                    expected_mapping["response_summary"],
+                    "{plan_label} {failure_kind} response summary shape"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["committed"],
+                    json!(false),
+                    "{plan_label} {failure_kind} committed"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["rolled_back"],
+                    json!(expected_rolled_back),
+                    "{plan_label} {failure_kind} rolled back"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["refused_statement_count"],
+                    json!(expected_refused_statement_count),
+                    "{plan_label} {failure_kind} refused statement count"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["row_count_mismatch"],
+                    json!(expected_row_count_mismatch),
+                    "{plan_label} {failure_kind} row count mismatch"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["final_statement_kind"],
+                    expected_final_statement_kind,
+                    "{plan_label} {failure_kind} final statement kind"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["operation_key_output"],
+                    json!("omitted"),
+                    "{plan_label} {failure_kind} operation key output"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]["error_detail_output"],
+                    json!("omitted"),
+                    "{plan_label} {failure_kind} error detail"
+                );
+                assert!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]
+                        .get("error_code")
+                        .is_none(),
+                    "{plan_label} {failure_kind} summary must omit error_code"
+                );
+                assert!(
+                    refusal_boundary["adapter_output"]["response_executor_summary"]
+                        .get("error_category")
+                        .is_none(),
+                    "{plan_label} {failure_kind} summary must omit error_category"
+                );
+                assert_eq!(
+                    refusal_boundary["adapter_output"]["success_audit_write"],
+                    json!(false),
+                    "{plan_label} {failure_kind} success audit write"
+                );
+                assert!(
+                    refusal_boundary["adapter_output"]["success_audit_executor_summary"].is_null(),
+                    "{plan_label} {failure_kind} must not include success audit summary"
+                );
+                assert_eq!(
+                    refusal_boundary["safe_output_contract"]["operation_key_bind_only"],
+                    json!(true),
+                    "{plan_label} {failure_kind} bind-only contract"
+                );
+
+                for forbidden in [
+                    "ledger-idempotency-never-return",
+                    "idempotency_key",
+                    "dedupe_key",
+                    "raw ledger payload",
+                    "Authorization",
+                    "Bearer",
+                    "sk-live",
+                    "raw executor failure detail",
+                    "sqlx private detail",
+                    "postgres://",
+                    "raw credential value",
+                    "raw metadata value",
+                ] {
+                    assert!(
+                        !serialized.contains(forbidden),
+                        "{plan_label} {failure_kind} refusal boundary must not contain {forbidden}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ledger_adjustment_billing_runtime_mapping_summaries_match_response_contract() {
         let request_id = Uuid::from_u128(90);
         let related_entry =
@@ -11879,6 +12269,21 @@ mod tests {
             json!(true)
         );
         assert_eq!(
+            fixture["execute_contract"]["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"]
+                [0]["failure_kind"],
+            json!("adapter_unavailable")
+        );
+        assert_eq!(
+            fixture["execute_contract"]["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"]
+                [1]["failure_kind"],
+            json!("sqlx_validation_refusal")
+        );
+        assert_eq!(
+            fixture["execute_contract"]["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"]
+                [2]["maps_to_summary_outcome"],
+            json!("refused_rollback")
+        );
+        assert_eq!(
             fixture["execute"]["writer"],
             json!("control_plane_transactional_admin_ledger_adjustment_writer")
         );
@@ -11998,6 +12403,31 @@ mod tests {
         assert_eq!(
             fixture["billing_ledger_writer_adapter_boundary_contract"]["raw_executor_error_detail_echoed"],
             json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"][0]
+                ["maps_to_summary_outcome"],
+            json!("refused_preflight")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"][1]
+                ["ui_status"],
+            json!("writer_preflight_refused")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"][2]
+                ["failure_kind"],
+            json!("row_count_mismatch")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"][2]
+                ["row_count_mismatch"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"][2]
+                ["error_detail_output"],
+            json!("omitted")
         );
         assert_eq!(
             fixture["execute"]["idempotent_replay_does_not_write_ledger_or_audit"],
