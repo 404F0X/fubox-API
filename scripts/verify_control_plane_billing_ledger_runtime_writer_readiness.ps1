@@ -1,6 +1,7 @@
 param(
   [switch]$Live,
   [switch]$LiveExecutionProbe,
+  [switch]$RunLiveDbExecutorProbe,
   [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
   [switch]$SimulateStaleProbeArtifact,
@@ -14,6 +15,8 @@ param(
   [switch]$ReadProbeArtifact,
   [AllowNull()][string]$ArtifactPath,
   [switch]$RuntimeWriterAvailable,
+  [switch]$RuntimeSchemaAvailable,
+  [switch]$RuntimeToolAvailable,
   [int]$BlockedExitCode = 2
 )
 
@@ -39,6 +42,9 @@ $liveOptInEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_READINESS_LIV
 $artifactWriteEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_WRITE"
 $artifactReadEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_READ"
 $artifactPathEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_PATH"
+$liveDbExecutorProbeEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_DB_EXECUTOR_PROBE"
+$runtimeSchemaEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_SCHEMA_AVAILABLE"
+$runtimeToolEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_TOOL_AVAILABLE"
 
 function Test-TruthyEnv {
   param([AllowNull()][string]$Value)
@@ -875,6 +881,117 @@ function New-LiveProbeMeasurementReadbackGate {
   }
 }
 
+function New-LiveDbExecutorProbeCommandBoundary {
+  param(
+    [Parameter(Mandatory = $true)][bool]$ProbeRequested,
+    [Parameter(Mandatory = $true)][bool]$LiveOptIn,
+    [Parameter(Mandatory = $true)][string]$Mode,
+    [Parameter(Mandatory = $true)][bool]$LiveDatabaseUrlPresent,
+    [Parameter(Mandatory = $true)][bool]$FeatureAvailable,
+    [Parameter(Mandatory = $true)][bool]$SchemaAvailable,
+    [Parameter(Mandatory = $true)][bool]$ToolAvailable,
+    [Parameter(Mandatory = $true)]$ArtifactWrite,
+    [Parameter(Mandatory = $true)]$ArtifactRead,
+    [Parameter(Mandatory = $true)]$ReadbackGate
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if (-not $ProbeRequested) {
+    [void]$blockers.Add("live_db_executor_probe_not_requested")
+  }
+  if (-not $LiveOptIn) {
+    [void]$blockers.Add("live_opt_in_missing")
+  }
+  if ($Mode -ne "ready") {
+    [void]$blockers.Add("cutover_mode_not_ready")
+  }
+  if (-not $LiveDatabaseUrlPresent) {
+    [void]$blockers.Add("live_database_url_missing")
+  }
+  if (-not $FeatureAvailable) {
+    [void]$blockers.Add("runtime_writer_feature_unavailable")
+  }
+  if (-not $SchemaAvailable) {
+    [void]$blockers.Add("runtime_schema_unavailable")
+  }
+  if (-not $ToolAvailable) {
+    [void]$blockers.Add("runtime_tool_unavailable")
+  }
+  if (-not [bool]$ArtifactWrite.performed) {
+    [void]$blockers.Add("artifact_write_missing")
+  }
+  if (-not [bool]$ArtifactRead.performed) {
+    [void]$blockers.Add("artifact_read_missing")
+  }
+  if ([string]$ReadbackGate.classification -eq "blocker") {
+    foreach ($refusal in @($ReadbackGate.refusals)) {
+      [void]$blockers.Add([string]$refusal)
+    }
+  }
+  if ([string]$ReadbackGate.classification -eq "fail") {
+    foreach ($failure in @($ReadbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($blockers.Count -eq 0 -and [string]$ReadbackGate.classification -eq "pass") {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = "control_plane_billing_ledger_live_db_executor_probe_command_boundary.v1"
+    classification = $classification
+    requested = $ProbeRequested
+    safe_command_summary = [ordered]@{
+      script = "scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1"
+      flags = @("-Live", "-LiveExecutionProbe", "-RunLiveDbExecutorProbe", "-WriteProbeArtifact", "-ReadProbeArtifact")
+      required_env_markers = @($modeEnvVar, $databaseUrlEnvVar, $featureEnvVar, $runtimeSchemaEnvVar, $runtimeToolEnvVar)
+      database_url_output = "presence_marker_only"
+      env_value_output = "omitted"
+      raw_env_values_echoed = $false
+    }
+    required_markers = [ordered]@{
+      live_opt_in = $LiveOptIn
+      mode_ready = ($Mode -eq "ready")
+      live_database_url_present = $LiveDatabaseUrlPresent
+      runtime_writer_feature_available = $FeatureAvailable
+      runtime_schema_available = $SchemaAvailable
+      runtime_tool_available = $ToolAvailable
+    }
+    rollback_only = [ordered]@{
+      rollback_required = $true
+      commit_forbidden = $true
+      production_writer_replaced = $false
+      production_source_of_truth_switch_allowed = $false
+      dual_commit_allowed = $false
+    }
+    row_count_evidence = $ReadbackGate.row_count_evidence
+    timing_evidence = $ReadbackGate.transaction_timing_durations
+    rollback_no_commit_proof = $ReadbackGate.rollback_no_commit_proof
+    artifact_handoff = [ordered]@{
+      write_performed = [bool]$ArtifactWrite.performed
+      read_performed = [bool]$ArtifactRead.performed
+      relative_path = [string]$ArtifactRead.relative_path
+    }
+    blockers = @($blockers | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
 function New-LiveExecutionHandoff {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -1043,6 +1160,9 @@ $liveOptIn = [bool]$Live -or (Test-TruthyEnv ([Environment]::GetEnvironmentVaria
 $mode = Normalize-CutoverMode ([Environment]::GetEnvironmentVariable($modeEnvVar))
 $liveDatabaseUrlPresent = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($databaseUrlEnvVar))
 $featureAvailable = [bool]$RuntimeWriterAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($featureEnvVar)))
+$runtimeSchemaAvailable = [bool]$RuntimeSchemaAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($runtimeSchemaEnvVar)))
+$runtimeToolAvailable = [bool]$RuntimeToolAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($runtimeToolEnvVar)))
+$liveDbExecutorProbeRequested = [bool]$RunLiveDbExecutorProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($liveDbExecutorProbeEnvVar)))
 $artifactWriteRequested = [bool]$WriteProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactWriteEnvVar)))
 $artifactReadRequested = [bool]$ReadProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactReadEnvVar)))
 $artifactPathValue = if ([string]::IsNullOrWhiteSpace($ArtifactPath)) { [Environment]::GetEnvironmentVariable($artifactPathEnvVar) } else { $ArtifactPath }
@@ -1093,6 +1213,7 @@ $artifactWriteResult = Write-ProbeArtifactIfAllowed -Artifact $liveProbeEvidence
 $artifactReadResult = Read-ProbeArtifactIfAllowed -FallbackArtifact $liveProbeEvidenceArtifact -PathGate $artifactPathGate -ReadRequested $artifactReadRequested
 $readbackArtifact = $artifactReadResult.artifact
 $liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifact $readbackArtifact -MissingRowCount ([bool]$SimulateMissingRowCountReadback) -MissingTiming ([bool]$SimulateMissingTimingReadback) -MissingRollbackProof ([bool]$SimulateMissingRollbackProofReadback)
+$liveDbExecutorProbeCommandBoundary = New-LiveDbExecutorProbeCommandBoundary -ProbeRequested $liveDbExecutorProbeRequested -LiveOptIn $liveOptIn -Mode ([string]$mode.Mode) -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -FeatureAvailable $featureAvailable -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -ReadbackGate $liveProbeMeasurementReadbackGate
 
 $summary = [ordered]@{
   schema_version = [string]$readinessContract.schema_version
@@ -1215,6 +1336,7 @@ $summary = [ordered]@{
     relative_path = [string]$artifactReadResult.relative_path
   }
   live_probe_measurement_readback_gate = $liveProbeMeasurementReadbackGate
+  live_db_executor_probe_command_boundary = $liveDbExecutorProbeCommandBoundary
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version
