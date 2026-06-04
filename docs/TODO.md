@@ -12,7 +12,7 @@
 - **E9-004-S7（Confucius）**：Control Plane execute writer 与 billing-ledger executor summary 的集成准备。
 - **E11-007-S9 Backend（Goodall）**：ledger execute live smoke runbook/acceptance blocker 文档。
 - **E13-005-S7 Gateway（Pauli）**：Prompt Protection no-side-effect regression 扩展到 non-chat paths。
-- **E11-007-S7 UI（Godel，已完成）**：Billing/Price 页面接通真实 ledger adjustment execute 提交。
+- **E11-007-S10 UI（Godel）**：Billing/Price 页面展示 ledger executor summary 安全摘要。
 - 多方向并行允许，但每个方向必须有明确 owner、切片目标、写入范围、验收检查和退出条件；没有切片记录的并行工作不能合并。
 
 多人协作规则：
@@ -45,6 +45,7 @@
 - **E13-005-S7，进行中，owner Pauli**：Prompt Protection no-side-effect regression 扩展到 non-chat paths。原因：S6 已覆盖 chat completions reject，但 Prompt Protection final Gateway surface 仍需要 responses、Anthropic 或 Gemini native 至少一个 non-chat path 的 no-side-effect regression，避免只有 chat path 证明 request/provider side effect ordering。范围：`apps/gateway/**`、Gateway prompt-protection fixtures；不改 Admin UI/Control Plane/billing/routing。验收：至少一个 non-chat endpoint 的 reject 有 no provider_attempt/provider key/upstream 断言；metadata secret-safe；targeted Gateway tests 通过。
 - **E13-005-S5，已完成，2026-06-04，owner Godel**：Prompt Protection Admin UI/audit 展示缺口。原因：Gateway 已产生 sanitized prompt_protection signals，但最终验收还需要 Admin UI 可读地展示 request/audit log 中的 protection summary，并避免显示 raw prompt/secret。范围：`web/admin-ui/**`；不改后端/Gateway。验收：UI 对 prompt_protection action/reason/hit summary 有可识别呈现；原始 prompt、Authorization、Cookie、secret-like pattern 不渲染；相关 UI tests 和 bundle check 覆盖。结果：Admin UI Request/Audit detail 已渲染 secret-safe prompt_protection summary，并从通用 JSON 摘要中剥离原始 prompt_protection 节点；旧日志无相关 metadata 时保持兼容。剩余缺口：未来后端若新增 safe prompt-protection 字段，需要显式加入 UI 白名单。
 - **E11-007-S7，已完成，2026-06-04，owner Godel**：Billing/Price 页面真实 execute 提交流程。原因：S4 后端已支持 `mode=execute` 最小事务 writer，S5 UI 已能展示 future execute states，但页面仍缺真实提交入口和成功/idempotent response 呈现。范围：`web/admin-ui/**`；不改后端/Gateway。验收：UI 在 dry-run fresh 且用户显式操作后调用 `mode=execute`；区分 applied/idempotent/blocked/failed；不回显 dedupe material/raw metadata/credential；相关 UI tests、build、bundle check 通过。结果：Billing/Price 页面新增 fresh dry-run gated 的 `mode=execute` 显式提交，展示 applied/idempotent/blocked/failed 安全摘要，API client 固定同源 execute POST，UI 不渲染 dedupe material、raw metadata、Authorization/Cookie/token/credential。剩余缺口：未跑真实 backend smoke；后端新增 executor summary 字段尚未在 UI 中专门展示。
+- **E11-007-S10，进行中，owner Godel**：Billing/Price 页面展示 ledger executor summary 安全摘要。原因：E9-S7 已准备 `billing_ledger_postgres_executor_summary.v1` 兼容边界，E11-S7 UI 已能执行 `mode=execute`，但页面尚未专门展示 executor summary，用户无法区分 writer outcome、statement count、row-count mismatch 等执行层信号。范围：`web/admin-ui/**`；不改后端/Gateway/routing/scripts。验收：dry-run/execute contract 和 applied/idempotent execute response 中的 `ledger_executor_summary_contract`/`ledger_executor_summary` 有可读安全摘要；展示 schema、executor、outcome、commit/rollback、statement/row count、final statement kind、row-count mismatch；不展示 operation key、error detail、dedupe material、raw metadata、credential；相关 UI tests、build、bundle check 通过。
 
 > 使用方式：开发组可以直接把本文件拆到 Jira/GitHub Issues。每个任务的完成必须满足 `TEST_AND_ACCEPTANCE.md` 中 Definition of Done。
 
