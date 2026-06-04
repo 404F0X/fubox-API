@@ -8,9 +8,16 @@
   },
   "runtime_policy": {
     "env": "AI_GATEWAY_PROMPT_PROTECTION",
+    "config_json_env": "AI_GATEWAY_PROMPT_PROTECTION_CONFIG_JSON",
     "default": "enforce",
     "modes": ["enforce", "audit", "disabled"],
-    "rule_matching": "bounded_no_per_request_regex"
+    "rule_matching": "bounded_no_per_request_regex",
+    "config_parse_boundary": "startup",
+    "custom_rules_schema": "prompt_protection_rules_v1",
+    "max_config_json_bytes": 16384,
+    "default_rules_enabled_by_default": true,
+    "custom_rules_compiled_before_requests": true,
+    "per_request_config_parse": false
   },
   "request_flow": [
     "authenticate_virtual_key",
@@ -43,10 +50,18 @@
         "mode",
         "action",
         "detected_action",
+        "effective_action",
         "reason",
         "hit_count",
+        "default_hit_count",
+        "configured_hit_count",
         "scopes",
-        "hit_kinds"
+        "hit_kinds",
+        "configured_actions",
+        "configured_pattern_types",
+        "configured_rules",
+        "raw_payload_omitted",
+        "raw_pattern_values_omitted"
       ]
     },
     "provider_attempts": {

@@ -1,6 +1,6 @@
 {
   "todo": "E1-004",
-  "scope": "control-plane provider, channel, api_key_profile, model_association, provider_key and price_version admin writes plus read-only audit log query API",
+  "scope": "control-plane provider, channel, api_key_profile, canonical model, model_association, provider_key and price_version admin writes plus read-only audit log query API",
   "transaction_contract": {
     "business_and_audit_share_transaction": true,
     "paths": [
@@ -13,6 +13,9 @@
       "POST /admin/api-key-profiles",
       "PATCH /admin/api-key-profiles/{id}",
       "DELETE /admin/api-key-profiles/{id}",
+      "POST /admin/models",
+      "PATCH /admin/models/{id}",
+      "DELETE /admin/models/{id}",
       "POST /admin/model-associations",
       "PATCH /admin/model-associations/{id}",
       "DELETE /admin/model-associations/{id}",
@@ -21,7 +24,7 @@
       "DELETE /admin/provider-keys/{id}",
       "POST /admin/price-versions"
     ],
-    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, api_key_profile, model_association, provider_key or price_version write"
+    "failure_behavior": "business write and success audit are committed together; missing business rows do not build success audit; audit insert failure rolls back the provider, channel, api_key_profile, canonical model, model_association, provider_key or price_version write"
   },
   "metadata_contract": {
     "raw_request_body_omitted": true,
@@ -202,6 +205,60 @@
       },
       "metadata": {
         "transactional_audit": true,
+        "actor_session_id": "00000000-0000-0000-0000-000000000701",
+        "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
+        "source": "control_plane_admin"
+      }
+    },
+    "canonical_model_update_success_audit": {
+      "action": "model.update",
+      "resource_type": "model",
+      "before_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000101",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "model_key": "gpt-visible",
+        "display_name": "GPT Visible",
+        "family": "gpt",
+        "capabilities_keys": [
+          "tools"
+        ],
+        "context_length": 128000,
+        "max_output_tokens": 16384,
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": false,
+        "supports_audio": false,
+        "supports_reasoning": false,
+        "visibility": "public",
+        "status": "active"
+      },
+      "after_snapshot": {
+        "id": "00000000-0000-0000-0000-000000000101",
+        "tenant_id": "00000000-0000-0000-0000-000000000001",
+        "model_key": "gpt-visible",
+        "display_name": "GPT Visible",
+        "family": "gpt",
+        "capabilities_keys": [
+          "tools"
+        ],
+        "context_length": 128000,
+        "max_output_tokens": 16384,
+        "supports_stream": true,
+        "supports_tools": true,
+        "supports_vision": false,
+        "supports_audio": false,
+        "supports_reasoning": false,
+        "visibility": "public",
+        "status": "inactive"
+      },
+      "metadata": {
+        "transactional_audit": true,
+        "upsert_semantics": false,
+        "default_price_config_contract": {
+          "tenant_price_book_relation_required": true,
+          "canonical_model_relation_required": true,
+          "write_audit_secret_safe": true
+        },
         "actor_session_id": "00000000-0000-0000-0000-000000000701",
         "actor_tenant_id": "00000000-0000-0000-0000-000000000001",
         "source": "control_plane_admin"

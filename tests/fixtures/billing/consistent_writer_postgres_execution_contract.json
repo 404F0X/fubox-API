@@ -1,0 +1,90 @@
+{
+  "contract": "billing_ledger_postgres_execution_plan_v1",
+  "db_io_implemented": false,
+  "source_fixture": "consistent_writer_executor_contract.json",
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "api_key",
+    "provider_key",
+    "raw_key",
+    "raw_wallet",
+    "database_url",
+    "payload",
+    "body",
+    "idempotency_key",
+    "reserve:00000000",
+    "settle:00000000",
+    "refund_partial:00000000"
+  ],
+  "required_lock_order": ["lock_wallet", "lock_credit_grants", "lock_budgets", "lock_ledger_entries"],
+  "cases": [
+    {
+      "name": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+      "expected_statement_kinds": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries",
+        "assert_balance_window",
+        "assert_budget_window",
+        "assert_budget_window",
+        "assert_budget_window",
+        "insert_ledger_entry"
+      ],
+      "expected_command_statement_kinds": [
+        "assert_balance_window",
+        "assert_budget_window",
+        "assert_budget_window",
+        "assert_budget_window",
+        "insert_ledger_entry"
+      ],
+      "status_update_target_field": null
+    },
+    {
+      "name": "settle_apply_reverses_pending_reserve_and_inserts_confirmed_debit",
+      "expected_statement_kinds": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries",
+        "assert_balance_window",
+        "insert_ledger_entry",
+        "update_ledger_status"
+      ],
+      "expected_command_statement_kinds": [
+        "assert_balance_window",
+        "insert_ledger_entry",
+        "update_ledger_status"
+      ],
+      "status_update_target_field": "ledger_entry_id"
+    },
+    {
+      "name": "reserve_replay_is_idempotent_and_does_not_emit_write_commands",
+      "expected_statement_kinds": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries"
+      ],
+      "expected_command_statement_kinds": [],
+      "status_update_target_field": null
+    },
+    {
+      "name": "partial_refund_apply_inserts_confirmed_credit",
+      "expected_statement_kinds": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries",
+        "assert_balance_window",
+        "insert_ledger_entry"
+      ],
+      "expected_command_statement_kinds": [
+        "assert_balance_window",
+        "insert_ledger_entry"
+      ],
+      "status_update_target_field": null
+    }
+  ]
+}

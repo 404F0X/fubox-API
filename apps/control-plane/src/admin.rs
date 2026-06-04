@@ -1414,23 +1414,36 @@ async fn create_model(
     let repository = repo(&state);
     let default_price_selector =
         validate_model_default_price_book_selector(&repository, default_price_book_id).await?;
+    let audit_metadata = model_write_audit_metadata(true, default_price_selector);
     let model = repository
-        .upsert_canonical_model(NewCanonicalModel {
-            tenant_id: DEFAULT_TENANT_ID,
-            model_key: non_empty(model_key, "model_key")?,
-            display_name: non_empty(display_name, "display_name")?,
-            family: request.family,
-            capabilities: request.capabilities.unwrap_or_else(|| json!({})),
-            context_length: request.context_length,
-            max_output_tokens: request.max_output_tokens,
-            supports_stream: request.supports_stream.unwrap_or(true),
-            supports_tools: request.supports_tools.unwrap_or(false),
-            supports_vision: request.supports_vision.unwrap_or(false),
-            supports_audio: request.supports_audio.unwrap_or(false),
-            supports_reasoning: request.supports_reasoning.unwrap_or(false),
-            visibility: request.visibility.unwrap_or_else(|| "internal".to_string()),
-            status: normalize_model_status(request.status.as_deref()),
-        })
+        .upsert_canonical_model_with_audit(
+            NewCanonicalModel {
+                tenant_id: DEFAULT_TENANT_ID,
+                model_key: non_empty(model_key, "model_key")?,
+                display_name: non_empty(display_name, "display_name")?,
+                family: request.family,
+                capabilities: request.capabilities.unwrap_or_else(|| json!({})),
+                context_length: request.context_length,
+                max_output_tokens: request.max_output_tokens,
+                supports_stream: request.supports_stream.unwrap_or(true),
+                supports_tools: request.supports_tools.unwrap_or(false),
+                supports_vision: request.supports_vision.unwrap_or(false),
+                supports_audio: request.supports_audio.unwrap_or(false),
+                supports_reasoning: request.supports_reasoning.unwrap_or(false),
+                visibility: request.visibility.unwrap_or_else(|| "internal".to_string()),
+                status: normalize_model_status(request.status.as_deref()),
+            },
+            |after| {
+                new_admin_audit_log(
+                    &session,
+                    "model.create",
+                    None,
+                    after,
+                    audit_metadata.clone(),
+                    None,
+                )
+            },
+        )
         .await?;
     let persisted_default_price_book_id = if let Some(default_price_book_id) = default_price_book_id
     {
@@ -1438,16 +1451,6 @@ async fn create_model(
     } else {
         get_model_default_price_book_id(&repository, model.id).await?
     };
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "model.create",
-        None,
-        &model,
-        model_write_audit_metadata(true, default_price_selector),
-    )
-    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -1504,13 +1507,13 @@ async fn patch_model(
     let default_price_selector =
         validate_model_default_price_book_selector(&repository, requested_default_price_book_id)
             .await?;
-    let before = current.clone();
+    let audit_metadata = model_write_audit_metadata(false, default_price_selector);
     let model_key = request
         .model_key
         .or(request.name)
         .unwrap_or(current.model_key);
     let model = repository
-        .update_canonical_model(
+        .update_canonical_model_with_audit(
             DEFAULT_TENANT_ID,
             id,
             UpdateCanonicalModel {
@@ -1533,6 +1536,16 @@ async fn patch_model(
                     .map(|status| normalize_model_status(Some(&status)))
                     .unwrap_or(current.status),
             },
+            |before, after| {
+                new_admin_audit_log(
+                    &session,
+                    "model.update",
+                    Some(before),
+                    after,
+                    audit_metadata.clone(),
+                    None,
+                )
+            },
         )
         .await?
         .ok_or_else(|| AdminError::not_found("model"))?;
@@ -1542,16 +1555,6 @@ async fn patch_model(
     } else {
         current_default_price_book_id
     };
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "model.update",
-        Some(&before),
-        &model,
-        model_write_audit_metadata(false, default_price_selector),
-    )
-    .await?;
 
     Ok(
         Json(json!({ "data": canonical_model_response(model, default_price_book_id) }))
@@ -1565,24 +1568,19 @@ async fn delete_model(
     Path(id): Path<Uuid>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
-    let before = repository
-        .get_canonical_model(DEFAULT_TENANT_ID, id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("model"))?;
     let model = repository
-        .soft_delete_canonical_model(DEFAULT_TENANT_ID, id)
+        .soft_delete_canonical_model_with_audit(DEFAULT_TENANT_ID, id, |before, after| {
+            new_admin_audit_log(
+                &session,
+                "model.delete",
+                Some(before),
+                after,
+                json!({ "transactional_audit": true }),
+                None,
+            )
+        })
         .await?
         .ok_or_else(|| AdminError::not_found("model"))?;
-
-    record_admin_audit(
-        &repository,
-        &session,
-        "model.delete",
-        Some(&before),
-        &model,
-        json!({}),
-    )
-    .await?;
 
     Ok(Json(json!({ "data": model })).into_response())
 }
@@ -2383,6 +2381,7 @@ fn model_write_audit_metadata(
     default_price_selector: Option<Value>,
 ) -> Value {
     let mut metadata = json!({
+        "transactional_audit": true,
         "upsert_semantics": upsert_semantics,
         "default_price_config_contract": {
             "tenant_price_book_relation_required": true,
@@ -2789,36 +2788,6 @@ trait AuditResource {
     fn audit_resource_id(&self) -> Uuid;
     fn audit_tenant_id(&self) -> Uuid;
     fn audit_summary(&self) -> Value;
-}
-
-async fn record_admin_audit<R: AuditResource>(
-    repository: &DbRepository,
-    session: &AdminSession,
-    action: &'static str,
-    before: Option<&R>,
-    after: &R,
-    metadata: Value,
-) -> Result<(), AdminError> {
-    let resource_id = after.audit_resource_id();
-    let tenant_id = after.audit_tenant_id();
-    let insert = repository
-        .insert_audit_log(new_admin_audit_log(
-            session, action, before, after, metadata, None,
-        ))
-        .await;
-
-    if let Err(error) = insert {
-        tracing::warn!(
-            action,
-            resource_type = R::RESOURCE_TYPE,
-            %resource_id,
-            %tenant_id,
-            error_kind = ?error,
-            "admin audit insert failed; continuing after completed business write"
-        );
-    }
-
-    Ok(())
 }
 
 fn new_admin_audit_log<R: AuditResource>(
@@ -3279,13 +3248,13 @@ impl AuditResource for CanonicalModel {
     }
 
     fn audit_summary(&self) -> Value {
-        json!({
+        sanitize_audit_value(json!({
             "id": self.id,
             "tenant_id": self.tenant_id,
             "model_key": self.model_key,
             "display_name": self.display_name,
             "family": self.family,
-            "capabilities_keys": object_keys(&self.capabilities),
+            "capabilities_keys": audit_safe_object_keys(&self.capabilities),
             "context_length": self.context_length,
             "max_output_tokens": self.max_output_tokens,
             "supports_stream": self.supports_stream,
@@ -3295,7 +3264,7 @@ impl AuditResource for CanonicalModel {
             "supports_reasoning": self.supports_reasoning,
             "visibility": self.visibility,
             "status": self.status,
-        })
+        }))
     }
 }
 
@@ -7332,6 +7301,120 @@ mod tests {
     }
 
     #[test]
+    fn canonical_model_success_audit_shape_is_transactional_and_secret_safe() {
+        let before = canonical_model_fixture();
+        let mut after = before.clone();
+        after.display_name = "Bearer never-audit".to_string();
+        after.capabilities = json!({
+            "tools": true,
+            "endpoint_url": "https://internal-model.example/v1",
+            "authorization": "Bearer never-audit",
+            "payload": { "prompt": "raw payload never audit" },
+            "provider_key_fingerprint": "fingerprint-never-audit"
+        });
+        after.status = "inactive".to_string();
+
+        let audit = new_admin_audit_log_from_parts(
+            Uuid::from_u128(701),
+            DEFAULT_TENANT_ID,
+            "model.update",
+            Some(&before),
+            &after,
+            model_write_audit_metadata(false, None),
+            None,
+        );
+        let serialized = serde_json::to_string(&audit).expect("audit should serialize");
+
+        assert_eq!(audit.action, "model.update");
+        assert_eq!(audit.resource_type, "model");
+        assert_eq!(audit.resource_id, Some(after.id));
+        assert_eq!(audit.resource_tenant_id, Some(DEFAULT_TENANT_ID));
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["display_name"],
+            json!("[REDACTED]")
+        );
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["capabilities_keys"],
+            json!(["tools"])
+        );
+        assert_eq!(
+            audit.after_snapshot.as_ref().unwrap()["status"],
+            json!("inactive")
+        );
+        assert_eq!(audit.metadata["transactional_audit"], json!(true));
+        assert!(!serialized.contains("Bearer never-audit"));
+        assert!(!serialized.contains("endpoint_url"));
+        assert!(!serialized.contains("internal-model.example"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("payload"));
+        assert!(!serialized.contains("raw payload never audit"));
+        assert!(!serialized.contains("provider_key_fingerprint"));
+        assert!(!serialized.contains("fingerprint-never-audit"));
+    }
+
+    #[test]
+    fn canonical_model_missing_business_result_does_not_build_success_audit() {
+        fn build_success_audit_for_optional_model(
+            model: Option<&CanonicalModel>,
+        ) -> Option<NewAuditLog> {
+            model.map(|after| {
+                new_admin_audit_log_from_parts(
+                    Uuid::from_u128(701),
+                    DEFAULT_TENANT_ID,
+                    "model.update",
+                    None,
+                    after,
+                    json!({ "transactional_audit": true }),
+                    None,
+                )
+            })
+        }
+
+        let missing = build_success_audit_for_optional_model(None);
+        let present_model = canonical_model_fixture();
+        let present = build_success_audit_for_optional_model(Some(&present_model));
+
+        assert!(missing.is_none());
+        assert_eq!(present.expect("audit should build").action, "model.update");
+    }
+
+    #[test]
+    fn canonical_model_admin_writes_use_transactional_success_audit_helpers() {
+        let source = include_str!("admin.rs");
+        let create_section = source
+            .split("async fn create_model")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn get_model").next())
+            .expect("create_model section should be present");
+        let patch_section = source
+            .split("async fn patch_model")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn delete_model").next())
+            .expect("patch_model section should be present");
+        let delete_section = source
+            .split("async fn delete_model")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn create_model_association").next())
+            .expect("delete_model section should be present");
+        let metadata_section = source
+            .split("fn model_write_audit_metadata")
+            .nth(1)
+            .and_then(|tail| tail.split("fn price_version_response").next())
+            .expect("model_write_audit_metadata section should be present");
+
+        assert!(create_section.contains(".upsert_canonical_model_with_audit("));
+        assert!(patch_section.contains(".update_canonical_model_with_audit("));
+        assert!(delete_section.contains(".soft_delete_canonical_model_with_audit("));
+        assert!(create_section.contains("model_write_audit_metadata(true"));
+        assert!(patch_section.contains("model_write_audit_metadata(false"));
+        assert!(metadata_section.contains("\"transactional_audit\": true"));
+        assert!(delete_section.contains("\"transactional_audit\": true"));
+        assert!(!create_section.contains("record_admin_audit("));
+        assert!(!patch_section.contains("record_admin_audit("));
+        assert!(!delete_section.contains("record_admin_audit("));
+    }
+
+    #[test]
     fn audit_log_contract_fixture_captures_transaction_and_safe_metadata() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/audit_log_contract.json"
@@ -7374,6 +7457,9 @@ mod tests {
             "POST /admin/model-associations",
             "PATCH /admin/model-associations/{id}",
             "DELETE /admin/model-associations/{id}",
+            "POST /admin/models",
+            "PATCH /admin/models/{id}",
+            "DELETE /admin/models/{id}",
             "POST /admin/price-versions",
         ] {
             assert!(
@@ -7395,6 +7481,10 @@ mod tests {
         );
         assert_eq!(
             fixture["examples"]["model_association_update_success_audit"]["metadata"]["transactional_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["canonical_model_update_success_audit"]["metadata"]["transactional_audit"],
             json!(true)
         );
         for snapshot in ["before_snapshot", "after_snapshot"] {
@@ -7461,7 +7551,9 @@ mod tests {
             "raw_headers",
             "base_url",
             "endpoint",
+            "endpoint_url",
             "sid=never-audit",
+            "provider_key_fingerprint",
         ] {
             assert!(
                 !serialized_examples.contains(forbidden),
@@ -8124,7 +8216,7 @@ mod tests {
             .and_then(|tail| tail.split("async fn get_model").next())
             .expect("create_model section should be present");
         let upsert_position = create_section
-            .find(".upsert_canonical_model(")
+            .find(".upsert_canonical_model_with_audit(")
             .expect("create_model should upsert canonical model");
         let reload_position = create_section
             .find("get_model_default_price_book_id(&repository, model.id).await?")

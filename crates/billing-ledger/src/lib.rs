@@ -1,5 +1,6 @@
 mod exact_cache;
 mod ledger;
+mod postgres_execution;
 mod pre_authorize;
 mod rating;
 mod reconciliation;
@@ -20,6 +21,12 @@ pub use ledger::{
     plan_ledger_reserve, plan_ledger_settle, refund_ledger_idempotency_key,
     refund_partial_ledger_idempotency_key, reserve_ledger_idempotency_key,
     settle_ledger_idempotency_key,
+};
+pub use postgres_execution::{
+    CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA, ConsistentLedgerPostgresBoundaryContract,
+    ConsistentLedgerPostgresExecutionPlan, ConsistentLedgerPostgresStatement,
+    ConsistentLedgerPostgresStatementKind, ConsistentLedgerPostgresTransactionStep,
+    ConsistentLedgerPostgresTransactionStepKind, plan_consistent_ledger_postgres_execution,
 };
 pub use pre_authorize::{
     PreAuthorizeBalance, PreAuthorizeBudget, PreAuthorizeDecision, PreAuthorizeEstimate,

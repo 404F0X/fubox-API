@@ -1,0 +1,92 @@
+{
+  "scenario": "rate_limit_reservation_contract",
+  "crate": "ai-gateway-routing",
+  "schema": "rate_limit_reservation_contract_v1",
+  "function": "plan_rate_limit_reservation",
+  "operations": {
+    "acquire": "increment bounded current-window counters only after every configured dimension is available",
+    "release": "decrement counters only when a prior reservation was acquired; repeated release is a no-op"
+  },
+  "dimension_order": [
+    "RequestsPerMinute",
+    "TokensPerMinute",
+    "Concurrency"
+  ],
+  "stable_behaviors": [
+    {
+      "name": "acquire_under_limits",
+      "operation": "Acquire",
+      "status": "Acquired",
+      "counter_updates_planned": 3,
+      "input": {
+        "requests_per_minute": { "limit": 60, "used": 58 },
+        "tokens_per_minute": { "limit": 1000, "used": 800 },
+        "concurrency": { "limit": 4, "used": 3 },
+        "required": {
+          "requests_per_minute": 1,
+          "tokens_per_minute": 100,
+          "concurrency": 1
+        }
+      },
+      "used_after": {
+        "requests_per_minute": 59,
+        "tokens_per_minute": 900,
+        "concurrency": 4
+      }
+    },
+    {
+      "name": "acquire_over_limit_rejected",
+      "operation": "Acquire",
+      "status": "Rejected",
+      "filter_reason": "RateLimitExceeded",
+      "blocking_dimensions": [
+        "RequestsPerMinute",
+        "TokensPerMinute",
+        "Concurrency"
+      ],
+      "counter_updates_planned": 0
+    },
+    {
+      "name": "limited_missing_window_rejected_conservatively",
+      "operation": "Acquire",
+      "status": "Rejected",
+      "conservative_reject": true,
+      "counter_updates_planned": 0
+    },
+    {
+      "name": "release_after_acquire",
+      "operation": "Release",
+      "reservation_acquired": true,
+      "status": "Released",
+      "counter_updates_planned": 3,
+      "saturating_decrement": true
+    },
+    {
+      "name": "idempotent_release_without_acquire",
+      "operation": "Release",
+      "reservation_acquired": false,
+      "status": "ReleaseNoop",
+      "counter_updates_planned": 0
+    }
+  ],
+  "safety_contract": {
+    "window_material_in_output": false,
+    "stores_raw_provider_key": false,
+    "stores_authorization_material": false,
+    "stores_payload": false,
+    "uses_regex": false,
+    "uses_io": false,
+    "bounded_dimensions": 3
+  },
+  "forbidden_output_markers": [
+    "sk-live",
+    "authorization",
+    "bearer",
+    "provider_key",
+    "api_key",
+    "encrypted_secret",
+    "payload",
+    "request_body",
+    "raw_window"
+  ]
+}

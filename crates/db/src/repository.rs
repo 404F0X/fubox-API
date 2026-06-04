@@ -2259,6 +2259,70 @@ impl DbRepository {
         canonical_model_from_row(row).map_err(DbError::Query)
     }
 
+    pub async fn upsert_canonical_model_with_audit<F>(
+        &self,
+        new_model: NewCanonicalModel,
+        build_audit: F,
+    ) -> Result<CanonicalModel, DbError>
+    where
+        F: FnOnce(&CanonicalModel) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let row = sqlx::query(
+            r#"
+            insert into canonical_models (
+              tenant_id, model_key, display_name, family, capabilities, context_length,
+              max_output_tokens, supports_stream, supports_tools, supports_vision,
+              supports_audio, supports_reasoning, visibility, status
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            on conflict (tenant_id, model_key) do update
+            set display_name = excluded.display_name,
+                family = excluded.family,
+                capabilities = excluded.capabilities,
+                context_length = excluded.context_length,
+                max_output_tokens = excluded.max_output_tokens,
+                supports_stream = excluded.supports_stream,
+                supports_tools = excluded.supports_tools,
+                supports_vision = excluded.supports_vision,
+                supports_audio = excluded.supports_audio,
+                supports_reasoning = excluded.supports_reasoning,
+                visibility = excluded.visibility,
+                status = excluded.status,
+                updated_at = now(),
+                deleted_at = null
+            returning
+              id, tenant_id, model_key, display_name, family, capabilities,
+              context_length, max_output_tokens, supports_stream, supports_tools,
+              supports_vision, supports_audio, supports_reasoning, visibility, status
+            "#,
+        )
+        .bind(new_model.tenant_id)
+        .bind(new_model.model_key)
+        .bind(new_model.display_name)
+        .bind(new_model.family)
+        .bind(new_model.capabilities)
+        .bind(new_model.context_length)
+        .bind(new_model.max_output_tokens)
+        .bind(new_model.supports_stream)
+        .bind(new_model.supports_tools)
+        .bind(new_model.supports_vision)
+        .bind(new_model.supports_audio)
+        .bind(new_model.supports_reasoning)
+        .bind(new_model.visibility)
+        .bind(new_model.status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let model = canonical_model_from_row(row).map_err(DbError::Query)?;
+        let audit = build_audit(&model);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(model)
+    }
+
     pub async fn get_canonical_model_by_key(
         &self,
         tenant_id: Uuid,
@@ -2388,6 +2452,90 @@ impl DbRepository {
             .map_err(DbError::Query)
     }
 
+    pub async fn update_canonical_model_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        canonical_model_id: Uuid,
+        update: UpdateCanonicalModel,
+        build_audit: F,
+    ) -> Result<Option<CanonicalModel>, DbError>
+    where
+        F: FnOnce(&CanonicalModel, &CanonicalModel) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, model_key, display_name, family, capabilities,
+              context_length, max_output_tokens, supports_stream, supports_tools,
+              supports_vision, supports_audio, supports_reasoning, visibility, status
+            from canonical_models
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(canonical_model_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = canonical_model_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update canonical_models
+            set model_key = $3,
+                display_name = $4,
+                family = $5,
+                capabilities = $6,
+                context_length = $7,
+                max_output_tokens = $8,
+                supports_stream = $9,
+                supports_tools = $10,
+                supports_vision = $11,
+                supports_audio = $12,
+                supports_reasoning = $13,
+                visibility = $14,
+                status = $15,
+                updated_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, model_key, display_name, family, capabilities,
+              context_length, max_output_tokens, supports_stream, supports_tools,
+              supports_vision, supports_audio, supports_reasoning, visibility, status
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(canonical_model_id)
+        .bind(update.model_key)
+        .bind(update.display_name)
+        .bind(update.family)
+        .bind(update.capabilities)
+        .bind(update.context_length)
+        .bind(update.max_output_tokens)
+        .bind(update.supports_stream)
+        .bind(update.supports_tools)
+        .bind(update.supports_vision)
+        .bind(update.supports_audio)
+        .bind(update.supports_reasoning)
+        .bind(update.visibility)
+        .bind(update.status)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = canonical_model_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
+    }
+
     pub async fn update_canonical_model_status(
         &self,
         tenant_id: Uuid,
@@ -2442,6 +2590,63 @@ impl DbRepository {
         row.map(canonical_model_from_row)
             .transpose()
             .map_err(DbError::Query)
+    }
+
+    pub async fn soft_delete_canonical_model_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        canonical_model_id: Uuid,
+        build_audit: F,
+    ) -> Result<Option<CanonicalModel>, DbError>
+    where
+        F: FnOnce(&CanonicalModel, &CanonicalModel) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, model_key, display_name, family, capabilities,
+              context_length, max_output_tokens, supports_stream, supports_tools,
+              supports_vision, supports_audio, supports_reasoning, visibility, status
+            from canonical_models
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(canonical_model_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = canonical_model_from_row(before_row).map_err(DbError::Query)?;
+
+        let after_row = sqlx::query(
+            r#"
+            update canonical_models
+            set status = 'deleted', updated_at = now(), deleted_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, model_key, display_name, family, capabilities,
+              context_length, max_output_tokens, supports_stream, supports_tools,
+              supports_vision, supports_audio, supports_reasoning, visibility, status
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(canonical_model_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let after = canonical_model_from_row(after_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some(after))
     }
 
     pub async fn create_model_association(

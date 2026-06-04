@@ -1104,6 +1104,9 @@ function healthSummaryPayload() {
         configured_last_error_code: "provider_auth_failed",
         cooldown_until: "2026-06-02 12:05:00+00",
         credential_configured: true,
+        current_window_state: {
+          raw: "current-window-state-hidden",
+        },
         health_score: 0.25,
         health_state: "degraded",
         id: "provider-key-1",
@@ -1113,7 +1116,11 @@ function healthSummaryPayload() {
           rpm: 600,
           tpm: 120000,
         },
+        metadata: {
+          raw_payload: "raw health metadata hidden",
+        },
         recent: healthSummaryRecent("provider_auth_failed"),
+        secret_fingerprint: "fp-health-hidden",
         status: "cooldown",
       },
     ],
@@ -1126,6 +1133,9 @@ function healthSummaryPayload() {
         health_score: 0.41,
         health_state: "degraded",
         id: "provider-1",
+        metadata: {
+          secret_note: skPlaceholder("health-provider-hidden"),
+        },
         name: "OpenAI",
         provider_key_count: 1,
         recent: healthSummaryRecent("provider_auth_failed"),
@@ -1481,10 +1491,18 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+      "/api/control-plane/admin/providers/health-summary",
+    );
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(10));
+    expect(
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url === "/api/control-plane/admin/providers/health-summary"),
+    ).toHaveLength(2);
   });
 
   it("signs in to the operations shell and renders the health overview", async () => {
@@ -1499,6 +1517,45 @@ describe("App", () => {
     await waitFor(() => expect(screen.getAllByText("50%").length).toBeGreaterThan(0));
     expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
     expect(await screen.findByText("Gateway")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("current_window_state");
+    expect(document.body.textContent).not.toContain("current-window-state-hidden");
+    expect(document.body.textContent).not.toContain("fp-health-hidden");
+    expect(document.body.textContent).not.toContain("raw health metadata hidden");
+    expect(document.body.textContent).not.toContain(skPlaceholder("health-provider-hidden"));
+  });
+
+  it("applies health summary window and sample controls on manual refresh", async () => {
+    const fetchMock = stubHealthyFetch();
+
+    const user = await renderSignedInApp();
+
+    expect(await screen.findByRole("heading", { level: 2, name: "Health controls" })).toBeInTheDocument();
+    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Window"), "15");
+    await user.selectOptions(screen.getByLabelText("Sample limit"), "100");
+    await user.selectOptions(screen.getByLabelText("Scope"), "Provider key");
+    await user.type(screen.getByLabelText("Matrix search"), "openai-main");
+
+    expect(screen.getByText("openai-main")).toBeInTheDocument();
+    expect(screen.queryByText("OpenAI")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Refresh summary" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/providers/health-summary?window_minutes=15&sample_limit=100",
+      ),
+    );
+
+    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    await user.click(recoveryButton);
+
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("Requested"));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/control-plane/admin/provider-keys/provider-key-1/recovery",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
   });
 
   it("shows request log and provider key navigation after sign-in", async () => {

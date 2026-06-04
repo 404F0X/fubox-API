@@ -99,6 +99,155 @@ pub struct RateLimitAvailability {
     pub dimensions: Vec<RateLimitDimensionSummary>,
 }
 
+pub const RATE_LIMIT_RESERVATION_CONTRACT_SCHEMA: &str = "rate_limit_reservation_contract_v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateLimitReservationOperation {
+    Acquire,
+    Release,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateLimitReservationStatus {
+    Acquired,
+    Rejected,
+    Released,
+    ReleaseNoop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateLimitCounterUpdate {
+    None,
+    Increment,
+    Decrement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitCounterWindow {
+    pub limit: Option<i64>,
+    pub used: Option<i64>,
+}
+
+impl RateLimitCounterWindow {
+    pub const fn unlimited() -> Self {
+        Self {
+            limit: None,
+            used: None,
+        }
+    }
+
+    pub const fn limited(limit: i64, used: i64) -> Self {
+        Self {
+            limit: Some(limit),
+            used: Some(used),
+        }
+    }
+
+    pub const fn missing(limit: i64) -> Self {
+        Self {
+            limit: Some(limit),
+            used: None,
+        }
+    }
+}
+
+impl Default for RateLimitCounterWindow {
+    fn default() -> Self {
+        Self::unlimited()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitRequiredCapacity {
+    pub requests_per_minute: i64,
+    pub tokens_per_minute: i64,
+    pub concurrency: i64,
+}
+
+impl RateLimitRequiredCapacity {
+    pub const fn new(requests_per_minute: i64, tokens_per_minute: i64, concurrency: i64) -> Self {
+        Self {
+            requests_per_minute,
+            tokens_per_minute,
+            concurrency,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitReservationInput {
+    pub requests_per_minute: RateLimitCounterWindow,
+    pub tokens_per_minute: RateLimitCounterWindow,
+    pub concurrency: RateLimitCounterWindow,
+    pub required: RateLimitRequiredCapacity,
+    pub operation: RateLimitReservationOperation,
+    pub reservation_acquired: bool,
+}
+
+impl RateLimitReservationInput {
+    pub const fn acquire(
+        requests_per_minute: RateLimitCounterWindow,
+        tokens_per_minute: RateLimitCounterWindow,
+        concurrency: RateLimitCounterWindow,
+        required: RateLimitRequiredCapacity,
+    ) -> Self {
+        Self {
+            requests_per_minute,
+            tokens_per_minute,
+            concurrency,
+            required,
+            operation: RateLimitReservationOperation::Acquire,
+            reservation_acquired: false,
+        }
+    }
+
+    pub const fn release(
+        requests_per_minute: RateLimitCounterWindow,
+        tokens_per_minute: RateLimitCounterWindow,
+        concurrency: RateLimitCounterWindow,
+        required: RateLimitRequiredCapacity,
+        reservation_acquired: bool,
+    ) -> Self {
+        Self {
+            requests_per_minute,
+            tokens_per_minute,
+            concurrency,
+            required,
+            operation: RateLimitReservationOperation::Release,
+            reservation_acquired,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitReservationDimensionPlan {
+    pub dimension: RateLimitDimension,
+    pub status: RateLimitDimensionStatus,
+    pub selectable_for_acquire: bool,
+    pub limit: Option<u64>,
+    pub used_before: u64,
+    pub required: u64,
+    pub used_after: u64,
+    pub remaining_before: Option<u64>,
+    pub remaining_after: Option<u64>,
+    pub window_present: bool,
+    pub sanitized_negative_used: bool,
+    pub counter_update: RateLimitCounterUpdate,
+    pub saturated_release: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitReservationPlan {
+    pub operation: RateLimitReservationOperation,
+    pub status: RateLimitReservationStatus,
+    pub filter_reason: Option<CandidateFilterReason>,
+    pub blocking_dimensions: Vec<RateLimitDimension>,
+    pub dimensions: Vec<RateLimitReservationDimensionPlan>,
+    pub conservative_reject: bool,
+    pub counter_updates_planned: usize,
+    pub window_material_in_output: bool,
+}
+
 pub fn evaluate_rate_limit_availability(
     input: RateLimitAvailabilityInput,
 ) -> RateLimitAvailability {
@@ -131,6 +280,67 @@ pub fn apply_rate_limit_availability_to_candidate(
     availability: &RateLimitAvailability,
 ) -> RouteCandidate {
     candidate.with_rate_limit_available(availability.selectable)
+}
+
+pub fn plan_rate_limit_reservation(input: RateLimitReservationInput) -> RateLimitReservationPlan {
+    let availability_input = reservation_availability_input(&input);
+    let availability = evaluate_rate_limit_availability(availability_input);
+    let invalid_required = availability
+        .dimensions
+        .iter()
+        .any(|dimension| dimension.status == RateLimitDimensionStatus::InvalidRequired);
+
+    let status = match input.operation {
+        RateLimitReservationOperation::Acquire if availability.selectable => {
+            RateLimitReservationStatus::Acquired
+        }
+        RateLimitReservationOperation::Acquire => RateLimitReservationStatus::Rejected,
+        RateLimitReservationOperation::Release if !input.reservation_acquired => {
+            RateLimitReservationStatus::ReleaseNoop
+        }
+        RateLimitReservationOperation::Release if invalid_required => {
+            RateLimitReservationStatus::Rejected
+        }
+        RateLimitReservationOperation::Release => RateLimitReservationStatus::Released,
+    };
+
+    let blocking_dimensions = match status {
+        RateLimitReservationStatus::Rejected => availability
+            .dimensions
+            .iter()
+            .filter(|dimension| !dimension.selectable)
+            .map(|dimension| dimension.dimension)
+            .collect::<Vec<_>>(),
+        RateLimitReservationStatus::Acquired
+        | RateLimitReservationStatus::Released
+        | RateLimitReservationStatus::ReleaseNoop => Vec::new(),
+    };
+    let conservative_reject = status == RateLimitReservationStatus::Rejected
+        && availability
+            .dimensions
+            .iter()
+            .any(|dimension| dimension.status == RateLimitDimensionStatus::WindowMissing);
+    let dimensions = availability
+        .dimensions
+        .iter()
+        .map(|dimension| reservation_dimension_plan(input.operation, status, dimension))
+        .collect::<Vec<_>>();
+    let counter_updates_planned = dimensions
+        .iter()
+        .filter(|dimension| dimension.counter_update != RateLimitCounterUpdate::None)
+        .count();
+
+    RateLimitReservationPlan {
+        operation: input.operation,
+        status,
+        filter_reason: (status == RateLimitReservationStatus::Rejected)
+            .then_some(CandidateFilterReason::RateLimitExceeded),
+        blocking_dimensions,
+        dimensions,
+        conservative_reject,
+        counter_updates_planned,
+        window_material_in_output: false,
+    }
 }
 
 pub fn evaluate_rate_limit_dimension(
@@ -222,6 +432,77 @@ fn non_negative_u64(value: i64) -> Option<u64> {
     (value >= 0).then_some(value as u64)
 }
 
+fn reservation_availability_input(input: &RateLimitReservationInput) -> RateLimitAvailabilityInput {
+    RateLimitAvailabilityInput::new(
+        reservation_window(
+            input.requests_per_minute,
+            input.required.requests_per_minute,
+        ),
+        reservation_window(input.tokens_per_minute, input.required.tokens_per_minute),
+        reservation_window(input.concurrency, input.required.concurrency),
+    )
+}
+
+fn reservation_window(window: RateLimitCounterWindow, required: i64) -> RateLimitWindow {
+    RateLimitWindow {
+        limit: window.limit,
+        used: window.used,
+        required,
+    }
+}
+
+fn reservation_dimension_plan(
+    operation: RateLimitReservationOperation,
+    reservation_status: RateLimitReservationStatus,
+    summary: &RateLimitDimensionSummary,
+) -> RateLimitReservationDimensionPlan {
+    let counter_update = counter_update_for_dimension(operation, reservation_status, summary);
+    let used_after = match counter_update {
+        RateLimitCounterUpdate::Increment => summary.used.saturating_add(summary.required),
+        RateLimitCounterUpdate::Decrement => summary.used.saturating_sub(summary.required),
+        RateLimitCounterUpdate::None => summary.used,
+    };
+    let remaining_after = summary.limit.map(|limit| limit.saturating_sub(used_after));
+    let saturated_release =
+        counter_update == RateLimitCounterUpdate::Decrement && summary.required > summary.used;
+
+    RateLimitReservationDimensionPlan {
+        dimension: summary.dimension,
+        status: summary.status,
+        selectable_for_acquire: summary.selectable,
+        limit: summary.limit,
+        used_before: summary.used,
+        required: summary.required,
+        used_after,
+        remaining_before: summary.remaining,
+        remaining_after,
+        window_present: summary.window_present,
+        sanitized_negative_used: summary.sanitized_negative_used,
+        counter_update,
+        saturated_release,
+    }
+}
+
+fn counter_update_for_dimension(
+    operation: RateLimitReservationOperation,
+    reservation_status: RateLimitReservationStatus,
+    summary: &RateLimitDimensionSummary,
+) -> RateLimitCounterUpdate {
+    if summary.limit.is_none() || !summary.window_present || summary.required == 0 {
+        return RateLimitCounterUpdate::None;
+    }
+
+    match (operation, reservation_status) {
+        (RateLimitReservationOperation::Acquire, RateLimitReservationStatus::Acquired) => {
+            RateLimitCounterUpdate::Increment
+        }
+        (RateLimitReservationOperation::Release, RateLimitReservationStatus::Released) => {
+            RateLimitCounterUpdate::Decrement
+        }
+        _ => RateLimitCounterUpdate::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +516,16 @@ mod tests {
             .iter()
             .find(|summary| summary.dimension == dimension)
             .expect("dimension summary should be present")
+    }
+
+    fn reservation_dimension_for(
+        plan: &RateLimitReservationPlan,
+        dimension: RateLimitDimension,
+    ) -> &RateLimitReservationDimensionPlan {
+        plan.dimensions
+            .iter()
+            .find(|summary| summary.dimension == dimension)
+            .expect("reservation dimension plan should be present")
     }
 
     #[test]
@@ -498,5 +789,244 @@ mod tests {
         let candidate = apply_rate_limit_availability_to_candidate(candidate, &availability);
 
         assert!(!candidate.rate_limit_available);
+    }
+
+    #[test]
+    fn reservation_acquire_under_limits_plans_counter_increments() {
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::limited(60, 58),
+            RateLimitCounterWindow::limited(1_000, 800),
+            RateLimitCounterWindow::limited(4, 3),
+            RateLimitRequiredCapacity::new(1, 100, 1),
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::Acquired);
+        assert_eq!(plan.filter_reason, None);
+        assert!(plan.blocking_dimensions.is_empty());
+        assert_eq!(plan.counter_updates_planned, 3);
+        assert!(!plan.window_material_in_output);
+
+        let rpm = reservation_dimension_for(&plan, RateLimitDimension::RequestsPerMinute);
+        assert_eq!(rpm.counter_update, RateLimitCounterUpdate::Increment);
+        assert_eq!(rpm.used_before, 58);
+        assert_eq!(rpm.required, 1);
+        assert_eq!(rpm.used_after, 59);
+        assert_eq!(rpm.remaining_after, Some(1));
+
+        let tpm = reservation_dimension_for(&plan, RateLimitDimension::TokensPerMinute);
+        assert_eq!(tpm.used_after, 900);
+        assert_eq!(tpm.remaining_after, Some(100));
+
+        let concurrency = reservation_dimension_for(&plan, RateLimitDimension::Concurrency);
+        assert_eq!(concurrency.used_after, 4);
+        assert_eq!(concurrency.remaining_after, Some(0));
+    }
+
+    #[test]
+    fn reservation_acquire_over_limit_rejects_without_counter_updates() {
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::limited(60, 60),
+            RateLimitCounterWindow::limited(1_000, 950),
+            RateLimitCounterWindow::limited(4, 4),
+            RateLimitRequiredCapacity::new(1, 100, 1),
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::Rejected);
+        assert_eq!(
+            plan.filter_reason,
+            Some(CandidateFilterReason::RateLimitExceeded)
+        );
+        assert_eq!(
+            plan.blocking_dimensions,
+            [
+                RateLimitDimension::RequestsPerMinute,
+                RateLimitDimension::TokensPerMinute,
+                RateLimitDimension::Concurrency
+            ]
+        );
+        assert_eq!(plan.counter_updates_planned, 0);
+
+        for dimension in [
+            RateLimitDimension::RequestsPerMinute,
+            RateLimitDimension::TokensPerMinute,
+            RateLimitDimension::Concurrency,
+        ] {
+            let summary = reservation_dimension_for(&plan, dimension);
+            assert_eq!(summary.counter_update, RateLimitCounterUpdate::None);
+            assert_eq!(summary.used_before, summary.used_after);
+        }
+    }
+
+    #[test]
+    fn reservation_acquire_missing_limited_windows_rejects_conservatively() {
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::missing(60),
+            RateLimitCounterWindow::unlimited(),
+            RateLimitCounterWindow::missing(4),
+            RateLimitRequiredCapacity::new(1, 100, 1),
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::Rejected);
+        assert!(plan.conservative_reject);
+        assert_eq!(
+            plan.blocking_dimensions,
+            [
+                RateLimitDimension::RequestsPerMinute,
+                RateLimitDimension::Concurrency
+            ]
+        );
+        assert_eq!(plan.counter_updates_planned, 0);
+
+        let rpm = reservation_dimension_for(&plan, RateLimitDimension::RequestsPerMinute);
+        assert_eq!(rpm.status, RateLimitDimensionStatus::WindowMissing);
+        assert!(!rpm.window_present);
+        assert_eq!(rpm.used_after, 0);
+    }
+
+    #[test]
+    fn reservation_acquire_negative_and_invalid_counters_are_stable() {
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::limited(10, -3),
+            RateLimitCounterWindow::limited(-1, 0),
+            RateLimitCounterWindow::limited(10, 0),
+            RateLimitRequiredCapacity::new(1, 1, -1),
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::Rejected);
+        assert_eq!(
+            plan.blocking_dimensions,
+            [
+                RateLimitDimension::TokensPerMinute,
+                RateLimitDimension::Concurrency
+            ]
+        );
+        assert_eq!(plan.counter_updates_planned, 0);
+
+        let rpm = reservation_dimension_for(&plan, RateLimitDimension::RequestsPerMinute);
+        assert_eq!(rpm.status, RateLimitDimensionStatus::Available);
+        assert_eq!(rpm.used_before, 0);
+        assert_eq!(rpm.used_after, 0);
+        assert!(rpm.sanitized_negative_used);
+
+        let tpm = reservation_dimension_for(&plan, RateLimitDimension::TokensPerMinute);
+        assert_eq!(tpm.status, RateLimitDimensionStatus::InvalidLimit);
+        assert_eq!(tpm.limit, None);
+
+        let concurrency = reservation_dimension_for(&plan, RateLimitDimension::Concurrency);
+        assert_eq!(
+            concurrency.status,
+            RateLimitDimensionStatus::InvalidRequired
+        );
+    }
+
+    #[test]
+    fn reservation_release_decrements_counters_saturating_at_zero() {
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::release(
+            RateLimitCounterWindow::limited(60, 59),
+            RateLimitCounterWindow::limited(1_000, 50),
+            RateLimitCounterWindow::limited(4, 1),
+            RateLimitRequiredCapacity::new(1, 100, 1),
+            true,
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::Released);
+        assert_eq!(plan.filter_reason, None);
+        assert!(plan.blocking_dimensions.is_empty());
+        assert_eq!(plan.counter_updates_planned, 3);
+
+        let rpm = reservation_dimension_for(&plan, RateLimitDimension::RequestsPerMinute);
+        assert_eq!(rpm.counter_update, RateLimitCounterUpdate::Decrement);
+        assert_eq!(rpm.used_after, 58);
+        assert!(!rpm.saturated_release);
+
+        let tpm = reservation_dimension_for(&plan, RateLimitDimension::TokensPerMinute);
+        assert_eq!(tpm.counter_update, RateLimitCounterUpdate::Decrement);
+        assert_eq!(tpm.used_after, 0);
+        assert!(tpm.saturated_release);
+
+        let concurrency = reservation_dimension_for(&plan, RateLimitDimension::Concurrency);
+        assert_eq!(concurrency.used_after, 0);
+    }
+
+    #[test]
+    fn reservation_release_without_acquired_marker_is_idempotent_noop() {
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::release(
+            RateLimitCounterWindow::limited(60, 59),
+            RateLimitCounterWindow::limited(1_000, 900),
+            RateLimitCounterWindow::limited(4, 1),
+            RateLimitRequiredCapacity::new(1, 100, 1),
+            false,
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::ReleaseNoop);
+        assert_eq!(plan.filter_reason, None);
+        assert!(plan.blocking_dimensions.is_empty());
+        assert_eq!(plan.counter_updates_planned, 0);
+
+        for dimension in [
+            RateLimitDimension::RequestsPerMinute,
+            RateLimitDimension::TokensPerMinute,
+            RateLimitDimension::Concurrency,
+        ] {
+            let summary = reservation_dimension_for(&plan, dimension);
+            assert_eq!(summary.counter_update, RateLimitCounterUpdate::None);
+            assert_eq!(summary.used_before, summary.used_after);
+        }
+
+        let invalid_required = plan_rate_limit_reservation(RateLimitReservationInput::release(
+            RateLimitCounterWindow::limited(60, 59),
+            RateLimitCounterWindow::limited(1_000, 900),
+            RateLimitCounterWindow::limited(4, 1),
+            RateLimitRequiredCapacity::new(1, 100, -1),
+            false,
+        ));
+        assert_eq!(
+            invalid_required.status,
+            RateLimitReservationStatus::ReleaseNoop
+        );
+        assert_eq!(invalid_required.counter_updates_planned, 0);
+    }
+
+    #[test]
+    fn reservation_contract_fixture_is_stable_and_secret_safe() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/routing/rate_limit_reservation_contract.json"
+        ))
+        .expect("rate-limit reservation contract fixture should be valid json");
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::limited(60, 58),
+            RateLimitCounterWindow::limited(1_000, 800),
+            RateLimitCounterWindow::limited(4, 3),
+            RateLimitRequiredCapacity::new(1, 100, 1),
+        ));
+
+        assert_eq!(fixture["scenario"], "rate_limit_reservation_contract");
+        assert_eq!(fixture["schema"], RATE_LIMIT_RESERVATION_CONTRACT_SCHEMA);
+        assert_eq!(
+            plan.status,
+            RateLimitReservationStatus::Acquired,
+            "fixture acquire_under_limits status should match the implementation"
+        );
+        assert_eq!(
+            plan.counter_updates_planned,
+            fixture["stable_behaviors"][0]["counter_updates_planned"]
+                .as_u64()
+                .expect("counter update count") as usize
+        );
+
+        let serialized = serde_json::to_string(&plan)
+            .expect("rate-limit reservation plan should serialize")
+            .to_ascii_lowercase();
+        for forbidden in fixture["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden marker array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(forbidden),
+                "rate-limit reservation plan leaked forbidden marker: {forbidden}"
+            );
+        }
     }
 }

@@ -1,4 +1,12 @@
-import type { HealthSummary, HealthSummaryRecentStats, ProbeResult } from "../api/client";
+import { FormEvent, useState } from "react";
+import {
+  getProviderHealthSummary,
+  type HealthSummary,
+  type HealthSummaryFilters,
+  type HealthSummaryRecentStats,
+  type ProbeResult,
+} from "../api/client";
+import { errorMessage, safeFieldValue } from "./adminUtils";
 import { RefreshCw, RotateCcw } from "./icons";
 import { StatusPill } from "./StatusPill";
 
@@ -24,6 +32,24 @@ type HealthRow = {
   status: ProbeResult["status"];
 };
 
+type MatrixScope = "all" | "Provider" | "Channel" | "Provider key" | "Model";
+
+const healthWindowOptions = [
+  { label: "15m", value: 15 },
+  { label: "1h", value: 60 },
+  { label: "6h", value: 360 },
+  { label: "24h", value: 1440 },
+];
+
+const sampleLimitOptions = [100, 500, 1000];
+
+const matrixScopes: MatrixScope[] = ["all", "Provider", "Channel", "Provider key", "Model"];
+
+const defaultHealthSummaryFilters = {
+  window_minutes: 60,
+  sample_limit: 500,
+} satisfies HealthSummaryFilters;
+
 export function HealthDashboard({
   healthSummary,
   healthSummaryError,
@@ -35,12 +61,41 @@ export function HealthDashboard({
   recoveryRequests,
   results,
 }: Props) {
+  const [filters, setFilters] = useState<HealthSummaryFilters>(defaultHealthSummaryFilters);
+  const [matrixQuery, setMatrixQuery] = useState("");
+  const [matrixScope, setMatrixScope] = useState<MatrixScope>("all");
+  const [summaryErrorOverride, setSummaryErrorOverride] = useState<string | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryOverride, setSummaryOverride] = useState<HealthSummary | null>(null);
+  const effectiveHealthSummary = summaryOverride ?? healthSummary;
+  const effectiveHealthSummaryError = summaryErrorOverride ?? (summaryOverride ? null : healthSummaryError);
+  const controlsLoading = loading || summaryLoading;
   const online = results.filter((result) => result.status === "online").length;
   const serviceHealthScore = results.length > 0 ? Math.round((online / results.length) * 100) : null;
-  const routingHealthScore = routeHealthScore(healthSummary);
-  const windowSuccessRate = successRateText(healthSummary?.recent_window.success_rate);
-  const windowLabel = healthWindowLabel(healthSummary);
-  const rows = healthRows(healthSummary);
+  const routingHealthScore = routeHealthScore(effectiveHealthSummary);
+  const windowSuccessRate = successRateText(effectiveHealthSummary?.recent_window.success_rate);
+  const windowLabel = healthWindowLabel(effectiveHealthSummary);
+  const allRows = healthRows(effectiveHealthSummary);
+  const rows = filterHealthRows(allRows, matrixScope, matrixQuery);
+
+  function updateFilters(nextFilters: HealthSummaryFilters) {
+    setFilters(nextFilters);
+  }
+
+  async function handleRefreshSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSummaryErrorOverride(null);
+    setSummaryLoading(true);
+
+    try {
+      setSummaryOverride(await getProviderHealthSummary(filters));
+    } catch (requestError) {
+      setSummaryErrorOverride(errorMessage(requestError));
+      setSummaryOverride(null);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }
 
   return (
     <div className="dashboard-stack">
@@ -48,15 +103,19 @@ export function HealthDashboard({
         <article className="metric-card">
           <span>Routing health</span>
           <strong>{routingHealthScore === null ? "No signal" : `${routingHealthScore}%`}</strong>
-          <small>{healthSummary ? `${healthSummary.recent_window.sample_count} recent requests` : "Summary unavailable"}</small>
+          <small>
+            {effectiveHealthSummary
+              ? `${effectiveHealthSummary.recent_window.sample_count} recent requests`
+              : "Summary unavailable"}
+          </small>
         </article>
         <article className="metric-card">
           <span>Window success</span>
           <strong>{windowSuccessRate}</strong>
           <small>
-            {healthSummary
-              ? `${healthSummary.recent_window.sample_count} requests / ${windowLabel}`
-              : healthSummaryError ?? "Waiting"}
+            {effectiveHealthSummary
+              ? `${effectiveHealthSummary.recent_window.sample_count} requests / ${windowLabel}`
+              : effectiveHealthSummaryError ?? "Waiting"}
           </small>
         </article>
         <article className="metric-card">
@@ -66,9 +125,85 @@ export function HealthDashboard({
         </article>
         <article className="metric-card">
           <span>Providers</span>
-          <strong>{healthSummary?.totals.providers ?? "-"}</strong>
-          <small>{healthSummary ? `${healthSummary.totals.channels} channels` : healthSummaryError ?? "Waiting"}</small>
+          <strong>{effectiveHealthSummary?.totals.providers ?? "-"}</strong>
+          <small>
+            {effectiveHealthSummary
+              ? `${effectiveHealthSummary.totals.channels} channels`
+              : effectiveHealthSummaryError ?? "Waiting"}
+          </small>
         </article>
+      </section>
+
+      <section className="admin-panel" aria-label="Health summary controls">
+        <div className="section-heading">
+          <div>
+            <h2>Health controls</h2>
+            <p>
+              {effectiveHealthSummary
+                ? `${effectiveHealthSummary.recent_window.sample_count} of ${effectiveHealthSummary.recent_window.sample_limit} samples / ${windowLabel}`
+                : "Choose a summary window and sample limit."}
+            </p>
+          </div>
+        </div>
+
+        <form className="health-controls" onSubmit={handleRefreshSubmit}>
+          <label className="field">
+            Window
+            <select
+              value={String(filters.window_minutes ?? 60)}
+              onChange={(event) =>
+                updateFilters({ ...filters, window_minutes: Number.parseInt(event.currentTarget.value, 10) })
+              }
+            >
+              {healthWindowOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            Sample limit
+            <select
+              value={String(filters.sample_limit ?? 500)}
+              onChange={(event) =>
+                updateFilters({ ...filters, sample_limit: Number.parseInt(event.currentTarget.value, 10) })
+              }
+            >
+              {sampleLimitOptions.map((limit) => (
+                <option key={limit} value={limit}>
+                  {limit}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            Scope
+            <select value={matrixScope} onChange={(event) => setMatrixScope(event.currentTarget.value as MatrixScope)}>
+              {matrixScopes.map((scope) => (
+                <option key={scope} value={scope}>
+                  {scope === "all" ? "All scopes" : scope}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
+            Matrix search
+            <input
+              value={matrixQuery}
+              onChange={(event) => setMatrixQuery(event.currentTarget.value)}
+              placeholder="name, status, route"
+            />
+          </label>
+
+          <button className="secondary-button primary-button--inline" type="submit" disabled={controlsLoading}>
+            <RefreshCw aria-hidden="true" size={18} className={controlsLoading ? "spin" : undefined} />
+            Refresh summary
+          </button>
+        </form>
       </section>
 
       <section aria-label="Service probes">
@@ -110,7 +245,11 @@ export function HealthDashboard({
         <div className="section-heading">
           <div>
             <h2>Health matrix</h2>
-            {healthSummaryError ? <p>{healthSummaryError}</p> : null}
+            <p>
+              {effectiveHealthSummaryError
+                ? effectiveHealthSummaryError
+                : `${rows.length} of ${allRows.length} rows shown across providers, channels, keys, and models.`}
+            </p>
           </div>
         </div>
 
@@ -169,7 +308,13 @@ export function HealthDashboard({
                 })
               ) : (
                 <tr>
-                  <td colSpan={6}>{loading ? "Loading health summary." : "No health summary returned."}</td>
+                  <td colSpan={6}>
+                    {loading
+                      ? "Loading health summary."
+                      : allRows.length > 0
+                        ? "No rows match the current scan."
+                        : "No health summary returned."}
+                  </td>
                 </tr>
               )}
             </tbody>
@@ -188,7 +333,7 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
   return [
     ...summary.providers.map((provider) => ({
       id: provider.id,
-      name: provider.name,
+      name: safeFieldValue(provider.name),
       recoverable: false,
       scope: "Provider",
       score: scoreText(provider.health_score),
@@ -197,7 +342,7 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
     })),
     ...summary.channels.map((channel) => ({
       id: channel.id,
-      name: channel.name,
+      name: safeFieldValue(channel.name),
       recoverable: false,
       scope: "Channel",
       score: scoreText(channel.health_score),
@@ -206,7 +351,7 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
     })),
     ...summary.provider_keys.map((key) => ({
       id: key.id,
-      name: key.key_alias,
+      name: safeFieldValue(key.key_alias),
       recoverable: isProviderKeyRecoverable(key.status),
       scope: "Provider key",
       score: scoreText(key.health_score),
@@ -215,7 +360,7 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
     })),
     ...summary.models.map((model) => ({
       id: model.id,
-      name: model.display_name,
+      name: safeFieldValue(model.display_name),
       recoverable: false,
       scope: "Model",
       score: `${model.routable_channel_count} routes`,
@@ -223,6 +368,25 @@ function healthRows(summary: HealthSummary | null): HealthRow[] {
       status: modelPillStatus(model.routing_state),
     })),
   ];
+}
+
+function filterHealthRows(rows: HealthRow[], scope: MatrixScope, query: string): HealthRow[] {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return rows.filter((row) => {
+    const scopeMatches = scope === "all" || row.scope === scope;
+    if (!scopeMatches) {
+      return false;
+    }
+
+    if (!normalizedQuery) {
+      return true;
+    }
+
+    return [row.scope, row.name, row.signal, row.score, row.id].some((value) =>
+      value.toLowerCase().includes(normalizedQuery),
+    );
+  });
 }
 
 function modelPillStatus(routingState: string): ProbeResult["status"] {
@@ -259,19 +423,20 @@ function scoreText(score: number | null | undefined): string {
 }
 
 function signalText(status: string, recent: HealthSummaryRecentStats, configuredError?: string | null): string {
-  const recentError = recent.last_error?.code ?? configuredError;
+  const safeStatus = safeFieldValue(status);
+  const recentError = safeFieldValue(recent.last_error?.code ?? configuredError);
 
   if (typeof recent.success_rate === "number" && Number.isFinite(recent.success_rate)) {
-    return `${status} / ${successRateText(recent.success_rate)} success`;
+    return `${safeStatus} / ${successRateText(recent.success_rate)} success`;
   }
-  if (recentError) {
-    return `${status} / ${recentError}`;
+  if (recentError !== "-") {
+    return `${safeStatus} / ${recentError}`;
   }
   if (recent.error_count > 0) {
-    return `${status} / ${recent.error_count} errors`;
+    return `${safeStatus} / ${recent.error_count} errors`;
   }
 
-  return status;
+  return safeStatus;
 }
 
 function successRateText(rate: number | null | undefined): string {

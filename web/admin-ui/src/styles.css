@@ -601,6 +601,14 @@ h3 {
   grid-template-columns: minmax(260px, 1fr) minmax(160px, 220px) auto;
 }
 
+.health-controls {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(130px, 0.7fr) minmax(150px, 0.8fr) minmax(220px, 1.2fr) auto;
+  gap: 12px;
+  align-items: end;
+  min-width: 0;
+}
+
 .form-grid--three {
   grid-template-columns: repeat(3, minmax(180px, 1fr));
 }
@@ -1128,6 +1136,7 @@ h3 {
   .advanced-json-grid,
   .advanced-json-form-grid,
   .payload-preview-grid,
+  .health-controls,
   .filter-bar {
     grid-template-columns: repeat(2, minmax(160px, 1fr));
   }
@@ -1165,6 +1174,7 @@ h3 {
   .advanced-json-grid,
   .advanced-json-form-grid,
   .payload-preview-grid,
+  .health-controls,
   .filter-bar,
   .detail-list {
     grid-template-columns: 1fr;
