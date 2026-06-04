@@ -9,6 +9,7 @@ param(
   [switch]$OpenApiTypescript,
   [switch]$TypescriptFetch,
   [switch]$AllowPackageDownload,
+  [switch]$CacheProbe,
   [switch]$CommandMatrix,
   [switch]$Clean,
   [switch]$SelfTest,
@@ -25,7 +26,8 @@ param(
   [switch]$SimulateSemanticEvidencePass,
   [switch]$SimulateSemanticEvidenceFailure,
   [switch]$SimulateSemanticEvidenceBlocker,
-  [switch]$SimulateToolPreflightBlocker
+  [switch]$SimulateToolPreflightBlocker,
+  [switch]$SimulateCacheProbe
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,6 +52,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLIENT_GENERATION) { $Clien
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT) { $OpenApiTypescript = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH) { $TypescriptFetch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD) { $AllowPackageDownload = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE) { $CacheProbe = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX) { $CommandMatrix = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLEAN) { $Clean = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST) { $SelfTest = $true }
@@ -67,6 +70,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE) { $SimulateSemanticEvidenceFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER) { $SimulateSemanticEvidenceBlocker = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER) { $SimulateToolPreflightBlocker = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE) { $SimulateCacheProbe = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -83,7 +87,7 @@ if ($ClientGeneration) {
   $TypescriptFetch = $true
 }
 
-if ($CommandMatrix) {
+if ($CommandMatrix -or $CacheProbe) {
   $Redocly = $false
   $OpenApiGeneratorValidate = $false
   $OpenApiTypescript = $false
@@ -224,6 +228,7 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-generated-client-missing-required"),
     (Join-Path $TempRoot "self-test-generated-client-missing-output"),
     (Join-Path $TempRoot "self-test-generated-client-stale-marker"),
+    (Join-Path $TempRoot "self-test-cache-probe"),
     (Join-Path $TempRoot "self-test-semantic-evidence-pass"),
     (Join-Path $TempRoot "self-test-semantic-evidence-failure"),
     (Join-Path $TempRoot "self-test-semantic-evidence-blocker"),
@@ -369,6 +374,7 @@ function Get-WrapperCommandSummary {
   if ($SimulateSemanticEvidenceFailure) { [void]$simulatedModes.Add("semantic_evidence_failure") }
   if ($SimulateSemanticEvidenceBlocker) { [void]$simulatedModes.Add("semantic_evidence_blocker") }
   if ($SimulateToolPreflightBlocker) { [void]$simulatedModes.Add("tool_preflight_blocker") }
+  if ($SimulateCacheProbe) { [void]$simulatedModes.Add("cache_probe") }
 
   return [ordered]@{
     script = "scripts/verify_control_plane_ledger_adjustment_openapi_semantic.ps1"
@@ -378,6 +384,7 @@ function Get-WrapperCommandSummary {
     requested_checks = @($requestedChecks.ToArray())
     simulated_modes = @($simulatedModes.ToArray())
     allow_package_download = [bool]$AllowPackageDownload
+    cache_probe = [bool]$CacheProbe
     command_matrix = [bool]$CommandMatrix
     clean_requested = [bool]$Clean
     self_test = [bool]$SelfTest
@@ -574,6 +581,207 @@ function Write-OpenApiCommandMatrix {
   }
 }
 
+function Invoke-LightweightToolVersionProbe {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string[]]$Arguments
+  )
+
+  $command = Get-Command $Name -ErrorAction SilentlyContinue
+  if ($null -eq $command) {
+    return [pscustomobject]@{
+      Name = $Name
+      Status = "missing"
+      Version = "unavailable"
+      ToolPath = "unavailable"
+      DurationMs = 0
+      Output = @("$Name not found")
+    }
+  }
+
+  $result = Invoke-Process -FileName $command.Source -Arguments $Arguments -Label "$Name availability probe"
+  $versionLines = @(Get-BoundedSafeLines -Lines $result.Output -TakeLast 3 -MaxLineLength 120)
+  $version = if ($versionLines.Count -gt 0) { $versionLines[0] } else { "unknown" }
+  $status = if ($result.ExitCode -eq 0) { "available" } else { "blocked" }
+  return [pscustomobject]@{
+    Name = $Name
+    Status = $status
+    Version = $version
+    ToolPath = Get-SafeToolPath $command
+    DurationMs = $result.DurationMs
+    Output = @($result.Output)
+  }
+}
+
+function Invoke-NpmCachePackageProbe {
+  param([Parameter(Mandatory = $true)][string]$Package)
+
+  $npm = Get-Command npm -ErrorAction SilentlyContinue
+  if ($null -eq $npm) {
+    return [pscustomobject]@{
+      Status = "blocked"
+      Classification = "blocker"
+      ExitCode = 2
+      DurationMs = 0
+      Output = @("npm not found")
+    }
+  }
+
+  if (-not (Test-Path $NpmCache)) {
+    return [pscustomobject]@{
+      Status = "offline_repo_cache_missing"
+      Classification = "blocker"
+      ExitCode = 2
+      DurationMs = 0
+      Output = @("offline npm cache missing")
+    }
+  }
+
+  $args = @("cache", "ls", $Package, "--cache", $NpmCache, "--offline")
+  $result = Invoke-Process -FileName $npm.Source -Arguments $args -Label "npm cache probe $Package" -ExternalTool
+  $outputText = ($result.Output -join "`n")
+  if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($outputText)) {
+    $status = "offline_repo_cache_present"
+    $classification = "pass"
+    $exitCode = 0
+  } else {
+    $status = "offline_repo_cache_missing"
+    $classification = "blocker"
+    $exitCode = 2
+  }
+
+  return [pscustomobject]@{
+    Status = $status
+    Classification = $classification
+    ExitCode = $exitCode
+    DurationMs = $result.DurationMs
+    Output = @($result.Output)
+  }
+}
+
+function Get-ToolProbeVersion {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$ToolProbes,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  if (-not $ToolProbes.ContainsKey($Name)) {
+    return "unavailable"
+  }
+  return [string]$ToolProbes[$Name].Version
+}
+
+function Get-ToolProbePathSummary {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$ToolProbes,
+    [Parameter(Mandatory = $true)][string[]]$Names
+  )
+
+  $parts = New-Object System.Collections.Generic.List[string]
+  foreach ($name in $Names) {
+    if ($ToolProbes.ContainsKey($name)) {
+      [void]$parts.Add("$name=$($ToolProbes[$name].ToolPath)")
+    } else {
+      [void]$parts.Add("$name=unavailable")
+    }
+  }
+  return ($parts.ToArray() -join ";")
+}
+
+function Get-ToolProbePreflightStatus {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$ToolProbes,
+    [Parameter(Mandatory = $true)][string[]]$Names
+  )
+
+  foreach ($name in $Names) {
+    if (-not $ToolProbes.ContainsKey($name) -or $ToolProbes[$name].Status -ne "available") {
+      return "blocked"
+    }
+  }
+  return "passed"
+}
+
+function Get-ToolProbeOutput {
+  param(
+    [Parameter(Mandatory = $true)][hashtable]$ToolProbes,
+    [Parameter(Mandatory = $true)][string[]]$Names
+  )
+
+  $lines = New-Object System.Collections.Generic.List[string]
+  foreach ($name in $Names) {
+    if ($ToolProbes.ContainsKey($name)) {
+      [void]$lines.Add("$name=$($ToolProbes[$name].Version)")
+    } else {
+      [void]$lines.Add("$name=unavailable")
+    }
+  }
+  return @($lines.ToArray())
+}
+
+function Add-OpenApiCacheProbeEvidence {
+  param([switch]$Simulated)
+
+  $matrix = @(Get-OpenApiCommandMatrix)
+  Assert-OpenApiCommandMatrixContract -Matrix $matrix
+  if ($script:Failures.Count -gt 0) {
+    return
+  }
+
+  $toolProbes = @{}
+  if ($Simulated) {
+    $toolProbes["node"] = [pscustomobject]@{ Status = "available"; Version = "v20.0.0-simulated"; ToolPath = "node=simulated"; DurationMs = 1; Output = @("node simulated") }
+    $toolProbes["npm"] = [pscustomobject]@{ Status = "available"; Version = "10.0.0-simulated"; ToolPath = "npm=simulated"; DurationMs = 1; Output = @("npm simulated") }
+    $toolProbes["java"] = [pscustomobject]@{ Status = "missing"; Version = "unavailable"; ToolPath = "java=unavailable"; DurationMs = 0; Output = @("java not found") }
+  } else {
+    $toolProbes["node"] = Invoke-LightweightToolVersionProbe -Name "node" -Arguments @("--version")
+    $toolProbes["npm"] = Invoke-LightweightToolVersionProbe -Name "npm" -Arguments @("--version")
+    $toolProbes["java"] = Invoke-LightweightToolVersionProbe -Name "java" -Arguments @("-version")
+  }
+
+  foreach ($entry in $matrix) {
+    $requiredTools = @($entry.required_tools)
+    $preflightStatus = Get-ToolProbePreflightStatus -ToolProbes $toolProbes -Names $requiredTools
+    $toolPath = Get-ToolProbePathSummary -ToolProbes $toolProbes -Names $requiredTools
+    $toolOutput = @(Get-ToolProbeOutput -ToolProbes $toolProbes -Names $requiredTools)
+    if ($Simulated) {
+      $cacheProbe = if ([string]$entry.package -eq "@openapitools/openapi-generator-cli") {
+        [pscustomobject]@{ Status = "offline_repo_cache_missing"; Classification = "blocker"; ExitCode = 2; DurationMs = 2; Output = @("simulated package cache missing") }
+      } else {
+        [pscustomobject]@{ Status = "offline_repo_cache_present"; Classification = "pass"; ExitCode = 0; DurationMs = 2; Output = @("simulated package cache present") }
+      }
+    } else {
+      $cacheProbe = Invoke-NpmCachePackageProbe -Package ([string]$entry.package)
+    }
+
+    $classification = if ($preflightStatus -eq "passed" -and $cacheProbe.Classification -eq "pass") { "pass" } else { "blocker" }
+    $exitCode = if ($classification -eq "pass") { 0 } else { 2 }
+    $blockerReason = ""
+    if ($classification -eq "blocker") {
+      $blockerReason = "tool or offline package cache unavailable before opt-in command"
+      Add-Blocker "[BLOCKED] cache/tool probe $($entry.name) - $blockerReason"
+    }
+
+    Add-EvidenceRecord `
+      -Kind ([string]$entry.evidence_kind) `
+      -Label "cache/tool availability probe $($entry.name)" `
+      -Tool ([string]$entry.tool) `
+      -ToolVersion (Get-ToolProbeVersion -ToolProbes $toolProbes -Name ([string]$requiredTools[0])) `
+      -Package ([string]$entry.package) `
+      -Classification $classification `
+      -ExitCode $exitCode `
+      -Command ([string]$entry.safe_command) `
+      -Output ($toolOutput + @($cacheProbe.Output)) `
+      -BlockerReason $blockerReason `
+      -ProvenanceMode $(if ($Simulated) { "simulated" } else { "real" }) `
+      -ToolPath $toolPath `
+      -PreflightStatus $preflightStatus `
+      -PackageCacheStatus ([string]$cacheProbe.Status) `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -DurationMs ([int64]($cacheProbe.DurationMs + ($requiredTools | ForEach-Object { if ($toolProbes.ContainsKey($_)) { $toolProbes[$_].DurationMs } else { 0 } } | Measure-Object -Sum).Sum))
+  }
+}
+
 function Add-EvidenceRecord {
   param(
     [Parameter(Mandatory = $true)][string]$Kind,
@@ -738,7 +946,7 @@ function Assert-EvidenceReportContract {
     Add-Failure "[FAIL] evidence report contract - missing command_summary"
   } else {
     foreach ($field in @($report.command_summary.PSObject.Properties.Name)) {
-      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "command_matrix", "clean_requested", "self_test").Contains($field)) {
+      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "cache_probe", "command_matrix", "clean_requested", "self_test").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected command_summary field '$field'"
       }
     }
@@ -2061,6 +2269,13 @@ function Invoke-SelfTest {
   Invoke-SelfTestChild -Name "simulated generated-client readiness unsafe target" -Arguments @("-SimulateGeneratedClientReadinessUnsafeTarget") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "command matrix dry-run" -Arguments @("-CommandMatrix") -ExpectedExitCode 0 -ExpectedEvidenceAbsent
   Invoke-SelfTestChild `
+    -Name "simulated cache/tool availability probe" `
+    -Arguments @("-SimulateCacheProbe") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-cache-probe") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("pass", "blocker") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
     -Name "simulated semantic validator evidence pass" `
     -Arguments @("-SimulateSemanticEvidencePass") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-pass") `
@@ -2261,8 +2476,18 @@ if ($SimulateToolPreflightBlocker) {
   Exit-WithResult
 }
 
+if ($SimulateCacheProbe) {
+  Add-OpenApiCacheProbeEvidence -Simulated
+  Exit-WithResult
+}
+
 if ($CommandMatrix) {
   Write-OpenApiCommandMatrix
+  Exit-WithResult
+}
+
+if ($CacheProbe) {
+  Add-OpenApiCacheProbeEvidence
   Exit-WithResult
 }
 

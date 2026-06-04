@@ -68,6 +68,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_CACHE_PROBE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST=1`
@@ -85,6 +86,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE=1`
 
 Optional path/env overrides:
 
@@ -129,6 +131,10 @@ Expected result:
   rejected before inspection.
 - Child case `command matrix dry-run` returns exit `0`, prints the real opt-in
   command matrix, and does not write evidence or run npm/java tools.
+- Child case `simulated cache/tool availability probe` returns exit `2` and
+  writes bounded evidence covering available/missing tools, offline cache
+  present/missing, download-disabled state, per-command blocker classification,
+  and duration fields without running validators/generators.
 - Child case `simulated semantic validator evidence pass` returns exit `0` and
   writes a bounded evidence report with classification `pass`.
 - Child case `simulated semantic validator evidence failure` returns exit `1`
@@ -175,6 +181,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -CommandMatrix
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateCacheProbe
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceFailure
@@ -189,14 +197,16 @@ The first three direct simulated commands are expected to return `2`, `1`, and
 returns `0`; the sensitive-command failure returns `1`. The generated-client
 inspection commands return `0` and `1`. The generated-client readiness commands
 return `1` for missing output, stale marker, and unsafe target. The command
-matrix dry-run returns `0`. The semantic evidence commands return `0`, `1`, and
-`2`. The tool-preflight blocker command returns `2`. They prove wrapper
-failure-path classification, generated-client readiness gating, command matrix
-coverage, bounded evidence lifecycle, path/output hardening,
-preflight/performance evidence shape, and redaction only. They do not run
-Redocly, OpenAPI Generator, `openapi-typescript`, generated-client inspection
-against real generated output, or any live Postgres checks. Do not use simulated
-passes or the matrix dry-run to close the real semantic/client-generation gap.
+matrix dry-run returns `0`. The simulated cache probe returns `2`. The semantic
+evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
+returns `2`. They prove wrapper failure-path classification, generated-client
+readiness gating, command matrix coverage, cache/tool availability evidence,
+bounded evidence lifecycle, path/output hardening, preflight/performance
+evidence shape, and redaction only. They do not run Redocly, OpenAPI Generator,
+`openapi-typescript`, generated-client inspection against real generated
+output, or any live Postgres checks. Do not use simulated passes, cache-probe
+blockers, or the matrix dry-run to close the real semantic/client-generation
+gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -405,6 +415,51 @@ operation keys, raw metadata, payload, or body data.
 The command matrix closes only the blocker-audit/readiness contract. It cannot
 close the real semantic/client-generation gap because it intentionally does not
 run real external tools.
+
+## Cache/Tool Availability Probe
+
+Use the cache probe when you need to know whether the current machine or CI
+runner is ready to attempt the real opt-in validators/generators. The probe is
+still lightweight: it does not run Redocly, OpenAPI Generator validation,
+`openapi-typescript`, `typescript-fetch`, client generation, or package
+download.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -CacheProbe
+```
+
+The probe performs only these checks:
+
+- `node --version`
+- `npm --version`
+- `java -version`
+- offline `npm cache ls <package> --cache .tool-cache\npm --offline` for:
+  - `@redocly/cli`
+  - `@openapitools/openapi-generator-cli`
+  - `openapi-typescript`
+
+Expected evidence fields per command:
+
+- `tool_path`: safe bounded path summary for `node`, `npm`, and `java` where
+  required
+- `tool_version`: bounded version marker
+- `package_cache_status`: `offline_repo_cache_present`,
+  `offline_repo_cache_missing`, or `download_allowed`
+- `package_download_allowed`: normally `false`; `true` only when
+  `-AllowPackageDownload` is explicitly supplied
+- `preflight_status`: `passed` or `blocked`
+- `classification`: `pass` or `blocker`
+- `duration_ms`: bounded probe duration
+- `output_tail`: bounded and redacted probe output
+
+If any required tool or offline package cache is unavailable, the probe writes a
+blocker evidence report and exits as externally blocked. That result is useful
+for acceptance notes, but it does not close the real semantic/client-generation
+gap.
+
+The probe output and evidence report must remain secret-safe. It must not print
+Authorization/Cookie values, bearer tokens, package credentials, API keys, raw
+operation keys, raw metadata, payload, or body data.
 
 ## Semantic Validator Commands
 
