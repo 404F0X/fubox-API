@@ -1,0 +1,87 @@
+{
+  "scenario": "control_plane_ledger_adjustment_execute_live_postgres_smoke",
+  "todo": ["E11-007-S6", "E1-004"],
+  "script": "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
+  "default_tests_require_live_db": false,
+  "external_blocked_exit_code": 2,
+  "endpoint": {
+    "method": "POST",
+    "path": "/admin/ledger/adjustments/dry-run",
+    "required_permission": "billing_adjust",
+    "execute_mode": "execute"
+  },
+  "live_requirements": {
+    "control_plane_http_required": true,
+    "compose_postgres_required": true,
+    "migrated_schema_required": true,
+    "dev_admin_seed_required": true,
+    "default_wallet_required": true
+  },
+  "flow": [
+    {
+      "name": "seed_related_confirmed_debit",
+      "via": "compose_postgres_psql",
+      "tenant_bounded": true,
+      "entry_type": "settle",
+      "status": "confirmed",
+      "amount": "-0.25000000"
+    },
+    {
+      "name": "execute_apply",
+      "via": "control_plane_api",
+      "expected_status": 201,
+      "expected_outcome": "applied",
+      "ledger_write": true,
+      "audit_log_write": true
+    },
+    {
+      "name": "execute_idempotent_replay",
+      "via": "control_plane_api",
+      "expected_status": 200,
+      "expected_outcome": "idempotent",
+      "ledger_write": false,
+      "audit_log_write": false
+    },
+    {
+      "name": "refund_over_remaining_refusal",
+      "via": "control_plane_api",
+      "expected_status": 400,
+      "expected_error_code": "bad_request",
+      "success_audit_created": false,
+      "ledger_write": false
+    },
+    {
+      "name": "concurrent_refund_race",
+      "via": "control_plane_api_parallel",
+      "expected_statuses": [201, 400],
+      "confirmed_credit_rows_for_source": 1
+    }
+  ],
+  "transaction_evidence": {
+    "ledger_row_exists_after_apply": true,
+    "success_audit_row_exists_after_apply": true,
+    "audit_resource_type": "ledger_entry",
+    "audit_actions": ["ledger.adjust", "ledger.refund"],
+    "audit_metadata_transactional": true,
+    "audit_metadata_execute_marker": true,
+    "audit_resource_id_matches_ledger_entry_id": true,
+    "audit_after_snapshot_secret_safe": true,
+    "idempotent_replay_does_not_increase_ledger_or_audit_count": true,
+    "over_remaining_refusal_does_not_increase_ledger_or_audit_count": true
+  },
+  "safe_output_contract": {
+    "server_dedupe_material_echoed": false,
+    "ledger_snapshots_echoed": false,
+    "raw_metadata_echoed": false,
+    "raw_request_material_echoed": false,
+    "credential_material_echoed": false,
+    "provider_material_echoed": false
+  },
+  "blocked_contract": {
+    "docker_unavailable": "external_blocked",
+    "compose_postgres_unavailable": "external_blocked",
+    "control_plane_unavailable": "external_blocked",
+    "migrations_missing": "external_blocked",
+    "blocked_is_not_success": true
+  }
+}
