@@ -1,0 +1,141 @@
+{
+  "contract": "billing_ledger_postgres_sqlx_schema_contract_v1",
+  "source_fixture": "consistent_writer_executor_contract.json",
+  "feature": "postgres-sqlx",
+  "live_smoke": {
+    "env_var": "BILLING_LEDGER_LIVE_DATABASE_URL",
+    "status_without_env": "not_run",
+    "external_blocker": "live postgres database URL and migrated ledger schema are required"
+  },
+  "returning_schema_by_kind": {
+    "lock_wallet": ["id", "balance_floor"],
+    "lock_credit_grants": ["id", "remaining_amount"],
+    "lock_budgets": ["id", "scope", "limit_amount"],
+    "lock_ledger_entries": [
+      "id",
+      "request_id",
+      "related_ledger_entry_id",
+      "entry_type",
+      "amount",
+      "currency",
+      "status"
+    ],
+    "assert_balance_window": ["passed"],
+    "assert_budget_window": ["passed"],
+    "insert_ledger_entry": ["id", "entry_type", "amount", "currency", "status"],
+    "update_ledger_status": ["id", "status"]
+  },
+  "cases": [
+    {
+      "source_case": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+      "operation": "reserve",
+      "expected_statement_order": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries",
+        "assert_balance_window",
+        "assert_budget_window",
+        "assert_budget_window",
+        "assert_budget_window",
+        "insert_ledger_entry"
+      ],
+      "expected_insert_bind_markers": [
+        "tenant_id",
+        "project_id",
+        "virtual_key_id",
+        "wallet_id",
+        "request_id",
+        "related_ledger_entry_id",
+        "entry_type",
+        "amount",
+        "currency",
+        "status",
+        "operation_key_bind",
+        "metadata"
+      ],
+      "expected_insert_returning": ["id", "entry_type", "amount", "currency", "status"],
+      "expected_status_update_bind_markers": null,
+      "expected_status_update_returning": null,
+      "operation_key_bind_statement_count": 2,
+      "must_contain_sql_fragments": [
+        "on conflict (tenant_id, idempotency_key) do nothing returning id",
+        "amount::text as amount"
+      ]
+    },
+    {
+      "source_case": "settle_apply_reverses_pending_reserve_and_inserts_confirmed_debit",
+      "operation": "settle",
+      "expected_statement_order": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries",
+        "assert_balance_window",
+        "insert_ledger_entry",
+        "update_ledger_status"
+      ],
+      "expected_insert_bind_markers": [
+        "tenant_id",
+        "project_id",
+        "virtual_key_id",
+        "wallet_id",
+        "request_id",
+        "related_ledger_entry_id",
+        "entry_type",
+        "amount",
+        "currency",
+        "status",
+        "operation_key_bind",
+        "metadata"
+      ],
+      "expected_insert_returning": ["id", "entry_type", "amount", "currency", "status"],
+      "expected_status_update_bind_markers": [
+        "tenant_id",
+        "ledger_entry_id",
+        "from_status",
+        "to_status"
+      ],
+      "expected_status_update_returning": ["id", "status"],
+      "operation_key_bind_statement_count": 2,
+      "must_contain_sql_fragments": [
+        "update ledger_entries set status = $4 where tenant_id = $1 and id = $2 and status = $3 returning id, status"
+      ]
+    },
+    {
+      "source_case": "partial_refund_apply_inserts_confirmed_credit",
+      "operation": "refund_partial",
+      "expected_statement_order": [
+        "lock_wallet",
+        "lock_credit_grants",
+        "lock_budgets",
+        "lock_ledger_entries",
+        "assert_balance_window",
+        "insert_ledger_entry"
+      ],
+      "expected_insert_bind_markers": [
+        "tenant_id",
+        "project_id",
+        "virtual_key_id",
+        "wallet_id",
+        "request_id",
+        "related_ledger_entry_id",
+        "entry_type",
+        "amount",
+        "currency",
+        "status",
+        "operation_key_bind",
+        "metadata"
+      ],
+      "expected_insert_returning": ["id", "entry_type", "amount", "currency", "status"],
+      "expected_status_update_bind_markers": null,
+      "expected_status_update_returning": null,
+      "operation_key_bind_statement_count": 2,
+      "must_contain_sql_fragments": [
+        "($3::uuid is not null and id = $3)",
+        "($4::uuid is not null and related_ledger_entry_id = $4)",
+        "idempotency_key = $5"
+      ]
+    }
+  ]
+}

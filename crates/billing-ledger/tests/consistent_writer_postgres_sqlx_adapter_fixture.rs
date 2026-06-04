@@ -16,6 +16,7 @@ use ai_gateway_billing_ledger::{
     plan_consistent_ledger_postgres_sqlx_executable_statements,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
 #[cfg(feature = "postgres-sqlx")]
 use std::{borrow::Cow, error::Error, fmt};
 use uuid::Uuid;
@@ -24,6 +25,9 @@ const EXECUTOR_FIXTURE: &str =
     include_str!("../../../tests/fixtures/billing/consistent_writer_executor_contract.json");
 const SQLX_ADAPTER_FIXTURE: &str = include_str!(
     "../../../tests/fixtures/billing/consistent_writer_postgres_sqlx_adapter_contract.json"
+);
+const SQLX_SCHEMA_FIXTURE: &str = include_str!(
+    "../../../tests/fixtures/billing/consistent_writer_postgres_sqlx_schema_contract.json"
 );
 const MONEY_SCALE: u32 = 8;
 
@@ -44,6 +48,38 @@ struct SqlxAdapterFixture {
     #[allow(dead_code)]
     executable_conversion: ExecutableConversionFixture,
     db_error_cases: Vec<DbErrorCaseFixture>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct SqlxSchemaFixture {
+    contract: String,
+    source_fixture: String,
+    feature: String,
+    live_smoke: LiveSmokeFixture,
+    returning_schema_by_kind: BTreeMap<String, Vec<String>>,
+    cases: Vec<SqlxSchemaCaseFixture>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LiveSmokeFixture {
+    env_var: String,
+    status_without_env: String,
+    external_blocker: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct SqlxSchemaCaseFixture {
+    source_case: String,
+    operation: String,
+    expected_statement_order: Vec<String>,
+    expected_insert_bind_markers: Vec<String>,
+    expected_insert_returning: Vec<String>,
+    expected_status_update_bind_markers: Option<Vec<String>>,
+    expected_status_update_returning: Option<Vec<String>>,
+    operation_key_bind_statement_count: usize,
+    must_contain_sql_fragments: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -304,6 +340,43 @@ fn postgres_db_error_mapping_is_stable_and_secret_safe() {
     }
 }
 
+#[test]
+fn postgres_sqlx_schema_fixture_documents_live_smoke_boundary() {
+    let schema_fixture: SqlxSchemaFixture =
+        serde_json::from_str(SQLX_SCHEMA_FIXTURE).expect("schema fixture should parse");
+
+    assert_eq!(
+        schema_fixture.contract,
+        "billing_ledger_postgres_sqlx_schema_contract_v1"
+    );
+    assert_eq!(
+        schema_fixture.source_fixture,
+        "consistent_writer_executor_contract.json"
+    );
+    assert_eq!(schema_fixture.feature, "postgres-sqlx");
+
+    if std::env::var(&schema_fixture.live_smoke.env_var).is_err() {
+        assert_eq!(schema_fixture.live_smoke.status_without_env, "not_run");
+        assert!(
+            schema_fixture
+                .live_smoke
+                .external_blocker
+                .contains("live postgres database URL"),
+            "fixture should document the live DB blocker"
+        );
+    }
+
+    for operation in ["reserve", "settle", "refund_partial"] {
+        assert!(
+            schema_fixture
+                .cases
+                .iter()
+                .any(|case| case.operation == operation),
+            "fixture should cover {operation}"
+        );
+    }
+}
+
 #[cfg(feature = "postgres-sqlx")]
 #[test]
 fn postgres_sqlx_converter_builds_ordered_concrete_secret_safe_executables() {
@@ -411,6 +484,152 @@ fn postgres_sqlx_converter_builds_ordered_concrete_secret_safe_executables() {
 
 #[cfg(feature = "postgres-sqlx")]
 #[test]
+fn postgres_sqlx_schema_contract_covers_reserve_settle_refund_executables() {
+    let source_fixture: SourceFixture =
+        serde_json::from_str(EXECUTOR_FIXTURE).expect("source fixture should parse");
+    let adapter_fixture: SqlxAdapterFixture =
+        serde_json::from_str(SQLX_ADAPTER_FIXTURE).expect("adapter fixture should parse");
+    let schema_fixture: SqlxSchemaFixture =
+        serde_json::from_str(SQLX_SCHEMA_FIXTURE).expect("schema fixture should parse");
+
+    for schema_case in &schema_fixture.cases {
+        let source_case = source_fixture
+            .cases
+            .iter()
+            .find(|case| case.name == schema_case.source_case)
+            .expect("source case");
+        assert_eq!(source_case.operation, schema_case.operation);
+
+        let request = request_from_fixture(&source_fixture.scope, source_case);
+        let state = state_from_fixture(&source_case.state);
+        let writer_plan =
+            plan_consistent_ledger_write(request, &state).expect("writer plan should build");
+        let command_plan = plan_consistent_ledger_write_commands(&writer_plan);
+        let postgres_plan = plan_consistent_ledger_postgres_execution(&writer_plan, &command_plan);
+        let executable_statements = plan_consistent_ledger_postgres_sqlx_executable_statements(
+            &writer_plan,
+            &postgres_plan,
+        )
+        .expect("sqlx executable statements should convert");
+
+        let statement_order = executable_statements
+            .iter()
+            .map(|statement| statement_kind_name(statement.kind).to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(statement_order, schema_case.expected_statement_order);
+
+        let operation_key_bind_statement_count = executable_statements
+            .iter()
+            .filter(|statement| {
+                statement
+                    .bind_markers
+                    .contains(&ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind)
+            })
+            .count();
+        assert_eq!(
+            operation_key_bind_statement_count,
+            schema_case.operation_key_bind_statement_count
+        );
+
+        for executable in &executable_statements {
+            let kind_name = statement_kind_name(executable.kind);
+            let expected_returning = schema_fixture
+                .returning_schema_by_kind
+                .get(kind_name)
+                .expect("expected returning schema");
+            assert_eq!(
+                column_names(&executable.returning_columns),
+                *expected_returning,
+                "{kind_name} returning schema"
+            );
+            assert_eq!(executable.bind_markers.len(), executable.binds.len());
+            assert!(
+                executable.sql.contains("$1"),
+                "{kind_name} should use binds"
+            );
+            assert!(
+                !executable.sql.contains("<private"),
+                "{kind_name} should be concrete"
+            );
+            assert!(
+                !executable.sql.contains("$tenant_id"),
+                "{kind_name} should not expose template placeholders"
+            );
+            assert!(
+                !executable.sql.contains("$private_operation_key"),
+                "{kind_name} should not expose raw operation-key placeholders"
+            );
+        }
+
+        let insert = executable_statements
+            .iter()
+            .find(|statement| {
+                statement.kind == ConsistentLedgerPostgresStatementKind::InsertLedgerEntry
+            })
+            .expect("insert executable");
+        assert_eq!(
+            bind_marker_names(&insert.bind_markers),
+            schema_case.expected_insert_bind_markers
+        );
+        assert_eq!(
+            column_names(&insert.returning_columns),
+            schema_case.expected_insert_returning
+        );
+
+        match &schema_case.expected_status_update_returning {
+            Some(expected_returning) => {
+                let update = executable_statements
+                    .iter()
+                    .find(|statement| {
+                        statement.kind == ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus
+                    })
+                    .expect("status update executable");
+                assert_eq!(
+                    bind_marker_names(&update.bind_markers),
+                    schema_case
+                        .expected_status_update_bind_markers
+                        .clone()
+                        .expect("expected status update bind markers")
+                );
+                assert_eq!(column_names(&update.returning_columns), *expected_returning);
+                assert!(
+                    !update.sql.contains("related_ledger_entry_id"),
+                    "status update must target ledger_entry_id only"
+                );
+            }
+            None => assert!(
+                executable_statements.iter().all(|statement| {
+                    statement.kind != ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus
+                }),
+                "{} should not include a status update",
+                schema_case.source_case
+            ),
+        }
+
+        for fragment in &schema_case.must_contain_sql_fragments {
+            assert!(
+                executable_statements
+                    .iter()
+                    .any(|statement| statement.sql.contains(fragment)),
+                "{} should contain SQL fragment `{fragment}`",
+                schema_case.source_case
+            );
+        }
+
+        let debug = format!("{executable_statements:?}");
+        assert!(debug.contains("returning_columns"));
+        assert!(debug.contains("<concrete_sql_omitted>"));
+        assert!(debug.contains("OperationKey(<bind_marker_only>)"));
+        assert_secret_safe_text(
+            &debug,
+            &adapter_fixture.secret_safe_forbidden_terms,
+            &format!("{} sqlx schema debug", schema_case.source_case),
+        );
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[test]
 fn postgres_sqlx_feature_boundary_keeps_bind_values_private_and_maps_sqlx_errors() {
     let adapter_fixture: SqlxAdapterFixture =
         serde_json::from_str(SQLX_ADAPTER_FIXTURE).expect("adapter fixture should parse");
@@ -423,6 +642,7 @@ fn postgres_sqlx_feature_boundary_keeps_bind_values_private_and_maps_sqlx_errors
             ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind,
             ConsistentLedgerPostgresSqlxBindMarker::Metadata,
         ],
+        returning_columns: vec!["id", "entry_type", "amount", "currency", "status"],
         binds: vec![
             ConsistentLedgerPostgresSqlxBindValue::Uuid(
                 "00000000-0000-0000-0000-000000000001"
@@ -667,6 +887,11 @@ fn bind_type_name(bind: &ConsistentLedgerPostgresSqlxBindValue) -> &'static str 
         ConsistentLedgerPostgresSqlxBindValue::Json(_) => "json",
         ConsistentLedgerPostgresSqlxBindValue::OperationKey(_) => "operation_key",
     }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn column_names(columns: &[&'static str]) -> Vec<String> {
+    columns.iter().map(|column| (*column).to_string()).collect()
 }
 
 #[cfg(feature = "postgres-sqlx")]

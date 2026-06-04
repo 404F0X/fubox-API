@@ -4,6 +4,9 @@ use uuid::Uuid;
 #[cfg(feature = "postgres-sqlx")]
 use std::fmt;
 
+#[cfg(feature = "postgres-sqlx")]
+use sqlx::Row;
+
 use crate::{
     ConsistentLedgerBoundedCommand, ConsistentLedgerBoundedCommandKind,
     ConsistentLedgerCommandPlan, ConsistentLedgerScope, ConsistentLedgerWriterPlan, FixedDecimal,
@@ -130,6 +133,7 @@ pub struct ConsistentLedgerPostgresSqlxExecutableStatement<'a> {
     pub kind: ConsistentLedgerPostgresStatementKind,
     pub sql: &'a str,
     pub bind_markers: Vec<ConsistentLedgerPostgresSqlxBindMarker>,
+    pub returning_columns: Vec<&'static str>,
     pub binds: Vec<ConsistentLedgerPostgresSqlxBindValue>,
 }
 
@@ -147,6 +151,7 @@ impl fmt::Debug for ConsistentLedgerPostgresSqlxExecutableStatement<'_> {
             .field("kind", &self.kind)
             .field("sql", &"<concrete_sql_omitted>")
             .field("bind_markers", &bind_markers)
+            .field("returning_columns", &self.returning_columns)
             .field("binds", &self.binds)
             .finish()
     }
@@ -783,6 +788,14 @@ fn validate_sqlx_executable_statement_set(
                     "sqlx_executable_bind_marker_mismatch",
                 ));
             }
+            [executable]
+                if executable.returning_columns
+                    != sqlx_returning_columns_for_statement(statement.kind) =>
+            {
+                return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                    "sqlx_executable_returning_schema_mismatch",
+                ));
+            }
             [executable] if executable.binds.len() != executable.bind_markers.len() => {
                 return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
                     "sqlx_executable_bind_count_mismatch",
@@ -841,6 +854,7 @@ fn sqlx_executable_statement(
         kind: statement.kind,
         sql: sqlx_statement_sql(statement.kind),
         bind_markers,
+        returning_columns: sqlx_returning_columns_for_statement(statement.kind),
         binds,
     })
 }
@@ -1039,29 +1053,57 @@ const fn ledger_entry_status_sql(status: LedgerEntryStatus) -> &'static str {
 const fn sqlx_statement_sql(kind: ConsistentLedgerPostgresStatementKind) -> &'static str {
     match kind {
         ConsistentLedgerPostgresStatementKind::LockWallet => {
-            "select id, balance_floor from wallets where tenant_id = $1 and project_id is not distinct from $2 and currency = $3 and status in ('active','suspended') for update"
+            "select id, balance_floor::text as balance_floor from wallets where tenant_id = $1 and project_id is not distinct from $2 and currency = $3 and status in ('active','suspended') for update"
         }
         ConsistentLedgerPostgresStatementKind::LockCreditGrants => {
-            "select id, remaining_amount from credit_grants where tenant_id = $1 and wallet_id = $2 and currency = $3 and status = 'active' and valid_from <= now() and (valid_until is null or valid_until > now()) order by id for update"
+            "select id, remaining_amount::text as remaining_amount from credit_grants where tenant_id = $1 and wallet_id = $2 and currency = $3 and status = 'active' and valid_from <= now() and (valid_until is null or valid_until > now()) order by id for update"
         }
         ConsistentLedgerPostgresStatementKind::LockBudgets => {
-            "select id, scope, limit_amount from budgets where tenant_id = $1 and (scope = 'tenant' or (scope = 'project' and project_id is not distinct from $2) or (scope = 'virtual_key' and virtual_key_id is not distinct from $3)) and currency = $4 and status = 'active' and deleted_at is null order by scope, id for update"
+            "select id, scope, limit_amount::text as limit_amount from budgets where tenant_id = $1 and (scope = 'tenant' or (scope = 'project' and project_id is not distinct from $2) or (scope = 'virtual_key' and virtual_key_id is not distinct from $3)) and currency = $4 and status = 'active' and deleted_at is null order by scope, id for update"
         }
         ConsistentLedgerPostgresStatementKind::LockLedgerEntries => {
-            "select id, request_id, related_ledger_entry_id, entry_type, amount, currency, status from ledger_entries where tenant_id = $1 and (($2::uuid is not null and request_id = $2) or ($3::uuid is not null and id = $3) or ($4::uuid is not null and related_ledger_entry_id = $4) or idempotency_key = $5) order by created_at, id for update"
+            "select id, request_id, related_ledger_entry_id, entry_type, amount::text as amount, currency, status from ledger_entries where tenant_id = $1 and (($2::uuid is not null and request_id = $2) or ($3::uuid is not null and id = $3) or ($4::uuid is not null and related_ledger_entry_id = $4) or idempotency_key = $5) order by created_at, id for update"
         }
         ConsistentLedgerPostgresStatementKind::AssertBalanceWindow => {
-            "select 1 where $1::uuid is not null and $2::text is not null and $3::numeric >= $4::numeric"
+            "select true as passed where $1::uuid is not null and $2::text is not null and $3::numeric >= $4::numeric"
         }
         ConsistentLedgerPostgresStatementKind::AssertBudgetWindow => {
-            "select 1 from budgets where tenant_id = $1 and id = $2 and currency = $3 and limit_amount >= $4::numeric"
+            "select true as passed from budgets where tenant_id = $1 and id = $2 and currency = $3 and limit_amount >= $4::numeric"
         }
         ConsistentLedgerPostgresStatementKind::InsertLedgerEntry => {
-            "insert into ledger_entries (tenant_id, project_id, virtual_key_id, wallet_id, request_id, related_ledger_entry_id, entry_type, amount, currency, status, idempotency_key, metadata) values ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11, $12) on conflict (tenant_id, idempotency_key) do nothing"
+            "insert into ledger_entries (tenant_id, project_id, virtual_key_id, wallet_id, request_id, related_ledger_entry_id, entry_type, amount, currency, status, idempotency_key, metadata) values ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11, $12) on conflict (tenant_id, idempotency_key) do nothing returning id, entry_type, amount::text as amount, currency, status"
         }
         ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus => {
-            "update ledger_entries set status = $4 where tenant_id = $1 and id = $2 and status = $3"
+            "update ledger_entries set status = $4 where tenant_id = $1 and id = $2 and status = $3 returning id, status"
         }
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn sqlx_returning_columns_for_statement(
+    kind: ConsistentLedgerPostgresStatementKind,
+) -> Vec<&'static str> {
+    match kind {
+        ConsistentLedgerPostgresStatementKind::LockWallet => vec!["id", "balance_floor"],
+        ConsistentLedgerPostgresStatementKind::LockCreditGrants => {
+            vec!["id", "remaining_amount"]
+        }
+        ConsistentLedgerPostgresStatementKind::LockBudgets => vec!["id", "scope", "limit_amount"],
+        ConsistentLedgerPostgresStatementKind::LockLedgerEntries => vec![
+            "id",
+            "request_id",
+            "related_ledger_entry_id",
+            "entry_type",
+            "amount",
+            "currency",
+            "status",
+        ],
+        ConsistentLedgerPostgresStatementKind::AssertBalanceWindow
+        | ConsistentLedgerPostgresStatementKind::AssertBudgetWindow => vec!["passed"],
+        ConsistentLedgerPostgresStatementKind::InsertLedgerEntry => {
+            vec!["id", "entry_type", "amount", "currency", "status"]
+        }
+        ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus => vec!["id", "status"],
     }
 }
 
@@ -1076,19 +1118,113 @@ async fn execute_sqlx_executable_statement(
         query = bind_sqlx_value(query, bind);
     }
 
-    let result = query
-        .execute(&mut **transaction)
+    let rows = query
+        .fetch_all(&mut **transaction)
         .await
         .map_err(|error| map_consistent_ledger_postgres_sqlx_error(&error, Some(statement.kind)))?;
+    validate_sqlx_returning_schema(statement.kind, &rows)?;
 
     Ok(ConsistentLedgerPostgresStatementResult {
         order: statement.order,
         kind: statement.kind,
         target: statement.target,
         outcome: ConsistentLedgerPostgresStatementOutcome::Executed,
-        rows_affected: result.rows_affected(),
+        rows_affected: rows.len() as u64,
         operation_key_output: "omitted",
     })
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn validate_sqlx_returning_schema(
+    kind: ConsistentLedgerPostgresStatementKind,
+    rows: &[sqlx::postgres::PgRow],
+) -> Result<(), ConsistentLedgerPostgresExecutorError> {
+    for row in rows {
+        match kind {
+            ConsistentLedgerPostgresStatementKind::LockWallet => {
+                get_uuid_column(row, "id")?;
+                get_text_column(row, "balance_floor")?;
+            }
+            ConsistentLedgerPostgresStatementKind::LockCreditGrants => {
+                get_uuid_column(row, "id")?;
+                get_text_column(row, "remaining_amount")?;
+            }
+            ConsistentLedgerPostgresStatementKind::LockBudgets => {
+                get_uuid_column(row, "id")?;
+                get_text_column(row, "scope")?;
+                get_text_column(row, "limit_amount")?;
+            }
+            ConsistentLedgerPostgresStatementKind::LockLedgerEntries => {
+                get_uuid_column(row, "id")?;
+                get_optional_uuid_column(row, "request_id")?;
+                get_optional_uuid_column(row, "related_ledger_entry_id")?;
+                get_text_column(row, "entry_type")?;
+                get_text_column(row, "amount")?;
+                get_text_column(row, "currency")?;
+                get_text_column(row, "status")?;
+            }
+            ConsistentLedgerPostgresStatementKind::AssertBalanceWindow
+            | ConsistentLedgerPostgresStatementKind::AssertBudgetWindow => {
+                get_bool_column(row, "passed")?;
+            }
+            ConsistentLedgerPostgresStatementKind::InsertLedgerEntry => {
+                get_uuid_column(row, "id")?;
+                get_text_column(row, "entry_type")?;
+                get_text_column(row, "amount")?;
+                get_text_column(row, "currency")?;
+                get_text_column(row, "status")?;
+            }
+            ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus => {
+                get_uuid_column(row, "id")?;
+                get_text_column(row, "status")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn get_uuid_column(
+    row: &sqlx::postgres::PgRow,
+    column: &'static str,
+) -> Result<Uuid, ConsistentLedgerPostgresExecutorError> {
+    row.try_get(column)
+        .map_err(|_| sqlx_returning_schema_error(column))
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn get_optional_uuid_column(
+    row: &sqlx::postgres::PgRow,
+    column: &'static str,
+) -> Result<Option<Uuid>, ConsistentLedgerPostgresExecutorError> {
+    row.try_get(column)
+        .map_err(|_| sqlx_returning_schema_error(column))
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn get_text_column(
+    row: &sqlx::postgres::PgRow,
+    column: &'static str,
+) -> Result<String, ConsistentLedgerPostgresExecutorError> {
+    row.try_get(column)
+        .map_err(|_| sqlx_returning_schema_error(column))
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn get_bool_column(
+    row: &sqlx::postgres::PgRow,
+    column: &'static str,
+) -> Result<bool, ConsistentLedgerPostgresExecutorError> {
+    row.try_get(column)
+        .map_err(|_| sqlx_returning_schema_error(column))
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn sqlx_returning_schema_error(column: &'static str) -> ConsistentLedgerPostgresExecutorError {
+    ConsistentLedgerPostgresExecutorError::statement_refused(format!(
+        "sqlx_returning_schema_mismatch_{column}"
+    ))
 }
 
 #[cfg(feature = "postgres-sqlx")]
