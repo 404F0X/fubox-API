@@ -1082,6 +1082,124 @@ mod tests {
     }
 
     #[test]
+    fn tpm_estimate_clamps_zero_estimates_to_minimum_one_token() {
+        let total_zero = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(300),
+            Some(128),
+            Some(512),
+            Some(0),
+            256,
+        ));
+
+        assert_eq!(
+            total_zero.required_tokens,
+            RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS
+        );
+        assert_eq!(total_zero.required_tokens_i64(), 1);
+        assert_eq!(total_zero.source, RateLimitTpmEstimateSource::TotalTokens);
+        assert!(!total_zero.used_conservative_fallback);
+        assert!(!total_zero.sanitized_negative_estimate);
+
+        let prompt_completion_zero = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(0),
+            Some(0),
+            None,
+            None,
+            256,
+        ));
+
+        assert_eq!(
+            prompt_completion_zero.required_tokens,
+            RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS
+        );
+        assert_eq!(
+            prompt_completion_zero.source,
+            RateLimitTpmEstimateSource::PromptAndCompletion
+        );
+        assert!(!prompt_completion_zero.used_conservative_fallback);
+    }
+
+    #[test]
+    fn tpm_estimate_extreme_values_do_not_overflow_i64_capacity() {
+        let estimate = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(i64::MAX),
+            Some(i64::MAX),
+            Some(i64::MAX),
+            None,
+            i64::MAX,
+        ));
+        let expected_tokens = (i64::MAX as u64).saturating_add(i64::MAX as u64);
+
+        assert_eq!(estimate.required_tokens, expected_tokens);
+        assert_eq!(
+            estimate.source,
+            RateLimitTpmEstimateSource::PromptAndCompletion
+        );
+        assert!(estimate.clamped_to_i64_max);
+        assert_eq!(estimate.required_tokens_i64(), i64::MAX);
+
+        let required = RateLimitRequiredCapacity::from_tpm_estimate(1, &estimate, 1);
+        assert_eq!(required.tokens_per_minute, i64::MAX);
+
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::unlimited(),
+            RateLimitCounterWindow::limited(i64::MAX, 0),
+            RateLimitCounterWindow::unlimited(),
+            required,
+        ));
+
+        assert_eq!(plan.status, RateLimitReservationStatus::Acquired);
+        let tpm = reservation_dimension_for(&plan, RateLimitDimension::TokensPerMinute);
+        assert_eq!(tpm.required, i64::MAX as u64);
+        assert_eq!(tpm.used_after, i64::MAX as u64);
+    }
+
+    #[test]
+    fn tpm_estimate_negative_partial_data_keeps_conservative_reservation() {
+        let partial = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(100),
+            Some(-5),
+            Some(-10),
+            Some(-15),
+            300,
+        ));
+
+        assert_eq!(partial.required_tokens, 400);
+        assert_eq!(
+            partial.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(partial.prompt_tokens, Some(100));
+        assert_eq!(partial.completion_tokens, None);
+        assert_eq!(partial.max_completion_tokens, None);
+        assert!(partial.used_conservative_fallback);
+        assert!(partial.sanitized_negative_estimate);
+
+        let fallback = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(-100),
+            Some(-50),
+            Some(-25),
+            Some(-10),
+            0,
+        ));
+
+        assert_eq!(
+            fallback.required_tokens,
+            RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS as u64
+        );
+        assert_eq!(
+            fallback.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(
+            fallback.fallback_tokens,
+            RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS as u64
+        );
+        assert!(fallback.used_conservative_fallback);
+        assert!(fallback.sanitized_negative_estimate);
+    }
+
+    #[test]
     fn tpm_estimate_feeds_reservation_selection_conservatively() {
         let precise = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
             Some(40),
@@ -1143,6 +1261,23 @@ mod tests {
             fallback.source,
             RateLimitTpmEstimateSource::ConservativeFallback
         );
+        let edge_behaviors = fixture["edge_behaviors"]
+            .as_array()
+            .expect("edge behavior array should exist");
+        assert!(edge_behaviors.iter().any(|behavior| {
+            behavior["name"] == "zero_total_tokens_minimum_clamp"
+                && behavior["required_tokens"] == RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS
+        }));
+        assert!(edge_behaviors.iter().any(|behavior| {
+            behavior["name"] == "negative_partial_estimate_adds_fallback"
+                && behavior["required_tokens"] == 400
+                && behavior["sanitized_negative_estimate"] == true
+        }));
+        assert!(edge_behaviors.iter().any(|behavior| {
+            behavior["name"] == "i64_capacity_clamp"
+                && behavior["required_tokens_i64"] == i64::MAX
+                && behavior["clamped_to_i64_max"] == true
+        }));
 
         let serialized = serde_json::to_string(&fallback)
             .expect("rate-limit TPM estimate should serialize")

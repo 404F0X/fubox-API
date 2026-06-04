@@ -77,6 +77,84 @@
       "used_conservative_fallback": true
     }
   ],
+  "edge_behaviors": [
+    {
+      "name": "zero_total_tokens_minimum_clamp",
+      "input": {
+        "prompt_tokens": 300,
+        "completion_tokens": 128,
+        "max_completion_tokens": 512,
+        "total_tokens": 0,
+        "conservative_fallback_tokens": 256
+      },
+      "source": "TotalTokens",
+      "required_tokens": 1,
+      "required_tokens_i64": 1,
+      "used_conservative_fallback": false,
+      "sanitized_negative_estimate": false
+    },
+    {
+      "name": "zero_prompt_completion_minimum_clamp",
+      "input": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "max_completion_tokens": null,
+        "total_tokens": null,
+        "conservative_fallback_tokens": 256
+      },
+      "source": "PromptAndCompletion",
+      "required_tokens": 1,
+      "required_tokens_i64": 1,
+      "used_conservative_fallback": false,
+      "sanitized_negative_estimate": false
+    },
+    {
+      "name": "negative_partial_estimate_adds_fallback",
+      "input": {
+        "prompt_tokens": 100,
+        "completion_tokens": -5,
+        "max_completion_tokens": -10,
+        "total_tokens": -15,
+        "conservative_fallback_tokens": 300
+      },
+      "source": "PartialEstimateWithConservativeFallback",
+      "required_tokens": 400,
+      "required_tokens_i64": 400,
+      "used_conservative_fallback": true,
+      "sanitized_negative_estimate": true
+    },
+    {
+      "name": "negative_or_zero_fallback_uses_default",
+      "input": {
+        "prompt_tokens": -100,
+        "completion_tokens": -50,
+        "max_completion_tokens": -25,
+        "total_tokens": -10,
+        "conservative_fallback_tokens": 0
+      },
+      "source": "ConservativeFallback",
+      "required_tokens": 1024,
+      "required_tokens_i64": 1024,
+      "used_conservative_fallback": true,
+      "sanitized_negative_estimate": true
+    },
+    {
+      "name": "i64_capacity_clamp",
+      "input": {
+        "prompt_tokens": 9223372036854775807,
+        "completion_tokens": 9223372036854775807,
+        "max_completion_tokens": 9223372036854775807,
+        "total_tokens": null,
+        "conservative_fallback_tokens": 9223372036854775807
+      },
+      "source": "PromptAndCompletion",
+      "required_tokens": 18446744073709551614,
+      "required_tokens_i64": 9223372036854775807,
+      "used_conservative_fallback": false,
+      "sanitized_negative_estimate": false,
+      "clamped_to_i64_max": true
+    }
+  ],
   "safety_contract": {
     "body_material_in_output": false,
     "stores_raw_provider_key": false,
