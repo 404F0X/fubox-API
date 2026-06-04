@@ -603,7 +603,9 @@ h3 {
 
 .health-controls {
   display: grid;
-  grid-template-columns: minmax(120px, 0.7fr) minmax(130px, 0.7fr) minmax(150px, 0.8fr) minmax(220px, 1.2fr) auto;
+  grid-template-columns:
+    minmax(120px, 0.6fr) minmax(130px, 0.65fr) minmax(150px, 0.75fr) minmax(130px, 0.65fr)
+    minmax(220px, 1.2fr) auto;
   gap: 12px;
   align-items: end;
   min-width: 0;

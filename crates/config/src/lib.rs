@@ -4,8 +4,18 @@ use std::{
     path::Path,
 };
 
+use ai_gateway_observability::{
+    PROMPT_PROTECTION_RULE_SET_SCHEMA, PromptProtectionRuntimeConfig,
+    parse_prompt_protection_runtime_config,
+    prompt_protection::{
+        MAX_PROMPT_PROTECTION_CONFIGURED_RULES, MAX_PROMPT_PROTECTION_RULE_NAME_BYTES,
+        MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES, MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES,
+    },
+    prompt_protection_runtime_config_summary,
+};
 use reqwest::Url;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use thiserror::Error;
 
 pub const CONFIG_ENV: &str = "AI_GATEWAY_CONFIG";
@@ -74,6 +84,134 @@ pub struct SecurityConfig {
     pub master_key_env: String,
     pub secret_masking: bool,
     pub default_payload_policy: String,
+    #[serde(default)]
+    pub prompt_protection: PromptProtectionConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PromptProtectionConfig {
+    #[serde(default = "default_prompt_protection_mode")]
+    pub mode: String,
+    #[serde(default = "default_true")]
+    pub default_rules: bool,
+    #[serde(default)]
+    pub custom_rules: Vec<Value>,
+    #[serde(default)]
+    pub limits: PromptProtectionLimitsConfig,
+}
+
+impl Default for PromptProtectionConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_prompt_protection_mode(),
+            default_rules: true,
+            custom_rules: Vec::new(),
+            limits: PromptProtectionLimitsConfig::default(),
+        }
+    }
+}
+
+impl PromptProtectionConfig {
+    pub fn to_runtime_config(&self) -> Result<PromptProtectionRuntimeConfig, ConfigError> {
+        self.validate_limits()?;
+        self.validate_custom_rules_against_limits()?;
+        parse_prompt_protection_runtime_config(&self.runtime_config_value()).map_err(|error| {
+            ConfigError::Invalid(format!(
+                "security.prompt_protection failed validation: code={}, field={}",
+                error.code,
+                error.field.as_deref().unwrap_or("unknown")
+            ))
+        })
+    }
+
+    pub fn safe_summary(&self) -> Result<Value, ConfigError> {
+        let runtime_config = self.to_runtime_config()?;
+        Ok(prompt_protection_runtime_config_summary(&runtime_config))
+    }
+
+    fn runtime_config_value(&self) -> Value {
+        json!({
+            "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+            "mode": self.mode,
+            "default_rules": self.default_rules,
+            "custom_rules": {
+                "schema": PROMPT_PROTECTION_RULE_SET_SCHEMA,
+                "rules": self.custom_rules,
+            },
+        })
+    }
+
+    fn validate_limits(&self) -> Result<(), ConfigError> {
+        validate_optional_limit(
+            "security.prompt_protection.limits.max_rules",
+            self.limits.max_rules,
+            MAX_PROMPT_PROTECTION_CONFIGURED_RULES,
+        )?;
+        validate_optional_limit(
+            "security.prompt_protection.limits.max_rule_name_bytes",
+            self.limits.max_rule_name_bytes,
+            MAX_PROMPT_PROTECTION_RULE_NAME_BYTES,
+        )?;
+        validate_optional_limit(
+            "security.prompt_protection.limits.max_pattern_bytes",
+            self.limits.max_pattern_bytes,
+            MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES,
+        )?;
+        validate_optional_limit(
+            "security.prompt_protection.limits.max_scope_bytes",
+            self.limits.max_scope_bytes,
+            MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES,
+        )
+    }
+
+    fn validate_custom_rules_against_limits(&self) -> Result<(), ConfigError> {
+        if let Some(max_rules) = self.limits.max_rules {
+            if self.custom_rules.len() > max_rules {
+                return Err(ConfigError::Invalid(format!(
+                    "security.prompt_protection.custom_rules exceeds configured max_rules ({max_rules})"
+                )));
+            }
+        }
+
+        for (index, rule) in self.custom_rules.iter().enumerate() {
+            let Some(object) = rule.as_object() else {
+                continue;
+            };
+            if let Some(value) = object.get("name").or_else(|| object.get("id")) {
+                validate_optional_string_bytes_limit(
+                    &format!("security.prompt_protection.custom_rules[{index}].name"),
+                    value,
+                    self.limits.max_rule_name_bytes,
+                )?;
+            }
+            if let Some(value) = object.get("scope") {
+                validate_optional_string_bytes_limit(
+                    &format!("security.prompt_protection.custom_rules[{index}].scope"),
+                    value,
+                    self.limits.max_scope_bytes,
+                )?;
+            }
+            if let Some(pattern) = object.get("pattern") {
+                validate_prompt_protection_pattern_limit(
+                    &format!("security.prompt_protection.custom_rules[{index}].pattern"),
+                    pattern,
+                    self.limits.max_pattern_bytes,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PromptProtectionLimitsConfig {
+    pub max_rules: Option<usize>,
+    pub max_rule_name_bytes: Option<usize>,
+    pub max_pattern_bytes: Option<usize>,
+    pub max_scope_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -157,6 +295,7 @@ impl AppConfig {
             &self.security.default_payload_policy,
             &["metadata_only", "hash", "redacted", "full"],
         )?;
+        self.security.prompt_protection.to_runtime_config()?;
         require_positive(
             "routing.default_max_attempts",
             self.routing.default_max_attempts,
@@ -284,6 +423,74 @@ fn env_truthy(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_prompt_protection_mode() -> String {
+    "enforce".to_string()
+}
+
+fn validate_optional_limit(
+    name: &str,
+    value: Option<usize>,
+    maximum: usize,
+) -> Result<(), ConfigError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value == 0 || value > maximum {
+        return Err(ConfigError::Invalid(format!(
+            "{name} must be between 1 and {maximum}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_optional_string_bytes_limit(
+    name: &str,
+    value: &Value,
+    maximum: Option<usize>,
+) -> Result<(), ConfigError> {
+    let Some(maximum) = maximum else {
+        return Ok(());
+    };
+    let Some(value) = value.as_str() else {
+        return Ok(());
+    };
+    if value.trim().len() > maximum {
+        return Err(ConfigError::Invalid(format!(
+            "{name} exceeds configured byte limit ({maximum})"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_prompt_protection_pattern_limit(
+    name: &str,
+    value: &Value,
+    maximum: Option<usize>,
+) -> Result<(), ConfigError> {
+    let Some(maximum) = maximum else {
+        return Ok(());
+    };
+
+    match value {
+        Value::String(_) => validate_optional_string_bytes_limit(name, value, Some(maximum)),
+        Value::Object(object) => {
+            if let Some(value) = object.get("value").or_else(|| object.get("literal")) {
+                validate_optional_string_bytes_limit(
+                    &format!("{name}.value"),
+                    value,
+                    Some(maximum),
+                )?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn forbidden_provider_host(host: &str) -> bool {
@@ -468,6 +675,7 @@ fn prefix_matches<const N: usize>(network: [u8; N], client: [u8; N], prefix_len:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ai_gateway_observability::apply_prompt_protection_runtime_config_to_json;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
@@ -476,6 +684,9 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.database.driver, "postgres");
         assert!(config.server.trusted_proxy_allowlist.is_empty());
+        assert_eq!(config.security.prompt_protection.mode, "enforce");
+        assert!(config.security.prompt_protection.default_rules);
+        assert!(config.security.prompt_protection.custom_rules.is_empty());
     }
 
     #[test]
@@ -486,6 +697,282 @@ mod tests {
         let error = config.validate().expect_err("invalid payload policy");
 
         assert!(error.to_string().contains("default_payload_policy"));
+    }
+
+    #[test]
+    fn prompt_protection_schema_validates_modes_limits_and_custom_regex_rules() {
+        for mode in ["enforce", "audit", "disabled"] {
+            let mut config =
+                AppConfig::load_from_path("../../examples/config.example.yaml").unwrap();
+            config.security.prompt_protection = PromptProtectionConfig {
+                mode: mode.to_string(),
+                default_rules: true,
+                custom_rules: vec![json!({
+                    "name": "gateway_ticket_reject",
+                    "action": "reject",
+                    "scope": "messages",
+                    "pattern": { "type": "regex", "value": "ticket-[0-9]{4}" }
+                })],
+                limits: PromptProtectionLimitsConfig {
+                    max_rules: Some(MAX_PROMPT_PROTECTION_CONFIGURED_RULES),
+                    max_rule_name_bytes: Some(MAX_PROMPT_PROTECTION_RULE_NAME_BYTES),
+                    max_pattern_bytes: Some(MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES),
+                    max_scope_bytes: Some(MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES),
+                },
+            };
+
+            config.validate().expect("valid prompt protection config");
+            let runtime = config
+                .security
+                .prompt_protection
+                .to_runtime_config()
+                .expect("runtime prompt protection config");
+            let summary = config
+                .security
+                .prompt_protection
+                .safe_summary()
+                .expect("safe prompt protection summary");
+
+            assert_eq!(summary["mode"], mode);
+            assert_eq!(summary["custom_rule_count"], 1);
+            assert_eq!(summary["raw_pattern_values_omitted"], true);
+            assert!(!summary.to_string().contains("ticket-[0-9]{4}"));
+
+            if mode == "enforce" {
+                let result = apply_prompt_protection_runtime_config_to_json(
+                    &json!({
+                        "model": "mock-gpt",
+                        "messages": [{ "role": "user", "content": "ticket-1234" }]
+                    }),
+                    &runtime,
+                );
+                assert_eq!(result.configured_result.hits.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_protection_schema_deserializes_from_security_yaml() {
+        let config: AppConfig = serde_yaml::from_str(&config_yaml_with_prompt_protection(
+            r#"
+  prompt_protection:
+    mode: audit
+    default_rules: true
+    limits:
+      max_rules: 32
+      max_rule_name_bytes: 64
+      max_pattern_bytes: 256
+      max_scope_bytes: 128
+    custom_rules:
+      - name: gateway_mask_codename
+        action: mask
+        scope: messages
+        pattern:
+          type: contains
+          value: project raven
+          case_sensitive: false
+"#,
+        ))
+        .expect("prompt protection yaml config");
+
+        config.validate().expect("valid prompt protection yaml");
+        assert_eq!(config.security.prompt_protection.mode, "audit");
+        assert_eq!(config.security.prompt_protection.custom_rules.len(), 1);
+        let summary = config
+            .security
+            .prompt_protection
+            .safe_summary()
+            .expect("safe summary");
+        let summary_text = summary.to_string().to_ascii_lowercase();
+
+        assert_eq!(summary["mode"], "audit");
+        assert!(!summary_text.contains("project raven"));
+    }
+
+    #[test]
+    fn prompt_protection_schema_rejects_invalid_rules_without_secret_echo() {
+        let invalid_regex = prompt_protection_error_for_rules(vec![json!({
+            "name": "gateway_invalid_regex",
+            "action": "reject",
+            "scope": "messages",
+            "pattern": { "type": "regex", "value": "(" }
+        })]);
+        assert!(invalid_regex.contains("invalid_regex"));
+        assert!(!invalid_regex.contains('('));
+
+        let long_pattern = "a".repeat(MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES + 1);
+        let pattern_too_long = prompt_protection_error_for_rules(vec![json!({
+            "name": "gateway_long_pattern",
+            "action": "mask",
+            "scope": "messages",
+            "pattern": { "type": "contains", "value": long_pattern }
+        })]);
+        assert!(pattern_too_long.contains("pattern_value_too_long"));
+        assert!(!pattern_too_long.contains(&"a".repeat(64)));
+
+        let too_many_rules = prompt_protection_error_for_rules(
+            (0..=MAX_PROMPT_PROTECTION_CONFIGURED_RULES)
+                .map(|index| {
+                    json!({
+                        "name": format!("gateway_rule_{index}"),
+                        "action": "mask",
+                        "scope": "messages",
+                        "pattern": { "type": "contains", "value": "safe marker" }
+                    })
+                })
+                .collect(),
+        );
+        assert!(too_many_rules.contains("too_many_rules"));
+
+        let secret_name = prompt_protection_error_for_rules(vec![json!({
+            "name": "sk-live-secret",
+            "action": "mask",
+            "scope": "messages",
+            "pattern": { "type": "contains", "value": "safe marker" }
+        })]);
+        assert!(secret_name.contains("secret_like_rule_name"));
+        assert!(!secret_name.contains("sk-live-secret"));
+
+        let secret_pattern = prompt_protection_error_for_rules(vec![json!({
+            "name": "gateway_header_marker",
+            "action": "reject",
+            "scope": "messages",
+            "pattern": {
+                "type": "contains",
+                "value": "Authorization: Bearer sk-live-secret"
+            }
+        })]);
+        assert!(secret_pattern.contains("secret_like_pattern_value"));
+        assert!(!secret_pattern.contains("sk-live-secret"));
+        assert!(!secret_pattern.contains("Authorization: Bearer"));
+    }
+
+    #[test]
+    fn prompt_protection_schema_rejects_invalid_limits_and_modes_without_raw_value() {
+        let mut config = PromptProtectionConfig {
+            mode: "sk-live-secret".to_string(),
+            ..PromptProtectionConfig::default()
+        };
+        let invalid_mode = config
+            .to_runtime_config()
+            .expect_err("invalid mode should fail")
+            .to_string();
+        assert!(invalid_mode.contains("invalid_mode"));
+        assert!(!invalid_mode.contains("sk-live-secret"));
+
+        config = PromptProtectionConfig {
+            limits: PromptProtectionLimitsConfig {
+                max_rules: Some(MAX_PROMPT_PROTECTION_CONFIGURED_RULES + 1),
+                ..PromptProtectionLimitsConfig::default()
+            },
+            ..PromptProtectionConfig::default()
+        };
+        let invalid_limit = config
+            .to_runtime_config()
+            .expect_err("invalid limit should fail")
+            .to_string();
+        assert!(invalid_limit.contains("security.prompt_protection.limits.max_rules"));
+        assert!(!invalid_limit.contains("sk-live-secret"));
+    }
+
+    #[test]
+    fn prompt_protection_schema_applies_configured_custom_limits_without_raw_value() {
+        let limited_rule_count = PromptProtectionConfig {
+            custom_rules: vec![
+                json!({
+                    "name": "gateway_rule_one",
+                    "action": "mask",
+                    "scope": "messages",
+                    "pattern": { "type": "contains", "value": "safe marker one" }
+                }),
+                json!({
+                    "name": "gateway_rule_two",
+                    "action": "mask",
+                    "scope": "messages",
+                    "pattern": { "type": "contains", "value": "safe marker two" }
+                }),
+            ],
+            limits: PromptProtectionLimitsConfig {
+                max_rules: Some(1),
+                ..PromptProtectionLimitsConfig::default()
+            },
+            ..PromptProtectionConfig::default()
+        };
+        let rule_count_error = limited_rule_count
+            .to_runtime_config()
+            .expect_err("custom max_rules should apply")
+            .to_string();
+        assert!(rule_count_error.contains("max_rules"));
+        assert!(!rule_count_error.contains("safe marker"));
+
+        let limited_fields = PromptProtectionConfig {
+            custom_rules: vec![json!({
+                "name": "gateway_rule_long_name",
+                "action": "reject",
+                "scope": "$.messages[0].content",
+                "pattern": {
+                    "type": "contains",
+                    "value": "safe marker too long for local limit"
+                }
+            })],
+            limits: PromptProtectionLimitsConfig {
+                max_rule_name_bytes: Some(8),
+                max_pattern_bytes: Some(8),
+                max_scope_bytes: Some(8),
+                ..PromptProtectionLimitsConfig::default()
+            },
+            ..PromptProtectionConfig::default()
+        };
+        let name_error = limited_fields
+            .to_runtime_config()
+            .expect_err("custom max_rule_name_bytes should apply")
+            .to_string();
+        assert!(name_error.contains("custom_rules[0].name"));
+        assert!(!name_error.contains("gateway_rule_long_name"));
+
+        let mut pattern_limited = limited_fields.clone();
+        pattern_limited.limits.max_rule_name_bytes = Some(MAX_PROMPT_PROTECTION_RULE_NAME_BYTES);
+        pattern_limited.limits.max_scope_bytes = Some(MAX_PROMPT_PROTECTION_RULE_SCOPE_BYTES);
+        let pattern_error = pattern_limited
+            .to_runtime_config()
+            .expect_err("custom max_pattern_bytes should apply")
+            .to_string();
+        assert!(pattern_error.contains("custom_rules[0].pattern.value"));
+        assert!(!pattern_error.contains("safe marker too long"));
+
+        let mut scope_limited = pattern_limited;
+        scope_limited.limits.max_pattern_bytes = Some(MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES);
+        scope_limited.limits.max_scope_bytes = Some(8);
+        let scope_error = scope_limited
+            .to_runtime_config()
+            .expect_err("custom max_scope_bytes should apply")
+            .to_string();
+        assert!(scope_error.contains("custom_rules[0].scope"));
+        assert!(!scope_error.contains("$.messages"));
+    }
+
+    #[test]
+    fn prompt_protection_safe_summary_omits_raw_rule_values_and_payload_markers() {
+        let config = PromptProtectionConfig {
+            mode: "enforce".to_string(),
+            default_rules: true,
+            custom_rules: vec![json!({
+                "name": "gateway_ticket_reject",
+                "action": "reject",
+                "scope": "messages",
+                "pattern": { "type": "regex", "value": "ticket-[0-9]{4}" }
+            })],
+            limits: PromptProtectionLimitsConfig::default(),
+        };
+
+        let summary = config.safe_summary().expect("safe summary");
+        let serialized = summary.to_string();
+
+        assert_eq!(summary["raw_pattern_values_omitted"], true);
+        assert!(!serialized.contains("ticket-[0-9]{4}"));
+        assert!(!serialized.contains("ticket-1234"));
+        assert!(!serialized.contains("Authorization: Bearer"));
+        assert!(!serialized.contains("sk-live-secret"));
     }
 
     #[test]
@@ -641,5 +1128,59 @@ mod tests {
         assert!(!provider_endpoint_resolved_ip_allowed(
             "fe80::1".parse().unwrap()
         ));
+    }
+
+    fn prompt_protection_error_for_rules(rules: Vec<Value>) -> String {
+        PromptProtectionConfig {
+            mode: "enforce".to_string(),
+            default_rules: true,
+            custom_rules: rules,
+            limits: PromptProtectionLimitsConfig::default(),
+        }
+        .to_runtime_config()
+        .expect_err("prompt protection config should fail")
+        .to_string()
+    }
+
+    fn config_yaml_with_prompt_protection(prompt_protection_yaml: &str) -> String {
+        format!(
+            r#"server:
+  listen: ":8080"
+  public_base_url: "http://localhost:8080"
+  max_request_body_bytes: 10485760
+  graceful_shutdown_seconds: 30
+
+database:
+  driver: "postgres"
+  dsn: "postgres://ai_gateway:ai_gateway@postgres:5432/ai_gateway?sslmode=disable"
+
+redis:
+  addr: "redis:6379"
+  db: 0
+
+security:
+  master_key_env: "AI_GATEWAY_MASTER_KEY"
+  secret_masking: true
+  default_payload_policy: "metadata_only"
+{prompt_protection_yaml}
+routing:
+  default_max_attempts: 2
+  retry_before_first_byte_only_for_stream: true
+  default_timeout_seconds: 120
+  stream_idle_timeout_seconds: 60
+
+observability:
+  metrics_enabled: true
+  otlp_enabled: false
+  log_payload_default: false
+  raw_stream_sampling_rate: 0.001
+
+billing:
+  pre_authorize_enabled: true
+  reserve_enabled: true
+  default_currency: "CREDIT"
+  settlement_async: true
+"#
+        )
     }
 }

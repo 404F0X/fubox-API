@@ -10,6 +10,8 @@
   "write_contract": {
     "endpoints": ["POST /admin/models", "PATCH /admin/models/{id}"],
     "field": "default_price_book_id",
+    "explicit_null_clears_selector": true,
+    "selector_write_shares_model_audit_transaction": true,
     "permission": "model_manage",
     "no_ui_required": true
   },
@@ -29,12 +31,16 @@
     "raw_user_agent_omitted": true,
     "raw_client_ip_omitted": true,
     "allowed_selector_metadata": [
+      "operation",
       "default_price_book_id",
       "price_book_currency",
       "relationship_validated",
       "price_version_selector",
+      "selector_write",
       "sensitive_material_policy"
-    ]
+    ],
+    "business_selector_and_success_audit_share_transaction": true,
+    "missing_model_or_invalid_price_book_does_not_build_success_audit": true
   },
   "examples": {
     "patch": {
@@ -52,24 +58,60 @@
         }
       }
     },
+    "patch_clear": {
+      "request": {
+        "default_price_book_id": null
+      },
+      "response": {
+        "data": {
+          "id": "00000000-0000-0000-0000-000000000101",
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "model_key": "gpt-visible",
+          "display_name": "GPT Visible",
+          "default_price_book_id": null,
+          "status": "active"
+        }
+      }
+    },
     "success_audit_metadata": {
+      "transactional_audit": true,
       "upsert_semantics": false,
       "default_price_config_contract": {
         "tenant_price_book_relation_required": true,
         "canonical_model_relation_required": true,
+        "selector_write_transactional_with_model_audit": true,
         "write_audit_secret_safe": true
       },
       "default_price_selector": {
+        "operation": "set",
         "default_price_book_id": "00000000-0000-0000-0000-000000000060",
         "price_book_currency": "USD",
         "relationship_validated": "tenant_canonical_model_price_book",
         "price_version_selector": "active_effective_version_for_default_price_book",
+        "selector_write": "transactional_with_model_audit",
+        "sensitive_material_policy": "uuid_and_currency_only"
+      }
+    },
+    "clear_success_audit_metadata": {
+      "transactional_audit": true,
+      "upsert_semantics": false,
+      "default_price_config_contract": {
+        "tenant_price_book_relation_required": true,
+        "canonical_model_relation_required": true,
+        "selector_write_transactional_with_model_audit": true,
+        "write_audit_secret_safe": true
+      },
+      "default_price_selector": {
+        "operation": "clear",
+        "default_price_book_id": null,
+        "relationship_validated": "tenant_canonical_model_price_book",
+        "price_version_selector": "active_effective_version_for_default_price_book",
+        "selector_write": "transactional_with_model_audit",
         "sensitive_material_policy": "uuid_and_currency_only"
       }
     }
   },
   "remaining_gaps": [
-    "clear default_price_book_id via explicit null is not part of this slice",
-    "transactional coupling between canonical model field update and audit insert is still the broader audit hardening track"
+    "live Postgres rollback smoke for audit insert failure is not part of this fixture"
   ]
 }

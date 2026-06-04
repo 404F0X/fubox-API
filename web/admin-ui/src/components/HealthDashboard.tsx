@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   getProviderHealthSummary,
   type HealthSummary,
@@ -11,6 +11,7 @@ import { RefreshCw, RotateCcw } from "./icons";
 import { StatusPill } from "./StatusPill";
 
 type Props = {
+  canRequestRecovery: boolean;
   healthSummary: HealthSummary | null;
   healthSummaryError: string | null;
   lastChecked: string | null;
@@ -33,6 +34,8 @@ type HealthRow = {
 };
 
 type MatrixScope = "all" | "Provider" | "Channel" | "Provider key" | "Model";
+type AutoRefreshSeconds = 0 | 30 | 60;
+type SummaryMode = "parent" | "local";
 
 const healthWindowOptions = [
   { label: "15m", value: 15 },
@@ -45,12 +48,19 @@ const sampleLimitOptions = [100, 500, 1000];
 
 const matrixScopes: MatrixScope[] = ["all", "Provider", "Channel", "Provider key", "Model"];
 
+const autoRefreshOptions: Array<{ label: string; value: AutoRefreshSeconds }> = [
+  { label: "Off", value: 0 },
+  { label: "30s", value: 30 },
+  { label: "60s", value: 60 },
+];
+
 const defaultHealthSummaryFilters = {
   window_minutes: 60,
   sample_limit: 500,
 } satisfies HealthSummaryFilters;
 
 export function HealthDashboard({
+  canRequestRecovery,
   healthSummary,
   healthSummaryError,
   lastChecked,
@@ -61,14 +71,17 @@ export function HealthDashboard({
   recoveryRequests,
   results,
 }: Props) {
+  const requestSeq = useRef(0);
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState<AutoRefreshSeconds>(0);
   const [filters, setFilters] = useState<HealthSummaryFilters>(defaultHealthSummaryFilters);
   const [matrixQuery, setMatrixQuery] = useState("");
   const [matrixScope, setMatrixScope] = useState<MatrixScope>("all");
+  const [summaryMode, setSummaryMode] = useState<SummaryMode>("parent");
   const [summaryErrorOverride, setSummaryErrorOverride] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryOverride, setSummaryOverride] = useState<HealthSummary | null>(null);
-  const effectiveHealthSummary = summaryOverride ?? healthSummary;
-  const effectiveHealthSummaryError = summaryErrorOverride ?? (summaryOverride ? null : healthSummaryError);
+  const effectiveHealthSummary = summaryMode === "local" ? summaryOverride : healthSummary;
+  const effectiveHealthSummaryError = summaryMode === "local" ? summaryErrorOverride : healthSummaryError;
   const controlsLoading = loading || summaryLoading;
   const online = results.filter((result) => result.status === "online").length;
   const serviceHealthScore = results.length > 0 ? Math.round((online / results.length) * 100) : null;
@@ -82,20 +95,57 @@ export function HealthDashboard({
     setFilters(nextFilters);
   }
 
-  async function handleRefreshSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function loadSummary(nextFilters: HealthSummaryFilters) {
+    const nextRequestSeq = requestSeq.current + 1;
+    requestSeq.current = nextRequestSeq;
+    setSummaryMode("local");
     setSummaryErrorOverride(null);
+    setSummaryOverride(null);
     setSummaryLoading(true);
 
     try {
-      setSummaryOverride(await getProviderHealthSummary(filters));
+      const nextSummary = await getProviderHealthSummary(nextFilters);
+
+      if (requestSeq.current === nextRequestSeq) {
+        setSummaryOverride(nextSummary);
+        setSummaryErrorOverride(null);
+      }
     } catch (requestError) {
-      setSummaryErrorOverride(errorMessage(requestError));
-      setSummaryOverride(null);
+      if (requestSeq.current === nextRequestSeq) {
+        setSummaryErrorOverride(errorMessage(requestError));
+        setSummaryOverride(null);
+      }
     } finally {
-      setSummaryLoading(false);
+      if (requestSeq.current === nextRequestSeq) {
+        setSummaryLoading(false);
+      }
     }
   }
+
+  function handleRefreshSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void loadSummary(filters);
+  }
+
+  useEffect(() => {
+    requestSeq.current += 1;
+    setSummaryMode("parent");
+    setSummaryErrorOverride(null);
+    setSummaryLoading(false);
+    setSummaryOverride(null);
+  }, [healthSummary, healthSummaryError]);
+
+  useEffect(() => {
+    if (autoRefreshSeconds === 0) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadSummary(filters);
+    }, autoRefreshSeconds * 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [autoRefreshSeconds, filters.sample_limit, filters.window_minutes]);
 
   return (
     <div className="dashboard-stack">
@@ -191,6 +241,22 @@ export function HealthDashboard({
           </label>
 
           <label className="field">
+            Auto refresh
+            <select
+              value={String(autoRefreshSeconds)}
+              onChange={(event) =>
+                setAutoRefreshSeconds(Number.parseInt(event.currentTarget.value, 10) as AutoRefreshSeconds)
+              }
+            >
+              {autoRefreshOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
             Matrix search
             <input
               value={matrixQuery}
@@ -271,6 +337,7 @@ export function HealthDashboard({
                   const recoveryState = recoveryRequests[row.id];
                   const recoveryError = recoveryErrors[row.id];
                   const recoveryDisabled = recoveryState === "pending" || recoveryState === "succeeded";
+                  const showRecoveryAction = canRequestRecovery && row.recoverable;
 
                   return (
                     <tr key={`${row.scope}-${row.id}`}>
@@ -285,7 +352,7 @@ export function HealthDashboard({
                       <td>{row.score}</td>
                       <td>{row.signal}</td>
                       <td>
-                        {row.recoverable ? (
+                        {showRecoveryAction ? (
                           <div className="table-action-stack">
                             <button
                               aria-label={`Request recovery for ${row.name}`}
@@ -300,7 +367,7 @@ export function HealthDashboard({
                             {recoveryError ? <small>{recoveryError}</small> : null}
                           </div>
                         ) : (
-                          "-"
+                          <span className="muted-copy">{row.recoverable ? "No permission" : "-"}</span>
                         )}
                       </td>
                     </tr>
@@ -309,7 +376,7 @@ export function HealthDashboard({
               ) : (
                 <tr>
                   <td colSpan={6}>
-                    {loading
+                    {controlsLoading
                       ? "Loading health summary."
                       : allRows.length > 0
                         ? "No rows match the current scan."

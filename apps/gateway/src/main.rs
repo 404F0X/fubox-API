@@ -43,9 +43,12 @@ use ai_gateway_observability::{
 use ai_gateway_routing::{
     ChannelHealth, ChannelStatus, HealthImpact, ProviderErrorClassification, ProviderErrorSignal,
     ProviderTransportErrorKind, RateLimitAvailability, RateLimitAvailabilityInput,
-    RateLimitDimension, RateLimitDimensionStatus, RateLimitWindow, RouteCandidate, RouteDecision,
-    RouteDecisionSnapshot, RouteRequest, RouteSelectionContext, classify_provider_error,
-    evaluate_rate_limit_availability, select_route_with_context,
+    RateLimitCounterUpdate, RateLimitCounterWindow, RateLimitDimension, RateLimitDimensionStatus,
+    RateLimitRequiredCapacity, RateLimitReservationInput, RateLimitReservationOperation,
+    RateLimitReservationPlan, RateLimitReservationStatus, RateLimitWindow, RouteCandidate,
+    RouteDecision, RouteDecisionSnapshot, RouteRequest, RouteSelectionContext,
+    classify_provider_error, evaluate_rate_limit_availability, plan_rate_limit_reservation,
+    select_route_with_context,
 };
 use axum::{
     Json, Router,
@@ -86,6 +89,9 @@ const AI_TRACE_ID_MAX_LEN: usize = 256;
 const TRACE_AFFINITY_LOOKBACK_SECONDS: i64 = 3_600;
 const GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA: &str = "gateway_trace_affinity_runtime_v1";
 const GATEWAY_RATE_LIMIT_RUNTIME_SCHEMA: &str = "gateway_rate_limit_runtime_v1";
+const GATEWAY_RATE_LIMIT_RESERVATION_RUNTIME_SCHEMA: &str =
+    "gateway_rate_limit_reservation_runtime_v1";
+const GATEWAY_RATE_LIMIT_RESERVATION_BACKEND: &str = "request_local_plan";
 const GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS: i64 = 1;
 const GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK: i64 = 1;
 const GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY: i64 = 1;
@@ -653,6 +659,20 @@ async fn chat_completions(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error(
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(&auth, request_id, route, attempt_no)
             .await
@@ -682,7 +702,7 @@ async fn chat_completions(
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -690,6 +710,11 @@ async fn chat_completions(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(repository, &auth, request_id, started_at, summary).await;
@@ -701,12 +726,17 @@ async fn chat_completions(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -735,8 +765,18 @@ async fn chat_completions(
                     response_payload_metadata(&payload_policy, response_body.as_bytes());
                 let usage =
                     request_usage_from_adapter_usage(upstream_client.extract_usage(&payload));
-                finish_provider_attempt_success(repository, &auth, attempt_id, provider_started_at)
-                    .await;
+                finish_provider_attempt_success(
+                    repository,
+                    &auth,
+                    attempt_id,
+                    provider_started_at,
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "completed",
+                    ),
+                )
+                .await;
                 record_request_final_route(
                     repository,
                     &auth,
@@ -788,7 +828,11 @@ async fn chat_completions(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -803,7 +847,7 @@ async fn chat_completions(
                     continue;
                 }
 
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -811,6 +855,11 @@ async fn chat_completions(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(repository, &auth, request_id, started_at, summary).await;
@@ -1086,6 +1135,21 @@ async fn responses(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error_for_endpoint(
+                METRICS_ENDPOINT_RESPONSES,
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(&auth, request_id, route, attempt_no)
             .await
@@ -1116,7 +1180,7 @@ async fn responses(
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -1124,6 +1188,11 @@ async fn responses(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1143,12 +1212,17 @@ async fn responses(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1178,8 +1252,18 @@ async fn responses(
                     response_payload_metadata(&payload_policy, response_body.as_bytes());
                 let usage =
                     request_usage_from_adapter_usage(upstream_client.extract_usage(&payload));
-                finish_provider_attempt_success(repository, &auth, attempt_id, provider_started_at)
-                    .await;
+                finish_provider_attempt_success(
+                    repository,
+                    &auth,
+                    attempt_id,
+                    provider_started_at,
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "completed",
+                    ),
+                )
+                .await;
                 record_request_final_route(
                     repository,
                     &auth,
@@ -1233,7 +1317,11 @@ async fn responses(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -1248,7 +1336,7 @@ async fn responses(
                     continue;
                 }
 
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -1256,6 +1344,11 @@ async fn responses(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1522,6 +1615,21 @@ async fn embeddings(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error_for_endpoint(
+                METRICS_ENDPOINT_EMBEDDINGS,
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(&auth, request_id, route, attempt_no)
             .await
@@ -1552,7 +1660,7 @@ async fn embeddings(
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -1560,6 +1668,11 @@ async fn embeddings(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1579,12 +1692,17 @@ async fn embeddings(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1615,8 +1733,18 @@ async fn embeddings(
                 let usage = request_usage_from_embedding_adapter_usage(
                     upstream_client.extract_usage(&payload),
                 );
-                finish_provider_attempt_success(repository, &auth, attempt_id, provider_started_at)
-                    .await;
+                finish_provider_attempt_success(
+                    repository,
+                    &auth,
+                    attempt_id,
+                    provider_started_at,
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "completed",
+                    ),
+                )
+                .await;
                 record_request_final_route(
                     repository,
                     &auth,
@@ -1670,7 +1798,11 @@ async fn embeddings(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -1685,7 +1817,7 @@ async fn embeddings(
                     continue;
                 }
 
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -1693,6 +1825,11 @@ async fn embeddings(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1976,6 +2113,21 @@ async fn anthropic_messages(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error_for_endpoint(
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(&auth, request_id, route, attempt_no)
             .await
@@ -2004,7 +2156,7 @@ async fn anthropic_messages(
             Ok(upstream_request) => upstream_request,
             Err(error) => {
                 let summary = summarize_anthropic_adapter_error(&error);
-                finish_provider_attempt_with_anthropic_adapter_error(
+                finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -2012,6 +2164,11 @@ async fn anthropic_messages(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -2029,7 +2186,7 @@ async fn anthropic_messages(
 
         if let Err(error) = validate_anthropic_route_endpoint_for_provider_call(route).await {
             let summary = summarize_anthropic_adapter_error(&error);
-            finish_provider_attempt_with_anthropic_adapter_error(
+            finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                 repository,
                 &auth,
                 route,
@@ -2037,6 +2194,11 @@ async fn anthropic_messages(
                 provider_started_at,
                 &error,
                 summary.clone(),
+                provider_attempt_metadata_with_rate_limit_reservation(
+                    json!({}),
+                    &rate_limit_reservation,
+                    "error",
+                ),
             )
             .await;
             finish_request_with_error_for_endpoint(
@@ -2054,12 +2216,17 @@ async fn anthropic_messages(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -2089,8 +2256,18 @@ async fn anthropic_messages(
                 let response_payload_metadata =
                     response_payload_metadata(&payload_policy, response_body.as_bytes());
                 let usage = request_usage_from_adapter_usage(adapter.extract_usage(&payload));
-                finish_provider_attempt_success(repository, &auth, attempt_id, provider_started_at)
-                    .await;
+                finish_provider_attempt_success(
+                    repository,
+                    &auth,
+                    attempt_id,
+                    provider_started_at,
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "completed",
+                    ),
+                )
+                .await;
                 record_request_final_route(
                     repository,
                     &auth,
@@ -2146,7 +2323,11 @@ async fn anthropic_messages(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -2161,7 +2342,7 @@ async fn anthropic_messages(
                     continue;
                 }
 
-                finish_provider_attempt_with_anthropic_adapter_error(
+                finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -2169,6 +2350,11 @@ async fn anthropic_messages(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -2503,6 +2689,21 @@ async fn gemini_generate_content_native_passthrough(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&native_path.requested_model);
+            finish_request_with_error_for_endpoint(
+                METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                repository,
+                &auth,
+                request_id,
+                started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(&auth, request_id, route, attempt_no)
             .await
@@ -2527,7 +2728,7 @@ async fn gemini_generate_content_native_passthrough(
             Ok(path) => path,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -2535,6 +2736,11 @@ async fn gemini_generate_content_native_passthrough(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -2554,7 +2760,7 @@ async fn gemini_generate_content_native_passthrough(
                 Ok(prepared) => prepared,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
-                    finish_provider_attempt_with_adapter_error(
+                    finish_provider_attempt_with_adapter_error_with_metadata(
                         repository,
                         &auth,
                         route,
@@ -2562,6 +2768,11 @@ async fn gemini_generate_content_native_passthrough(
                         provider_started_at,
                         &error,
                         summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "error",
+                        ),
                     )
                     .await;
                     finish_request_with_error_for_endpoint(
@@ -2579,7 +2790,7 @@ async fn gemini_generate_content_native_passthrough(
 
         if let Err(error) = validate_route_endpoint_for_provider_call(route).await {
             let summary = summarize_adapter_error(&error);
-            finish_provider_attempt_with_adapter_error(
+            finish_provider_attempt_with_adapter_error_with_metadata(
                 repository,
                 &auth,
                 route,
@@ -2587,6 +2798,11 @@ async fn gemini_generate_content_native_passthrough(
                 provider_started_at,
                 &error,
                 summary.clone(),
+                provider_attempt_metadata_with_rate_limit_reservation(
+                    json!({}),
+                    &rate_limit_reservation,
+                    "error",
+                ),
             )
             .await;
             finish_request_with_error_for_endpoint(
@@ -2604,12 +2820,17 @@ async fn gemini_generate_content_native_passthrough(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -2640,8 +2861,18 @@ async fn gemini_generate_content_native_passthrough(
                 let response_payload_metadata =
                     response_payload_metadata(&payload_policy, &payload.body);
                 let usage = gemini_usage_from_response_body(&payload.body);
-                finish_provider_attempt_success(repository, &auth, attempt_id, provider_started_at)
-                    .await;
+                finish_provider_attempt_success(
+                    repository,
+                    &auth,
+                    attempt_id,
+                    provider_started_at,
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "completed",
+                    ),
+                )
+                .await;
                 record_request_final_route(
                     repository,
                     &auth,
@@ -2690,7 +2921,11 @@ async fn gemini_generate_content_native_passthrough(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -2705,7 +2940,7 @@ async fn gemini_generate_content_native_passthrough(
                     continue;
                 }
 
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
                     route,
@@ -2713,6 +2948,11 @@ async fn gemini_generate_content_native_passthrough(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -4329,6 +4569,221 @@ fn route_rate_limit_window(
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct GatewayRateLimitReservationAttempt {
+    acquire: RateLimitReservationPlan,
+    release: RateLimitReservationPlan,
+}
+
+impl GatewayRateLimitReservationAttempt {
+    fn new(route: &ResolvedChatRoute) -> Self {
+        let acquire =
+            route_rate_limit_reservation_plan(route, RateLimitReservationOperation::Acquire, false);
+        let release = route_rate_limit_reservation_plan(
+            route,
+            RateLimitReservationOperation::Release,
+            acquire.status == RateLimitReservationStatus::Acquired,
+        );
+
+        Self { acquire, release }
+    }
+
+    pub(crate) fn acquired(&self) -> bool {
+        self.acquire.status == RateLimitReservationStatus::Acquired
+    }
+
+    pub(crate) fn metadata(&self, outcome: &'static str) -> Value {
+        json!({
+            "schema": GATEWAY_RATE_LIMIT_RESERVATION_RUNTIME_SCHEMA,
+            "backend": GATEWAY_RATE_LIMIT_RESERVATION_BACKEND,
+            "outcome": outcome,
+            "acquire": rate_limit_reservation_plan_metadata(&self.acquire),
+            "finalize": rate_limit_reservation_plan_metadata(&self.release),
+            "required_capacity": {
+                "requests_per_minute": GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+                "tokens_per_minute": GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
+                "concurrency": GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+            },
+            "window_material_in_output": self.acquire.window_material_in_output
+                || self.release.window_material_in_output,
+        })
+    }
+}
+
+pub(crate) fn gateway_rate_limit_reservation_for_attempt(
+    route: &ResolvedChatRoute,
+) -> GatewayRateLimitReservationAttempt {
+    GatewayRateLimitReservationAttempt::new(route)
+}
+
+fn route_rate_limit_reservation_plan(
+    route: &ResolvedChatRoute,
+    operation: RateLimitReservationOperation,
+    reservation_acquired: bool,
+) -> RateLimitReservationPlan {
+    let requests_per_minute = route_rate_limit_counter_window(
+        route.provider_key_rpm_limit,
+        window_state_used_for_dimension(
+            &route.provider_key_current_window_state,
+            RateLimitDimension::RequestsPerMinute,
+        ),
+    );
+    let tokens_per_minute = route_rate_limit_counter_window(
+        route.provider_key_tpm_limit,
+        window_state_used_for_dimension(
+            &route.provider_key_current_window_state,
+            RateLimitDimension::TokensPerMinute,
+        ),
+    );
+    let concurrency = route_rate_limit_counter_window(
+        route.provider_key_concurrency_limit,
+        window_state_used_for_dimension(
+            &route.provider_key_current_window_state,
+            RateLimitDimension::Concurrency,
+        ),
+    );
+    let required = RateLimitRequiredCapacity::new(
+        GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+        GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
+        GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+    );
+
+    let input = match operation {
+        RateLimitReservationOperation::Acquire => RateLimitReservationInput::acquire(
+            requests_per_minute,
+            tokens_per_minute,
+            concurrency,
+            required,
+        ),
+        RateLimitReservationOperation::Release => RateLimitReservationInput::release(
+            requests_per_minute,
+            tokens_per_minute,
+            concurrency,
+            required,
+            reservation_acquired,
+        ),
+    };
+
+    plan_rate_limit_reservation(input)
+}
+
+fn route_rate_limit_counter_window(
+    limit: Option<i32>,
+    used: Option<i64>,
+) -> RateLimitCounterWindow {
+    match (limit, used) {
+        (Some(limit), Some(used)) => RateLimitCounterWindow::limited(i64::from(limit), used),
+        (Some(limit), None) => RateLimitCounterWindow::missing(i64::from(limit)),
+        (None, _) => RateLimitCounterWindow::unlimited(),
+    }
+}
+
+fn rate_limit_reservation_plan_metadata(plan: &RateLimitReservationPlan) -> Value {
+    json!({
+        "operation": rate_limit_reservation_operation_label(plan.operation),
+        "status": rate_limit_reservation_status_label(plan.status),
+        "filter_reason": plan.filter_reason.map(|reason| format!("{reason:?}")),
+        "blocking_dimensions": plan
+            .blocking_dimensions
+            .iter()
+            .copied()
+            .map(rate_limit_dimension_label)
+            .collect::<Vec<_>>(),
+        "conservative_reject": plan.conservative_reject,
+        "counter_updates_planned": plan.counter_updates_planned,
+        "window_material_in_output": plan.window_material_in_output,
+        "dimensions": plan
+            .dimensions
+            .iter()
+            .map(rate_limit_reservation_dimension_metadata)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn rate_limit_reservation_dimension_metadata(
+    dimension: &ai_gateway_routing::RateLimitReservationDimensionPlan,
+) -> Value {
+    json!({
+        "dimension": rate_limit_dimension_label(dimension.dimension),
+        "status": rate_limit_dimension_status_label(dimension.status),
+        "selectable_for_acquire": dimension.selectable_for_acquire,
+        "limit": dimension.limit,
+        "used_before": dimension.used_before,
+        "required": dimension.required,
+        "used_after": dimension.used_after,
+        "remaining_before": dimension.remaining_before,
+        "remaining_after": dimension.remaining_after,
+        "window_present": dimension.window_present,
+        "sanitized_negative_used": dimension.sanitized_negative_used,
+        "counter_update": rate_limit_counter_update_label(dimension.counter_update),
+        "saturated_release": dimension.saturated_release,
+    })
+}
+
+const fn rate_limit_reservation_operation_label(
+    operation: RateLimitReservationOperation,
+) -> &'static str {
+    match operation {
+        RateLimitReservationOperation::Acquire => "acquire",
+        RateLimitReservationOperation::Release => "release",
+    }
+}
+
+const fn rate_limit_reservation_status_label(status: RateLimitReservationStatus) -> &'static str {
+    match status {
+        RateLimitReservationStatus::Acquired => "acquired",
+        RateLimitReservationStatus::Rejected => "rejected",
+        RateLimitReservationStatus::Released => "released",
+        RateLimitReservationStatus::ReleaseNoop => "release_noop",
+    }
+}
+
+const fn rate_limit_dimension_status_label(status: RateLimitDimensionStatus) -> &'static str {
+    match status {
+        RateLimitDimensionStatus::Unlimited => "unlimited",
+        RateLimitDimensionStatus::WindowMissing => "window_missing",
+        RateLimitDimensionStatus::Available => "available",
+        RateLimitDimensionStatus::Exceeded => "exceeded",
+        RateLimitDimensionStatus::InvalidLimit => "invalid_limit",
+        RateLimitDimensionStatus::InvalidRequired => "invalid_required",
+    }
+}
+
+const fn rate_limit_counter_update_label(update: RateLimitCounterUpdate) -> &'static str {
+    match update {
+        RateLimitCounterUpdate::None => "none",
+        RateLimitCounterUpdate::Increment => "increment",
+        RateLimitCounterUpdate::Decrement => "decrement",
+    }
+}
+
+pub(crate) fn provider_attempt_metadata_with_rate_limit_reservation(
+    mut metadata: Value,
+    reservation: &GatewayRateLimitReservationAttempt,
+    outcome: &'static str,
+) -> Value {
+    let reservation_metadata = reservation.metadata(outcome);
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("rate_limit_reservation".to_string(), reservation_metadata);
+        metadata
+    } else {
+        json!({ "rate_limit_reservation": reservation_metadata })
+    }
+}
+
+pub(crate) fn rate_limit_reservation_rejected_error(_model: &str) -> GatewayApiError {
+    GatewayApiError {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        error_type: "rate_limit_error",
+        code: "rate_limit_exceeded",
+        message: "Rate-limit capacity is unavailable for the selected model".to_string(),
+        param: Some("model"),
+        owner: "gateway",
+        stage: "route",
+        retryable: Some(true),
+    }
+}
+
 fn window_state_used_for_dimension(state: &Value, dimension: RateLimitDimension) -> Option<i64> {
     let keys: &[&str] = match dimension {
         RateLimitDimension::RequestsPerMinute => &[
@@ -5854,6 +6309,7 @@ async fn finish_provider_attempt_success(
     auth: &AuthContext,
     attempt_id: uuid::Uuid,
     started_at: Instant,
+    metadata: Value,
 ) {
     if let Err(error) = repository
         .finish_provider_attempt(
@@ -5867,7 +6323,7 @@ async fn finish_provider_attempt_success(
                 retryable: None,
                 fallback_reason: None,
                 latency_ms: elapsed_ms(started_at),
-                metadata: json!({}),
+                metadata,
             },
         )
         .await
@@ -5876,26 +6332,22 @@ async fn finish_provider_attempt_success(
     }
 }
 
-async fn finish_provider_attempt_with_error(
+pub(crate) async fn finish_provider_attempt_with_error_with_metadata(
     repository: &GatewayRepository,
     auth: &AuthContext,
     attempt_id: uuid::Uuid,
     started_at: Instant,
     summary: ErrorLogSummary,
+    metadata: Value,
 ) {
     finish_provider_attempt_with_error_and_fallback(
-        repository,
-        auth,
-        attempt_id,
-        started_at,
-        summary,
-        None,
-        json!({}),
+        repository, auth, attempt_id, started_at, summary, None, metadata,
     )
     .await;
 }
 
-async fn finish_provider_attempt_with_adapter_error(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finish_provider_attempt_with_adapter_error_with_metadata(
     repository: &GatewayRepository,
     auth: &AuthContext,
     route: &ResolvedChatRoute,
@@ -5903,22 +6355,16 @@ async fn finish_provider_attempt_with_adapter_error(
     started_at: Instant,
     error: &OpenAiAdapterError,
     summary: ErrorLogSummary,
+    metadata: Value,
 ) {
     finish_provider_attempt_with_adapter_error_and_fallback(
-        repository,
-        auth,
-        route,
-        attempt_id,
-        started_at,
-        error,
-        summary,
-        None,
-        json!({}),
+        repository, auth, route, attempt_id, started_at, error, summary, None, metadata,
     )
     .await;
 }
 
-pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
     repository: &GatewayRepository,
     auth: &AuthContext,
     route: &ResolvedChatRoute,
@@ -5926,6 +6372,7 @@ pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error(
     started_at: Instant,
     error: &AnthropicAdapterError,
     summary: ErrorLogSummary,
+    metadata: Value,
 ) {
     finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint(
         METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
@@ -5937,7 +6384,7 @@ pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error(
         error,
         summary,
         None,
-        json!({}),
+        metadata,
     )
     .await;
 }
@@ -9311,6 +9758,198 @@ mod tests {
         assert_eq!(rating.final_cost, "2.10000000");
         assert_eq!(rating.currency, "USD");
         assert_eq!(rating.price_version_id, price_version_id);
+    }
+
+    #[test]
+    fn rate_limit_reservation_runtime_orders_after_preauth_before_provider_side_effects() {
+        let main_source = include_str!("main.rs");
+        let streaming_source = include_str!("streaming.rs");
+        let reservation_marker = "gateway_rate_limit_reservation_for_attempt(";
+
+        for (source, start, end, section_name, upstream_marker) in [
+            (
+                main_source,
+                "async fn chat_completions(",
+                "async fn responses(",
+                "chat completions",
+                "chat_completions_with_provider_key(",
+            ),
+            (
+                main_source,
+                "async fn responses(",
+                "async fn embeddings(",
+                "responses",
+                "responses_with_provider_key(",
+            ),
+            (
+                main_source,
+                "async fn embeddings(",
+                "async fn anthropic_messages(",
+                "embeddings",
+                "embeddings_with_provider_key(",
+            ),
+            (
+                main_source,
+                "async fn anthropic_messages(",
+                "async fn gemini_generate_content_native_passthrough(",
+                "anthropic messages",
+                "send_anthropic_messages_request(",
+            ),
+            (
+                main_source,
+                "async fn gemini_generate_content_native_passthrough(",
+                "async fn models(",
+                "gemini generateContent",
+                "send_native_passthrough_request(",
+            ),
+            (
+                streaming_source,
+                "pub(crate) async fn chat_completions_streaming(",
+                "pub(crate) async fn responses_streaming(",
+                "chat completions streaming",
+                "chat_completions_stream_with_provider_key(",
+            ),
+            (
+                streaming_source,
+                "pub(crate) async fn responses_streaming(",
+                "pub(crate) async fn anthropic_messages_streaming(",
+                "responses streaming",
+                "responses_stream_with_provider_key(",
+            ),
+            (
+                streaming_source,
+                "pub(crate) async fn anthropic_messages_streaming(",
+                "pub(crate) async fn gemini_generate_content_streaming(",
+                "anthropic messages streaming",
+                "send_anthropic_messages_stream_request(",
+            ),
+            (
+                streaming_source,
+                "pub(crate) async fn gemini_generate_content_streaming(",
+                "#[derive(Debug, Clone)]\nstruct StreamLogContext",
+                "gemini generateContent streaming",
+                "send_gemini_generate_content_stream_request(",
+            ),
+        ] {
+            let section = source_section(source, start, end);
+            assert_marker_before(
+                section,
+                "pre_authorize_before_provider_attempt(",
+                reservation_marker,
+                section_name,
+            );
+            assert_marker_before(
+                section,
+                reservation_marker,
+                ".create_provider_attempt_started(",
+                section_name,
+            );
+            assert_marker_before(
+                section,
+                reservation_marker,
+                "open_provider_key_for_route(",
+                section_name,
+            );
+            assert_marker_before(section, reservation_marker, upstream_marker, section_name);
+        }
+    }
+
+    #[test]
+    fn rate_limit_reservation_runtime_metadata_acquires_releases_and_is_secret_safe() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(51),
+            0,
+            Some(60),
+            Some(1_000),
+            Some(4),
+            json!({
+                "rpm_used": 10,
+                "tokens_per_minute": { "used": 99 },
+                "active_concurrency": 1,
+                "authorization": "Bearer sk-live-secret",
+                "endpoint": "https://provider.example.test/v1",
+                "payload": "raw request body"
+            }),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let metadata = provider_attempt_metadata_with_rate_limit_reservation(
+            json!({ "fallback": { "schema": "gateway_retry_fallback_v1" } }),
+            &reservation,
+            "completed",
+        );
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+        let runtime = &metadata["rate_limit_reservation"];
+
+        assert!(reservation.acquired());
+        assert_eq!(runtime["schema"], fixture["runtime_schema"]);
+        assert_eq!(runtime["backend"], fixture["backend"]);
+        assert_eq!(
+            runtime["acquire"]["status"],
+            fixture["expected"]["successful_acquire_status"]
+        );
+        assert_eq!(
+            runtime["finalize"]["status"],
+            fixture["expected"]["successful_finalize_status"]
+        );
+        assert_eq!(
+            runtime["acquire"]["counter_updates_planned"],
+            fixture["expected"]["successful_counter_updates_planned"]
+        );
+        assert_eq!(runtime["window_material_in_output"], false);
+        assert_eq!(metadata["fallback"]["schema"], "gateway_retry_fallback_v1");
+
+        let metadata_text = metadata.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !metadata_text.contains(&marker.to_ascii_lowercase()),
+                "rate-limit reservation metadata leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_reservation_runtime_rejects_missing_window_and_noops_release() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(52),
+            0,
+            Some(60),
+            None,
+            None,
+            json!({}),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let metadata = reservation.metadata("reservation_rejected");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+
+        assert!(!reservation.acquired());
+        assert_eq!(
+            metadata["acquire"]["status"],
+            fixture["expected"]["missing_window_acquire_status"]
+        );
+        assert_eq!(
+            metadata["finalize"]["status"],
+            fixture["expected"]["missing_window_finalize_status"]
+        );
+        assert_eq!(metadata["acquire"]["conservative_reject"], true);
+        assert_eq!(metadata["finalize"]["counter_updates_planned"], 0);
+    }
+
+    #[test]
+    fn rate_limit_reservation_rejection_error_does_not_echo_model() {
+        let error = rate_limit_reservation_rejected_error("sk-live-secret");
+        assert_eq!(error.code, "rate_limit_exceeded");
+        assert!(!error.message.contains("sk-live-secret"));
     }
 
     #[test]

@@ -1,0 +1,47 @@
+{
+  "scenario": "gateway_rate_limit_reservation_runtime_contract_v1",
+  "crate": "apps/gateway",
+  "runtime_schema": "gateway_rate_limit_reservation_runtime_v1",
+  "backend": "request_local_plan",
+  "contract": {
+    "reservation_backend": "request local only until Redis or DB counters are wired",
+    "acquire_order": "after preauth and before provider attempt side effects",
+    "finalize_order": "provider attempt completion, error, fallback, stream finalizer, or stream pre-response error",
+    "bounded_dimensions": [
+      "rpm",
+      "tpm",
+      "concurrency"
+    ],
+    "missing_limited_counter": {
+      "acquire_status": "rejected",
+      "finalize_status": "release_noop",
+      "request_rejected_before_upstream": true
+    },
+    "stores_request_or_response_body": false,
+    "stores_authorization_material": false,
+    "stores_provider_key": false,
+    "stores_raw_headers": false,
+    "stores_raw_endpoint": false,
+    "adds_metrics_labels": false
+  },
+  "expected": {
+    "successful_acquire_status": "acquired",
+    "successful_finalize_status": "released",
+    "successful_counter_updates_planned": 3,
+    "missing_window_acquire_status": "rejected",
+    "missing_window_finalize_status": "release_noop"
+  },
+  "forbidden_snapshot_markers": [
+    "sk-live-secret",
+    "authorization",
+    "bearer",
+    "provider_key",
+    "provider key",
+    "payload",
+    "request_body",
+    "response_body",
+    "raw_headers",
+    "raw endpoint",
+    "https://provider.example.test"
+  ]
+}

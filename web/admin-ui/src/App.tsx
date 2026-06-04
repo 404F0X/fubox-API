@@ -7,6 +7,7 @@ import {
   probeServices,
   requestProviderKeyRecovery,
 } from "./api/client";
+import { errorMessage } from "./components/adminUtils";
 import { HealthDashboard } from "./components/HealthDashboard";
 import { Activity, Database, Key, Network, ScrollText, ShieldCheck } from "./components/icons";
 import { type AdminSession, LoginPanel } from "./components/LoginPanel";
@@ -111,7 +112,7 @@ export function App() {
         setHealthSummaryError(null);
       } else {
         setHealthSummary(null);
-        setHealthSummaryError(errorText(summaryResult.reason));
+        setHealthSummaryError(errorMessage(summaryResult.reason));
       }
 
       setLastChecked(
@@ -150,7 +151,7 @@ export function App() {
       void refresh();
     } catch (error) {
       setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "failed" }));
-      setRecoveryErrors((current) => ({ ...current, [providerKeyId]: errorText(error) }));
+      setRecoveryErrors((current) => ({ ...current, [providerKeyId]: errorMessage(error) }));
     }
   }
 
@@ -218,6 +219,7 @@ export function App() {
           </section>
         ) : selectedView === "overview" ? (
           <HealthDashboard
+            canRequestRecovery={hasSessionCapability(session, "provider_key.recovery")}
             lastChecked={lastChecked}
             healthSummary={healthSummary}
             healthSummaryError={healthSummaryError}
@@ -317,10 +319,6 @@ export function App() {
   );
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function capabilityAccessFromSession(session: AdminSession): Set<AdminCapability> {
   const denied = new Set(session.capabilitySummary.denied_capabilities);
 
@@ -344,6 +342,7 @@ const knownCapabilities = new Set<AdminCapability>([
   "provider.manage",
   "key.read",
   "key.manage",
+  "provider_key.recovery",
   "request_log.read",
   "trace.read",
   "audit.read",

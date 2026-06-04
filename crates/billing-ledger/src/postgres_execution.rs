@@ -9,6 +9,7 @@ use crate::{
 
 pub const CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA: &str =
     "billing_ledger_postgres_execution_plan.v1";
+pub const CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA: &str = "billing_ledger_postgres_executor.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConsistentLedgerPostgresExecutionPlan {
@@ -20,6 +21,83 @@ pub struct ConsistentLedgerPostgresExecutionPlan {
     pub operation_key_output: &'static str,
     pub transaction_steps: Vec<ConsistentLedgerPostgresTransactionStep>,
     pub sql_statements: Vec<ConsistentLedgerPostgresStatement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresExecutorResult {
+    pub schema_version: &'static str,
+    pub executor: &'static str,
+    pub operation: LedgerOperationKind,
+    pub outcome: ConsistentLedgerPostgresExecutorOutcome,
+    pub operation_key_output: &'static str,
+    pub committed: bool,
+    pub rolled_back: bool,
+    pub statement_results: Vec<ConsistentLedgerPostgresStatementResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ConsistentLedgerPostgresExecutorError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerPostgresExecutorOutcome {
+    Applied,
+    Idempotent,
+    RolledBack,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresStatementResult {
+    pub order: u16,
+    pub kind: ConsistentLedgerPostgresStatementKind,
+    pub target: &'static str,
+    pub outcome: ConsistentLedgerPostgresStatementOutcome,
+    pub rows_affected: u64,
+    pub operation_key_output: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerPostgresStatementOutcome {
+    Executed,
+    Refused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsistentLedgerPostgresExecutorError {
+    pub code: String,
+    pub category: String,
+    pub detail_output: &'static str,
+}
+
+impl ConsistentLedgerPostgresExecutorError {
+    pub fn statement_refused(code: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            category: "statement_refusal".to_string(),
+            detail_output: "omitted",
+        }
+    }
+
+    pub fn transaction_error(code: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            category: "transaction".to_string(),
+            detail_output: "omitted",
+        }
+    }
+}
+
+pub trait ConsistentLedgerPostgresTransactionExecutor {
+    fn begin_transaction(&mut self) -> Result<(), ConsistentLedgerPostgresExecutorError>;
+
+    fn execute_statement(
+        &mut self,
+        statement: &ConsistentLedgerPostgresStatement,
+    ) -> Result<ConsistentLedgerPostgresStatementResult, ConsistentLedgerPostgresExecutorError>;
+
+    fn commit_transaction(&mut self) -> Result<(), ConsistentLedgerPostgresExecutorError>;
+
+    fn rollback_transaction(&mut self) -> Result<(), ConsistentLedgerPostgresExecutorError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -106,6 +184,128 @@ pub fn plan_consistent_ledger_postgres_execution(
         operation_key_output: "omitted",
         transaction_steps: transaction_steps(command_plan.commands.is_empty()),
         sql_statements,
+    }
+}
+
+pub fn execute_consistent_ledger_postgres_plan<E>(
+    executor: &mut E,
+    plan: &ConsistentLedgerPostgresExecutionPlan,
+) -> ConsistentLedgerPostgresExecutorResult
+where
+    E: ConsistentLedgerPostgresTransactionExecutor,
+{
+    if let Err(error) = executor.begin_transaction() {
+        return executor_result(
+            plan,
+            ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+            false,
+            false,
+            Vec::new(),
+            Some(error),
+        );
+    }
+
+    let mut statement_results = Vec::new();
+    for statement in &plan.sql_statements {
+        match executor.execute_statement(statement) {
+            Ok(result) => {
+                let result = sanitized_statement_result(statement, result);
+                if result.outcome == ConsistentLedgerPostgresStatementOutcome::Refused {
+                    statement_results.push(result);
+                    let rolled_back = executor.rollback_transaction().is_ok();
+                    return executor_result(
+                        plan,
+                        ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+                        false,
+                        rolled_back,
+                        statement_results,
+                        Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                            "statement_refused",
+                        )),
+                    );
+                }
+                statement_results.push(result);
+            }
+            Err(error) => {
+                statement_results.push(refused_statement_result(statement));
+                let rolled_back = executor.rollback_transaction().is_ok();
+                return executor_result(
+                    plan,
+                    ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+                    false,
+                    rolled_back,
+                    statement_results,
+                    Some(error),
+                );
+            }
+        }
+    }
+
+    if let Err(error) = executor.commit_transaction() {
+        let rolled_back = executor.rollback_transaction().is_ok();
+        return executor_result(
+            plan,
+            ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+            false,
+            rolled_back,
+            statement_results,
+            Some(error),
+        );
+    }
+
+    let outcome = if matches!(plan.outcome, LedgerOperationOutcome::Idempotent { .. }) {
+        ConsistentLedgerPostgresExecutorOutcome::Idempotent
+    } else {
+        ConsistentLedgerPostgresExecutorOutcome::Applied
+    };
+    executor_result(plan, outcome, true, false, statement_results, None)
+}
+
+fn executor_result(
+    plan: &ConsistentLedgerPostgresExecutionPlan,
+    outcome: ConsistentLedgerPostgresExecutorOutcome,
+    committed: bool,
+    rolled_back: bool,
+    statement_results: Vec<ConsistentLedgerPostgresStatementResult>,
+    error: Option<ConsistentLedgerPostgresExecutorError>,
+) -> ConsistentLedgerPostgresExecutorResult {
+    ConsistentLedgerPostgresExecutorResult {
+        schema_version: CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA,
+        executor: "consistent_ledger_postgres_transaction_executor",
+        operation: plan.operation,
+        outcome,
+        operation_key_output: "omitted",
+        committed,
+        rolled_back,
+        statement_results,
+        error,
+    }
+}
+
+fn sanitized_statement_result(
+    statement: &ConsistentLedgerPostgresStatement,
+    result: ConsistentLedgerPostgresStatementResult,
+) -> ConsistentLedgerPostgresStatementResult {
+    ConsistentLedgerPostgresStatementResult {
+        order: statement.order,
+        kind: statement.kind,
+        target: statement.target,
+        outcome: result.outcome,
+        rows_affected: result.rows_affected,
+        operation_key_output: "omitted",
+    }
+}
+
+fn refused_statement_result(
+    statement: &ConsistentLedgerPostgresStatement,
+) -> ConsistentLedgerPostgresStatementResult {
+    ConsistentLedgerPostgresStatementResult {
+        order: statement.order,
+        kind: statement.kind,
+        target: statement.target,
+        outcome: ConsistentLedgerPostgresStatementOutcome::Refused,
+        rows_affected: 0,
+        operation_key_output: "omitted",
     }
 }
 

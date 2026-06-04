@@ -23,10 +23,14 @@ pub use ledger::{
     settle_ledger_idempotency_key,
 };
 pub use postgres_execution::{
-    CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA, ConsistentLedgerPostgresBoundaryContract,
-    ConsistentLedgerPostgresExecutionPlan, ConsistentLedgerPostgresStatement,
-    ConsistentLedgerPostgresStatementKind, ConsistentLedgerPostgresTransactionStep,
-    ConsistentLedgerPostgresTransactionStepKind, plan_consistent_ledger_postgres_execution,
+    CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA, CONSISTENT_LEDGER_POSTGRES_EXECUTOR_SCHEMA,
+    ConsistentLedgerPostgresBoundaryContract, ConsistentLedgerPostgresExecutionPlan,
+    ConsistentLedgerPostgresExecutorError, ConsistentLedgerPostgresExecutorOutcome,
+    ConsistentLedgerPostgresExecutorResult, ConsistentLedgerPostgresStatement,
+    ConsistentLedgerPostgresStatementKind, ConsistentLedgerPostgresStatementOutcome,
+    ConsistentLedgerPostgresStatementResult, ConsistentLedgerPostgresTransactionExecutor,
+    ConsistentLedgerPostgresTransactionStep, ConsistentLedgerPostgresTransactionStepKind,
+    execute_consistent_ledger_postgres_plan, plan_consistent_ledger_postgres_execution,
 };
 pub use pre_authorize::{
     PreAuthorizeBalance, PreAuthorizeBudget, PreAuthorizeDecision, PreAuthorizeEstimate,

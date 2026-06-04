@@ -84,6 +84,9 @@ export function isSensitiveDisplayText(value: string): boolean {
     SECRET_VALUE_PREFIXES.some((prefix) => normalized.startsWith(prefix)) ||
     /\b(?:bearer|basic)\s+\S+/i.test(trimmed) ||
     /\b(?:api[_-]?key|apikey|authorization|cookie|password|secret|token)\s*[:=]/i.test(trimmed) ||
+    /\b(?:current_window_state|encrypted_secret|secret_fingerprint|fingerprint|raw[_\s-]?(?:headers|key|metadata))\b/i.test(
+      trimmed,
+    ) ||
     /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i.test(trimmed)
   );
 }
@@ -121,6 +124,7 @@ export function errorMessage(error: unknown): string {
     !redacted ||
     redacted.includes("[redacted]") ||
     /\bauthorization\b/i.test(message) ||
+    isSensitiveDisplayText(message) ||
     isSensitiveDisplayText(redacted)
   ) {
     return "Request failed.";

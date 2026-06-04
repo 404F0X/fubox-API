@@ -30,8 +30,8 @@ use futures::stream;
 use serde_json::{Value, json};
 
 use crate::{
-    EndpointRequestFinalMetrics, NativeParsedJsonBody, OpenAiClientCache,
-    anthropic_provider_error_can_fallback, cached_openai_client,
+    EndpointRequestFinalMetrics, GatewayRateLimitReservationAttempt, NativeParsedJsonBody,
+    OpenAiClientCache, anthropic_provider_error_can_fallback, cached_openai_client,
     db::{
         AuthContext, GatewayRepository, LedgerSettleEntry, ResolvedChatRoute, ResolvedPriceVersion,
         StreamProviderAttemptFinalUpdate, StreamRequestFinalUpdate,
@@ -39,16 +39,18 @@ use crate::{
     elapsed_ms,
     errors::{adapter_error_response, summarize_adapter_error},
     errors::{anthropic_adapter_error_response, summarize_anthropic_adapter_error},
-    fallback_event, finish_provider_attempt_with_adapter_error,
-    finish_provider_attempt_with_adapter_error_and_fallback,
+    fallback_event, finish_provider_attempt_with_adapter_error_and_fallback,
     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint,
-    finish_provider_attempt_with_anthropic_adapter_error,
+    finish_provider_attempt_with_adapter_error_with_metadata,
     finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint,
-    finish_provider_attempt_with_error, finish_request_with_error,
-    finish_request_with_error_for_endpoint, open_provider_key_for_route,
-    pre_authorize_before_provider_attempt, provider_attempt_fallback_metadata,
-    provider_error_can_fallback, record_endpoint_request_final_metrics, record_request_final_route,
-    request_for_upstream, responses_request_for_upstream, route_snapshot_with_final_attempt,
+    finish_provider_attempt_with_anthropic_adapter_error_with_metadata,
+    finish_provider_attempt_with_error_with_metadata, finish_request_with_error,
+    finish_request_with_error_for_endpoint, gateway_rate_limit_reservation_for_attempt,
+    open_provider_key_for_route, pre_authorize_before_provider_attempt,
+    provider_attempt_fallback_metadata, provider_attempt_metadata_with_rate_limit_reservation,
+    provider_error_can_fallback, rate_limit_reservation_rejected_error,
+    record_endpoint_request_final_metrics, record_request_final_route, request_for_upstream,
+    responses_request_for_upstream, route_snapshot_with_final_attempt,
     validate_anthropic_route_endpoint_for_provider_call, validate_route_endpoint_for_provider_call,
 };
 
@@ -144,6 +146,20 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error(
+                repository,
+                auth,
+                request_id,
+                request_started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(auth, request_id, route, attempt_no)
             .await
@@ -169,7 +185,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                 Ok(client) => client,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
-                    finish_provider_attempt_with_adapter_error(
+                    finish_provider_attempt_with_adapter_error_with_metadata(
                         repository,
                         auth,
                         route,
@@ -177,6 +193,11 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         provider_started_at,
                         &error,
                         summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "stream_pre_response_error",
+                        ),
                     )
                     .await;
                     finish_request_with_error(
@@ -195,12 +216,17 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -263,6 +289,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
+                        rate_limit_reservation,
                     },
                 );
             }
@@ -281,7 +308,11 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -296,7 +327,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                     continue;
                 }
 
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     auth,
                     route,
@@ -304,6 +335,11 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -355,6 +391,21 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error_for_endpoint(
+                crate::METRICS_ENDPOINT_RESPONSES,
+                repository,
+                auth,
+                request_id,
+                request_started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(auth, request_id, route, attempt_no)
             .await
@@ -380,7 +431,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                 Ok(client) => client,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
-                    finish_provider_attempt_with_adapter_error(
+                    finish_provider_attempt_with_adapter_error_with_metadata(
                         repository,
                         auth,
                         route,
@@ -388,6 +439,11 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                         provider_started_at,
                         &error,
                         summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "stream_pre_response_error",
+                        ),
                     )
                     .await;
                     finish_request_with_error(
@@ -406,12 +462,17 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -474,6 +535,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
+                        rate_limit_reservation,
                     },
                 );
             }
@@ -492,7 +554,11 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -507,7 +573,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                     continue;
                 }
 
-                finish_provider_attempt_with_adapter_error(
+                finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     auth,
                     route,
@@ -515,6 +581,11 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -568,6 +639,21 @@ pub(crate) async fn anthropic_messages_streaming(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&request.model);
+            finish_request_with_error_for_endpoint(
+                crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                repository,
+                auth,
+                request_id,
+                request_started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(auth, request_id, route, attempt_no)
             .await
@@ -595,7 +681,7 @@ pub(crate) async fn anthropic_messages_streaming(
             Ok(upstream_request) => upstream_request,
             Err(error) => {
                 let summary = summarize_anthropic_adapter_error(&error);
-                finish_provider_attempt_with_anthropic_adapter_error(
+                finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     auth,
                     route,
@@ -603,6 +689,11 @@ pub(crate) async fn anthropic_messages_streaming(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -619,7 +710,7 @@ pub(crate) async fn anthropic_messages_streaming(
 
         if let Err(error) = validate_anthropic_route_endpoint_for_provider_call(route).await {
             let summary = summarize_anthropic_adapter_error(&error);
-            finish_provider_attempt_with_anthropic_adapter_error(
+            finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                 repository,
                 auth,
                 route,
@@ -627,6 +718,11 @@ pub(crate) async fn anthropic_messages_streaming(
                 provider_started_at,
                 &error,
                 summary.clone(),
+                provider_attempt_metadata_with_rate_limit_reservation(
+                    json!({}),
+                    &rate_limit_reservation,
+                    "stream_pre_response_error",
+                ),
             )
             .await;
             finish_request_with_error(repository, auth, request_id, request_started_at, summary)
@@ -637,12 +733,17 @@ pub(crate) async fn anthropic_messages_streaming(
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -706,6 +807,7 @@ pub(crate) async fn anthropic_messages_streaming(
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
+                        rate_limit_reservation,
                     },
                 );
             }
@@ -727,7 +829,11 @@ pub(crate) async fn anthropic_messages_streaming(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -742,7 +848,7 @@ pub(crate) async fn anthropic_messages_streaming(
                     continue;
                 }
 
-                finish_provider_attempt_with_anthropic_adapter_error(
+                finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     auth,
                     route,
@@ -750,6 +856,11 @@ pub(crate) async fn anthropic_messages_streaming(
                     provider_started_at,
                     &error,
                     summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error(
@@ -802,6 +913,21 @@ pub(crate) async fn gemini_generate_content_streaming(
             return response;
         }
 
+        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if !rate_limit_reservation.acquired() {
+            let error = rate_limit_reservation_rejected_error(&route.canonical_model_key);
+            finish_request_with_error_for_endpoint(
+                crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                repository,
+                auth,
+                request_id,
+                request_started_at,
+                error.log_summary(),
+            )
+            .await;
+            return error.into_response();
+        }
+
         let attempt_id = match repository
             .create_provider_attempt_started(auth, request_id, route, attempt_no)
             .await
@@ -836,7 +962,11 @@ pub(crate) async fn gemini_generate_content_streaming(
                         &error,
                         summary.clone(),
                         None,
-                        json!({}),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "stream_pre_response_error",
+                        ),
                     )
                     .await;
                     finish_request_with_error_for_endpoint(
@@ -869,7 +999,11 @@ pub(crate) async fn gemini_generate_content_streaming(
                     &error,
                     summary.clone(),
                     None,
-                    json!({}),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -897,7 +1031,11 @@ pub(crate) async fn gemini_generate_content_streaming(
                 &error,
                 summary.clone(),
                 None,
-                json!({}),
+                provider_attempt_metadata_with_rate_limit_reservation(
+                    json!({}),
+                    &rate_limit_reservation,
+                    "stream_pre_response_error",
+                ),
             )
             .await;
             finish_request_with_error_for_endpoint(
@@ -915,12 +1053,17 @@ pub(crate) async fn gemini_generate_content_streaming(
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
-                finish_provider_attempt_with_error(
+                finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
                     attempt_id,
                     provider_started_at,
                     error.log_summary(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -987,6 +1130,7 @@ pub(crate) async fn gemini_generate_content_streaming(
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
+                        rate_limit_reservation,
                     },
                 );
             }
@@ -1006,7 +1150,11 @@ pub(crate) async fn gemini_generate_content_streaming(
                         &error,
                         summary.clone(),
                         Some(summary.error_code.as_str()),
-                        provider_attempt_fallback_metadata(&event),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            provider_attempt_fallback_metadata(&event),
+                            &rate_limit_reservation,
+                            "fallback",
+                        ),
                     )
                     .await;
                     fallback_events.push(event);
@@ -1031,7 +1179,11 @@ pub(crate) async fn gemini_generate_content_streaming(
                     &error,
                     summary.clone(),
                     None,
-                    json!({}),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
                 )
                 .await;
                 finish_request_with_error_for_endpoint(
@@ -1064,6 +1216,7 @@ struct StreamLogContext {
     request_started_at: Instant,
     provider_started_at: Instant,
     stream_idle_timeout: Duration,
+    rate_limit_reservation: GatewayRateLimitReservationAttempt,
 }
 
 fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -> Response {
@@ -1756,6 +1909,11 @@ impl StreamFinalizationSnapshot {
             elapsed_ms(self.context.provider_started_at),
             end_reason,
             self.provider_ttft_ms,
+            provider_attempt_metadata_with_rate_limit_reservation(
+                json!({}),
+                &self.context.rate_limit_reservation,
+                rate_limit_reservation_stream_outcome(end_reason),
+            ),
         );
         if let Err(error) = self
             .context
@@ -2126,6 +2284,7 @@ fn stream_provider_attempt_final_update(
     latency_ms: i32,
     end_reason: StreamEndReason,
     ttft_ms: Option<i32>,
+    metadata: Value,
 ) -> StreamProviderAttemptFinalUpdate {
     let outcome = StreamLogOutcome::from_end_reason(end_reason);
 
@@ -2138,7 +2297,15 @@ fn stream_provider_attempt_final_update(
         fallback_reason: None,
         latency_ms,
         ttft_ms,
-        metadata: json!({}),
+        metadata,
+    }
+}
+
+const fn rate_limit_reservation_stream_outcome(end_reason: StreamEndReason) -> &'static str {
+    match end_reason {
+        StreamEndReason::Completed => "completed",
+        StreamEndReason::ClientCancel => "client_cancel",
+        _ => "stream_error",
     }
 }
 
@@ -2344,8 +2511,12 @@ mod tests {
             StreamUsageUpdate::default(),
             None,
         );
-        let attempt =
-            stream_provider_attempt_final_update(10, StreamEndReason::ClientCancel, Some(3));
+        let attempt = stream_provider_attempt_final_update(
+            10,
+            StreamEndReason::ClientCancel,
+            Some(3),
+            json!({}),
+        );
 
         assert_eq!(request.status, "cancelled");
         assert_eq!(request.http_status, 499);
@@ -2376,7 +2547,12 @@ mod tests {
                 price_version_id: uuid::Uuid::from_u128(41),
             }),
         );
-        let attempt = stream_provider_attempt_final_update(10, StreamEndReason::ClientCancel, None);
+        let attempt = stream_provider_attempt_final_update(
+            10,
+            StreamEndReason::ClientCancel,
+            None,
+            json!({}),
+        );
 
         assert_eq!(request.status, "cancelled");
         assert_eq!(request.http_status, 499);
@@ -2409,8 +2585,12 @@ mod tests {
                 price_version_id: uuid::Uuid::from_u128(42),
             }),
         );
-        let attempt =
-            stream_provider_attempt_final_update(28, StreamEndReason::UpstreamError, Some(5));
+        let attempt = stream_provider_attempt_final_update(
+            28,
+            StreamEndReason::UpstreamError,
+            Some(5),
+            json!({}),
+        );
 
         assert_eq!(request.status, "partial");
         assert_eq!(request.http_status, 502);

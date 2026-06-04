@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -39,7 +39,10 @@ function sessionPlaceholder(value: string): string {
   return `${SESSION_PREFIX}${value}`;
 }
 
-function stubHealthyFetch(roles = ["owner"], options: { recoveryFails?: boolean } = {}) {
+function stubHealthyFetch(
+  roles = ["owner"],
+  options: { recoveryFails?: boolean; recoveryFailsWithSecret?: boolean } = {},
+) {
   const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = String(url);
     const method = init?.method ?? "GET";
@@ -57,6 +60,13 @@ function stubHealthyFetch(roles = ["owner"], options: { recoveryFails?: boolean 
     }
 
     if (requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") && method === "POST") {
+      if (options.recoveryFailsWithSecret) {
+        return jsonError(
+          `fingerprint fp-recovery-hidden current_window_state raw metadata`,
+          400,
+        );
+      }
+
       if (options.recoveryFails) {
         return jsonError("provider key status `auth_failed` cannot be recovered through this endpoint", 400);
       }
@@ -65,7 +75,7 @@ function stubHealthyFetch(roles = ["owner"], options: { recoveryFails?: boolean 
     }
 
     if (requestUrl.includes("/admin/providers/health-summary")) {
-      return jsonResponse(healthSummaryPayload());
+      return jsonResponse(healthSummaryPayload(healthSummaryQueryOptions(requestUrl)));
     }
 
     if (
@@ -988,6 +998,8 @@ function capabilitySummaryForRoles(roles: string[]) {
             "health.liveness",
             "health.readiness",
           ]
+        : normalized.includes("health")
+          ? ["provider_health.read", "health.liveness", "health.readiness"]
         : allCapabilities;
   const allowed = new Set(capabilities);
 
@@ -1063,7 +1075,24 @@ function baseRequestLog() {
   };
 }
 
-function healthSummaryPayload() {
+function healthSummaryQueryOptions(requestUrl: string) {
+  const params = new URL(requestUrl, "http://admin.local").searchParams;
+  const windowMinutes = Number.parseInt(params.get("window_minutes") ?? "", 10);
+  const sampleLimit = Number.parseInt(params.get("sample_limit") ?? "", 10);
+
+  return {
+    sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 500,
+    windowMinutes: Number.isFinite(windowMinutes) ? windowMinutes : 60,
+  };
+}
+
+function healthSummaryPayload(options: { sampleLimit?: number; windowMinutes?: number } = {}) {
+  const sampleLimit = options.sampleLimit ?? 500;
+  const windowMinutes = options.windowMinutes ?? 60;
+  const sampleCount = windowMinutes === 15 ? 1 : 2;
+  const successCount = 1;
+  const successRate = sampleCount > 0 ? successCount / sampleCount : null;
+
   return {
     channels: [
       {
@@ -1144,16 +1173,16 @@ function healthSummaryPayload() {
     ],
     recent_window: {
       error_count: 1,
-      sample_count: 2,
-      sample_limit: 500,
+      sample_count: sampleCount,
+      sample_limit: sampleLimit,
       source: "request_logs",
-      success_count: 1,
-      success_rate: 0.5,
+      success_count: successCount,
+      success_rate: successRate,
       window: {
-        minutes: 60,
+        minutes: windowMinutes,
         unit: "minutes",
       },
-      window_minutes: 60,
+      window_minutes: windowMinutes,
     },
     status_counts: {
       channels: { cooldown: 1 },
@@ -1474,6 +1503,7 @@ async function renderSignedInApp() {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -1546,6 +1576,16 @@ describe("App", () => {
         "/api/control-plane/admin/providers/health-summary?window_minutes=15&sample_limit=100",
       ),
     );
+    expect(await screen.findByText("1 requests / 15m")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(screen.getByText("2 requests / 1h")).toBeInTheDocument());
+    expect(
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url === "/api/control-plane/admin/providers/health-summary"),
+    ).toHaveLength(2);
 
     const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
     await user.click(recoveryButton);
@@ -1556,6 +1596,38 @@ describe("App", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("auto refreshes the health summary with bounded selected controls", async () => {
+    const fetchMock = stubHealthyFetch();
+
+    await renderSignedInApp();
+
+    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "15" } });
+    fireEvent.change(screen.getByLabelText("Sample limit"), { target: { value: "100" } });
+
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText("Auto refresh"), { target: { value: "30" } });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+      "/api/control-plane/admin/providers/health-summary?window_minutes=15&sample_limit=100",
+    );
+    expect(screen.getByText("1 requests / 15m")).toBeInTheDocument();
+  });
+
+  it("hides provider key recovery controls without recovery capability", async () => {
+    stubHealthyFetch(["health"]);
+
+    await renderSignedInApp();
+
+    expect(await screen.findByText("openai-main")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request recovery for openai-main" })).not.toBeInTheDocument();
+    expect(screen.getByText("No permission")).toBeInTheDocument();
   });
 
   it("shows request log and provider key navigation after sign-in", async () => {
@@ -1651,6 +1723,23 @@ describe("App", () => {
       await screen.findByText("provider key status `auth_failed` cannot be recovered through this endpoint"),
     ).toBeInTheDocument();
     expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("redacts secret-bearing provider key recovery errors", async () => {
+    stubHealthyFetch(["owner"], { recoveryFailsWithSecret: true });
+
+    const user = await renderSignedInApp();
+
+    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    await user.click(recoveryButton);
+
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("Retry"));
+    expect(await screen.findByText("Request failed.")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("recovery-error-hidden"));
+    expect(document.body.textContent).not.toContain("fp-recovery-hidden");
+    expect(document.body.textContent).not.toContain("current_window_state");
+    expect(document.body.textContent).not.toContain("raw metadata");
   });
 
   it("renders request logs and safe request detail fields", async () => {

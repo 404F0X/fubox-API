@@ -1,0 +1,86 @@
+{
+  "contract": "billing_ledger_postgres_executor_v1",
+  "source_fixture": "consistent_writer_executor_contract.json",
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "api_key",
+    "provider_key",
+    "raw_key",
+    "raw_wallet",
+    "database_url",
+    "payload",
+    "body",
+    "idempotency_key",
+    "reserve:00000000",
+    "settle:00000000",
+    "refund_partial:00000000"
+  ],
+  "cases": [
+    {
+      "name": "reserve_apply_executor_commits_in_statement_order",
+      "source_case": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+      "fail_on_statement_kind": null,
+      "failure_code": null,
+      "internal_failure_detail": null,
+      "expected_outcome": "applied",
+      "expected_committed": true,
+      "expected_rolled_back": false,
+      "expected_error_code": null,
+      "expected_statement_result_count": 9,
+      "expected_event_suffix": "commit"
+    },
+    {
+      "name": "reserve_idempotent_replay_commits_without_write_commands",
+      "source_case": "reserve_replay_is_idempotent_and_does_not_emit_write_commands",
+      "fail_on_statement_kind": null,
+      "failure_code": null,
+      "internal_failure_detail": null,
+      "expected_outcome": "idempotent",
+      "expected_committed": true,
+      "expected_rolled_back": false,
+      "expected_error_code": null,
+      "expected_statement_result_count": 4,
+      "expected_event_suffix": "commit"
+    },
+    {
+      "name": "duplicate_locked_row_refusal_rolls_back_without_leaking_key",
+      "source_case": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+      "fail_on_statement_kind": "lock_ledger_entries",
+      "failure_code": "duplicate_operation_conflict",
+      "internal_failure_detail": "private operation key reserve:00000000-0000-0000-0000-000000000111 matched a conflicting row",
+      "expected_outcome": "rolled_back",
+      "expected_committed": false,
+      "expected_rolled_back": true,
+      "expected_error_code": "duplicate_operation_conflict",
+      "expected_statement_result_count": 4,
+      "expected_event_suffix": "rollback"
+    },
+    {
+      "name": "ledger_insert_failure_rolls_back_and_refuses_result",
+      "source_case": "partial_refund_apply_inserts_confirmed_credit",
+      "fail_on_statement_kind": "insert_ledger_entry",
+      "failure_code": "ledger_insert_failed",
+      "internal_failure_detail": "insert failed after locked statement shape",
+      "expected_outcome": "rolled_back",
+      "expected_committed": false,
+      "expected_rolled_back": true,
+      "expected_error_code": "ledger_insert_failed",
+      "expected_statement_result_count": 6,
+      "expected_event_suffix": "rollback"
+    },
+    {
+      "name": "metadata_secret_like_insert_refusal_is_sanitized",
+      "source_case": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+      "fail_on_statement_kind": "insert_ledger_entry",
+      "failure_code": "metadata_rejected_secret_like",
+      "internal_failure_detail": "Authorization Bearer provider_key payload body secret database_url raw_wallet",
+      "expected_outcome": "rolled_back",
+      "expected_committed": false,
+      "expected_rolled_back": true,
+      "expected_error_code": "metadata_rejected_secret_like",
+      "expected_statement_result_count": 9,
+      "expected_event_suffix": "rollback"
+    }
+  ]
+}

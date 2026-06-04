@@ -257,7 +257,16 @@
         "default_price_config_contract": {
           "tenant_price_book_relation_required": true,
           "canonical_model_relation_required": true,
+          "selector_write_transactional_with_model_audit": true,
           "write_audit_secret_safe": true
+        },
+        "default_price_selector": {
+          "operation": "clear",
+          "default_price_book_id": null,
+          "relationship_validated": "tenant_canonical_model_price_book",
+          "price_version_selector": "active_effective_version_for_default_price_book",
+          "selector_write": "transactional_with_model_audit",
+          "sensitive_material_policy": "uuid_and_currency_only"
         },
         "actor_session_id": "00000000-0000-0000-0000-000000000701",
         "actor_tenant_id": "00000000-0000-0000-0000-000000000001",

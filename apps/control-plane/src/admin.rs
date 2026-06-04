@@ -401,7 +401,38 @@ struct PatchModelRequest {
     supports_reasoning: Option<bool>,
     visibility: Option<String>,
     status: Option<String>,
-    default_price_book_id: Option<Uuid>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_default_price_book_selector_change"
+    )]
+    default_price_book_id: DefaultPriceBookSelectorChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultPriceBookSelectorChange {
+    Unchanged,
+    Set(Uuid),
+    Clear,
+}
+
+impl Default for DefaultPriceBookSelectorChange {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+impl DefaultPriceBookSelectorChange {
+    fn from_create(default_price_book_id: Option<Uuid>) -> Self {
+        default_price_book_id.map_or(Self::Unchanged, Self::Set)
+    }
+
+    fn to_repository_update(self) -> Option<Option<Uuid>> {
+        match self {
+            Self::Unchanged => None,
+            Self::Set(default_price_book_id) => Some(Some(default_price_book_id)),
+            Self::Clear => Some(None),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1403,7 +1434,8 @@ async fn create_model(
     Extension(session): Extension<AdminSession>,
     Json(request): Json<CreateModelRequest>,
 ) -> Result<Response, AdminError> {
-    let default_price_book_id = request.default_price_book_id;
+    let default_price_selector_change =
+        DefaultPriceBookSelectorChange::from_create(request.default_price_book_id);
     let model_key = request
         .model_key
         .or(request.name)
@@ -1413,7 +1445,8 @@ async fn create_model(
         .unwrap_or_else(|| model_key.replace(['/', '-'], " "));
     let repository = repo(&state);
     let default_price_selector =
-        validate_model_default_price_book_selector(&repository, default_price_book_id).await?;
+        validate_model_default_price_book_selector(&repository, default_price_selector_change)
+            .await?;
     let audit_metadata = model_write_audit_metadata(true, default_price_selector);
     let model = repository
         .upsert_canonical_model_with_audit(
@@ -1433,6 +1466,7 @@ async fn create_model(
                 visibility: request.visibility.unwrap_or_else(|| "internal".to_string()),
                 status: normalize_model_status(request.status.as_deref()),
             },
+            default_price_selector_change.to_repository_update(),
             |after| {
                 new_admin_audit_log(
                     &session,
@@ -1445,12 +1479,8 @@ async fn create_model(
             },
         )
         .await?;
-    let persisted_default_price_book_id = if let Some(default_price_book_id) = default_price_book_id
-    {
-        Some(set_model_default_price_book_id(&repository, model.id, default_price_book_id).await?)
-    } else {
-        get_model_default_price_book_id(&repository, model.id).await?
-    };
+    let persisted_default_price_book_id =
+        get_model_default_price_book_id(&repository, model.id).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -1501,11 +1531,9 @@ async fn patch_model(
         .get_canonical_model(DEFAULT_TENANT_ID, id)
         .await?
         .ok_or_else(|| AdminError::not_found("model"))?;
-    let current_default_price_book_id =
-        get_model_default_price_book_id(&repository, current.id).await?;
-    let requested_default_price_book_id = request.default_price_book_id;
+    let default_price_selector_change = request.default_price_book_id;
     let default_price_selector =
-        validate_model_default_price_book_selector(&repository, requested_default_price_book_id)
+        validate_model_default_price_book_selector(&repository, default_price_selector_change)
             .await?;
     let audit_metadata = model_write_audit_metadata(false, default_price_selector);
     let model_key = request
@@ -1536,6 +1564,7 @@ async fn patch_model(
                     .map(|status| normalize_model_status(Some(&status)))
                     .unwrap_or(current.status),
             },
+            default_price_selector_change.to_repository_update(),
             |before, after| {
                 new_admin_audit_log(
                     &session,
@@ -1549,12 +1578,7 @@ async fn patch_model(
         )
         .await?
         .ok_or_else(|| AdminError::not_found("model"))?;
-    let default_price_book_id = if let Some(default_price_book_id) = requested_default_price_book_id
-    {
-        Some(set_model_default_price_book_id(&repository, model.id, default_price_book_id).await?)
-    } else {
-        current_default_price_book_id
-    };
+    let default_price_book_id = get_model_default_price_book_id(&repository, model.id).await?;
 
     Ok(
         Json(json!({ "data": canonical_model_response(model, default_price_book_id) }))
@@ -2322,58 +2346,35 @@ async fn list_model_default_price_book_ids(
 
 async fn validate_model_default_price_book_selector(
     repository: &DbRepository,
-    default_price_book_id: Option<Uuid>,
+    selector_change: DefaultPriceBookSelectorChange,
 ) -> Result<Option<Value>, AdminError> {
-    let Some(default_price_book_id) = default_price_book_id else {
-        return Ok(None);
-    };
-    let price_book_currency = repository
-        .get_price_book_currency(DEFAULT_TENANT_ID, default_price_book_id)
-        .await?
-        .ok_or_else(|| AdminError::not_found("price book"))?;
+    match selector_change {
+        DefaultPriceBookSelectorChange::Unchanged => Ok(None),
+        DefaultPriceBookSelectorChange::Set(default_price_book_id) => {
+            let price_book_currency = repository
+                .get_price_book_currency(DEFAULT_TENANT_ID, default_price_book_id)
+                .await?
+                .ok_or_else(|| AdminError::not_found("price book"))?;
 
-    Ok(Some(json!({
-        "default_price_book_id": default_price_book_id,
-        "price_book_currency": price_book_currency,
-        "relationship_validated": "tenant_canonical_model_price_book",
-        "price_version_selector": "active_effective_version_for_default_price_book",
-        "sensitive_material_policy": "uuid_and_currency_only",
-    })))
-}
-
-async fn set_model_default_price_book_id(
-    repository: &DbRepository,
-    model_id: Uuid,
-    default_price_book_id: Uuid,
-) -> Result<Uuid, AdminError> {
-    let row = sqlx::query(
-        r#"
-        update canonical_models
-        set default_price_book_id = $3,
-            updated_at = now()
-        where tenant_id = $1
-          and id = $2
-          and deleted_at is null
-          and exists (
-            select 1
-            from price_books pb
-            where pb.tenant_id = $1
-              and pb.id = $3
-              and pb.status <> 'archived'
-          )
-        returning default_price_book_id
-        "#,
-    )
-    .bind(DEFAULT_TENANT_ID)
-    .bind(model_id)
-    .bind(default_price_book_id)
-    .fetch_optional(repository.pool())
-    .await
-    .map_err(|error| AdminError::from(DbError::Query(error)))?
-    .ok_or_else(|| AdminError::bad_request("default price book must belong to the model tenant"))?;
-
-    row.try_get("default_price_book_id")
-        .map_err(|error| AdminError::from(DbError::Query(error)))
+            Ok(Some(json!({
+                "operation": "set",
+                "default_price_book_id": default_price_book_id,
+                "price_book_currency": price_book_currency,
+                "relationship_validated": "tenant_canonical_model_price_book",
+                "price_version_selector": "active_effective_version_for_default_price_book",
+                "selector_write": "transactional_with_model_audit",
+                "sensitive_material_policy": "uuid_and_currency_only",
+            })))
+        }
+        DefaultPriceBookSelectorChange::Clear => Ok(Some(json!({
+            "operation": "clear",
+            "default_price_book_id": Value::Null,
+            "relationship_validated": "tenant_canonical_model_price_book",
+            "price_version_selector": "active_effective_version_for_default_price_book",
+            "selector_write": "transactional_with_model_audit",
+            "sensitive_material_policy": "uuid_and_currency_only",
+        }))),
+    }
 }
 
 fn model_write_audit_metadata(
@@ -2386,6 +2387,7 @@ fn model_write_audit_metadata(
         "default_price_config_contract": {
             "tenant_price_book_relation_required": true,
             "canonical_model_relation_required": true,
+            "selector_write_transactional_with_model_audit": true,
             "write_audit_secret_safe": true,
         },
     });
@@ -3330,6 +3332,18 @@ where
 {
     let _ = Value::deserialize(deserializer)?;
     Ok(true)
+}
+
+fn deserialize_default_price_book_selector_change<'de, D>(
+    deserializer: D,
+) -> Result<DefaultPriceBookSelectorChange, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<Uuid>::deserialize(deserializer)?.map_or(
+        Ok(DefaultPriceBookSelectorChange::Clear),
+        |default_price_book_id| Ok(DefaultPriceBookSelectorChange::Set(default_price_book_id)),
+    )
 }
 
 struct VirtualKeyListFilter {
@@ -7407,8 +7421,15 @@ mod tests {
         assert!(delete_section.contains(".soft_delete_canonical_model_with_audit("));
         assert!(create_section.contains("model_write_audit_metadata(true"));
         assert!(patch_section.contains("model_write_audit_metadata(false"));
+        assert!(create_section.contains("default_price_selector_change.to_repository_update()"));
+        assert!(patch_section.contains("default_price_selector_change.to_repository_update()"));
         assert!(metadata_section.contains("\"transactional_audit\": true"));
+        assert!(
+            metadata_section.contains("\"selector_write_transactional_with_model_audit\": true")
+        );
         assert!(delete_section.contains("\"transactional_audit\": true"));
+        assert!(!create_section.contains("set_model_default_price_book_id("));
+        assert!(!patch_section.contains("set_model_default_price_book_id("));
         assert!(!create_section.contains("record_admin_audit("));
         assert!(!patch_section.contains("record_admin_audit("));
         assert!(!delete_section.contains("record_admin_audit("));
@@ -7486,6 +7507,16 @@ mod tests {
         assert_eq!(
             fixture["examples"]["canonical_model_update_success_audit"]["metadata"]["transactional_audit"],
             json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["canonical_model_update_success_audit"]["metadata"]["default_price_config_contract"]
+                ["selector_write_transactional_with_model_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["canonical_model_update_success_audit"]["metadata"]["default_price_selector"]
+                ["operation"],
+            json!("clear")
         );
         for snapshot in ["before_snapshot", "after_snapshot"] {
             assert!(
@@ -8163,10 +8194,12 @@ mod tests {
         let audit_metadata = model_write_audit_metadata(
             false,
             Some(json!({
+                "operation": "set",
                 "default_price_book_id": default_price_book_id,
                 "price_book_currency": "USD",
                 "relationship_validated": "tenant_canonical_model_price_book",
                 "price_version_selector": "active_effective_version_for_default_price_book",
+                "selector_write": "transactional_with_model_audit",
                 "sensitive_material_policy": "uuid_and_currency_only"
             })),
         );
@@ -8185,8 +8218,20 @@ mod tests {
             json!(true)
         );
         assert_eq!(
+            audit_metadata["default_price_config_contract"]["selector_write_transactional_with_model_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            audit_metadata["default_price_selector"]["operation"],
+            json!("set")
+        );
+        assert_eq!(
             audit_metadata["default_price_selector"]["price_version_selector"],
             json!("active_effective_version_for_default_price_book")
+        );
+        assert_eq!(
+            audit_metadata["default_price_selector"]["selector_write"],
+            json!("transactional_with_model_audit")
         );
 
         for forbidden in [
@@ -8208,6 +8253,43 @@ mod tests {
     }
 
     #[test]
+    fn canonical_model_patch_default_price_selector_distinguishes_absent_set_and_clear() {
+        let set_id = Uuid::parse_str("00000000-0000-0000-0000-000000000060").unwrap();
+        let absent = serde_json::from_value::<PatchModelRequest>(json!({}))
+            .expect("absent selector should deserialize");
+        let set = serde_json::from_value::<PatchModelRequest>(json!({
+            "default_price_book_id": set_id
+        }))
+        .expect("set selector should deserialize");
+        let clear = serde_json::from_value::<PatchModelRequest>(json!({
+            "default_price_book_id": Value::Null
+        }))
+        .expect("clear selector should deserialize");
+
+        assert_eq!(
+            absent.default_price_book_id,
+            DefaultPriceBookSelectorChange::Unchanged
+        );
+        assert_eq!(
+            set.default_price_book_id,
+            DefaultPriceBookSelectorChange::Set(set_id)
+        );
+        assert_eq!(
+            clear.default_price_book_id,
+            DefaultPriceBookSelectorChange::Clear
+        );
+        assert_eq!(absent.default_price_book_id.to_repository_update(), None);
+        assert_eq!(
+            set.default_price_book_id.to_repository_update(),
+            Some(Some(set_id))
+        );
+        assert_eq!(
+            clear.default_price_book_id.to_repository_update(),
+            Some(None)
+        );
+    }
+
+    #[test]
     fn canonical_model_create_reloads_default_price_selector_after_upsert() {
         let source = include_str!("admin.rs");
         let create_section = source
@@ -8225,6 +8307,8 @@ mod tests {
             .find("canonical_model_response(model, persisted_default_price_book_id)")
             .expect("create_model response should use persisted selector");
 
+        assert!(create_section.contains("default_price_selector_change.to_repository_update()"));
+        assert!(!create_section.contains("set_model_default_price_book_id("));
         assert!(
             reload_position > upsert_position,
             "selector reload must happen after upsert so existing upserted models do not report null"
@@ -8259,6 +8343,26 @@ mod tests {
         assert_eq!(
             fixture["audit_contract"]["metadata_and_snapshot_safe"],
             json!(true)
+        );
+        assert_eq!(
+            fixture["write_contract"]["explicit_null_clears_selector"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["write_contract"]["selector_write_shares_model_audit_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["audit_contract"]["business_selector_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["success_audit_metadata"]["default_price_config_contract"]["selector_write_transactional_with_model_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["clear_success_audit_metadata"]["default_price_selector"]["operation"],
+            json!("clear")
         );
 
         for forbidden in [

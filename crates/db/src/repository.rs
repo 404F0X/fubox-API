@@ -2262,6 +2262,7 @@ impl DbRepository {
     pub async fn upsert_canonical_model_with_audit<F>(
         &self,
         new_model: NewCanonicalModel,
+        default_price_book_id: Option<Option<Uuid>>,
         build_audit: F,
     ) -> Result<CanonicalModel, DbError>
     where
@@ -2316,6 +2317,13 @@ impl DbRepository {
         .map_err(DbError::Query)?;
 
         let model = canonical_model_from_row(row).map_err(DbError::Query)?;
+        Self::apply_canonical_model_default_price_selector_in_tx(
+            &mut tx,
+            model.tenant_id,
+            model.id,
+            default_price_book_id,
+        )
+        .await?;
         let audit = build_audit(&model);
         Self::insert_audit_log_in_tx(&mut tx, audit).await?;
         tx.commit().await.map_err(DbError::Query)?;
@@ -2457,6 +2465,7 @@ impl DbRepository {
         tenant_id: Uuid,
         canonical_model_id: Uuid,
         update: UpdateCanonicalModel,
+        default_price_book_id: Option<Option<Uuid>>,
         build_audit: F,
     ) -> Result<Option<CanonicalModel>, DbError>
     where
@@ -2529,11 +2538,85 @@ impl DbRepository {
         .map_err(DbError::Query)?;
 
         let after = canonical_model_from_row(after_row).map_err(DbError::Query)?;
+        Self::apply_canonical_model_default_price_selector_in_tx(
+            &mut tx,
+            after.tenant_id,
+            after.id,
+            default_price_book_id,
+        )
+        .await?;
         let audit = build_audit(&before, &after);
         Self::insert_audit_log_in_tx(&mut tx, audit).await?;
         tx.commit().await.map_err(DbError::Query)?;
 
         Ok(Some(after))
+    }
+
+    async fn apply_canonical_model_default_price_selector_in_tx(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: Uuid,
+        canonical_model_id: Uuid,
+        default_price_book_id: Option<Option<Uuid>>,
+    ) -> Result<(), DbError> {
+        match default_price_book_id {
+            None => Ok(()),
+            Some(Some(price_book_id)) => {
+                let row = sqlx::query(
+                    r#"
+                    update canonical_models
+                    set default_price_book_id = $3,
+                        updated_at = now()
+                    where tenant_id = $1
+                      and id = $2
+                      and deleted_at is null
+                      and exists (
+                        select 1
+                        from price_books pb
+                        where pb.tenant_id = $1
+                          and pb.id = $3
+                          and pb.status <> 'archived'
+                      )
+                    returning default_price_book_id
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(canonical_model_id)
+                .bind(price_book_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(DbError::Query)?;
+
+                let Some(row) = row else {
+                    return Err(DbError::Query(sqlx::Error::RowNotFound));
+                };
+                row.try_get::<Uuid, _>("default_price_book_id")
+                    .map(|_| ())
+                    .map_err(DbError::Query)
+            }
+            Some(None) => {
+                let row = sqlx::query(
+                    r#"
+                    update canonical_models
+                    set default_price_book_id = null,
+                        updated_at = now()
+                    where tenant_id = $1 and id = $2 and deleted_at is null
+                    returning default_price_book_id
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(canonical_model_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(DbError::Query)?;
+
+                let Some(row) = row else {
+                    return Err(DbError::Query(sqlx::Error::RowNotFound));
+                };
+                row.try_get::<Option<Uuid>, _>("default_price_book_id")
+                    .map(|_| ())
+                    .map_err(DbError::Query)
+            }
+        }
     }
 
     pub async fn update_canonical_model_status(
