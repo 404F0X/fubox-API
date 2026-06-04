@@ -109,6 +109,9 @@ Expected default result:
   `redaction_status=hash_only`, `provider_attempts_count=0`, and exit `0`/`1`/`2`.
 - Verifies the test/release wrappers still keep `-ContractOnly` as the default
   and use `-Live` only for explicit runtime opt-in.
+- Verifies the live/preflight evidence envelope still documents `required_env`,
+  SQL evidence fields, request log hash-only fields, provider key/upstream
+  not-called fields, and secret-safe omission fields.
 - Returns exit `0` when the contract checks pass.
 
 Exit semantics self-test command:
@@ -145,6 +148,39 @@ Live preflight without evidence requests:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -PreflightOnly
 ```
 
+Live/preflight evidence envelope:
+
+Every `-Live` run, including `-Live -PreflightOnly`, prints a bounded evidence
+envelope before checking Gateway, mock-provider, compose, `psql`, or Postgres.
+The envelope schema is `prompt_protection_postgres_proof_evidence_envelope.v1`.
+It lists field names and endpoint labels only; it does not print URL values,
+virtual keys, DSNs, headers, cookies, raw prompts, request bodies, regex pattern
+values, or provider secrets.
+
+Envelope sections:
+
+- `required_env`: names the required live inputs and whether each input is
+  configured, including `GATEWAY_BASE_URL`, `GATEWAY_AUTH_TOKEN`,
+  `MOCK_PROVIDER_BASE_URL`, `COMPOSE_FILE`, `DATABASE_URL`/`POSTGRES_URL`,
+  `PROMPT_PROTECTION_POSTGRES_PROOF_LIVE`, and
+  `PROMPT_PROTECTION_POSTGRES_PROOF_PREFLIGHT_ONLY`. Values are omitted.
+- `endpoint_catalog`: lists `chat_completions`, `responses`,
+  `anthropic_messages`, and `gemini_native_generate_content` with endpoint label
+  and expected prompt-protection scope. Request bodies are omitted.
+- `sql_evidence_fields`: lists the DB columns/projections checked by the proof:
+  request status/error/hash fields, route/provider side-effect null fields,
+  prompt-protection action/reason/scope fields, omission booleans, and
+  `provider_attempts_count`.
+- Request log hash-only fields: `request_body_hash`, `redaction_status`,
+  `payload_stored`, and `payload_object_ref_present`.
+- Provider key/upstream not-called fields: `provider_attempts_count`,
+  `has_provider_key`, `has_canonical_model`, `has_resolved_provider`,
+  `has_resolved_channel`, and `route_policy_version`.
+- Secret-safe omission fields: `raw_payload_omitted`,
+  `raw_pattern_values_omitted`, and the forbidden output markers for raw prompt,
+  proof run id, regex pattern, auth header material, session cookie material,
+  and provider secret.
+
 Useful live environment overrides:
 
 - `GATEWAY_BASE_URL`: Gateway URL, default `http://127.0.0.1:8080`.
@@ -164,6 +200,12 @@ Script exit semantics:
 - Exit `0`: default contract passes, or live proof passes for all four endpoints.
 - Exit `1`: Gateway/Postgres are reachable, but HTTP/DB evidence mismatches.
 - Exit `2`: external blocker prevents the live proof from being authoritative.
+
+Live/preflight blockers are bounded and secret-safe. Missing Gateway,
+mock-provider, compose/Postgres/`psql`, or virtual-key preconditions are reported
+as `[BLOCKED]` with the failing precondition and without URL values, tokens,
+Authorization headers, cookies, DSNs, raw prompts, regex patterns, or provider
+secret material.
 
 The `-SimulateLivePreflightBlocker` and `-SimulateEvidenceMismatch` switches are
 contract-test helpers only. They do not connect to live services; they inject a

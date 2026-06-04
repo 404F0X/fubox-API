@@ -79,7 +79,11 @@ function Redact-SecretLikeString {
 function Write-SafeHost {
   param([AllowNull()][string]$Text)
 
-  Write-Host (Redact-SecretLikeString $Text)
+  $safe = Redact-SecretLikeString $Text
+  if ($safe.Length -gt 1200) {
+    $safe = $safe.Substring(0, 1200) + "...[truncated]"
+  }
+  Write-Host $safe
 }
 
 function Add-Failure {
@@ -273,7 +277,11 @@ function Invoke-HttpGet {
   $client = New-Object System.Net.Http.HttpClient
   $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
   try {
-    $response = $client.GetAsync($Url).GetAwaiter().GetResult()
+    try {
+      $response = $client.GetAsync($Url).GetAwaiter().GetResult()
+    } catch {
+      throw "HTTP health transport failed"
+    }
     try {
       return [PSCustomObject]@{
         StatusCode = [int]$response.StatusCode
@@ -306,7 +314,11 @@ function Invoke-GatewayRequest {
   $request.Content = $content
 
   try {
-    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    try {
+      $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    } catch {
+      throw "Gateway proof request transport failed"
+    }
     try {
       return [PSCustomObject]@{
         StatusCode = [int]$response.StatusCode
@@ -321,6 +333,27 @@ function Invoke-GatewayRequest {
   }
 }
 
+function Invoke-DockerCaptured {
+  param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+  $docker = Get-DockerCommand
+  $oldNativeErrorPreference = $null
+  $hadNativeErrorPreference = $false
+  if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $hadNativeErrorPreference = $true
+    $oldNativeErrorPreference = $global:PSNativeCommandUseErrorActionPreference
+    $global:PSNativeCommandUseErrorActionPreference = $false
+  }
+
+  try {
+    return @(& $docker @Arguments 2>$null)
+  } finally {
+    if ($hadNativeErrorPreference) {
+      $global:PSNativeCommandUseErrorActionPreference = $oldNativeErrorPreference
+    }
+  }
+}
+
 function Invoke-PostgresSql {
   param([Parameter(Mandatory = $true)][string]$Sql)
 
@@ -330,7 +363,7 @@ function Invoke-PostgresSql {
       throw "psql executable was not found for DATABASE_URL mode"
     }
 
-    $output = & $psql.Source $DatabaseUrl -tA -v ON_ERROR_STOP=1 -c $Sql
+    $output = @(& $psql.Source $DatabaseUrl -tA -v ON_ERROR_STOP=1 -c $Sql 2>$null)
     if ($LASTEXITCODE -ne 0) {
       throw "psql failed with exit code $LASTEXITCODE"
     }
@@ -339,12 +372,24 @@ function Invoke-PostgresSql {
 
   Push-Location $repoRoot
   try {
-    $output = Invoke-Docker compose -f $ComposeFile exec -T postgres psql `
-      -U ai_gateway `
-      -d ai_gateway `
-      -tA `
-      -v ON_ERROR_STOP=1 `
-      -c $Sql
+    $output = @(Invoke-DockerCaptured @(
+        "compose",
+        "-f",
+        $ComposeFile,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-U",
+        "ai_gateway",
+        "-d",
+        "ai_gateway",
+        "-tA",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        $Sql
+      ))
 
     if ($LASTEXITCODE -ne 0) {
       throw "compose psql failed with exit code $LASTEXITCODE"
@@ -408,6 +453,120 @@ function Get-ProofCases {
         })
     }
   )
+}
+
+function Get-LiveEnvEnvelopeLines {
+  $dbMode = "compose_psql"
+  if (-not [string]::IsNullOrWhiteSpace($DatabaseUrl)) {
+    $dbMode = "direct_psql"
+  }
+
+  return @(
+    "required_env:",
+    "- GATEWAY_BASE_URL: required for live/preflight; value omitted",
+    "- GATEWAY_AUTH_TOKEN configured as virtual key input; value omitted",
+    "- MOCK_PROVIDER_BASE_URL: required unless mock-provider health is explicitly skipped; value omitted",
+    "- COMPOSE_FILE: required for compose DB mode; value omitted",
+    "- DATABASE_URL or POSTGRES_URL: optional direct psql mode; value omitted",
+    "- PROMPT_PROTECTION_POSTGRES_PROOF_LIVE=1 or -Live: explicit live opt-in",
+    "- PROMPT_PROTECTION_POSTGRES_PROOF_PREFLIGHT_ONLY=1 or -PreflightOnly: health/schema only",
+    "- database_access_mode: $dbMode",
+    "- compose_service_check_skipped: $([bool]$SkipComposePs)",
+    "- mock_provider_health_skipped: $([bool]$SkipMockProviderHealth)",
+    "- gateway_base_url_configured: $(-not [string]::IsNullOrWhiteSpace($GatewayBaseUrl))",
+    "- gateway_auth_token_configured $(-not [string]::IsNullOrWhiteSpace($GatewayAuthToken))",
+    "- mock_provider_base_url_configured: $(-not [string]::IsNullOrWhiteSpace($MockProviderBaseUrl))",
+    "- database_url_configured: $(-not [string]::IsNullOrWhiteSpace($DatabaseUrl))"
+  )
+}
+
+function Get-SqlEvidenceFieldLines {
+  return @(
+    "sql_evidence_fields:",
+    "- request_id",
+    "- request_status",
+    "- request_http_status",
+    "- request_error_code",
+    "- request_body_hash",
+    "- redaction_status",
+    "- payload_stored",
+    "- payload_object_ref_present",
+    "- has_canonical_model",
+    "- has_resolved_provider",
+    "- has_resolved_channel",
+    "- has_provider_key",
+    "- route_policy_version",
+    "- route_reason",
+    "- prompt_protection_mode",
+    "- prompt_protection_action",
+    "- prompt_protection_reason",
+    "- prompt_protection_scopes",
+    "- raw_payload_omitted",
+    "- raw_pattern_values_omitted",
+    "- provider_attempts_count"
+  )
+}
+
+function Get-RequestLogHashOnlyFieldLines {
+  return @(
+    "request_log_hash_only_fields:",
+    "- request_body_hash equals computed SHA-256",
+    "- redaction_status = hash_only",
+    "- payload_stored = false",
+    "- payload_object_ref_present = false"
+  )
+}
+
+function Get-ProviderSideEffectFieldLines {
+  return @(
+    "provider_key_upstream_not_called_fields:",
+    "- provider_attempts_count = 0",
+    "- has_provider_key expected false",
+    "- has_canonical_model = false",
+    "- has_resolved_provider = false",
+    "- has_resolved_channel = false",
+    "- route_policy_version = null"
+  )
+}
+
+function Get-SecretSafeOmissionFieldLines {
+  return @(
+    "secret_safe_omission_fields:",
+    "- raw_payload_omitted = true",
+    "- raw_pattern_values_omitted = true",
+    "- forbidden_output_markers: raw prompt, proof run id, regex pattern, auth header material, session cookie material, provider secret"
+  )
+}
+
+function Write-LiveEvidenceEnvelope {
+  $cases = @(Get-ProofCases "pp-proof-envelope")
+
+  Write-SafeHost ""
+  Write-SafeHost "Prompt protection Postgres proof live/preflight evidence envelope:"
+  Write-SafeHost "schema: prompt_protection_postgres_proof_evidence_envelope.v1"
+  Write-SafeHost "mode: $(if ($PreflightOnly) { "live_preflight_only" } else { "live_proof" })"
+  foreach ($line in @(Get-LiveEnvEnvelopeLines)) {
+    Write-SafeHost $line
+  }
+
+  Write-SafeHost "endpoint_catalog:"
+  foreach ($proofCase in $cases) {
+    Write-SafeHost ("- name={0}; endpoint={1}; expected_scope={2}" -f $proofCase.Name, $proofCase.Endpoint, $proofCase.ExpectedScope)
+  }
+
+  foreach ($line in @(Get-SqlEvidenceFieldLines)) {
+    Write-SafeHost $line
+  }
+  foreach ($line in @(Get-RequestLogHashOnlyFieldLines)) {
+    Write-SafeHost $line
+  }
+  foreach ($line in @(Get-ProviderSideEffectFieldLines)) {
+    Write-SafeHost $line
+  }
+  foreach ($line in @(Get-SecretSafeOmissionFieldLines)) {
+    Write-SafeHost $line
+  }
+  Write-SafeHost ""
 }
 
 function Assert-NoForbiddenMarkers {
@@ -482,7 +641,13 @@ function Assert-RunbookContract {
       "external blocker",
       "-SelfTestExitSemantics",
       "-SimulateLivePreflightBlocker",
-      "-SimulateEvidenceMismatch"
+      "-SimulateEvidenceMismatch",
+      "live/preflight evidence envelope",
+      "required_env",
+      "sql_evidence_fields",
+      "Request log hash-only fields",
+      "Provider key/upstream not-called fields",
+      "Secret-safe omission fields"
     )) {
     if (-not $runbook.Contains($needle)) {
       throw "runbook missing '$needle'"
@@ -506,7 +671,12 @@ function Assert-ScriptContract {
       "SimulateLivePreflightBlocker",
       "SimulateEvidenceMismatch",
       "simulated live preflight blocker",
-      "simulated evidence mismatch"
+      "simulated evidence mismatch",
+      "Write-LiveEvidenceEnvelope",
+      "prompt_protection_postgres_proof_evidence_envelope.v1",
+      "request_log_hash_only_fields",
+      "provider_key_upstream_not_called_fields",
+      "secret_safe_omission_fields"
     )) {
     if (-not $source.Contains($needle)) {
       throw "script missing '$needle'"
@@ -557,7 +727,11 @@ function Assert-ComposeServicesRunning {
 
   Push-Location $repoRoot
   try {
-    $running = @(Invoke-Docker compose -f $ComposeFile ps --services --status running)
+    try {
+      $running = @(Invoke-DockerCaptured @("compose", "-f", $ComposeFile, "ps", "--services", "--status", "running"))
+    } catch {
+      throw "docker compose ps failed or Docker daemon is unavailable"
+    }
     if ($LASTEXITCODE -ne 0) {
       throw "docker compose ps failed with exit code $LASTEXITCODE"
     }
@@ -591,7 +765,11 @@ select jsonb_build_object(
   'provider_attempts', to_regclass('public.provider_attempts') is not null
 )::text;
 "@
-  $result = Invoke-PostgresSql $sql
+  try {
+    $result = Invoke-PostgresSql $sql
+  } catch {
+    throw "Postgres schema could not be queried"
+  }
   $json = $result | ConvertFrom-Json
   if ($json.request_logs -ne $true) {
     throw "request_logs table is not available"
@@ -751,6 +929,8 @@ function Invoke-ContractChecks {
 }
 
 function Invoke-LiveProof {
+  Write-LiveEvidenceEnvelope
+
   Check-LivePrecondition "Gateway auth token configured" {
     if ([string]::IsNullOrWhiteSpace($GatewayAuthToken)) {
       throw "GATEWAY_AUTH_TOKEN is required for live proof"

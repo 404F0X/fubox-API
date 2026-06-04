@@ -406,7 +406,7 @@ audit live evidence, Admin UI E2E, or billing-ledger runtime writer gaps.
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
 This section is the acceptance entry for TODO lanes `E13-005-S10` through
-`E13-005-S13`. The detailed live proof is documented in
+`E13-005-S14`. The detailed live proof is documented in
 `docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
 
 The proof covers prompt-protection reject no-side-effect evidence for:
@@ -434,6 +434,14 @@ This live proof is opt-in. Docker/Postgres/Gateway/mock-provider unavailability
 is an external blocker, not a pass. If wrapped in automation, use exit `0` only
 when every endpoint and DB assertion passes, exit `1` for evidence mismatch, and
 exit `2` for external blockers.
+
+Every `-Live` or `-Live -PreflightOnly` run prints a bounded
+`prompt_protection_postgres_proof_evidence_envelope.v1` before live checks. The
+envelope lists required env names, endpoint catalog, SQL evidence fields,
+request log hash-only fields, provider key/upstream not-called fields, and
+secret-safe omission fields. It must not print URL values, tokens, DSNs,
+Authorization, Cookie, raw prompt text, regex pattern values, request bodies, or
+provider secrets.
 
 Default script contract/preflight command:
 
