@@ -7,6 +7,7 @@ param(
   [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [int]$TimeoutSeconds = 10,
   [int]$BrowserProbeTimeoutMilliseconds = 750,
+  [switch]$BrowserMutationOptIn,
   [switch]$BrowserPreflight,
   [switch]$ContractOnly,
   [switch]$KeepSmokeRows
@@ -793,9 +794,11 @@ function Assert-UiSmokeHandoffFreshness {
   foreach ($needle in @(
       "ledgerAdjustmentExecuteBrowserPreflightContract",
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
+      "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
+      "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract"
     )) {
     if (-not $source.Contains($needle)) {
@@ -809,6 +812,9 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerExecuteSmokeSerializableHandoffArtifact",
       "browserPreflight",
       "browserActionPlan",
+      "browserLiveRunbook",
+      "live_mutation_opt_in_missing",
+      "session_material_missing",
       "dry_run_plan_duration_ms",
       "execute_apply_duration_ms",
       "idempotent_replay_duration_ms",
@@ -819,6 +825,8 @@ function Assert-UiSmokeHandoffFreshness {
       "idempotent_replay_duration_ms",
       "refund_refusal_duration_ms",
       "service_readiness_duration_ms",
+      "live_mutation_opt_in_missing",
+      "session_material_missing",
       "admin_ui_reachable",
       "control_plane_health_reachable",
       "submit_latency_ms"
@@ -964,6 +972,126 @@ function Write-BrowserActionPlanDryRun {
   }
 }
 
+function Test-BrowserMutationOptIn {
+  param([Parameter(Mandatory = $true)]$Runbook)
+
+  $mutationOptIn = Get-JsonProperty $Runbook "mutationOptIn" "UI browser live runbook"
+  $envName = [string](Get-JsonProperty $mutationOptIn "env" "UI browser live runbook mutation opt-in")
+  $requiredValue = [string](Get-JsonProperty $mutationOptIn "requiredValue" "UI browser live runbook mutation opt-in")
+  return $BrowserMutationOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Assert-BrowserLiveRunbookContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
+  Assert-Equal (Get-JsonProperty $runbook "defaultMode" "UI browser live runbook") "contract_only" "UI browser live runbook default mode"
+
+  $liveCommand = Get-JsonProperty $runbook "liveCommand" "UI browser live runbook"
+  Assert-Equal (Get-JsonProperty $liveCommand "script" "UI browser live runbook command") "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1" "UI browser live runbook script"
+  $arguments = Get-JsonStringArray (Get-JsonProperty $liveCommand "arguments" "UI browser live runbook command") "UI browser live runbook command arguments"
+  if ($arguments -notcontains "-BrowserPreflight") {
+    throw "UI browser live runbook command must include -BrowserPreflight"
+  }
+
+  $requiredInputs = Get-JsonProperty $runbook "requiredInputs" "UI browser live runbook"
+  Assert-Equal (Get-JsonProperty $requiredInputs "adminUiBaseUrl" "UI browser live runbook required inputs") "ADMIN_UI_BASE_URL" "UI browser live runbook Admin UI env"
+  Assert-Equal (Get-JsonProperty $requiredInputs "controlPlaneBaseUrl" "UI browser live runbook required inputs") "CONTROL_PLANE_BASE_URL" "UI browser live runbook Control Plane env"
+  Assert-Equal (Get-JsonProperty $requiredInputs "sessionMaterial" "UI browser live runbook required inputs") "CONTROL_PLANE_ADMIN_SESSION_TOKEN" "UI browser live runbook session env"
+
+  $mutationOptIn = Get-JsonProperty $runbook "mutationOptIn" "UI browser live runbook"
+  Assert-Equal (Get-JsonProperty $mutationOptIn "env" "UI browser live runbook mutation opt-in") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION" "UI browser live runbook mutation env"
+  Assert-Equal (Get-JsonProperty $mutationOptIn "flag" "UI browser live runbook mutation opt-in") "-BrowserMutationOptIn" "UI browser live runbook mutation flag"
+  Assert-Equal (Get-JsonProperty $mutationOptIn "requiredValue" "UI browser live runbook mutation opt-in") "1" "UI browser live runbook mutation value"
+
+  $blockers = Get-JsonProperty $runbook "blockerClassifications" "UI browser live runbook"
+  foreach ($name in @("adminUiUnreachable", "browserToolingUnavailable", "controlPlaneHealthUnreachable", "liveMutationOptInMissing", "sessionMaterialMissing")) {
+    $classification = [string](Get-JsonProperty $blockers $name "UI browser live runbook blocker classifications")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser live runbook blocker '$name' must be machine readable"
+    }
+  }
+
+  $evidenceNames = Get-JsonProperty $runbook "evidenceNames" "UI browser live runbook"
+  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    $evidence = [string](Get-JsonProperty $evidenceNames $name "UI browser live runbook evidence names")
+    if ($evidence -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser live runbook evidence '$name' must be machine readable"
+    }
+  }
+
+  $secretSafe = Get-JsonProperty $runbook "secretSafeOutput" "UI browser live runbook"
+  Assert-True ((Get-JsonProperty $secretSafe "echoSessionMaterial" "UI browser live runbook secret-safe output") -eq $false) "UI browser live runbook must not echo session material"
+  $forbiddenMarkers = Get-JsonStringArray (Get-JsonProperty $secretSafe "forbiddenMarkers" "UI browser live runbook secret-safe output") "UI browser live runbook forbidden markers"
+  foreach ($forbidden in @("Authorization", "Cookie", "token", "credential", "operation_key", "raw metadata", "raw executor error detail", "dedupe material")) {
+    if ($forbiddenMarkers -notcontains $forbidden) {
+      throw "UI browser live runbook forbidden markers missing '$forbidden'"
+    }
+  }
+}
+
+function Write-BrowserLiveRunbookGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe
+  )
+
+  Assert-BrowserLiveRunbookContract $Handoff
+  $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
+  $liveCommand = Get-JsonProperty $runbook "liveCommand" "UI browser live runbook"
+  $mutationOptIn = Get-JsonProperty $runbook "mutationOptIn" "UI browser live runbook"
+  $requiredInputs = Get-JsonProperty $runbook "requiredInputs" "UI browser live runbook"
+  $blockers = Get-JsonProperty $runbook "blockerClassifications" "UI browser live runbook"
+  $evidenceNames = Get-JsonProperty $runbook "evidenceNames" "UI browser live runbook"
+  $mutationEnabled = Test-BrowserMutationOptIn $runbook
+  $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+  $liveBlockers = @()
+  if ($ToolingStatus -ne "available") {
+    $liveBlockers += [string](Get-JsonProperty $blockers "browserToolingUnavailable" "UI browser live runbook blocker classifications")
+  }
+  if (-not [bool]$AdminUiProbe.Reachable) {
+    $liveBlockers += [string](Get-JsonProperty $blockers "adminUiUnreachable" "UI browser live runbook blocker classifications")
+  }
+  if (-not [bool]$ControlPlaneProbe.Reachable) {
+    $liveBlockers += [string](Get-JsonProperty $blockers "controlPlaneHealthUnreachable" "UI browser live runbook blocker classifications")
+  }
+  if (-not $sessionMaterialPresent) {
+    $liveBlockers += [string](Get-JsonProperty $blockers "sessionMaterialMissing" "UI browser live runbook blocker classifications")
+  }
+  if (-not $mutationEnabled) {
+    $liveBlockers += [string](Get-JsonProperty $blockers "liveMutationOptInMissing" "UI browser live runbook blocker classifications")
+  }
+  $blockerSummary = "none"
+  if ($liveBlockers.Count -gt 0) {
+    $blockerSummary = ($liveBlockers -join "+")
+  }
+
+  $scriptPath = [string](Get-JsonProperty $liveCommand "script" "UI browser live runbook command")
+  $arguments = Get-JsonStringArray (Get-JsonProperty $liveCommand "arguments" "UI browser live runbook command") "UI browser live runbook command arguments"
+  $mutationFlag = [string](Get-JsonProperty $mutationOptIn "flag" "UI browser live runbook mutation opt-in")
+  $mutationEnv = [string](Get-JsonProperty $mutationOptIn "env" "UI browser live runbook mutation opt-in")
+  $mutationValue = [string](Get-JsonProperty $mutationOptIn "requiredValue" "UI browser live runbook mutation opt-in")
+  $adminUiEnv = [string](Get-JsonProperty $requiredInputs "adminUiBaseUrl" "UI browser live runbook required inputs")
+  $controlPlaneEnv = [string](Get-JsonProperty $requiredInputs "controlPlaneBaseUrl" "UI browser live runbook required inputs")
+  $sessionEnv = [string](Get-JsonProperty $requiredInputs "sessionMaterial" "UI browser live runbook required inputs")
+  $copyableCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath $($arguments -join ' ') $mutationFlag"
+
+  Write-SafeHost "Browser ledger execute live runbook gate:"
+  Write-SafeHost "browser_live_runbook_mode=$([string](Get-JsonProperty $runbook "defaultMode" "UI browser live runbook"))"
+  Write-SafeHost "browser_live_run_command=$copyableCommand"
+  Write-SafeHost "browser_live_required_env=$adminUiEnv,$controlPlaneEnv,$sessionEnv,$mutationEnv=$mutationValue"
+  Write-SafeHost "browser_live_required_flag=$mutationFlag"
+  Write-SafeHost "browser_live_mutation_enabled=$(Format-BoolMarker $mutationEnabled)"
+  Write-SafeHost "browser_live_session_material_present=$(Format-BoolMarker $sessionMaterialPresent)"
+  Write-SafeHost "browser_live_session_material_echoed=false"
+  Write-SafeHost "browser_live_blockers=$blockerSummary"
+  foreach ($name in @("serviceReadinessDurationMs", "submitLatencyMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "refundRefusalDurationMs", "ledgerRefreshDurationMs")) {
+    Write-SafeHost "browser_live_evidence_name=$([string](Get-JsonProperty $evidenceNames $name "UI browser live runbook evidence names"))"
+  }
+}
+
 function Assert-BrowserLiveSmokeHarnessPreflight {
   param([Parameter(Mandatory = $true)]$Handoff)
 
@@ -1017,6 +1145,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-SafeHost "handoff_artifact=fresh"
   Write-SafeHost "$submitLatencyMarker=$unavailableMarker"
   Write-SafeHost "$ledgerRefreshMarker=$unavailableMarker"
+  Write-BrowserLiveRunbookGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
 }
 
 function Assert-AdminSourceMarkers {

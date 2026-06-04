@@ -156,8 +156,47 @@ export const ledgerAdjustmentExecuteBrowserActionPlanContract = {
   usesDataTestIdsOnly: true,
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserLiveRunbookContract = {
+  blockerClassifications: {
+    adminUiUnreachable: "admin_ui_unreachable",
+    browserToolingUnavailable: "browser_tooling_unavailable",
+    controlPlaneHealthUnreachable: "control_plane_health_unreachable",
+    liveMutationOptInMissing: "live_mutation_opt_in_missing",
+    sessionMaterialMissing: "session_material_missing",
+  },
+  defaultMode: "contract_only",
+  evidenceNames: {
+    dryRunPlanDurationMs: "dry_run_plan_duration_ms",
+    executeApplyDurationMs: "execute_apply_duration_ms",
+    idempotentReplayDurationMs: "idempotent_replay_duration_ms",
+    ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+    refundRefusalDurationMs: "refund_refusal_duration_ms",
+    serviceReadinessDurationMs: "service_readiness_duration_ms",
+    submitLatencyMs: "submit_latency_ms",
+  },
+  liveCommand: {
+    arguments: ["-BrowserPreflight"],
+    script: "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
+  },
+  mutationOptIn: {
+    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
+    flag: "-BrowserMutationOptIn",
+    requiredValue: "1",
+  },
+  requiredInputs: {
+    adminUiBaseUrl: "ADMIN_UI_BASE_URL",
+    controlPlaneBaseUrl: "CONTROL_PLANE_BASE_URL",
+    sessionMaterial: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+  },
+  secretSafeOutput: {
+    echoSessionMaterial: false,
+    forbiddenMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
+  },
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
+  browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
   forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
   readinessStates: {
