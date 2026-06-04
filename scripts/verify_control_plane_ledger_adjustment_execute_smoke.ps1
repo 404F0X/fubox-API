@@ -833,12 +833,14 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteBrowserPreflightContract",
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
       "ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
+      "ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
       "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
+      "browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract",
       "browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract"
@@ -855,11 +857,17 @@ function Assert-UiSmokeHandoffFreshness {
       "browserPreflight",
       "browserActionPlan",
       "browserDomActionRunner",
+      "browserPlaywrightLaunchReadiness",
       "browserEvidenceArtifact",
       "browserRunnerReadiness",
       "browserLiveRunbook",
       "billing_execute_browser_live_e2e_evidence.v1",
       "dom_action_runner_dry_run_only",
+      "playwright_launch_readiness_only",
+      "browser_launch_duration_ms",
+      "context_setup_duration_ms",
+      "page_ready_duration_ms",
+      "selector_snapshot_duration_ms",
       "selector_availability_summary",
       "runner_readiness_only",
       "artifact_roundtrip_fresh",
@@ -1128,6 +1136,125 @@ function Write-BrowserDomActionRunnerDryRun {
   }
 }
 
+function Assert-BrowserPlaywrightLaunchReadinessContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $launch = Get-JsonProperty $Handoff "browserPlaywrightLaunchReadiness" "UI handoff"
+  Assert-Equal (Get-JsonProperty $launch "defaultMode" "UI browser Playwright launch readiness") "playwright_launch_readiness_only" "UI browser Playwright launch readiness default mode"
+  Assert-True ((Get-JsonProperty $launch "defaultClicksAdminUiActions" "UI browser Playwright launch readiness") -eq $false) "UI browser Playwright launch readiness must not click by default"
+  Assert-True ((Get-JsonProperty $launch "defaultSubmitsLiveMutation" "UI browser Playwright launch readiness") -eq $false) "UI browser Playwright launch readiness must not mutate by default"
+
+  $durationFields = Get-JsonProperty $launch "durationFields" "UI browser Playwright launch readiness"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "pageReadyDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs")) {
+    $field = [string](Get-JsonProperty $durationFields $name "UI browser Playwright duration fields")
+    if ($field -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser Playwright duration field '$name' must be machine readable"
+    }
+  }
+
+  $readinessFields = Get-JsonProperty $launch "readinessFields" "UI browser Playwright launch readiness"
+  foreach ($name in @("browserLaunchReady", "contextReady", "mutationAllowed", "pageReady", "safeAdminUiUrl", "safeControlPlaneUrl", "selectorSnapshotReady")) {
+    $field = [string](Get-JsonProperty $readinessFields $name "UI browser Playwright readiness fields")
+    if ($field -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser Playwright readiness field '$name' must be machine readable"
+    }
+  }
+
+  $blockers = Get-JsonProperty $launch "blockers" "UI browser Playwright launch readiness"
+  foreach ($name in @("adminUiUnreachable", "browserToolingUnavailable", "controlPlaneHealthUnreachable", "liveMutationOptInMissing", "sessionMaterialMissing")) {
+    $blocker = [string](Get-JsonProperty $blockers $name "UI browser Playwright blockers")
+    if ($blocker -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser Playwright blocker '$name' must be machine readable"
+    }
+  }
+
+  $artifactEmission = Get-JsonProperty $launch "artifactEmission" "UI browser Playwright launch readiness"
+  Assert-Equal (Get-JsonProperty $artifactEmission "artifactName" "UI browser Playwright artifact emission") "billing_execute_browser_live_e2e_evidence.v1" "UI browser Playwright artifact name"
+  Assert-Equal (Get-JsonProperty $artifactEmission "outputMarker" "UI browser Playwright artifact emission") "browser_runner_evidence_json" "UI browser Playwright artifact output marker"
+  Assert-True ((Get-JsonProperty $artifactEmission "writeDisabledByDefault" "UI browser Playwright artifact emission") -eq $true) "UI browser Playwright artifact write must be disabled by default"
+
+  $secretSafeOmission = Get-JsonProperty $launch "secretSafeOmission" "UI browser Playwright launch readiness"
+  foreach ($name in @("echoRequestMaterial", "echoSessionMaterial", "echoUrlCredentials")) {
+    Assert-True ((Get-JsonProperty $secretSafeOmission $name "UI browser Playwright secret-safe omission") -eq $false) "UI browser Playwright must omit $name"
+  }
+}
+
+function Write-BrowserPlaywrightLaunchReadinessBoundary {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+  )
+
+  Assert-BrowserPlaywrightLaunchReadinessContract $Handoff
+  $launch = Get-JsonProperty $Handoff "browserPlaywrightLaunchReadiness" "UI handoff"
+  $durationFields = Get-JsonProperty $launch "durationFields" "UI browser Playwright launch readiness"
+  $readinessFields = Get-JsonProperty $launch "readinessFields" "UI browser Playwright launch readiness"
+  $blockers = Get-JsonProperty $launch "blockers" "UI browser Playwright launch readiness"
+  $artifactEmission = Get-JsonProperty $launch "artifactEmission" "UI browser Playwright launch readiness"
+  $selectorReadiness = Get-ActionSelectorReadiness $Handoff
+  $adminUiUrl = Get-SafeSmokeUrlSummary $AdminUiBaseUrl "Admin UI URL"
+  $backendUrl = Get-SafeSmokeUrlSummary $ControlPlaneBaseUrl "Control Plane backend URL"
+  $launchBlockers = @()
+  if ($ToolingStatus -ne "available") {
+    $launchBlockers += [string](Get-JsonProperty $blockers "browserToolingUnavailable" "UI browser Playwright blockers")
+  }
+  if (-not [bool]$AdminUiProbe.Reachable) {
+    $launchBlockers += [string](Get-JsonProperty $blockers "adminUiUnreachable" "UI browser Playwright blockers")
+  }
+  if (-not [bool]$ControlPlaneProbe.Reachable) {
+    $launchBlockers += [string](Get-JsonProperty $blockers "controlPlaneHealthUnreachable" "UI browser Playwright blockers")
+  }
+  if (-not $SessionMaterialPresent) {
+    $launchBlockers += [string](Get-JsonProperty $blockers "sessionMaterialMissing" "UI browser Playwright blockers")
+  }
+  if (-not $MutationEnabled) {
+    $launchBlockers += [string](Get-JsonProperty $blockers "liveMutationOptInMissing" "UI browser Playwright blockers")
+  }
+
+  $browserReady = $ToolingStatus -eq "available"
+  $contextReady = $browserReady -and [bool]$AdminUiProbe.Reachable -and $SessionMaterialPresent
+  $pageReady = $contextReady -and [bool]$ControlPlaneProbe.Reachable
+  $selectorReady = $pageReady -and $selectorReadiness -eq "ready"
+  $unavailable = "unavailable"
+  $blockerSummary = "none"
+  if ($launchBlockers.Count -gt 0) {
+    $blockerSummary = ($launchBlockers -join "+")
+  }
+
+  Write-SafeHost "Browser ledger execute Playwright launch readiness boundary:"
+  Write-SafeHost "browser_playwright_launch_mode=$([string](Get-JsonProperty $launch "defaultMode" "UI browser Playwright launch readiness"))"
+  Write-SafeHost "browser_playwright_blockers=$blockerSummary"
+  Write-SafeHost "browser_playwright_tooling=$ToolingStatus"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "safeAdminUiUrl" "UI browser Playwright readiness fields"))=true"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "safeControlPlaneUrl" "UI browser Playwright readiness fields"))=true"
+  Write-SafeHost "browser_playwright_admin_ui_origin=$adminUiUrl"
+  Write-SafeHost "browser_playwright_control_plane_origin=$backendUrl"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "browserLaunchReady" "UI browser Playwright readiness fields"))=$(Format-BoolMarker $browserReady)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "contextReady" "UI browser Playwright readiness fields"))=$(Format-BoolMarker $contextReady)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "pageReady" "UI browser Playwright readiness fields"))=$(Format-BoolMarker $pageReady)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "selectorSnapshotReady" "UI browser Playwright readiness fields"))=$(Format-BoolMarker $selectorReady)"
+  Write-SafeHost "$([string](Get-JsonProperty $readinessFields "mutationAllowed" "UI browser Playwright readiness fields"))=false"
+  Write-SafeHost "browser_playwright_clicks_enabled=false"
+  Write-SafeHost "browser_playwright_live_mutation_enabled=false"
+  Write-SafeHost "$([string](Get-JsonProperty $durationFields "serviceReadinessDurationMs" "UI browser Playwright duration fields"))=$ServiceReadinessDurationMs"
+  Write-SafeHost "$([string](Get-JsonProperty $durationFields "browserLaunchDurationMs" "UI browser Playwright duration fields"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationFields "contextSetupDurationMs" "UI browser Playwright duration fields"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationFields "pageReadyDurationMs" "UI browser Playwright duration fields"))=$unavailable"
+  Write-SafeHost "$([string](Get-JsonProperty $durationFields "selectorSnapshotDurationMs" "UI browser Playwright duration fields"))=$unavailable"
+  Write-SafeHost "browser_playwright_selector_snapshot=$selectorReadiness"
+  Write-SafeHost "browser_playwright_secret_url_credentials_echoed=false"
+  Write-SafeHost "browser_playwright_secret_session_echoed=false"
+  Write-SafeHost "browser_playwright_request_material_echoed=false"
+  Write-SafeHost "browser_playwright_artifact=$([string](Get-JsonProperty $artifactEmission "artifactName" "UI browser Playwright artifact emission"))"
+  Write-SafeHost "browser_playwright_artifact_output=$([string](Get-JsonProperty $artifactEmission "outputMarker" "UI browser Playwright artifact emission"))"
+  Write-SafeHost "browser_playwright_artifact_write_disabled_default=$(Format-BoolMarker ([bool](Get-JsonProperty $artifactEmission "writeDisabledByDefault" "UI browser Playwright artifact emission")))"
+}
+
 function Test-BrowserMutationOptIn {
   param([Parameter(Mandatory = $true)]$Runbook)
 
@@ -1169,7 +1296,7 @@ function Assert-BrowserLiveRunbookContract {
   }
 
   $evidenceNames = Get-JsonProperty $runbook "evidenceNames" "UI browser live runbook"
-  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
     $evidence = [string](Get-JsonProperty $evidenceNames $name "UI browser live runbook evidence names")
     if ($evidence -notmatch '^[a-z0-9_]+$') {
       throw "UI browser live runbook evidence '$name' must be machine readable"
@@ -1243,7 +1370,7 @@ function Write-BrowserLiveRunbookGate {
   Write-SafeHost "browser_live_session_material_present=$(Format-BoolMarker $sessionMaterialPresent)"
   Write-SafeHost "browser_live_session_material_echoed=false"
   Write-SafeHost "browser_live_blockers=$blockerSummary"
-  foreach ($name in @("serviceReadinessDurationMs", "submitLatencyMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "refundRefusalDurationMs", "ledgerRefreshDurationMs")) {
+  foreach ($name in @("serviceReadinessDurationMs", "browserLaunchDurationMs", "contextSetupDurationMs", "pageReadyDurationMs", "selectorSnapshotDurationMs", "submitLatencyMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "refundRefusalDurationMs", "ledgerRefreshDurationMs")) {
     Write-SafeHost "browser_live_evidence_name=$([string](Get-JsonProperty $evidenceNames $name "UI browser live runbook evidence names"))"
   }
 }
@@ -1264,7 +1391,7 @@ function Assert-BrowserEvidenceArtifactContract {
   }
 
   $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
-  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
     $field = [string](Get-JsonProperty $durationFields $name "UI browser evidence duration fields")
     if ($field -notmatch '^[a-z0-9_]+$') {
       throw "UI browser evidence duration field '$name' must be machine readable"
@@ -1343,6 +1470,10 @@ function New-BrowserEvidenceArtifact {
     }
     durations = [PSCustomObject]@{
       service_readiness_duration_ms = $ServiceReadinessDurationMs
+      browser_launch_duration_ms = $unavailable
+      context_setup_duration_ms = $unavailable
+      page_ready_duration_ms = $unavailable
+      selector_snapshot_duration_ms = $unavailable
       submit_latency_ms = $unavailable
       dry_run_plan_duration_ms = $unavailable
       execute_apply_duration_ms = $unavailable
@@ -1352,6 +1483,10 @@ function New-BrowserEvidenceArtifact {
     }
     duration_field_names = [PSCustomObject]@{
       service_readiness_duration_ms = [string](Get-JsonProperty $durationFields "serviceReadinessDurationMs" "UI browser evidence duration fields")
+      browser_launch_duration_ms = [string](Get-JsonProperty $durationFields "browserLaunchDurationMs" "UI browser evidence duration fields")
+      context_setup_duration_ms = [string](Get-JsonProperty $durationFields "contextSetupDurationMs" "UI browser evidence duration fields")
+      page_ready_duration_ms = [string](Get-JsonProperty $durationFields "pageReadyDurationMs" "UI browser evidence duration fields")
+      selector_snapshot_duration_ms = [string](Get-JsonProperty $durationFields "selectorSnapshotDurationMs" "UI browser evidence duration fields")
       submit_latency_ms = [string](Get-JsonProperty $durationFields "submitLatencyMs" "UI browser evidence duration fields")
       dry_run_plan_duration_ms = [string](Get-JsonProperty $durationFields "dryRunPlanDurationMs" "UI browser evidence duration fields")
       execute_apply_duration_ms = [string](Get-JsonProperty $durationFields "executeApplyDurationMs" "UI browser evidence duration fields")
@@ -1392,7 +1527,7 @@ function Assert-BrowserEvidenceArtifactShape {
   }
 
   $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
-  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
     $field = [string](Get-JsonProperty $durationFields $name "UI browser evidence duration fields")
     [void](Get-JsonProperty $Artifact.durations $field "browser evidence durations")
   }
@@ -1531,7 +1666,7 @@ function Assert-BrowserRunnerReadinessContract {
   $durationCaptureNames = Get-JsonProperty $runner "durationCaptureNames" "UI browser runner readiness"
   $evidenceContract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
   $durationFields = Get-JsonProperty $evidenceContract "durationFields" "UI browser evidence artifact"
-  foreach ($name in @("dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "refundRefusalDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
     Assert-Equal (Get-JsonProperty $durationCaptureNames $name "UI browser runner duration capture names") (Get-JsonProperty $durationFields $name "UI browser evidence duration fields") "UI browser runner duration capture $name"
   }
 
@@ -1712,6 +1847,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-BrowserLiveRunbookGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
   Write-BrowserEvidenceArtifactDryRun -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+  Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
 }
 
 function Assert-AdminSourceMarkers {

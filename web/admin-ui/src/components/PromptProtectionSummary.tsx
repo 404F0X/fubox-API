@@ -34,6 +34,23 @@ type PromptProtectionSummaryData = {
   staleSimulatedMarker: string;
 };
 
+export type PromptProtectionEvidenceReadback = {
+  auditReadiness: string;
+  closureChecklist: string[];
+  closureGaps: string[];
+  closureRule: string;
+  currentCommit: string;
+  durationAvailability: string;
+  freshnessReplay: string;
+  latencyEnvelope: string;
+  omittedMaterial: string;
+  proofClosure: string;
+  proofEvidence: string[];
+  proofMode: string;
+  providerAttempts: string;
+  schema: "prompt_protection_evidence_readback_v1";
+};
+
 const PROMPT_PROTECTION_KEYS = new Set([
   "promptprotection",
   "promptprotectionsummary",
@@ -208,6 +225,33 @@ export function stripPromptProtectionSignals(value: JsonValue | null | undefined
       .filter(([key]) => !isPromptProtectionKey(key))
       .map(([key, child]) => [key, stripPromptProtectionSignals(child)]),
   ) as JsonValue;
+}
+
+export function promptProtectionEvidenceReadback(
+  value: JsonValue | null | undefined,
+): PromptProtectionEvidenceReadback | null {
+  const record = findPromptProtectionRecord(value);
+
+  if (!record) {
+    return null;
+  }
+
+  return {
+    auditReadiness: auditReadinessField(record),
+    closureChecklist: closureChecklistItems(record),
+    closureGaps: closureGapItems(record),
+    closureRule: closureRuleField(record),
+    currentCommit: currentCommitField(record),
+    durationAvailability: durationAvailabilityField(record),
+    freshnessReplay: freshnessReplayField(record),
+    latencyEnvelope: latencyClosureField(record),
+    omittedMaterial: omittedMaterialField(record),
+    proofClosure: proofClosureField(record),
+    proofEvidence: proofEvidenceItems(record),
+    proofMode: provenanceModeField(record),
+    providerAttempts: providerAttemptsField(record),
+    schema: "prompt_protection_evidence_readback_v1",
+  };
 }
 
 function summarizePromptProtection(value: JsonValue | null | undefined): PromptProtectionSummaryData | null {
@@ -652,6 +696,16 @@ function proofEvidenceField(record: Record<string, JsonValue>): string {
   return listField(handoff.evidence_fields);
 }
 
+function proofEvidenceItems(record: Record<string, JsonValue>): string[] {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return [];
+  }
+
+  return listItems(handoff.evidence_fields);
+}
+
 function closureRuleField(record: Record<string, JsonValue>): string {
   const handoff = auditHandoffRecord(record);
 
@@ -679,6 +733,16 @@ function closureChecklistField(record: Record<string, JsonValue>): string {
   return listField(handoff.closure_checklist);
 }
 
+function closureChecklistItems(record: Record<string, JsonValue>): string[] {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return [];
+  }
+
+  return listItems(handoff.closure_checklist);
+}
+
 function closureGapsField(record: Record<string, JsonValue>): string {
   const handoff = auditHandoffRecord(record);
 
@@ -687,6 +751,16 @@ function closureGapsField(record: Record<string, JsonValue>): string {
   }
 
   return listField(handoff.closure_gaps);
+}
+
+function closureGapItems(record: Record<string, JsonValue>): string[] {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return [];
+  }
+
+  return listItems(handoff.closure_gaps);
 }
 
 function auditHandoffRecord(record: Record<string, JsonValue>): Record<string, JsonValue> | null {
@@ -728,4 +802,15 @@ function commitField(value: JsonValue | undefined): string {
   }
 
   return /^[0-9a-f]{40}$/.test(trimmed) ? trimmed.slice(0, 12) : "-";
+}
+
+function listItems(value: JsonValue | undefined): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => enumField(item))
+    .filter((item) => item !== "-")
+    .slice(0, 8);
 }

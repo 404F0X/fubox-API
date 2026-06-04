@@ -9,6 +9,7 @@ import {
   ledgerAdjustmentExecuteLiveSmokeSerializableHandoff,
 } from "./billingExecuteSmokeContract";
 import ledgerAdjustmentExecuteLiveSmokeSerializableHandoffArtifact from "./billingExecuteSmokeContract.serializable.json";
+import { promptProtectionEvidenceReadback } from "./components/PromptProtectionSummary";
 
 vi.setConfig({ testTimeout: 15000 });
 
@@ -3200,6 +3201,200 @@ describe("App", () => {
     },
   );
 
+  it.each([
+    {
+      auditReadiness: "pass",
+      closureGaps: ["none"],
+      durationAvailable: true,
+      freshnessReplay: "current_live_proof",
+      latencyClosureEligible: true,
+      liveClosureEligible: true,
+      performanceWithinBounds: true,
+      proofMode: "live / live",
+      providerAttempts: 0,
+      rawMarker: "prompt-export-current-hidden",
+    },
+    {
+      auditReadiness: "fail",
+      closureGaps: ["stale_generated_at"],
+      durationAvailable: true,
+      freshnessReplay: "stale_generated_at_refused",
+      latencyClosureEligible: true,
+      liveClosureEligible: false,
+      performanceWithinBounds: true,
+      proofMode: "live / live",
+      providerAttempts: 0,
+      rawMarker: "prompt-export-stale-hidden",
+    },
+    {
+      auditReadiness: "blocker",
+      closureGaps: ["simulated_replay"],
+      durationAvailable: false,
+      freshnessReplay: "simulated_replay_refused",
+      latencyClosureEligible: false,
+      liveClosureEligible: false,
+      performanceWithinBounds: false,
+      proofMode: "contract / simulated",
+      providerAttempts: 0,
+      rawMarker: "prompt-export-simulated-hidden",
+    },
+    {
+      auditReadiness: "blocker",
+      closureGaps: ["duration_unavailable", "latency_envelope_missing"],
+      durationAvailable: false,
+      freshnessReplay: "current_live_proof",
+      latencyClosureEligible: false,
+      liveClosureEligible: false,
+      performanceWithinBounds: false,
+      proofMode: "live / live",
+      providerAttempts: 0,
+      rawMarker: "prompt-export-duration-hidden",
+    },
+    {
+      auditReadiness: "fail",
+      closureGaps: ["provider_attempts_nonzero"],
+      durationAvailable: true,
+      freshnessReplay: "current_live_proof",
+      latencyClosureEligible: true,
+      liveClosureEligible: false,
+      performanceWithinBounds: true,
+      proofMode: "live / live",
+      providerAttempts: 1,
+      rawMarker: "prompt-export-attempt-hidden",
+    },
+  ])(
+    "exports prompt protection evidence readback for $freshnessReplay / $auditReadiness without raw material",
+    ({
+      auditReadiness,
+      closureGaps,
+      durationAvailable,
+      freshnessReplay,
+      latencyClosureEligible,
+      liveClosureEligible,
+      performanceWithinBounds,
+      proofMode,
+      providerAttempts,
+      rawMarker,
+    }) => {
+      const proofKind = proofMode.endsWith("simulated") ? "simulated" : "live";
+      const proofModeValue = proofMode.startsWith("contract") ? "contract" : "live";
+      const input = {
+        action: "reject",
+        audit_readiness: {
+          classification: auditReadiness,
+          closure_checklist: [
+            "gateway_live_proof",
+            "postgres_audit_row",
+            "mock_provider_upstream_refusal",
+            "provider_attempts_zero",
+            "latency_envelope",
+            "current_provenance",
+            "duration_available",
+            "freshness_replay_classification",
+          ],
+          closure_gaps: closureGaps,
+          command_summary: "live_proof_report",
+          current_provenance_required: true,
+          duration_available_required: true,
+          evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+          freshness_replay_classification: freshnessReplay,
+          latency_envelope_required: true,
+          provider_attempts_zero_required: true,
+          raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder(rawMarker)}`,
+          raw_report_path: `C:\\secret\\${rawMarker}.json`,
+          secret_dsn: `postgres://${rawMarker}`,
+        },
+        freshness: {
+          freshness_replay_classification: freshnessReplay,
+          generated_at_utc: "2026-06-04T14:05:00.000Z",
+          live_evidence_closure_eligible: liveClosureEligible,
+          proof_run_id_hash: `${rawMarker}${rawMarker}${rawMarker}`,
+          raw_report_path: `C:\\secret\\${rawMarker}-freshness.json`,
+          repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
+          stale_or_simulated_report_closes_live_gap: false,
+        },
+        mode: "enforce",
+        performance: {
+          db_evidence_duration_ms: durationAvailable ? 15 : null,
+          duration_available: durationAvailable,
+          raw_body: `raw prompt body ${rawMarker}`,
+          request_preflight_duration_ms: durationAvailable ? 9 : null,
+          total_case_duration_ms: durationAvailable ? 24 : null,
+          unavailable_reason: durationAvailable ? null : "duration_unavailable",
+        },
+        performance_envelope: {
+          all_endpoint_performance_within_bounds: performanceWithinBounds,
+          command_summary: {
+            authorization: bearerPlaceholder(`${rawMarker}-command`),
+            database_url: `postgres://${rawMarker}-performance`,
+          },
+          duration_unavailable_marker: "duration_available=false",
+          latency_envelope_closure_eligible: latencyClosureEligible,
+          live_blocker_status: auditReadiness === "blocker" ? "blocked" : "not_blocked",
+          provider_attempts_zero_required: true,
+          raw_headers: {
+            [AUTH_HEADER_NAME]: bearerPlaceholder(`${rawMarker}-header`),
+          },
+        },
+        provider_attempts_count: providerAttempts,
+        provider_secret: skPlaceholder(`${rawMarker}-provider`),
+        provenance: {
+          command_line: `${AUTH_HEADER_NAME}: ${bearerPlaceholder(`${rawMarker}-artifact`)}`,
+          generated_at_utc: "2026-06-04T14:05:00.000Z",
+          kind: proofKind,
+          mode: proofModeValue,
+          redacted_command_summary: {
+            database_connection: `postgres://${rawMarker}-artifact`,
+            provider_secret: skPlaceholder(`${rawMarker}-artifact-provider`),
+            report_path: `C:\\secret\\${rawMarker}-artifact.json`,
+          },
+          repo: {
+            head_commit: "1234567890abcdef1234567890abcdef12345678",
+          },
+        },
+        raw_payload_omitted: true,
+        raw_pattern_values_omitted: true,
+        raw_prompt: `raw prompt ${rawMarker}`,
+        schema: "gateway_prompt_protection_v1",
+      };
+
+      const readback = promptProtectionEvidenceReadback(input);
+      expect(readback).not.toBeNull();
+      expect(readback).toEqual(JSON.parse(JSON.stringify(readback)));
+      expect(readback).toMatchObject({
+        auditReadiness,
+        closureGaps,
+        closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+        currentCommit: "1234567890ab",
+        freshnessReplay,
+        proofMode,
+        providerAttempts: String(providerAttempts),
+        schema: "prompt_protection_evidence_readback_v1",
+      });
+      expect(readback?.closureChecklist).toEqual([
+        "gateway_live_proof",
+        "postgres_audit_row",
+        "mock_provider_upstream_refusal",
+        "provider_attempts_zero",
+        "latency_envelope",
+        "current_provenance",
+        "duration_available",
+        "freshness_replay_classification",
+      ]);
+      expect(readback?.proofEvidence).toEqual(["provider_attempts_count", "latency_envelope", "provenance"]);
+
+      const exported = JSON.stringify(readback);
+      expect(exported).not.toContain(rawMarker);
+      expect(exported).not.toContain("C:\\secret");
+      expect(exported).not.toContain("postgres://");
+      expect(exported).not.toContain(AUTH_HEADER_NAME);
+      expect(exported).not.toContain(BEARER_SCHEME);
+      expect(exported).not.toContain(SK_PREFIX);
+      expect(exported).not.toContain("raw prompt");
+      expect(exported).not.toContain("raw prompt body");
+    },
+  );
+
   it("runs routing dry-run and renders selected candidates without secret material", async () => {
     const fetchMock = stubAdminFetch();
 
@@ -3747,11 +3942,15 @@ describe("App", () => {
     expect(parsed.browserEvidenceArtifact).toEqual({
       artifactName: "billing_execute_browser_live_e2e_evidence.v1",
       durationFields: {
+        browserLaunchDurationMs: "browser_launch_duration_ms",
+        contextSetupDurationMs: "context_setup_duration_ms",
         dryRunPlanDurationMs: "dry_run_plan_duration_ms",
         executeApplyDurationMs: "execute_apply_duration_ms",
         idempotentReplayDurationMs: "idempotent_replay_duration_ms",
         ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+        pageReadyDurationMs: "page_ready_duration_ms",
         refundRefusalDurationMs: "refund_refusal_duration_ms",
+        selectorSnapshotDurationMs: "selector_snapshot_duration_ms",
         serviceReadinessDurationMs: "service_readiness_duration_ms",
         submitLatencyMs: "submit_latency_ms",
       },
@@ -3785,11 +3984,15 @@ describe("App", () => {
       },
       defaultMode: "contract_only",
       evidenceNames: {
+        browserLaunchDurationMs: "browser_launch_duration_ms",
+        contextSetupDurationMs: "context_setup_duration_ms",
         dryRunPlanDurationMs: "dry_run_plan_duration_ms",
         executeApplyDurationMs: "execute_apply_duration_ms",
         idempotentReplayDurationMs: "idempotent_replay_duration_ms",
         ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+        pageReadyDurationMs: "page_ready_duration_ms",
         refundRefusalDurationMs: "refund_refusal_duration_ms",
+        selectorSnapshotDurationMs: "selector_snapshot_duration_ms",
         serviceReadinessDurationMs: "service_readiness_duration_ms",
         submitLatencyMs: "submit_latency_ms",
       },
@@ -3810,6 +4013,44 @@ describe("App", () => {
       secretSafeOutput: {
         echoSessionMaterial: false,
         forbiddenMarkers: ledgerExecuteSmoke.forbiddenSensitiveMarkers,
+      },
+    });
+    expect(parsed.browserPlaywrightLaunchReadiness).toEqual({
+      artifactEmission: {
+        artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+        outputMarker: "browser_runner_evidence_json",
+        writeDisabledByDefault: true,
+      },
+      blockers: {
+        adminUiUnreachable: "admin_ui_unreachable",
+        browserToolingUnavailable: "browser_tooling_unavailable",
+        controlPlaneHealthUnreachable: "control_plane_health_unreachable",
+        liveMutationOptInMissing: "live_mutation_opt_in_missing",
+        sessionMaterialMissing: "session_material_missing",
+      },
+      defaultClicksAdminUiActions: false,
+      defaultMode: "playwright_launch_readiness_only",
+      defaultSubmitsLiveMutation: false,
+      durationFields: {
+        browserLaunchDurationMs: "browser_launch_duration_ms",
+        contextSetupDurationMs: "context_setup_duration_ms",
+        pageReadyDurationMs: "page_ready_duration_ms",
+        selectorSnapshotDurationMs: "selector_snapshot_duration_ms",
+        serviceReadinessDurationMs: "service_readiness_duration_ms",
+      },
+      readinessFields: {
+        browserLaunchReady: "browser_launch_ready",
+        contextReady: "context_ready",
+        mutationAllowed: "mutation_allowed",
+        pageReady: "page_ready",
+        safeAdminUiUrl: "safe_admin_ui_url",
+        safeControlPlaneUrl: "safe_control_plane_url",
+        selectorSnapshotReady: "selector_snapshot_ready",
+      },
+      secretSafeOmission: {
+        echoRequestMaterial: false,
+        echoSessionMaterial: false,
+        echoUrlCredentials: false,
       },
     });
     expect(parsed.browserPreflight).toEqual({

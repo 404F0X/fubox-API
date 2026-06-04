@@ -166,11 +166,15 @@ export const ledgerAdjustmentExecuteBrowserLiveRunbookContract = {
   },
   defaultMode: "contract_only",
   evidenceNames: {
+    browserLaunchDurationMs: "browser_launch_duration_ms",
+    contextSetupDurationMs: "context_setup_duration_ms",
     dryRunPlanDurationMs: "dry_run_plan_duration_ms",
     executeApplyDurationMs: "execute_apply_duration_ms",
     idempotentReplayDurationMs: "idempotent_replay_duration_ms",
     ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+    pageReadyDurationMs: "page_ready_duration_ms",
     refundRefusalDurationMs: "refund_refusal_duration_ms",
+    selectorSnapshotDurationMs: "selector_snapshot_duration_ms",
     serviceReadinessDurationMs: "service_readiness_duration_ms",
     submitLatencyMs: "submit_latency_ms",
   },
@@ -197,11 +201,15 @@ export const ledgerAdjustmentExecuteBrowserLiveRunbookContract = {
 export const ledgerAdjustmentExecuteBrowserEvidenceArtifactContract = {
   artifactName: "billing_execute_browser_live_e2e_evidence.v1",
   durationFields: {
+    browserLaunchDurationMs: "browser_launch_duration_ms",
+    contextSetupDurationMs: "context_setup_duration_ms",
     dryRunPlanDurationMs: "dry_run_plan_duration_ms",
     executeApplyDurationMs: "execute_apply_duration_ms",
     idempotentReplayDurationMs: "idempotent_replay_duration_ms",
     ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
+    pageReadyDurationMs: "page_ready_duration_ms",
     refundRefusalDurationMs: "refund_refusal_duration_ms",
+    selectorSnapshotDurationMs: "selector_snapshot_duration_ms",
     serviceReadinessDurationMs: "service_readiness_duration_ms",
     submitLatencyMs: "submit_latency_ms",
   },
@@ -316,11 +324,51 @@ export const ledgerAdjustmentExecuteBrowserDomActionRunnerContract = {
   toolingBlocker: "browser_tooling_unavailable",
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract = {
+  artifactEmission: {
+    artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    outputMarker: "browser_runner_evidence_json",
+    writeDisabledByDefault: true,
+  },
+  blockers: {
+    adminUiUnreachable: "admin_ui_unreachable",
+    browserToolingUnavailable: "browser_tooling_unavailable",
+    controlPlaneHealthUnreachable: "control_plane_health_unreachable",
+    liveMutationOptInMissing: "live_mutation_opt_in_missing",
+    sessionMaterialMissing: "session_material_missing",
+  },
+  defaultClicksAdminUiActions: false,
+  defaultMode: "playwright_launch_readiness_only",
+  defaultSubmitsLiveMutation: false,
+  durationFields: {
+    browserLaunchDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.browserLaunchDurationMs,
+    contextSetupDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.contextSetupDurationMs,
+    pageReadyDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.pageReadyDurationMs,
+    selectorSnapshotDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.selectorSnapshotDurationMs,
+    serviceReadinessDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.serviceReadinessDurationMs,
+  },
+  readinessFields: {
+    browserLaunchReady: "browser_launch_ready",
+    contextReady: "context_ready",
+    mutationAllowed: "mutation_allowed",
+    pageReady: "page_ready",
+    safeAdminUiUrl: "safe_admin_ui_url",
+    safeControlPlaneUrl: "safe_control_plane_url",
+    selectorSnapshotReady: "selector_snapshot_ready",
+  },
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
   browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
+  browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
   browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract,
   forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
