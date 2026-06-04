@@ -241,6 +241,26 @@ Freshness guidance:
   marker. A simulated or stale report can document the contract or blocker, but
   it is not live evidence.
 
+Performance envelope guidance:
+
+- Each endpoint report includes `performance.duration_unit=milliseconds`,
+  `total_case_duration_ms`, `request_preflight_duration_ms`, and
+  `db_evidence_duration_ms` when the live request and DB evidence path ran far
+  enough to measure them. Contract, preflight-only, not-run, and blocked cases
+  use the explicit unavailable marker `duration_available=false` with a bounded
+  reason.
+- The root `performance_envelope` records the latency bounds used by the proof,
+  the `live_blocker_status`, `external_blocker_count`, and the closure rules.
+  It also repeats that `provider_attempts_count=0` is required for every
+  endpoint.
+- `latency_envelope_closure_eligible=true` is allowed only when the report is a
+  current live `passed` report, all four endpoint evidence entries passed,
+  every endpoint has `provider_attempts_count=0`, every duration is available,
+  and all endpoint `latency_envelope.within_bounds` values are true.
+- A blocker, preflight-only, contract, simulated, stale, or duration-unavailable
+  report closes only the performance envelope contract. It does not close the
+  live Postgres proof gap.
+
 Each endpoint report records:
 
 - `name`, endpoint label, and expected prompt-protection scope.
@@ -257,6 +277,10 @@ Each endpoint report records:
   observed safe reason/scope when DB evidence is available.
 - Secret-safe omission markers for raw payload, raw pattern values, transport
   metadata, credentials, database connection values, and provider secret values.
+- Performance fields: `total_case_duration_ms`,
+  `request_preflight_duration_ms`, `db_evidence_duration_ms`,
+  `duration_available`, `latency_envelope.within_bounds`, and an unavailable
+  reason when the case did not run far enough to measure all durations.
 
 The report must not contain raw prompt text, request bodies, transport header
 values, credential values, database connection strings, regex pattern values, or

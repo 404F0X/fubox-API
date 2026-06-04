@@ -464,6 +464,18 @@ and `freshness.live_evidence_closure_eligible=true` can close the live
 provider_attempts proof gap. Blocker, failed, preflight, contract, simulated,
 stale, wrong-commit, or dirty/unreviewed reports cannot close it.
 
+Reports also include a performance envelope. Each endpoint records
+`total_case_duration_ms`, `request_preflight_duration_ms`, and
+`db_evidence_duration_ms` when the live path ran far enough to measure them, or
+the explicit `duration_available=false` unavailable marker. The root
+`performance_envelope` records latency bounds, `live_blocker_status`,
+`external_blocker_count`, provider_attempts=0 closure requirements, and
+`latency_envelope_closure_eligible`. That field is true only for current live
+passed reports where all four endpoint reports passed, every
+provider_attempts_count is `0`, every duration is available, and every endpoint
+latency envelope is within bounds. Blocker/preflight/contract/simulated/stale
+reports close only the performance envelope contract, not the live proof gap.
+
 Report paths must resolve under `.tmp/**` or
 `artifacts/prompt-protection-postgres-proof/**` with a `.json` file extension.
 Repo-outside paths, `.git` paths, source/script/docs paths, and unrelated worker
@@ -510,8 +522,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protec
 This self-test does not connect to live services or write a live report. It
 validates simulated pass, evidence mismatch, and external blocker reports for
 the four endpoint catalog entries, covers live/preflight/contract/simulated
-provenance modes, validates closure eligibility, and verifies the report JSON is
-secret-safe.
+provenance modes, validates freshness and latency envelope closure eligibility,
+and verifies the report JSON is secret-safe.
 
 Evidence report path-safety self-test:
 

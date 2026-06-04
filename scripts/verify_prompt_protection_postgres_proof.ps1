@@ -245,7 +245,10 @@ function Invoke-EvidenceReportContractSelfTest {
         -RequestHash ("a" * 64) `
         -ObservedHttpStatus 400 `
         -ProviderAttemptsCount 0 `
-        -PromptProtectionReason "prompt_injection_detected"
+        -PromptProtectionReason "prompt_injection_detected" `
+        -TotalCaseDurationMs 24 `
+        -RequestPreflightDurationMs 9 `
+        -DbEvidenceDurationMs 15
     }
     $script:Live = $true
     $script:PreflightOnly = $false
@@ -257,7 +260,11 @@ function Invoke-EvidenceReportContractSelfTest {
     if ($passed.freshness.live_evidence_closure_eligible -ne $true) {
       throw "live passed evidence report was not closure eligible"
     }
+    if ($passed.performance_envelope.latency_envelope_closure_eligible -ne $true) {
+      throw "live passed evidence report latency envelope was not closure eligible"
+    }
 
+    $script:CaseReportByName = @{}
     $script:Live = $true
     $script:PreflightOnly = $true
     $script:ContractOnly = $false
@@ -266,7 +273,11 @@ function Invoke-EvidenceReportContractSelfTest {
     if ($preflight.freshness.live_evidence_closure_eligible -ne $false) {
       throw "live preflight evidence report was closure eligible"
     }
+    if ($preflight.performance_envelope.latency_envelope_closure_eligible -ne $false) {
+      throw "live preflight latency envelope was closure eligible"
+    }
 
+    $script:CaseReportByName = @{}
     $script:Live = $false
     $script:PreflightOnly = $false
     $script:ContractOnly = $true
@@ -274,6 +285,9 @@ function Invoke-EvidenceReportContractSelfTest {
     Assert-EvidenceReportContract -Report $contract -ExpectedStatus "preflight_passed" -ExpectedExitCode 0 -ExpectedMode "contract" -ExpectedProvenanceKind "simulated"
     if ($contract.freshness.live_evidence_closure_eligible -ne $false) {
       throw "contract evidence report was closure eligible"
+    }
+    if ($contract.performance_envelope.latency_envelope_closure_eligible -ne $false) {
+      throw "contract latency envelope was closure eligible"
     }
 
     $script:CaseReportByName = @{}
@@ -649,6 +663,28 @@ function New-RedactedCommandSummary {
       database_connection_values_omitted = $true
     }
   }
+}
+
+function Get-PerformanceEnvelopeBounds {
+  return [ordered]@{
+    max_request_preflight_duration_ms = [int][Math]::Max(1, ($TimeoutSeconds * 1000))
+    max_db_evidence_duration_ms = [int][Math]::Max(1000, (($DbPollSeconds + 1) * 1000))
+    max_total_case_duration_ms = [int][Math]::Max(1, (($TimeoutSeconds + $DbPollSeconds + 2) * 1000))
+  }
+}
+
+function ConvertTo-NullableNonNegativeInt {
+  param([AllowNull()]$Value)
+
+  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+    return $null
+  }
+
+  $number = [int][Math]::Round([double]$Value)
+  if ($number -lt 0) {
+    return 0
+  }
+  return $number
 }
 
 function Invoke-HttpGet {
@@ -1153,12 +1189,37 @@ function New-EndpointEvidenceReport {
     [string]$RequestHash = "",
     [AllowNull()]$ObservedHttpStatus = $null,
     [AllowNull()]$ProviderAttemptsCount = $null,
-    [string]$PromptProtectionReason = ""
+    [string]$PromptProtectionReason = "",
+    [AllowNull()]$TotalCaseDurationMs = $null,
+    [AllowNull()]$RequestPreflightDurationMs = $null,
+    [AllowNull()]$DbEvidenceDurationMs = $null,
+    [string]$DurationUnavailableReason = ""
   )
 
   $providerAttemptsValue = $null
   if ($null -ne $ProviderAttemptsCount -and -not [string]::IsNullOrWhiteSpace([string]$ProviderAttemptsCount)) {
     $providerAttemptsValue = [int]$ProviderAttemptsCount
+  }
+
+  $totalDuration = ConvertTo-NullableNonNegativeInt $TotalCaseDurationMs
+  $requestDuration = ConvertTo-NullableNonNegativeInt $RequestPreflightDurationMs
+  $dbDuration = ConvertTo-NullableNonNegativeInt $DbEvidenceDurationMs
+  $durationAvailable = ($null -ne $totalDuration -and $null -ne $requestDuration -and $null -ne $dbDuration)
+  $durationReason = [string]$DurationUnavailableReason
+  if (-not $durationAvailable -and [string]::IsNullOrWhiteSpace($durationReason)) {
+    $durationReason = "duration_unavailable"
+  }
+  if ($durationAvailable) {
+    $durationReason = ""
+  }
+  $latencyBounds = Get-PerformanceEnvelopeBounds
+  $withinLatencyBounds = $false
+  if ($durationAvailable) {
+    $withinLatencyBounds = (
+      $totalDuration -le [int]$latencyBounds.max_total_case_duration_ms -and
+      $requestDuration -le [int]$latencyBounds.max_request_preflight_duration_ms -and
+      $dbDuration -le [int]$latencyBounds.max_db_evidence_duration_ms
+    )
   }
 
   return [ordered]@{
@@ -1209,6 +1270,21 @@ function New-EndpointEvidenceReport {
       database_connection_values_omitted = $true
       provider_secret_values_omitted = $true
     }
+    performance = [ordered]@{
+      duration_unit = "milliseconds"
+      duration_available = [bool]$durationAvailable
+      unavailable_reason = [string]$durationReason
+      total_case_duration_ms = $totalDuration
+      request_preflight_duration_ms = $requestDuration
+      db_evidence_duration_ms = $dbDuration
+      latency_envelope = [ordered]@{
+        bounded = $true
+        within_bounds = [bool]$withinLatencyBounds
+        max_total_case_duration_ms = [int]$latencyBounds.max_total_case_duration_ms
+        max_request_preflight_duration_ms = [int]$latencyBounds.max_request_preflight_duration_ms
+        max_db_evidence_duration_ms = [int]$latencyBounds.max_db_evidence_duration_ms
+      }
+    }
   }
 }
 
@@ -1219,7 +1295,11 @@ function Set-EndpointEvidenceReport {
     [string]$RequestHash = "",
     [AllowNull()]$ObservedHttpStatus = $null,
     [AllowNull()]$ProviderAttemptsCount = $null,
-    [string]$PromptProtectionReason = ""
+    [string]$PromptProtectionReason = "",
+    [AllowNull()]$TotalCaseDurationMs = $null,
+    [AllowNull()]$RequestPreflightDurationMs = $null,
+    [AllowNull()]$DbEvidenceDurationMs = $null,
+    [string]$DurationUnavailableReason = ""
   )
 
   $script:CaseReportByName[[string]$Case.Name] = New-EndpointEvidenceReport `
@@ -1228,7 +1308,11 @@ function Set-EndpointEvidenceReport {
     -RequestHash $RequestHash `
     -ObservedHttpStatus $ObservedHttpStatus `
     -ProviderAttemptsCount $ProviderAttemptsCount `
-    -PromptProtectionReason $PromptProtectionReason
+    -PromptProtectionReason $PromptProtectionReason `
+    -TotalCaseDurationMs $TotalCaseDurationMs `
+    -RequestPreflightDurationMs $RequestPreflightDurationMs `
+    -DbEvidenceDurationMs $DbEvidenceDurationMs `
+    -DurationUnavailableReason $DurationUnavailableReason
 }
 
 function New-ReportIssueObjects {
@@ -1285,6 +1369,14 @@ function New-EvidenceReport {
     $endpointReports.Count -eq 4 -and
     @($endpointReports | Where-Object { [string]$_.evidence_status -ne "passed" }).Count -eq 0
   )
+  $allEndpointPerformanceWithinBounds = (
+    $endpointReports.Count -eq 4 -and
+    @($endpointReports | Where-Object {
+        $_.performance.duration_available -ne $true -or
+        $_.performance.latency_envelope.within_bounds -ne $true -or
+        $_.provider_side_effects.provider_attempts_count -ne 0
+      }).Count -eq 0
+  )
   $closeLiveGapEligible = (
     $kind -eq "live" -and
     $mode -eq "live" -and
@@ -1292,6 +1384,8 @@ function New-EvidenceReport {
     [int]$ExitCode -eq 0 -and
     $allEndpointEvidencePassed
   )
+  $latencyEnvelopeClosureEligible = ($closeLiveGapEligible -and $allEndpointPerformanceWithinBounds)
+  $latencyBounds = Get-PerformanceEnvelopeBounds
 
   return [ordered]@{
     schema_version = "prompt_protection_postgres_proof_evidence_report.v1"
@@ -1337,6 +1431,28 @@ function New-EvidenceReport {
       max_issue_count = 8
       max_issue_message_chars = 240
       raw_values_policy = "omitted"
+    }
+    performance_envelope = [ordered]@{
+      duration_unit = "milliseconds"
+      per_endpoint_duration_fields = @("total_case_duration_ms", "request_preflight_duration_ms", "db_evidence_duration_ms")
+      duration_unavailable_marker = "duration_available=false"
+      provider_attempts_zero_required = $true
+      external_blocker_count = [int]$script:Blockers.Count
+      live_blocker_status = $(if ($script:Blockers.Count -gt 0) { "blocked" } else { "not_blocked" })
+      latency_bounds = $latencyBounds
+      all_endpoint_performance_within_bounds = [bool]$allEndpointPerformanceWithinBounds
+      latency_envelope_closure_eligible = [bool]$latencyEnvelopeClosureEligible
+      closure_requires = @(
+        "provenance.kind=live",
+        "provenance.mode=live",
+        "status=passed",
+        "exit_code=0",
+        "no external blockers",
+        "all endpoint evidence_status values are passed",
+        "all endpoint provider_attempts_count values are 0",
+        "all endpoint duration_available values are true",
+        "all endpoint latency_envelope.within_bounds values are true"
+      )
     }
     exit_semantics = [ordered]@{
       pass = 0
@@ -1508,6 +1624,29 @@ function Assert-EvidenceReportContract {
   if ($endpoints.Count -ne 4) {
     throw "evidence report must include four endpoints"
   }
+
+  if ($null -eq $Report.performance_envelope) {
+    throw "evidence report missing performance envelope"
+  }
+  if ([string]$Report.performance_envelope.duration_unit -ne "milliseconds") {
+    throw "evidence report performance duration unit mismatch"
+  }
+  if ([string]$Report.performance_envelope.duration_unavailable_marker -ne "duration_available=false") {
+    throw "evidence report performance unavailable marker mismatch"
+  }
+  if ($Report.performance_envelope.provider_attempts_zero_required -ne $true) {
+    throw "evidence report performance provider_attempts rule mismatch"
+  }
+  if ([int]$Report.performance_envelope.latency_bounds.max_total_case_duration_ms -lt 1) {
+    throw "evidence report total latency bound mismatch"
+  }
+  if ([int]$Report.performance_envelope.latency_bounds.max_request_preflight_duration_ms -lt 1) {
+    throw "evidence report request latency bound mismatch"
+  }
+  if ([int]$Report.performance_envelope.latency_bounds.max_db_evidence_duration_ms -lt 1) {
+    throw "evidence report DB latency bound mismatch"
+  }
+
   foreach ($endpoint in $endpoints) {
     if ([string]::IsNullOrWhiteSpace([string]$endpoint.name)) { throw "endpoint report missing name" }
     if ([string]::IsNullOrWhiteSpace([string]$endpoint.endpoint)) { throw "endpoint report missing endpoint" }
@@ -1519,12 +1658,53 @@ function Assert-EvidenceReportContract {
     if ($endpoint.provider_side_effects.has_provider_key -ne $false) { throw "endpoint provider key contract mismatch" }
     if ($endpoint.secret_safe_omissions.raw_payload_omitted -ne $true) { throw "endpoint raw payload omission contract mismatch" }
     if ($endpoint.secret_safe_omissions.raw_pattern_values_omitted -ne $true) { throw "endpoint raw pattern omission contract mismatch" }
+    if ($null -eq $endpoint.performance) { throw "endpoint performance contract missing" }
+    if ([string]$endpoint.performance.duration_unit -ne "milliseconds") { throw "endpoint performance duration unit mismatch" }
+    if ($endpoint.performance.latency_envelope.bounded -ne $true) { throw "endpoint performance bounded latency mismatch" }
+    if ($endpoint.performance.duration_available -eq $true) {
+      if ([int]$endpoint.performance.total_case_duration_ms -lt 0) { throw "endpoint total duration mismatch" }
+      if ([int]$endpoint.performance.request_preflight_duration_ms -lt 0) { throw "endpoint request duration mismatch" }
+      if ([int]$endpoint.performance.db_evidence_duration_ms -lt 0) { throw "endpoint DB duration mismatch" }
+      $expectedWithinBounds = (
+        [int]$endpoint.performance.total_case_duration_ms -le [int]$endpoint.performance.latency_envelope.max_total_case_duration_ms -and
+        [int]$endpoint.performance.request_preflight_duration_ms -le [int]$endpoint.performance.latency_envelope.max_request_preflight_duration_ms -and
+        [int]$endpoint.performance.db_evidence_duration_ms -le [int]$endpoint.performance.latency_envelope.max_db_evidence_duration_ms
+      )
+      if ([bool]$endpoint.performance.latency_envelope.within_bounds -ne [bool]$expectedWithinBounds) {
+        throw "endpoint latency envelope bound result mismatch"
+      }
+    } else {
+      if ([string]::IsNullOrWhiteSpace([string]$endpoint.performance.unavailable_reason)) {
+        throw "endpoint duration unavailable marker missing"
+      }
+      if ($endpoint.performance.latency_envelope.within_bounds -ne $false) {
+        throw "endpoint unavailable duration was marked within bounds"
+      }
+    }
 
     if ($RequirePassedEndpoints) {
       if ([string]$endpoint.evidence_status -ne "passed") { throw "endpoint evidence status was not passed" }
       if ([string]::IsNullOrWhiteSpace([string]$endpoint.request.request_body_hash)) { throw "passed endpoint missing request_body_hash" }
       if ([int]$endpoint.provider_side_effects.provider_attempts_count -ne 0) { throw "passed endpoint provider_attempts_count was not zero" }
+      if ($endpoint.performance.duration_available -ne $true) { throw "passed endpoint duration was unavailable" }
+      if ($endpoint.performance.latency_envelope.within_bounds -ne $true) { throw "passed endpoint latency envelope was out of bounds" }
     }
+  }
+
+  $allEndpointPerformanceWithinBounds = (
+    $endpoints.Count -eq 4 -and
+    @($endpoints | Where-Object {
+        $_.performance.duration_available -ne $true -or
+        $_.performance.latency_envelope.within_bounds -ne $true -or
+        $_.provider_side_effects.provider_attempts_count -ne 0
+      }).Count -eq 0
+  )
+  $latencyClosureEligible = ($closureEligible -and $allEndpointPerformanceWithinBounds)
+  if ([bool]$Report.performance_envelope.all_endpoint_performance_within_bounds -ne [bool]$allEndpointPerformanceWithinBounds) {
+    throw "evidence report all endpoint performance bound mismatch"
+  }
+  if ([bool]$Report.performance_envelope.latency_envelope_closure_eligible -ne [bool]$latencyClosureEligible) {
+    throw "evidence report latency envelope closure eligibility mismatch"
   }
 
   $json = $Report | ConvertTo-Json -Depth 32 -Compress
@@ -1673,6 +1853,12 @@ function Assert-RunbookContract {
       "redacted_command_summary",
       "live_evidence_closure_eligible",
       "stale_or_simulated_report_closes_live_gap",
+      "performance envelope",
+      "total_case_duration_ms",
+      "request_preflight_duration_ms",
+      "db_evidence_duration_ms",
+      "latency_envelope_closure_eligible",
+      "duration_available=false",
       ".git paths are not allowed",
       "report_status",
       "report_exit_code"
@@ -1724,6 +1910,13 @@ function Assert-ScriptContract {
       "redacted_command_summary",
       "live_evidence_closure_eligible",
       "stale_or_simulated_report_closes_live_gap",
+      "performance_envelope",
+      "Get-PerformanceEnvelopeBounds",
+      "total_case_duration_ms",
+      "request_preflight_duration_ms",
+      "db_evidence_duration_ms",
+      "latency_envelope_closure_eligible",
+      "duration_available",
       "Write-EvidenceReportIfRequested",
       "Assert-EvidenceReportContract",
       "request_log_hash_only_fields",
@@ -2009,6 +2202,9 @@ function Invoke-LiveProof {
   $cases = @(Get-ProofCases $script:RunId)
   Write-SafeHost "Running live prompt-protection Postgres proof for $($cases.Count) endpoints."
   foreach ($proofCase in $cases) {
+    $caseStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $requestPreflightDurationMs = $null
+    $dbEvidenceDurationMs = $null
     $hash = Get-Sha256Hex $proofCase.Body
     Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "started" -RequestHash $hash
     $script:TrackedCases += [PSCustomObject]@{
@@ -2019,41 +2215,91 @@ function Invoke-LiveProof {
     }
 
     try {
+      $requestStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
       $response = Invoke-GatewayRequest $proofCase $proofCase.Body
+      $requestStopwatch.Stop()
+      $requestPreflightDurationMs = [int]$requestStopwatch.ElapsedMilliseconds
       $responseEvidencePassed = $true
       try {
         Assert-ResponseEvidence $proofCase $response
       } catch {
         $responseEvidencePassed = $false
         if ($response.StatusCode -eq 401 -or $response.StatusCode -eq 403) {
-          Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "blocked" -RequestHash $hash -ObservedHttpStatus ([int]$response.StatusCode)
+          $caseStopwatch.Stop()
+          Set-EndpointEvidenceReport `
+            -Case $proofCase `
+            -EvidenceStatus "blocked" `
+            -RequestHash $hash `
+            -ObservedHttpStatus ([int]$response.StatusCode) `
+            -TotalCaseDurationMs ([int]$caseStopwatch.ElapsedMilliseconds) `
+            -RequestPreflightDurationMs $requestPreflightDurationMs `
+            -DurationUnavailableReason "db_evidence_not_measured"
           Add-Blocker "[BLOCKED] $($proofCase.Name) auth/profile precondition - $($_.Exception.Message)"
           continue
         }
-        Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "failed" -RequestHash $hash -ObservedHttpStatus ([int]$response.StatusCode)
+        Set-EndpointEvidenceReport `
+          -Case $proofCase `
+          -EvidenceStatus "failed" `
+          -RequestHash $hash `
+          -ObservedHttpStatus ([int]$response.StatusCode) `
+          -TotalCaseDurationMs ([int]$caseStopwatch.ElapsedMilliseconds) `
+          -RequestPreflightDurationMs $requestPreflightDurationMs `
+          -DurationUnavailableReason "db_evidence_not_measured"
         Add-Failure "[FAIL] $($proofCase.Name) response evidence - $($_.Exception.Message)"
       }
 
       try {
+        $dbStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $row = Assert-RequestLogEvidence $proofCase $hash
+        $dbStopwatch.Stop()
+        $dbEvidenceDurationMs = [int]$dbStopwatch.ElapsedMilliseconds
         $endpointEvidenceStatus = "passed"
         if (-not $responseEvidencePassed) {
           $endpointEvidenceStatus = "failed"
         }
+        $caseStopwatch.Stop()
         Set-EndpointEvidenceReport `
           -Case $proofCase `
           -EvidenceStatus $endpointEvidenceStatus `
           -RequestHash $hash `
           -ObservedHttpStatus ([int]$response.StatusCode) `
           -ProviderAttemptsCount ([int]$row.provider_attempts_count) `
-          -PromptProtectionReason ([string]$row.prompt_protection_reason)
-        Write-SafeHost "[OK] $($proofCase.Name) provider_attempts_count=0 hash=$hash"
+          -PromptProtectionReason ([string]$row.prompt_protection_reason) `
+          -TotalCaseDurationMs ([int]$caseStopwatch.ElapsedMilliseconds) `
+          -RequestPreflightDurationMs $requestPreflightDurationMs `
+          -DbEvidenceDurationMs $dbEvidenceDurationMs
+        Write-SafeHost "[OK] $($proofCase.Name) provider_attempts_count=0 hash=$hash duration_ms=$([int]$caseStopwatch.ElapsedMilliseconds)"
       } catch {
-        Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "failed" -RequestHash $hash -ObservedHttpStatus ([int]$response.StatusCode)
+        if ($null -ne $dbStopwatch -and $dbStopwatch.IsRunning) {
+          $dbStopwatch.Stop()
+          $dbEvidenceDurationMs = [int]$dbStopwatch.ElapsedMilliseconds
+        }
+        $caseStopwatch.Stop()
+        Set-EndpointEvidenceReport `
+          -Case $proofCase `
+          -EvidenceStatus "failed" `
+          -RequestHash $hash `
+          -ObservedHttpStatus ([int]$response.StatusCode) `
+          -TotalCaseDurationMs ([int]$caseStopwatch.ElapsedMilliseconds) `
+          -RequestPreflightDurationMs $requestPreflightDurationMs `
+          -DbEvidenceDurationMs $dbEvidenceDurationMs `
+          -DurationUnavailableReason "db_evidence_failed"
         Add-Failure "[FAIL] $($proofCase.Name) Postgres evidence - $($_.Exception.Message)"
       }
     } catch {
-      Set-EndpointEvidenceReport -Case $proofCase -EvidenceStatus "blocked" -RequestHash $hash
+      if ($null -ne $requestStopwatch -and $requestStopwatch.IsRunning) {
+        $requestStopwatch.Stop()
+        $requestPreflightDurationMs = [int]$requestStopwatch.ElapsedMilliseconds
+      }
+      $caseStopwatch.Stop()
+      Set-EndpointEvidenceReport `
+        -Case $proofCase `
+        -EvidenceStatus "blocked" `
+        -RequestHash $hash `
+        -TotalCaseDurationMs ([int]$caseStopwatch.ElapsedMilliseconds) `
+        -RequestPreflightDurationMs $requestPreflightDurationMs `
+        -DbEvidenceDurationMs $dbEvidenceDurationMs `
+        -DurationUnavailableReason "live_request_or_query_blocked"
       Add-Blocker "[BLOCKED] $($proofCase.Name) live request/query could not run - $($_.Exception.Message)"
     }
   }
