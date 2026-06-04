@@ -9,6 +9,7 @@ param(
   [switch]$OpenApiTypescript,
   [switch]$TypescriptFetch,
   [switch]$AllowPackageDownload,
+  [switch]$CommandMatrix,
   [switch]$Clean,
   [switch]$SelfTest,
   [switch]$SimulateExternalBlocker,
@@ -49,6 +50,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLIENT_GENERATION) { $Clien
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT) { $OpenApiTypescript = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH) { $TypescriptFetch = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD) { $AllowPackageDownload = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX) { $CommandMatrix = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_CLEAN) { $Clean = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST) { $SelfTest = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_EXTERNAL_BLOCKER) { $SimulateExternalBlocker = $true }
@@ -79,6 +81,13 @@ if ($Semantic) {
 if ($ClientGeneration) {
   $OpenApiTypescript = $true
   $TypescriptFetch = $true
+}
+
+if ($CommandMatrix) {
+  $Redocly = $false
+  $OpenApiGeneratorValidate = $false
+  $OpenApiTypescript = $false
+  $TypescriptFetch = $false
 }
 
 function Resolve-RepoRelativePath {
@@ -369,6 +378,7 @@ function Get-WrapperCommandSummary {
     requested_checks = @($requestedChecks.ToArray())
     simulated_modes = @($simulatedModes.ToArray())
     allow_package_download = [bool]$AllowPackageDownload
+    command_matrix = [bool]$CommandMatrix
     clean_requested = [bool]$Clean
     self_test = [bool]$SelfTest
   }
@@ -428,6 +438,140 @@ function Get-NpmPackageCacheStatus {
   }
 
   return "offline_repo_cache_missing"
+}
+
+function Get-OpenApiCommandMatrix {
+  $cachePolicy = if ($AllowPackageDownload) { "download_allowed" } else { "offline_first_repo_cache" }
+  return @(
+    [ordered]@{
+      name = "redocly_semantic"
+      flag = "-Redocly"
+      env = "CONTROL_PLANE_LEDGER_OPENAPI_REDOCLY=1"
+      package = "@redocly/cli"
+      tool = "redocly"
+      required_tools = @("node", "npm")
+      cache_policy = $cachePolicy
+      expected_exit_classification = "0 pass; 1 schema_failure; 2 tool_or_cache_blocker"
+      evidence_kind = "semantic_validator"
+      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail")
+      safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Redocly"
+    },
+    [ordered]@{
+      name = "openapi_generator_validate"
+      flag = "-OpenApiGeneratorValidate"
+      env = "CONTROL_PLANE_LEDGER_OPENAPI_GENERATOR_VALIDATE=1"
+      package = "@openapitools/openapi-generator-cli"
+      tool = "openapi-generator-cli"
+      required_tools = @("node", "npm", "java")
+      cache_policy = $cachePolicy
+      expected_exit_classification = "0 pass; 1 schema_failure; 2 tool_or_cache_blocker"
+      evidence_kind = "semantic_validator"
+      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail")
+      safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiGeneratorValidate"
+    },
+    [ordered]@{
+      name = "openapi_typescript"
+      flag = "-OpenApiTypescript"
+      env = "CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT=1"
+      package = "openapi-typescript"
+      tool = "openapi-typescript"
+      required_tools = @("node", "npm")
+      cache_policy = $cachePolicy
+      expected_exit_classification = "0 pass_with_readiness; 1 generated_client_mismatch; 2 tool_or_cache_blocker"
+      evidence_kind = "client_generation"
+      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
+      safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiTypescript"
+    },
+    [ordered]@{
+      name = "typescript_fetch"
+      flag = "-TypescriptFetch"
+      env = "CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1"
+      package = "@openapitools/openapi-generator-cli"
+      tool = "openapi-generator-cli"
+      required_tools = @("node", "npm", "java")
+      cache_policy = $cachePolicy
+      expected_exit_classification = "0 pass_with_readiness; 1 generated_client_mismatch; 2 tool_or_cache_blocker"
+      evidence_kind = "client_generation"
+      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
+      safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -TypescriptFetch"
+    }
+  )
+}
+
+function Assert-OpenApiCommandMatrixContract {
+  param([Parameter(Mandatory = $true)][object[]]$Matrix)
+
+  if ($Matrix.Count -ne 4) {
+    Add-Failure "[FAIL] command matrix contract - expected 4 entries, found $($Matrix.Count)"
+    return
+  }
+
+  $expectedNames = @("redocly_semantic", "openapi_generator_validate", "openapi_typescript", "typescript_fetch")
+  foreach ($expectedName in $expectedNames) {
+    if (-not (@($Matrix | Where-Object { $_.name -eq $expectedName }).Count -eq 1)) {
+      Add-Failure "[FAIL] command matrix contract - missing entry '$expectedName'"
+    }
+  }
+
+  foreach ($entry in $Matrix) {
+    foreach ($field in @("name", "flag", "env", "package", "tool", "required_tools", "cache_policy", "expected_exit_classification", "evidence_kind", "evidence_fields", "safe_command")) {
+      if ($null -eq $entry[$field]) {
+        Add-Failure "[FAIL] command matrix contract - '$($entry.name)' missing field '$field'"
+      }
+    }
+
+    if (-not ([string]$entry.flag).StartsWith("-")) {
+      Add-Failure "[FAIL] command matrix contract - '$($entry.name)' flag is not an opt-in flag"
+    }
+    if (-not ([string]$entry.env).StartsWith("CONTROL_PLANE_LEDGER_OPENAPI_")) {
+      Add-Failure "[FAIL] command matrix contract - '$($entry.name)' env opt-in is not scoped"
+    }
+    if (-not @("semantic_validator", "client_generation").Contains([string]$entry.evidence_kind)) {
+      Add-Failure "[FAIL] command matrix contract - '$($entry.name)' evidence_kind is invalid"
+    }
+    if (-not ([string]$entry.expected_exit_classification).Contains("2 tool_or_cache_blocker")) {
+      Add-Failure "[FAIL] command matrix contract - '$($entry.name)' does not document blocker exit classification"
+    }
+    foreach ($requiredField in @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail")) {
+      if (-not @($entry.evidence_fields).Contains($requiredField)) {
+        Add-Failure "[FAIL] command matrix contract - '$($entry.name)' missing evidence field '$requiredField'"
+      }
+    }
+    foreach ($tool in @($entry.required_tools)) {
+      if (-not @("node", "npm", "java").Contains([string]$tool)) {
+        Add-Failure "[FAIL] command matrix contract - '$($entry.name)' has unexpected required tool '$tool'"
+      }
+    }
+    $safe = Redact-SafeText ([string]$entry.safe_command)
+    if ($safe -ne [string]$entry.safe_command) {
+      Add-Failure "[FAIL] command matrix contract - '$($entry.name)' safe_command needed redaction"
+    }
+    if ([string]$entry.safe_command -match "(?i)Authorization|Cookie|Bearer|secret|credential|api[_-]?key|operation[_-]?key|raw[_-]?metadata|payload|body") {
+      Add-Failure "[FAIL] command matrix contract - '$($entry.name)' safe_command contains forbidden material"
+    }
+  }
+}
+
+function Write-OpenApiCommandMatrix {
+  $matrix = @(Get-OpenApiCommandMatrix)
+  Assert-OpenApiCommandMatrixContract -Matrix $matrix
+  if ($script:Failures.Count -gt 0) {
+    return
+  }
+
+  Write-SafeHost "Control Plane ledger adjustment OpenAPI opt-in command matrix"
+  foreach ($entry in $matrix) {
+    Write-SafeHost ("[MATRIX] {0} flag={1} env={2} tools={3} package={4} cache={5} exit='{6}' evidence={7} command='{8}'" -f `
+        $entry.name,
+        $entry.flag,
+        $entry.env,
+        (@($entry.required_tools) -join "+"),
+        $entry.package,
+        $entry.cache_policy,
+        $entry.expected_exit_classification,
+        (@($entry.evidence_fields) -join "+"),
+        $entry.safe_command)
+  }
 }
 
 function Add-EvidenceRecord {
@@ -594,7 +738,7 @@ function Assert-EvidenceReportContract {
     Add-Failure "[FAIL] evidence report contract - missing command_summary"
   } else {
     foreach ($field in @($report.command_summary.PSObject.Properties.Name)) {
-      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "clean_requested", "self_test").Contains($field)) {
+      if (-not @("script", "openapi_path", "temp_root", "npm_cache", "requested_checks", "simulated_modes", "allow_package_download", "command_matrix", "clean_requested", "self_test").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected command_summary field '$field'"
       }
     }
@@ -1915,6 +2059,7 @@ function Invoke-SelfTest {
   Invoke-SelfTestChild -Name "simulated generated-client readiness missing output" -Arguments @("-SimulateGeneratedClientReadinessMissingOutput") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "simulated generated-client readiness stale marker" -Arguments @("-SimulateGeneratedClientReadinessStaleMarker") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "simulated generated-client readiness unsafe target" -Arguments @("-SimulateGeneratedClientReadinessUnsafeTarget") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "command matrix dry-run" -Arguments @("-CommandMatrix") -ExpectedExitCode 0 -ExpectedEvidenceAbsent
   Invoke-SelfTestChild `
     -Name "simulated semantic validator evidence pass" `
     -Arguments @("-SimulateSemanticEvidencePass") `
@@ -2113,6 +2258,11 @@ if ($SimulateSemanticEvidenceBlocker) {
 if ($SimulateToolPreflightBlocker) {
   Add-SimulatedToolPreflightBlockerEvidence
   Add-Blocker "[BLOCKED] simulated real-tool preflight blocker - required local tool unavailable"
+  Exit-WithResult
+}
+
+if ($CommandMatrix) {
+  Write-OpenApiCommandMatrix
   Exit-WithResult
 }
 

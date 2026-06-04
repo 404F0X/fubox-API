@@ -68,6 +68,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_COMMAND_MATRIX=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SELF_TEST=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_EXTERNAL_BLOCKER=1`
@@ -126,6 +127,8 @@ Expected result:
 - Child case `simulated generated-client readiness unsafe target` returns exit
   `1`, proving generated-client targets outside validated `TempRoot` are
   rejected before inspection.
+- Child case `command matrix dry-run` returns exit `0`, prints the real opt-in
+  command matrix, and does not write evidence or run npm/java tools.
 - Child case `simulated semantic validator evidence pass` returns exit `0` and
   writes a bounded evidence report with classification `pass`.
 - Child case `simulated semantic validator evidence failure` returns exit `1`
@@ -170,6 +173,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientReadinessUnsafeTarget
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -CommandMatrix
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceFailure
@@ -183,14 +188,15 @@ The first three direct simulated commands are expected to return `2`, `1`, and
 `1` respectively after the lightweight gate passes. The sensitive-output command
 returns `0`; the sensitive-command failure returns `1`. The generated-client
 inspection commands return `0` and `1`. The generated-client readiness commands
-return `1` for missing output, stale marker, and unsafe target. The semantic
-evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
-returns `2`. They prove wrapper failure-path classification, generated-client
-readiness gating, bounded evidence lifecycle, path/output hardening,
+return `1` for missing output, stale marker, and unsafe target. The command
+matrix dry-run returns `0`. The semantic evidence commands return `0`, `1`, and
+`2`. The tool-preflight blocker command returns `2`. They prove wrapper
+failure-path classification, generated-client readiness gating, command matrix
+coverage, bounded evidence lifecycle, path/output hardening,
 preflight/performance evidence shape, and redaction only. They do not run
 Redocly, OpenAPI Generator, `openapi-typescript`, generated-client inspection
 against real generated output, or any live Postgres checks. Do not use simulated
-passes to close the real semantic/client-generation gap.
+passes or the matrix dry-run to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -359,6 +365,46 @@ Optional Python preflight:
 python --version
 python -m pip --version
 ```
+
+## Opt-In Command Matrix Dry-Run
+
+Before running real validators or generators, record the command matrix. This
+dry-run does not download packages, run npm tools, generate clients, or write an
+evidence report.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -CommandMatrix
+```
+
+The matrix must include exactly these real opt-in entries:
+
+| Entry | Flag | Required tools | Package | Cache policy | Expected exits |
+| --- | --- | --- | --- | --- | --- |
+| Redocly semantic validation | `-Redocly` | `node`, `npm` | `@redocly/cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass, `1` schema failure, `2` tool/cache blocker |
+| OpenAPI Generator validate | `-OpenApiGeneratorValidate` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass, `1` schema failure, `2` tool/cache blocker |
+| openapi-typescript generation | `-OpenApiTypescript` | `node`, `npm` | `openapi-typescript` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness marker, `1` generated-client mismatch, `2` tool/cache blocker |
+| typescript-fetch generation | `-TypescriptFetch` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness marker, `1` generated-client mismatch, `2` tool/cache blocker |
+
+Each matrix row must document these evidence fields before a real opt-in run is
+accepted:
+
+- `tool_path`
+- `tool_version`
+- `package_cache_status`
+- `package_download_allowed`
+- `preflight_status`
+- `duration_ms`
+- `command`
+- `output_tail`
+- `readiness_marker` for generated-client rows
+
+The safe command examples must use the wrapper path and scoped flags only. They
+must not contain Authorization, Cookie, bearer tokens, package credentials,
+operation keys, raw metadata, payload, or body data.
+
+The command matrix closes only the blocker-audit/readiness contract. It cannot
+close the real semantic/client-generation gap because it intentionally does not
+run real external tools.
 
 ## Semantic Validator Commands
 
