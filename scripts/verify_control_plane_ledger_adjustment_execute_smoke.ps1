@@ -6,6 +6,7 @@ param(
   [string]$AdminUiBaseUrl = "http://127.0.0.1:5173",
   [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [int]$TimeoutSeconds = 10,
+  [int]$BrowserProbeTimeoutMilliseconds = 750,
   [switch]$BrowserPreflight,
   [switch]$ContractOnly,
   [switch]$KeepSmokeRows
@@ -38,6 +39,7 @@ if ($env:CONTROL_PLANE_ADMIN_EMAIL) { $AdminEmail = $env:CONTROL_PLANE_ADMIN_EMA
 if ($env:CONTROL_PLANE_ADMIN_PASSWORD) { $AdminPassword = $env:CONTROL_PLANE_ADMIN_PASSWORD }
 if ($env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $script:AdminSessionToken = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN }
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS) { $BrowserProbeTimeoutMilliseconds = [int]$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_CONTRACT_ONLY -eq "1") { $ContractOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS -eq "1") { $KeepSmokeRows = $true }
@@ -663,6 +665,100 @@ function Get-SafeSmokeUrlSummary {
   return $uri.GetLeftPart([UriPartial]::Authority)
 }
 
+function Join-SmokeProbeUrl {
+  param(
+    [Parameter(Mandatory = $true)][string]$BaseUrl,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+
+  $safeBase = Get-SafeSmokeUrlSummary $BaseUrl "probe base URL"
+  if (-not $Path.StartsWith("/")) {
+    $Path = "/$Path"
+  }
+
+  return $safeBase.TrimEnd("/") + $Path
+}
+
+function Invoke-ServiceReadinessProbe {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string]$Url,
+    [int]$TimeoutMs = $BrowserProbeTimeoutMilliseconds,
+    [int[]]$ReachableStatusCodes = @(200)
+  )
+
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  $client = New-Object System.Net.Http.HttpClient
+  $client.Timeout = [TimeSpan]::FromMilliseconds([Math]::Max(100, $TimeoutMs))
+  $request = $null
+  $response = $null
+  try {
+    $request = New-Object System.Net.Http.HttpRequestMessage -ArgumentList (New-Object System.Net.Http.HttpMethod -ArgumentList "GET"), $Url
+    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    $statusCode = [int]$response.StatusCode
+    return [PSCustomObject]@{
+      Name = $Name
+      Reachable = $ReachableStatusCodes -contains $statusCode
+      StatusCode = $statusCode
+      DurationMs = [int]$timer.ElapsedMilliseconds
+      Classification = if ($ReachableStatusCodes -contains $statusCode) { "reachable" } else { "unreachable:http_status" }
+    }
+  } catch [System.Threading.Tasks.TaskCanceledException] {
+    return [PSCustomObject]@{
+      Name = $Name
+      Reachable = $false
+      StatusCode = 0
+      DurationMs = [int]$timer.ElapsedMilliseconds
+      Classification = "unreachable:timeout"
+    }
+  } catch {
+    return [PSCustomObject]@{
+      Name = $Name
+      Reachable = $false
+      StatusCode = 0
+      DurationMs = [int]$timer.ElapsedMilliseconds
+      Classification = "unreachable:connection"
+    }
+  } finally {
+    if ($response) { $response.Dispose() }
+    if ($request) { $request.Dispose() }
+    $client.Dispose()
+    $timer.Stop()
+  }
+}
+
+function Get-ServiceBlockerMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe
+  )
+
+  $blockers = @()
+  if ($ToolingStatus -ne "available") {
+    $blockers += "browser_tooling_unavailable"
+  }
+  if (-not [bool]$AdminUiProbe.Reachable) {
+    $blockers += "admin_ui_unreachable"
+  }
+  if (-not [bool]$ControlPlaneProbe.Reachable) {
+    $blockers += "control_plane_health_unreachable"
+  }
+  if ($blockers.Count -eq 0) {
+    return "none"
+  }
+  return ($blockers -join "+")
+}
+
+function Format-BoolMarker {
+  param([Parameter(Mandatory = $true)][bool]$Value)
+
+  if ($Value) {
+    return "true"
+  }
+  return "false"
+}
+
 function Get-BrowserToolingStatus {
   $node = Get-Command node -ErrorAction SilentlyContinue
   if (-not $node) {
@@ -711,6 +807,9 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerExecuteSmokeSerializableHandoffArtifact",
       "browserPreflight",
       "ledger_refresh_duration_ms",
+      "service_readiness_duration_ms",
+      "admin_ui_reachable",
+      "control_plane_health_reachable",
       "submit_latency_ms"
     )) {
     if (-not $testSource.Contains($needle)) {
@@ -723,13 +822,29 @@ function Assert-UiSmokeHandoffFreshness {
   Assert-True ((Get-JsonProperty $browserPreflight "requiresLiveBackendByDefault" "UI browser preflight") -eq $false) "UI browser preflight must not require live backend by default"
   Assert-True ([bool](Get-JsonProperty $browserPreflight "usesDataTestIdsOnly" "UI browser preflight")) "UI browser preflight must use data-testid selectors"
 
+  $healthProbePaths = Get-JsonProperty $browserPreflight "healthProbePaths" "UI browser preflight"
+  Assert-Equal (Get-JsonProperty $healthProbePaths "adminUi" "UI browser preflight health paths") "/" "UI browser preflight Admin UI probe path"
+  Assert-Equal (Get-JsonProperty $healthProbePaths "controlPlane" "UI browser preflight health paths") "/healthz" "UI browser preflight Control Plane health path"
+
   $requiredInputs = Get-JsonProperty $browserPreflight "requiredInputs" "UI browser preflight"
   Assert-Equal (Get-JsonProperty $requiredInputs "adminUiBaseUrl" "UI browser preflight inputs") "ADMIN_UI_BASE_URL" "UI browser preflight Admin UI env"
   Assert-Equal (Get-JsonProperty $requiredInputs "controlPlaneBaseUrl" "UI browser preflight inputs") "CONTROL_PLANE_BASE_URL" "UI browser preflight backend env"
   Assert-Equal (Get-JsonProperty $requiredInputs "handoffArtifact" "UI browser preflight inputs") "web/admin-ui/src/billingExecuteSmokeContract.serializable.json" "UI browser preflight handoff artifact path"
 
   $metricMarkers = Get-JsonProperty $browserPreflight "metricMarkers" "UI browser preflight"
-  foreach ($name in @("readiness", "submitLatencyMs", "ledgerRefreshDurationMs", "unavailable")) {
+  foreach ($name in @(
+      "adminUiReachable",
+      "controlPlaneHealthReachable",
+      "ledgerRefreshDurationMs",
+      "readiness",
+      "serviceBlocker",
+      "serviceProbeTimeoutMs",
+      "serviceReadinessDurationMs",
+      "sessionMaterialEchoed",
+      "sessionMaterialPresent",
+      "submitLatencyMs",
+      "unavailable"
+    )) {
     $marker = [string](Get-JsonProperty $metricMarkers $name "UI browser preflight metric markers")
     if ($marker -notmatch '^[a-z0-9_]+$') {
       throw "UI browser preflight metric marker '$name' must be machine readable"
@@ -744,20 +859,47 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   $adminUiUrl = Get-SafeSmokeUrlSummary $AdminUiBaseUrl "Admin UI URL"
   $backendUrl = Get-SafeSmokeUrlSummary $ControlPlaneBaseUrl "Control Plane backend URL"
   $browserPreflight = Get-JsonProperty $Handoff "browserPreflight" "UI handoff"
+  $healthProbePaths = Get-JsonProperty $browserPreflight "healthProbePaths" "UI browser preflight"
   $metricMarkers = Get-JsonProperty $browserPreflight "metricMarkers" "UI browser preflight"
+  $adminUiReachableMarker = [string](Get-JsonProperty $metricMarkers "adminUiReachable" "UI browser preflight metric markers")
+  $controlPlaneHealthReachableMarker = [string](Get-JsonProperty $metricMarkers "controlPlaneHealthReachable" "UI browser preflight metric markers")
   $readinessMarker = [string](Get-JsonProperty $metricMarkers "readiness" "UI browser preflight metric markers")
+  $serviceBlockerMarker = [string](Get-JsonProperty $metricMarkers "serviceBlocker" "UI browser preflight metric markers")
+  $serviceProbeTimeoutMarker = [string](Get-JsonProperty $metricMarkers "serviceProbeTimeoutMs" "UI browser preflight metric markers")
+  $serviceReadinessDurationMarker = [string](Get-JsonProperty $metricMarkers "serviceReadinessDurationMs" "UI browser preflight metric markers")
+  $sessionMaterialEchoedMarker = [string](Get-JsonProperty $metricMarkers "sessionMaterialEchoed" "UI browser preflight metric markers")
+  $sessionMaterialPresentMarker = [string](Get-JsonProperty $metricMarkers "sessionMaterialPresent" "UI browser preflight metric markers")
   $submitLatencyMarker = [string](Get-JsonProperty $metricMarkers "submitLatencyMs" "UI browser preflight metric markers")
   $ledgerRefreshMarker = [string](Get-JsonProperty $metricMarkers "ledgerRefreshDurationMs" "UI browser preflight metric markers")
   $unavailableMarker = [string](Get-JsonProperty $metricMarkers "unavailable" "UI browser preflight metric markers")
   $toolingStatus = Get-BrowserToolingStatus
+  $serviceTimer = [Diagnostics.Stopwatch]::StartNew()
+  $adminUiProbeUrl = Join-SmokeProbeUrl $AdminUiBaseUrl ([string](Get-JsonProperty $healthProbePaths "adminUi" "UI browser preflight health paths"))
+  $controlPlaneProbeUrl = Join-SmokeProbeUrl $ControlPlaneBaseUrl ([string](Get-JsonProperty $healthProbePaths "controlPlane" "UI browser preflight health paths"))
+  $adminUiProbe = Invoke-ServiceReadinessProbe -Name "admin_ui" -Url $adminUiProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200, 304)
+  $controlPlaneProbe = Invoke-ServiceReadinessProbe -Name "control_plane_health" -Url $controlPlaneProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200)
+  $serviceTimer.Stop()
+  $serviceBlocker = Get-ServiceBlockerMarker -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
+  $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
   $readiness = "ready"
-  if ($toolingStatus -ne "available") {
+  if ($serviceBlocker -ne "none") {
     $readiness = $unavailableMarker
   }
 
   Write-SafeHost "Browser ledger execute smoke harness preflight:"
   Write-SafeHost "$readinessMarker=$readiness"
   Write-SafeHost "browser_tooling=$toolingStatus"
+  Write-SafeHost "$adminUiReachableMarker=$(Format-BoolMarker ([bool]$adminUiProbe.Reachable))"
+  Write-SafeHost "admin_ui_probe_classification=$($adminUiProbe.Classification)"
+  Write-SafeHost "admin_ui_probe_duration_ms=$($adminUiProbe.DurationMs)"
+  Write-SafeHost "$controlPlaneHealthReachableMarker=$(Format-BoolMarker ([bool]$controlPlaneProbe.Reachable))"
+  Write-SafeHost "control_plane_health_probe_classification=$($controlPlaneProbe.Classification)"
+  Write-SafeHost "control_plane_health_probe_duration_ms=$($controlPlaneProbe.DurationMs)"
+  Write-SafeHost "$serviceBlockerMarker=$serviceBlocker"
+  Write-SafeHost "$serviceProbeTimeoutMarker=$BrowserProbeTimeoutMilliseconds"
+  Write-SafeHost "$serviceReadinessDurationMarker=$([int]$serviceTimer.ElapsedMilliseconds)"
+  Write-SafeHost "$sessionMaterialPresentMarker=$(Format-BoolMarker $sessionMaterialPresent)"
+  Write-SafeHost "$sessionMaterialEchoedMarker=false"
   Write-SafeHost "admin_ui_url=$adminUiUrl"
   Write-SafeHost "control_plane_backend_url=$backendUrl"
   Write-SafeHost "handoff_artifact=fresh"

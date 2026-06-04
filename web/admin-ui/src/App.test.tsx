@@ -3100,9 +3100,20 @@ describe("App", () => {
     expect(JSON.parse(JSON.stringify(ledgerExecuteSmokeSerializableHandoffArtifact))).toEqual(handoff);
     expect(parsed.browserPreflight).toEqual({
       defaultMode: "preflight_only",
+      healthProbePaths: {
+        adminUi: "/",
+        controlPlane: "/healthz",
+      },
       metricMarkers: {
+        adminUiReachable: "admin_ui_reachable",
+        controlPlaneHealthReachable: "control_plane_health_reachable",
+        serviceBlocker: "service_blocker",
+        serviceProbeTimeoutMs: "service_probe_timeout_ms",
+        serviceReadinessDurationMs: "service_readiness_duration_ms",
         ledgerRefreshDurationMs: "ledger_refresh_duration_ms",
         readiness: "browser_smoke_readiness",
+        sessionMaterialEchoed: "session_material_echoed",
+        sessionMaterialPresent: "session_material_present",
         submitLatencyMs: "submit_latency_ms",
         unavailable: "unavailable",
       },
