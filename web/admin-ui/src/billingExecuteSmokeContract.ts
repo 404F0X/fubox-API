@@ -50,3 +50,140 @@ export const ledgerAdjustmentExecuteLiveSmokeContract = {
 } as const;
 
 export type LedgerAdjustmentExecuteLiveSmokeContract = typeof ledgerAdjustmentExecuteLiveSmokeContract;
+
+export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
+  forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
+  readinessStates: {
+    appliedRefreshError: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
+        executeResultFresh: true,
+        executeWriteNetworkCall: true,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.error,
+      },
+    },
+    appliedRefreshSuccess: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
+        executeResultFresh: true,
+        executeWriteNetworkCall: true,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.success,
+      },
+    },
+    blocked: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.blocked,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: undefined,
+        executeResultFresh: undefined,
+        executeWriteNetworkCall: true,
+        ledgerRefreshStatus: undefined,
+      },
+    },
+    contractBlocked: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.blocked,
+      markers: {
+        contractCheckNetworkCall: true,
+        dryRunFresh: true,
+        executeOutcome: undefined,
+        executeResultFresh: undefined,
+        executeWriteNetworkCall: false,
+        ledgerRefreshStatus: undefined,
+      },
+    },
+    dryRunRequired: {
+      executeButtonEnabled: false,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.dryRunRequired,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: false,
+        executeOutcome: undefined,
+        executeResultFresh: undefined,
+        executeWriteNetworkCall: false,
+        ledgerRefreshStatus: undefined,
+      },
+    },
+    executePreflight: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.executePreflight,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: undefined,
+        executeResultFresh: undefined,
+        executeWriteNetworkCall: false,
+        ledgerRefreshStatus: undefined,
+      },
+    },
+    failed: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.failed,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: undefined,
+        executeResultFresh: undefined,
+        executeWriteNetworkCall: true,
+        ledgerRefreshStatus: undefined,
+      },
+    },
+    idempotentRefreshError: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+        executeResultFresh: true,
+        executeWriteNetworkCall: true,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.error,
+      },
+    },
+    idempotentRefreshSuccess: {
+      executeButtonEnabled: true,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: true,
+        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+        executeResultFresh: true,
+        executeWriteNetworkCall: true,
+        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.success,
+      },
+    },
+    stalePlan: {
+      executeButtonEnabled: false,
+      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.stalePlan,
+      markers: {
+        contractCheckNetworkCall: false,
+        dryRunFresh: false,
+        executeOutcome: undefined,
+        executeResultFresh: undefined,
+        executeWriteNetworkCall: false,
+        ledgerRefreshStatus: undefined,
+      },
+    },
+  },
+  scriptUsage: {
+    assertNoForbiddenMarkersInDocument: true,
+    readStatusFromReadinessRegion: true,
+    selectorsSource: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
+    statusMarkersSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
+    useDataTestIdsOnly: true,
+  },
+  selectors: ledgerAdjustmentExecuteLiveSmokeContract.selectors,
+  statusMarkers: ledgerAdjustmentExecuteLiveSmokeContract.markers,
+} as const;
+
+export type LedgerAdjustmentExecuteLiveSmokeHandoff = typeof ledgerAdjustmentExecuteLiveSmokeHandoff;

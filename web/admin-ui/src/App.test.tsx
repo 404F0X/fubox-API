@@ -2,11 +2,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { ledgerAdjustmentExecuteLiveSmokeContract } from "./billingExecuteSmokeContract";
+import {
+  ledgerAdjustmentExecuteLiveSmokeContract,
+  ledgerAdjustmentExecuteLiveSmokeHandoff,
+} from "./billingExecuteSmokeContract";
 
 vi.setConfig({ testTimeout: 15000 });
 
 const ledgerExecuteSmoke = ledgerAdjustmentExecuteLiveSmokeContract;
+const ledgerExecuteSmokeHandoff = ledgerAdjustmentExecuteLiveSmokeHandoff;
 
 const AUTH_HEADER_NAME = ["Author", "ization"].join("");
 const BEARER_SCHEME = ["Bear", "er"].join("");
@@ -2809,6 +2813,7 @@ describe("App", () => {
     executeOutcome,
     executeResultFresh,
     executeWriteNetworkCall,
+    handoffState,
     ledgerRefreshStatus,
     status,
   }: {
@@ -2818,11 +2823,24 @@ describe("App", () => {
     executeOutcome?: "applied" | "idempotent";
     executeResultFresh?: boolean;
     executeWriteNetworkCall: boolean;
+    handoffState?: keyof typeof ledgerExecuteSmokeHandoff.readinessStates;
     ledgerRefreshStatus?: "success" | "error";
     status: string;
   }) {
     const { markers, selectors } = ledgerExecuteSmoke;
     const readiness = screen.getByTestId(selectors.readiness);
+    const expectedHandoffState = handoffState ? ledgerExecuteSmokeHandoff.readinessStates[handoffState] : null;
+
+    if (expectedHandoffState) {
+      expect(expectedHandoffState.expectedStatus).toBe(status);
+      expect(expectedHandoffState.executeButtonEnabled).toBe(executeEnabled);
+      expect(expectedHandoffState.markers.contractCheckNetworkCall).toBe(contractCheckNetworkCall);
+      expect(expectedHandoffState.markers.dryRunFresh).toBe(dryRunFresh);
+      expect(expectedHandoffState.markers.executeWriteNetworkCall).toBe(executeWriteNetworkCall);
+      expect(expectedHandoffState.markers.executeResultFresh).toBe(executeResultFresh);
+      expect(expectedHandoffState.markers.executeOutcome).toBe(executeOutcome);
+      expect(expectedHandoffState.markers.ledgerRefreshStatus).toBe(ledgerRefreshStatus);
+    }
 
     expect(screen.getByTestId(selectors.executeContractMode)).toHaveTextContent(`${markers.executeContractMode}=true`);
     expect(screen.getByTestId(selectors.executeEndpoint)).toHaveTextContent(`${markers.executeEndpoint}=true`);
@@ -2913,6 +2931,144 @@ describe("App", () => {
     ]);
   });
 
+  it("exports the ledger execute live-smoke handoff for scripts", () => {
+    const { forbiddenSensitiveMarkers, readinessStates, scriptUsage, selectors, statusMarkers } = ledgerExecuteSmokeHandoff;
+
+    expect(selectors).toBe(ledgerExecuteSmoke.selectors);
+    expect(statusMarkers).toBe(ledgerExecuteSmoke.markers);
+    expect(forbiddenSensitiveMarkers).toBe(ledgerExecuteSmoke.forbiddenSensitiveMarkers);
+    expect(scriptUsage).toEqual({
+      assertNoForbiddenMarkersInDocument: true,
+      readStatusFromReadinessRegion: true,
+      selectorsSource: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
+      statusMarkersSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
+      useDataTestIdsOnly: true,
+    });
+    expect(readinessStates).toMatchObject({
+      appliedRefreshError: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.applied,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: ledgerExecuteSmoke.statuses.applied,
+          executeResultFresh: true,
+          executeWriteNetworkCall: true,
+          ledgerRefreshStatus: ledgerExecuteSmoke.refreshStatuses.error,
+        },
+      },
+      appliedRefreshSuccess: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.applied,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: ledgerExecuteSmoke.statuses.applied,
+          executeResultFresh: true,
+          executeWriteNetworkCall: true,
+          ledgerRefreshStatus: ledgerExecuteSmoke.refreshStatuses.success,
+        },
+      },
+      blocked: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.blocked,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: undefined,
+          executeResultFresh: undefined,
+          executeWriteNetworkCall: true,
+          ledgerRefreshStatus: undefined,
+        },
+      },
+      contractBlocked: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.blocked,
+        markers: {
+          contractCheckNetworkCall: true,
+          dryRunFresh: true,
+          executeOutcome: undefined,
+          executeResultFresh: undefined,
+          executeWriteNetworkCall: false,
+          ledgerRefreshStatus: undefined,
+        },
+      },
+      dryRunRequired: {
+        executeButtonEnabled: false,
+        expectedStatus: ledgerExecuteSmoke.statuses.dryRunRequired,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: false,
+          executeOutcome: undefined,
+          executeResultFresh: undefined,
+          executeWriteNetworkCall: false,
+          ledgerRefreshStatus: undefined,
+        },
+      },
+      executePreflight: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.executePreflight,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: undefined,
+          executeResultFresh: undefined,
+          executeWriteNetworkCall: false,
+          ledgerRefreshStatus: undefined,
+        },
+      },
+      failed: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.failed,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: undefined,
+          executeResultFresh: undefined,
+          executeWriteNetworkCall: true,
+          ledgerRefreshStatus: undefined,
+        },
+      },
+      idempotentRefreshError: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.idempotent,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: ledgerExecuteSmoke.statuses.idempotent,
+          executeResultFresh: true,
+          executeWriteNetworkCall: true,
+          ledgerRefreshStatus: ledgerExecuteSmoke.refreshStatuses.error,
+        },
+      },
+      idempotentRefreshSuccess: {
+        executeButtonEnabled: true,
+        expectedStatus: ledgerExecuteSmoke.statuses.idempotent,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: true,
+          executeOutcome: ledgerExecuteSmoke.statuses.idempotent,
+          executeResultFresh: true,
+          executeWriteNetworkCall: true,
+          ledgerRefreshStatus: ledgerExecuteSmoke.refreshStatuses.success,
+        },
+      },
+      stalePlan: {
+        executeButtonEnabled: false,
+        expectedStatus: ledgerExecuteSmoke.statuses.stalePlan,
+        markers: {
+          contractCheckNetworkCall: false,
+          dryRunFresh: false,
+          executeOutcome: undefined,
+          executeResultFresh: undefined,
+          executeWriteNetworkCall: false,
+          ledgerRefreshStatus: undefined,
+        },
+      },
+    });
+    expect(new Set(Object.keys(readinessStates)).size).toBe(Object.keys(readinessStates).length);
+  });
+
   it("runs ledger adjustment dry-run and renders the plan-only contract with execute readiness", async () => {
     const fetchMock = stubAdminFetch();
 
@@ -2933,6 +3089,7 @@ describe("App", () => {
       dryRunFresh: false,
       executeEnabled: false,
       executeWriteNetworkCall: false,
+      handoffState: "dryRunRequired",
       status: "dry run required",
     });
 
@@ -2971,6 +3128,7 @@ describe("App", () => {
       dryRunFresh: true,
       executeEnabled: true,
       executeWriteNetworkCall: false,
+      handoffState: "executePreflight",
       status: "execute preflight",
     });
 
@@ -3039,6 +3197,7 @@ describe("App", () => {
       dryRunFresh: true,
       executeEnabled: true,
       executeWriteNetworkCall: false,
+      handoffState: "contractBlocked",
       status: "blocked",
     });
 
@@ -3146,6 +3305,7 @@ describe("App", () => {
       executeOutcome: "applied",
       executeResultFresh: true,
       executeWriteNetworkCall: true,
+      handoffState: "appliedRefreshSuccess",
       ledgerRefreshStatus: "success",
       status: "applied",
     });
@@ -3265,6 +3425,7 @@ describe("App", () => {
       executeOutcome: "idempotent",
       executeResultFresh: true,
       executeWriteNetworkCall: true,
+      handoffState: "idempotentRefreshSuccess",
       ledgerRefreshStatus: "success",
       status: "idempotent",
     });
@@ -3351,6 +3512,7 @@ describe("App", () => {
       executeOutcome: outcome,
       executeResultFresh: true,
       executeWriteNetworkCall: true,
+      handoffState: outcome === "applied" ? "appliedRefreshError" : "idempotentRefreshError",
       ledgerRefreshStatus: "error",
       status: outcome,
     });
@@ -3448,6 +3610,7 @@ describe("App", () => {
       executeOutcome: outcome,
       executeResultFresh: true,
       executeWriteNetworkCall: true,
+      handoffState: outcome === "applied" ? "appliedRefreshSuccess" : "idempotentRefreshSuccess",
       ledgerRefreshStatus: "success",
       status: outcome,
     });
@@ -3530,6 +3693,7 @@ describe("App", () => {
       dryRunFresh: true,
       executeEnabled: true,
       executeWriteNetworkCall: true,
+      handoffState: "failed",
       status: "failed",
     });
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
@@ -3585,6 +3749,7 @@ describe("App", () => {
       dryRunFresh: true,
       executeEnabled: true,
       executeWriteNetworkCall: true,
+      handoffState: "blocked",
       status: "blocked",
     });
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
@@ -3694,6 +3859,7 @@ describe("App", () => {
       dryRunFresh: false,
       executeEnabled: false,
       executeWriteNetworkCall: false,
+      handoffState: "stalePlan",
       status: "stale plan",
     });
     expect(
