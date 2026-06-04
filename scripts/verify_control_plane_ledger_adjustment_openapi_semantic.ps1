@@ -18,6 +18,9 @@ param(
   [switch]$SimulateSensitiveCommandFailure,
   [switch]$SimulateGeneratedClientInspectionPass,
   [switch]$SimulateGeneratedClientMissingRequired,
+  [switch]$SimulateGeneratedClientReadinessMissingOutput,
+  [switch]$SimulateGeneratedClientReadinessStaleMarker,
+  [switch]$SimulateGeneratedClientReadinessUnsafeTarget,
   [switch]$SimulateSemanticEvidencePass,
   [switch]$SimulateSemanticEvidenceFailure,
   [switch]$SimulateSemanticEvidenceBlocker,
@@ -55,6 +58,9 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_OUTPUT_T
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE) { $SimulateSensitiveCommandFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_INSPECTION_PASS) { $SimulateGeneratedClientInspectionPass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_MISSING_REQUIRED) { $SimulateGeneratedClientMissingRequired = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_READINESS_MISSING_OUTPUT) { $SimulateGeneratedClientReadinessMissingOutput = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_READINESS_STALE_MARKER) { $SimulateGeneratedClientReadinessStaleMarker = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_READINESS_UNSAFE_TARGET) { $SimulateGeneratedClientReadinessUnsafeTarget = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_PASS) { $SimulateSemanticEvidencePass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE) { $SimulateSemanticEvidenceFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER) { $SimulateSemanticEvidenceBlocker = $true }
@@ -207,6 +213,8 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-default-lightweight-no-evidence"),
     (Join-Path $TempRoot "self-test-generated-client-pass"),
     (Join-Path $TempRoot "self-test-generated-client-missing-required"),
+    (Join-Path $TempRoot "self-test-generated-client-missing-output"),
+    (Join-Path $TempRoot "self-test-generated-client-stale-marker"),
     (Join-Path $TempRoot "self-test-semantic-evidence-pass"),
     (Join-Path $TempRoot "self-test-semantic-evidence-failure"),
     (Join-Path $TempRoot "self-test-semantic-evidence-blocker"),
@@ -345,6 +353,9 @@ function Get-WrapperCommandSummary {
   if ($SimulateSensitiveCommandFailure) { [void]$simulatedModes.Add("sensitive_command_failure") }
   if ($SimulateGeneratedClientInspectionPass) { [void]$simulatedModes.Add("generated_client_inspection_pass") }
   if ($SimulateGeneratedClientMissingRequired) { [void]$simulatedModes.Add("generated_client_missing_required") }
+  if ($SimulateGeneratedClientReadinessMissingOutput) { [void]$simulatedModes.Add("generated_client_readiness_missing_output") }
+  if ($SimulateGeneratedClientReadinessStaleMarker) { [void]$simulatedModes.Add("generated_client_readiness_stale_marker") }
+  if ($SimulateGeneratedClientReadinessUnsafeTarget) { [void]$simulatedModes.Add("generated_client_readiness_unsafe_target") }
   if ($SimulateSemanticEvidencePass) { [void]$simulatedModes.Add("semantic_evidence_pass") }
   if ($SimulateSemanticEvidenceFailure) { [void]$simulatedModes.Add("semantic_evidence_failure") }
   if ($SimulateSemanticEvidenceBlocker) { [void]$simulatedModes.Add("semantic_evidence_blocker") }
@@ -1224,6 +1235,166 @@ function Get-GeneratedClientFiles {
   return @()
 }
 
+function Get-GeneratedClientReadinessRoot {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (Test-Path $Path -PathType Leaf) {
+    return (Split-Path -Parent ([System.IO.Path]::GetFullPath($Path)))
+  }
+
+  return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Assert-GeneratedClientTargetSafe {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  $root = Get-GeneratedClientReadinessRoot -Path $Path
+  if (-not (Test-PathUnderRoot -Path $root -Root $TempRoot)) {
+    Add-Failure "[FAIL] $Label - generated-client target must stay under TempRoot: $(Format-BoundedPath $root)"
+    return $false
+  }
+
+  return $true
+}
+
+function Get-GeneratedClientReadinessMarkerPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  return Join-Path (Get-GeneratedClientReadinessRoot -Path $Path) ".ledger-openapi-generated-client-readiness.json"
+}
+
+function Write-GeneratedClientReadinessMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Target,
+    [Parameter(Mandatory = $true)][string]$Tool,
+    [ValidateSet("real", "simulated")][string]$ProvenanceMode = "real",
+    [string]$OpenApiSha256 = "",
+    [int64]$DurationMs = 0,
+    [string]$PackageCacheStatus = "",
+    [bool]$PackageDownloadAllowed = [bool]$AllowPackageDownload
+  )
+
+  if (-not (Assert-GeneratedClientTargetSafe -Path $Path -Label "$Target generated-client readiness marker")) {
+    return
+  }
+
+  $fixture = Get-OpenApiFixtureFingerprint
+  if ([string]::IsNullOrWhiteSpace($OpenApiSha256)) {
+    $OpenApiSha256 = $fixture.Sha256
+  }
+  if ([string]::IsNullOrWhiteSpace($PackageCacheStatus)) {
+    $PackageCacheStatus = Get-NpmPackageCacheStatus
+  }
+  if ($DurationMs -lt 0) {
+    $DurationMs = 0
+  }
+
+  $marker = [ordered]@{
+    schema_version = "ledger_openapi_generated_client_readiness.v1"
+    target = Redact-SafeText $Target
+    tool = Redact-SafeText $Tool
+    provenance_mode = $ProvenanceMode
+    checked_schema = Get-RepoRelativePath $OpenApiPath
+    openapi_fixture_sha256 = Redact-SafeText $OpenApiSha256
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    package_cache_status = Redact-SafeText $PackageCacheStatus
+    package_download_allowed = [bool]$PackageDownloadAllowed
+    duration_ms = [int64]$DurationMs
+  }
+
+  $markerPath = Get-GeneratedClientReadinessMarkerPath -Path $Path
+  Assert-WrapperOwnedArtifactPath -Path $markerPath -Label "generated-client readiness marker"
+  New-Item -ItemType Directory -Force (Split-Path -Parent $markerPath) | Out-Null
+  ($marker | ConvertTo-Json -Depth 5) | Set-Content -Path $markerPath -Encoding ascii
+}
+
+function Assert-GeneratedClientReadinessMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  $markerPath = Get-GeneratedClientReadinessMarkerPath -Path $Path
+  if (-not (Test-Path $markerPath -PathType Leaf)) {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker is missing: $(Format-BoundedPath $markerPath)"
+    return $false
+  }
+
+  $raw = Get-Content -Path $markerPath -Raw
+  foreach ($pattern in @(
+      "(?i)Authorization\s*[:=]",
+      "(?i)Cookie\s*[:=]",
+      "(?i)Bearer\s+[A-Za-z0-9._~+/\-]+=*",
+      "(?i)(password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key|package[_-]?token|npm[_-]?token|raw[_-]?metadata|metadata)\s*[:=]\s*[^,\s]+"
+    )) {
+    if ($raw -match $pattern) {
+      Add-Failure "[FAIL] $Label - generated-client readiness marker contains forbidden material pattern"
+      return $false
+    }
+  }
+
+  $marker = $raw | ConvertFrom-Json
+  foreach ($field in @($marker.PSObject.Properties.Name)) {
+    if (-not @("schema_version", "target", "tool", "provenance_mode", "checked_schema", "openapi_fixture_sha256", "generated_at_utc", "package_cache_status", "package_download_allowed", "duration_ms").Contains($field)) {
+      Add-Failure "[FAIL] $Label - generated-client readiness marker has unexpected field '$field'"
+    }
+  }
+  if ([string]$marker.schema_version -ne "ledger_openapi_generated_client_readiness.v1") {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker schema_version mismatch"
+  }
+  if (-not @("real", "simulated").Contains([string]$marker.provenance_mode)) {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker provenance_mode mismatch"
+  }
+  if ([string]$marker.checked_schema -ne (Get-RepoRelativePath $OpenApiPath)) {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker checked_schema drifted"
+  }
+  $fixture = Get-OpenApiFixtureFingerprint
+  if ([string]$marker.openapi_fixture_sha256 -ne $fixture.Sha256) {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker is stale for current OpenAPI fixture"
+  }
+  try {
+    [void][datetime]::Parse([string]$marker.generated_at_utc)
+  } catch {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker generated_at_utc is not parseable"
+  }
+  if (-not @("download_allowed", "offline_repo_cache_present", "offline_repo_cache_missing", "simulated", "not_applicable").Contains([string]$marker.package_cache_status)) {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker package_cache_status mismatch"
+  }
+  try {
+    $durationMs = [int64]$marker.duration_ms
+    if ($durationMs -lt 0 -or $durationMs -gt 86400000) {
+      Add-Failure "[FAIL] $Label - generated-client readiness marker duration_ms is unbounded"
+    }
+  } catch {
+    Add-Failure "[FAIL] $Label - generated-client readiness marker duration_ms is not numeric"
+  }
+
+  return $script:Failures.Count -eq 0
+}
+
+function Assert-GeneratedClientReadinessGate {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  if (-not (Assert-GeneratedClientTargetSafe -Path $Path -Label $Label)) {
+    return
+  }
+  if (-not (Test-Path $Path)) {
+    Add-Failure "[FAIL] $Label - generated-client output is missing: $(Format-BoundedPath $Path)"
+    return
+  }
+  if (-not (Assert-GeneratedClientReadinessMarker -Path $Path -Label $Label)) {
+    return
+  }
+  Assert-GeneratedClientInspectionContract -Path $Path -Label $Label
+}
+
 function Get-GeneratedClientInspectionText {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -1568,7 +1739,7 @@ function Invoke-OpenApiTypescript {
   New-Item -ItemType Directory -Force $outDir | Out-Null
   Remove-Item -Force $outFile -ErrorAction SilentlyContinue
 
-  Invoke-NpmTool `
+  $result = Invoke-NpmTool `
     -Package "openapi-typescript" `
     -ToolArguments @("openapi-typescript", $OpenApiPath, "-o", $outFile) `
     -ToolName "openapi-typescript" `
@@ -1576,8 +1747,16 @@ function Invoke-OpenApiTypescript {
     -VersionToolArguments @("openapi-typescript", "--version") `
     -Label "openapi-typescript client type generation"
 
-  if ($script:Blockers.Count -eq 0) {
-    Assert-GeneratedClientInspectionContract -Path $outFile -Label "openapi-typescript ledger execute generated-client inspection"
+  if ($script:Blockers.Count -eq 0 -and $null -ne $result -and $result.ExitCode -eq 0) {
+    Write-GeneratedClientReadinessMarker `
+      -Path $outFile `
+      -Target "openapi-typescript" `
+      -Tool "openapi-typescript" `
+      -ProvenanceMode "real" `
+      -DurationMs $result.DurationMs `
+      -PackageCacheStatus (Get-NpmPackageCacheStatus) `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload)
+    Assert-GeneratedClientReadinessGate -Path $outFile -Label "openapi-typescript ledger execute generated-client readiness"
   }
 }
 
@@ -1586,7 +1765,7 @@ function Invoke-TypescriptFetch {
   Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force $outDir | Out-Null
 
-  Invoke-NpmTool `
+  $result = Invoke-NpmTool `
     -Package "@openapitools/openapi-generator-cli" `
     -ToolArguments @(
       "openapi-generator-cli",
@@ -1605,8 +1784,16 @@ function Invoke-TypescriptFetch {
     -Label "OpenAPI Generator typescript-fetch client generation" `
     -RequireJava
 
-  if ($script:Blockers.Count -eq 0) {
-    Assert-GeneratedClientInspectionContract -Path $outDir -Label "typescript-fetch ledger execute generated-client inspection"
+  if ($script:Blockers.Count -eq 0 -and $null -ne $result -and $result.ExitCode -eq 0) {
+    Write-GeneratedClientReadinessMarker `
+      -Path $outDir `
+      -Target "typescript-fetch" `
+      -Tool "openapi-generator-cli" `
+      -ProvenanceMode "real" `
+      -DurationMs $result.DurationMs `
+      -PackageCacheStatus (Get-NpmPackageCacheStatus) `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload)
+    Assert-GeneratedClientReadinessGate -Path $outDir -Label "typescript-fetch ledger execute generated-client readiness"
   }
 }
 
@@ -1725,6 +1912,9 @@ function Invoke-SelfTest {
   Invoke-SelfTestChild -Name "sensitive failing command display redacted" -Arguments @("-SimulateSensitiveCommandFailure") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "simulated generated-client inspection pass" -Arguments @("-SimulateGeneratedClientInspectionPass") -ExpectedExitCode 0
   Invoke-SelfTestChild -Name "simulated generated-client missing required field" -Arguments @("-SimulateGeneratedClientMissingRequired") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "simulated generated-client readiness missing output" -Arguments @("-SimulateGeneratedClientReadinessMissingOutput") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "simulated generated-client readiness stale marker" -Arguments @("-SimulateGeneratedClientReadinessStaleMarker") -ExpectedExitCode 1
+  Invoke-SelfTestChild -Name "simulated generated-client readiness unsafe target" -Arguments @("-SimulateGeneratedClientReadinessUnsafeTarget") -ExpectedExitCode 1
   Invoke-SelfTestChild `
     -Name "simulated semantic validator evidence pass" `
     -Arguments @("-SimulateSemanticEvidencePass") `
@@ -1856,13 +2046,54 @@ if ($SimulateSensitiveCommandFailure) {
 if ($SimulateGeneratedClientInspectionPass) {
   $path = Join-Path $TempRoot "self-test-generated-client-pass"
   Write-SimulatedGeneratedClientFixture -Path $path
-  Assert-GeneratedClientInspectionContract -Path $path -Label "simulated generated-client inspection pass"
+  Write-GeneratedClientReadinessMarker `
+    -Path $path `
+    -Target "simulated-generated-client-pass" `
+    -Tool "simulated-client-generator" `
+    -ProvenanceMode "simulated" `
+    -DurationMs 8 `
+    -PackageCacheStatus "simulated" `
+    -PackageDownloadAllowed $false
+  Assert-GeneratedClientReadinessGate -Path $path -Label "simulated generated-client readiness pass"
   Exit-WithResult
 }
 if ($SimulateGeneratedClientMissingRequired) {
   $path = Join-Path $TempRoot "self-test-generated-client-missing-required"
   Write-SimulatedGeneratedClientFixture -Path $path -MissingRequired
-  Assert-GeneratedClientInspectionContract -Path $path -Label "simulated generated-client missing required field"
+  Write-GeneratedClientReadinessMarker `
+    -Path $path `
+    -Target "simulated-generated-client-missing-required" `
+    -Tool "simulated-client-generator" `
+    -ProvenanceMode "simulated" `
+    -DurationMs 8 `
+    -PackageCacheStatus "simulated" `
+    -PackageDownloadAllowed $false
+  Assert-GeneratedClientReadinessGate -Path $path -Label "simulated generated-client missing required field"
+  Exit-WithResult
+}
+if ($SimulateGeneratedClientReadinessMissingOutput) {
+  $path = Join-Path $TempRoot "self-test-generated-client-missing-output"
+  Assert-GeneratedClientReadinessGate -Path $path -Label "simulated generated-client readiness missing output"
+  Exit-WithResult
+}
+if ($SimulateGeneratedClientReadinessStaleMarker) {
+  $path = Join-Path $TempRoot "self-test-generated-client-stale-marker"
+  Write-SimulatedGeneratedClientFixture -Path $path
+  Write-GeneratedClientReadinessMarker `
+    -Path $path `
+    -Target "simulated-generated-client-stale-marker" `
+    -Tool "simulated-client-generator" `
+    -ProvenanceMode "simulated" `
+    -OpenApiSha256 "0000000000000000000000000000000000000000000000000000000000000000" `
+    -DurationMs 8 `
+    -PackageCacheStatus "simulated" `
+    -PackageDownloadAllowed $false
+  Assert-GeneratedClientReadinessGate -Path $path -Label "simulated generated-client readiness stale marker"
+  Exit-WithResult
+}
+if ($SimulateGeneratedClientReadinessUnsafeTarget) {
+  $path = Join-Path $repoRoot "scripts\self-test-generated-client-unsafe-target"
+  Assert-GeneratedClientReadinessGate -Path $path -Label "simulated generated-client readiness unsafe target"
   Exit-WithResult
 }
 if ($SimulateSemanticEvidencePass) {

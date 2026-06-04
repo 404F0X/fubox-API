@@ -77,6 +77,9 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_INSPECTION_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_MISSING_REQUIRED=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_READINESS_MISSING_OUTPUT=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_READINESS_STALE_MARKER=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_READINESS_UNSAFE_TARGET=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER=1`
@@ -111,10 +114,18 @@ Expected result:
 - Child case `sensitive failing command display redacted` returns exit `1` after
   proving failure output and displayed command lines are redacted.
 - Child case `simulated generated-client inspection pass` returns exit `0`
-  after proving a mock generated client contains the required ledger execute and
-  executor summary fields while omitting secret-like output fields.
+  after proving a mock generated client has a current readiness marker and
+  contains the required ledger execute and executor summary fields while
+  omitting secret-like output fields.
 - Child case `simulated generated-client missing required field` returns exit
   `1`, proving generated-client contract drift is a mismatch, not a blocker.
+- Child case `simulated generated-client readiness missing output` returns exit
+  `1`, proving absent generated output cannot pass readiness.
+- Child case `simulated generated-client readiness stale marker` returns exit
+  `1`, proving a marker bound to an old OpenAPI fixture cannot pass readiness.
+- Child case `simulated generated-client readiness unsafe target` returns exit
+  `1`, proving generated-client targets outside validated `TempRoot` are
+  rejected before inspection.
 - Child case `simulated semantic validator evidence pass` returns exit `0` and
   writes a bounded evidence report with classification `pass`.
 - Child case `simulated semantic validator evidence failure` returns exit `1`
@@ -153,6 +164,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientMissingRequired
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientReadinessMissingOutput
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientReadinessStaleMarker
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientReadinessUnsafeTarget
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceFailure
@@ -165,13 +182,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 The first three direct simulated commands are expected to return `2`, `1`, and
 `1` respectively after the lightweight gate passes. The sensitive-output command
 returns `0`; the sensitive-command failure returns `1`. The generated-client
-inspection commands return `0` and `1`. The semantic evidence commands return
-`0`, `1`, and `2`. The tool-preflight blocker command returns `2`. They prove
-wrapper failure-path classification, bounded evidence lifecycle, path/output
-hardening, preflight/performance evidence shape, and redaction only. They do
-not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
-inspection against real generated output, or any live Postgres checks. Do not
-use simulated passes to close the real semantic/client-generation gap.
+inspection commands return `0` and `1`. The generated-client readiness commands
+return `1` for missing output, stale marker, and unsafe target. The semantic
+evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
+returns `2`. They prove wrapper failure-path classification, generated-client
+readiness gating, bounded evidence lifecycle, path/output hardening,
+preflight/performance evidence shape, and redaction only. They do not run
+Redocly, OpenAPI Generator, `openapi-typescript`, generated-client inspection
+against real generated output, or any live Postgres checks. Do not use simulated
+passes to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -516,9 +535,35 @@ rg -n "LedgerAdjustmentExecuteResult|LedgerAdjustmentExecutorSummary|LedgerAdjus
 ```
 
 The wrapper performs this inspection automatically after `-OpenApiTypescript`,
-`-TypescriptFetch`, or `-ClientGeneration` succeeds. It inspects only the
-generated ledger execute/executor summary model snippets, not unrelated auth or
-request schemas elsewhere in a generated client.
+`-TypescriptFetch`, or `-ClientGeneration` succeeds. Before inspection, the
+wrapper runs a generated-client readiness gate. It inspects only the generated
+ledger execute/executor summary model snippets, not unrelated auth or request
+schemas elsewhere in a generated client.
+
+Generated-client readiness requires all of the following:
+
+- The generated output target is under the validated wrapper `TempRoot`.
+- The generated output exists.
+- A wrapper-owned
+  `.ledger-openapi-generated-client-readiness.json` marker exists beside the
+  generated output.
+- The readiness marker has schema
+  `ledger_openapi_generated_client_readiness.v1`.
+- The marker is bound to the current `examples\openapi_admin_skeleton.yaml`
+  SHA-256.
+- The marker records bounded `generated_at_utc`, `target`, `tool`,
+  `provenance_mode`, package/cache state, package-download flag, and
+  `duration_ms`.
+- The generated output preserves the required ledger execute/executor summary
+  fields and omits secret-like response fields.
+
+Readiness failure classes:
+
+- Missing generated output is a mismatch and exits `1`.
+- Missing or stale readiness marker is a mismatch and exits `1`.
+- Unsafe target path outside `TempRoot` is a mismatch and exits `1`.
+- Missing local tools or offline package/cache blockers before generation are
+  external blockers and exit `2`.
 
 The generated client must preserve all of these contracts:
 
@@ -601,8 +646,15 @@ Generated-client inspection mismatch examples:
   `provider_key`, `operation_key`, `payload`, `body`, `raw_metadata`, `secret`,
   `credential`, `api_key`, or raw bearer/token material.
 
-Any generated-client inspection mismatch exits `1`. Missing local tools,
-offline package cache, or package download blockers exit `2`.
+Any generated-client readiness or inspection mismatch exits `1`. Missing local
+tools, offline package cache, or package download blockers before generated
+output is produced exit `2`.
+
+This readiness gate is not the final production client acceptance. Passing the
+simulated readiness self-test closes only the readiness-gate contract. Real
+generated-client production acceptance still requires an explicit opt-in run of
+`-OpenApiTypescript`, `-TypescriptFetch`, or `-ClientGeneration` in an
+environment with the required tools and package/cache access.
 
 ## Cleanup
 
@@ -630,6 +682,7 @@ the validated temp root:
 
 - `ledger-adjustment-openapi-semantic-evidence.json`
 - wrapper-generated `openapi-typescript` and `typescript-fetch` directories
+- generated-client readiness markers under wrapper-generated output directories
 - wrapper self-test artifact directories and markers
 
 It does not delete source files, `.git`, repo-external paths, non-temp paths, or
