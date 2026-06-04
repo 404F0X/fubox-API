@@ -5,10 +5,11 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    FixedDecimal, LedgerContractError, LedgerEntryMetadata, LedgerEntryRecord, LedgerEntryStatus,
-    LedgerEntryType, LedgerOperationKind, LedgerOperationOutcome, LedgerOperationPlan,
-    RefundLedgerRequest, ReserveLedgerRequest, SettleLedgerRequest, plan_ledger_refund,
-    plan_ledger_reserve, plan_ledger_settle, refund_ledger_idempotency_key,
+    AdminAdjustmentLedgerRequest, FixedDecimal, LedgerContractError, LedgerEntryMetadata,
+    LedgerEntryRecord, LedgerEntryStatus, LedgerEntryType, LedgerOperationKind,
+    LedgerOperationOutcome, LedgerOperationPlan, RefundLedgerRequest, ReserveLedgerRequest,
+    SettleLedgerRequest, admin_adjustment_ledger_idempotency_key, plan_ledger_admin_adjustment,
+    plan_ledger_refund, plan_ledger_reserve, plan_ledger_settle, refund_ledger_idempotency_key,
     refund_partial_ledger_idempotency_key, reserve_ledger_idempotency_key,
     settle_ledger_idempotency_key,
 };
@@ -77,6 +78,14 @@ pub enum ConsistentLedgerWriteRequest {
         amount: FixedDecimal,
         currency: String,
     },
+    AdminAdjustment {
+        scope: ConsistentLedgerScope,
+        adjustment_operation_id: Uuid,
+        request_id: Option<Uuid>,
+        related_ledger_entry_id: Option<Uuid>,
+        amount: FixedDecimal,
+        currency: String,
+    },
 }
 
 impl ConsistentLedgerWriteRequest {
@@ -85,7 +94,8 @@ impl ConsistentLedgerWriteRequest {
             Self::Reserve { scope, .. }
             | Self::Settle { scope, .. }
             | Self::RefundFull { scope, .. }
-            | Self::RefundPartial { scope, .. } => scope,
+            | Self::RefundPartial { scope, .. }
+            | Self::AdminAdjustment { scope, .. } => scope,
         }
     }
 
@@ -94,7 +104,8 @@ impl ConsistentLedgerWriteRequest {
             Self::Reserve { currency, .. }
             | Self::Settle { currency, .. }
             | Self::RefundFull { currency, .. }
-            | Self::RefundPartial { currency, .. } => currency,
+            | Self::RefundPartial { currency, .. }
+            | Self::AdminAdjustment { currency, .. } => currency,
         }
     }
 
@@ -104,6 +115,7 @@ impl ConsistentLedgerWriteRequest {
             Self::Settle { .. } => LedgerOperationKind::Settle,
             Self::RefundFull { .. } => LedgerOperationKind::Refund,
             Self::RefundPartial { .. } => LedgerOperationKind::RefundPartial,
+            Self::AdminAdjustment { .. } => LedgerOperationKind::AdminAdjustment,
         }
     }
 
@@ -123,6 +135,10 @@ impl ConsistentLedgerWriteRequest {
                 *related_ledger_entry_id,
                 *refund_operation_id,
             ),
+            Self::AdminAdjustment {
+                adjustment_operation_id,
+                ..
+            } => admin_adjustment_ledger_idempotency_key(*adjustment_operation_id),
         }
     }
 }
@@ -267,6 +283,7 @@ pub struct ConsistentWriterStateMachine {
     pub reserve: &'static str,
     pub settle: &'static str,
     pub refund: &'static str,
+    pub admin_adjustment: &'static str,
     pub idempotency: &'static str,
     pub concurrency_rejections: Vec<&'static str>,
 }
@@ -918,6 +935,23 @@ fn plan_inner_ledger_write(
             },
             existing_entries,
         ),
+        ConsistentLedgerWriteRequest::AdminAdjustment {
+            adjustment_operation_id,
+            request_id,
+            related_ledger_entry_id,
+            amount,
+            currency,
+            ..
+        } => plan_ledger_admin_adjustment(
+            AdminAdjustmentLedgerRequest {
+                adjustment_operation_id: *adjustment_operation_id,
+                request_id: *request_id,
+                related_ledger_entry_id: *related_ledger_entry_id,
+                amount: *amount,
+                currency: currency.clone(),
+            },
+            existing_entries,
+        ),
     }
 }
 
@@ -947,6 +981,13 @@ fn required_debit_for_write(
                 .map(|wallet| wallet.available_balance.scale())
                 .unwrap_or(crate::DEFAULT_MONEY_SCALE);
             zero(scale)
+        }
+        ConsistentLedgerWriteRequest::AdminAdjustment { amount, .. } => {
+            if amount.units() < 0 {
+                checked_neg(*amount)
+            } else {
+                zero(amount.scale())
+            }
         }
     }
 }
@@ -1149,6 +1190,20 @@ fn lock_plan_for_request(request: &ConsistentLedgerWriteRequest) -> ConsistentWr
                 ],
             });
         }
+        ConsistentLedgerWriteRequest::AdminAdjustment { .. } => {
+            lock_order.push(ConsistentWriterLockStep {
+                order: 4,
+                resource: "ledger_entries",
+                lock_mode: "for_update_ordered",
+                query_shape: "select admin adjustment replay and related rows by tenant/request_id/related_ledger_entry_id/idempotency_key ordered by created_at,id for update",
+                bounded_by: vec![
+                    "tenant_id",
+                    "request_id",
+                    "related_ledger_entry_id",
+                    "idempotency_key",
+                ],
+            });
+        }
         ConsistentLedgerWriteRequest::RefundFull { .. }
         | ConsistentLedgerWriteRequest::RefundPartial { .. } => {
             lock_order.push(ConsistentWriterLockStep {
@@ -1182,6 +1237,7 @@ fn state_machine_contract() -> ConsistentWriterStateMachine {
         reserve: "reserve:{request_id} inserts one pending debit after locked wallet/grant/budget balance covers required debit",
         settle: "settle:{request_id} inserts one confirmed debit and reverses pending reserve for the same request; only final_cost minus locked pending reserve requires additional balance",
         refund: "refund keys insert confirmed positive credits against a locked confirmed settle source; remaining refundable amount is recomputed while source and related refunds are locked",
+        admin_adjustment: "admin_adjustment:{adjustment_operation_id} inserts one confirmed signed adjustment; debits require locked balance/budget capacity and credits increase the locked balance window",
         idempotency: "same idempotency key with identical ledger shape returns idempotent without additional debit; same key with different amount/currency/status is rejected",
         concurrency_rejections: vec![
             "non_idempotent_duplicate_reserve_for_request",
