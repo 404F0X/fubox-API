@@ -239,6 +239,27 @@
         "cookie_header",
         "provider_key_secret"
       ]
+    },
+    {
+      "name": "gemini_generate_content_reject_no_provider_side_effects",
+      "endpoint": "POST /v1beta/models/{model}:generateContent",
+      "test": "apps/gateway/src/main.rs::tests::prompt_protection_gemini_native_http_reject_logs_request_without_provider_side_effects",
+      "assertions": [
+        "block_response_prompt_protection_rejected",
+        "request_log_created_and_finished_rejected",
+        "provider_attempt_started_count_zero",
+        "provider_key_open_count_zero",
+        "upstream_call_count_zero",
+        "payload_log_hash_only",
+        "route_snapshot_prompt_protection_sanitized"
+      ],
+      "forbidden_logged_fields": [
+        "raw_prompt",
+        "raw_pattern",
+        "authorization_header",
+        "cookie_header",
+        "provider_key_secret"
+      ]
     }
   ],
   "audit_contract": {
