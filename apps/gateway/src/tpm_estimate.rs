@@ -4,6 +4,7 @@ use ai_gateway_routing::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::{fs, path::Path};
 
 pub(crate) const GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA: &str = "gateway_tpm_estimate_mapper_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA: &str =
@@ -18,6 +19,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ENV_CONFIG_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_env_config_read_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_evidence_projection_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_runtime_evidence_artifact_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV: &str =
@@ -1102,6 +1105,81 @@ pub(crate) struct GatewayTrustedNumericSourceRuntimeEvidenceSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus {
+    Disabled,
+    Written,
+    Read,
+    Blocked,
+}
+
+impl GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Written => "written",
+            Self::Read => "read",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker {
+    OptInMissing,
+    PathOutOfScope,
+    WriteFailed,
+    ReadFailed,
+    InvalidJson,
+    SchemaMismatch,
+    StaleCommit,
+    MissingGeneratedAt,
+    SimulatedArtifact,
+    MissingDurationMarker,
+    MissingSourceMarker,
+    MissingReservationAcquireReadiness,
+}
+
+impl GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::OptInMissing => "opt_in_missing",
+            Self::PathOutOfScope => "path_out_of_scope",
+            Self::WriteFailed => "write_failed",
+            Self::ReadFailed => "read_failed",
+            Self::InvalidJson => "invalid_json",
+            Self::SchemaMismatch => "schema_mismatch",
+            Self::StaleCommit => "stale_commit",
+            Self::MissingGeneratedAt => "missing_generated_at",
+            Self::SimulatedArtifact => "simulated_artifact",
+            Self::MissingDurationMarker => "missing_duration_marker",
+            Self::MissingSourceMarker => "missing_source_marker",
+            Self::MissingReservationAcquireReadiness => "missing_reservation_acquire_readiness",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) operation: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) artifact_path_scope: &'static str,
+    pub(crate) artifact_written: bool,
+    pub(crate) artifact_read: bool,
+    pub(crate) current_commit_present: bool,
+    pub(crate) generated_at_present: bool,
+    pub(crate) source_marker_present: bool,
+    pub(crate) token_count_marker_present: bool,
+    pub(crate) duration_markers_present: bool,
+    pub(crate) reservation_acquire_ready_present: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceAvailabilityStatus {
     Available,
     Unavailable,
@@ -1684,6 +1762,398 @@ pub(crate) fn gateway_trusted_numeric_source_runtime_evidence_projection(
         live_gap_closure_ready,
         live_gap_closure_marker: "gateway_tpm_trusted_numeric_source_live_gap_closure_ready",
         performance_markers_present,
+        material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_runtime_evidence_artifact_write(
+    opt_in: bool,
+    path: &Path,
+    current_commit: &str,
+    generated_at: &str,
+    evidence: &GatewayTrustedNumericSourceRuntimeEvidenceProjection,
+) -> GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary {
+    if !opt_in {
+        return runtime_evidence_artifact_summary(
+            "write",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Disabled,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::OptInMissing),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    if !runtime_evidence_artifact_path_allowed(path) {
+        return runtime_evidence_artifact_summary(
+            "write",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::PathOutOfScope),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+
+    let payload = serde_json::json!({
+        "schema": GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA,
+        "current_commit": current_commit,
+        "generated_at": generated_at,
+        "simulated": false,
+        "evidence": evidence.safe_summary(),
+    });
+    let Some(parent) = path.parent() else {
+        return runtime_evidence_artifact_summary(
+            "write",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::PathOutOfScope),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    };
+    if fs::create_dir_all(parent)
+        .and_then(|_| {
+            serde_json::to_vec_pretty(&payload)
+                .map_err(std::io::Error::other)
+                .and_then(|bytes| fs::write(path, bytes))
+        })
+        .is_err()
+    {
+        return runtime_evidence_artifact_summary(
+            "write",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::WriteFailed),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+
+    runtime_evidence_artifact_summary(
+        "write",
+        GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Written,
+        None,
+        true,
+        false,
+        true,
+        !generated_at.is_empty(),
+        true,
+        true,
+        true,
+        true,
+        evidence.reservation_acquire_ready,
+        evidence.live_gap_closure_ready,
+    )
+}
+
+pub(crate) fn gateway_trusted_numeric_source_runtime_evidence_artifact_read(
+    path: &Path,
+    expected_commit: &str,
+) -> GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary {
+    if !runtime_evidence_artifact_path_allowed(path) {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::PathOutOfScope),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let Ok(contents) = fs::read_to_string(path) else {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::ReadFailed),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(&contents) else {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::InvalidJson),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    };
+    if payload["schema"].as_str()
+        != Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA)
+    {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::SchemaMismatch),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let current_commit_present = payload["current_commit"]
+        .as_str()
+        .is_some_and(|commit| !commit.is_empty());
+    if payload["current_commit"].as_str() != Some(expected_commit) {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::StaleCommit),
+            false,
+            false,
+            current_commit_present,
+            payload["generated_at"]
+                .as_str()
+                .is_some_and(|generated_at| !generated_at.is_empty()),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let generated_at_present = payload["generated_at"]
+        .as_str()
+        .is_some_and(|generated_at| !generated_at.is_empty());
+    if !generated_at_present {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::MissingGeneratedAt),
+            false,
+            false,
+            current_commit_present,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    if payload["simulated"].as_bool().unwrap_or(true) {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::SimulatedArtifact),
+            false,
+            false,
+            current_commit_present,
+            generated_at_present,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let evidence = &payload["evidence"];
+    if evidence["schema"].as_str()
+        != Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA)
+    {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::SchemaMismatch),
+            false,
+            false,
+            current_commit_present,
+            generated_at_present,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let duration_markers_present = evidence["preflight_duration_marker"].as_str()
+        == Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER)
+        && evidence["estimate_duration_marker"].as_str()
+            == Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER);
+    if !duration_markers_present {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::MissingDurationMarker),
+            false,
+            false,
+            current_commit_present,
+            generated_at_present,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+    }
+    let source_marker_present =
+        evidence["source_marker"].as_str() == Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER);
+    let token_count_marker_present = evidence["token_count_marker"].as_str()
+        == Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER);
+    if !source_marker_present || !token_count_marker_present {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::MissingSourceMarker),
+            false,
+            false,
+            current_commit_present,
+            generated_at_present,
+            source_marker_present,
+            token_count_marker_present,
+            duration_markers_present,
+            false,
+            false,
+            false,
+        );
+    }
+    let Some(reservation_acquire_ready) = evidence["reservation_acquire_ready"].as_bool() else {
+        return runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Blocked,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::MissingReservationAcquireReadiness),
+            false,
+            false,
+            current_commit_present,
+            generated_at_present,
+            source_marker_present,
+            token_count_marker_present,
+            duration_markers_present,
+            false,
+            false,
+            false,
+        );
+    };
+    runtime_evidence_artifact_summary(
+        "read",
+        GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Read,
+        None,
+        false,
+        true,
+        current_commit_present,
+        generated_at_present,
+        source_marker_present,
+        token_count_marker_present,
+        duration_markers_present,
+        true,
+        reservation_acquire_ready,
+        evidence["live_gap_closure_ready"]
+            .as_bool()
+            .unwrap_or(false),
+    )
+}
+
+fn runtime_evidence_artifact_path_allowed(path: &Path) -> bool {
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if first.as_os_str() != ".tmp" {
+        return false;
+    }
+    components.all(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runtime_evidence_artifact_summary(
+    operation: &'static str,
+    status: GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus,
+    blocker: Option<GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker>,
+    artifact_written: bool,
+    artifact_read: bool,
+    current_commit_present: bool,
+    generated_at_present: bool,
+    source_marker_present: bool,
+    token_count_marker_present: bool,
+    duration_markers_present: bool,
+    reservation_acquire_ready_present: bool,
+    reservation_acquire_ready: bool,
+    live_gap_closure_ready: bool,
+) -> GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary {
+    GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary {
+        schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA,
+        operation,
+        status: status.as_str(),
+        blocker: blocker.map(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::as_str),
+        artifact_path_scope: ".tmp",
+        artifact_written,
+        artifact_read,
+        current_commit_present,
+        generated_at_present,
+        source_marker_present,
+        token_count_marker_present,
+        duration_markers_present,
+        reservation_acquire_ready_present,
+        reservation_acquire_ready,
+        live_gap_closure_ready,
+        raw_value_omitted: true,
         material_in_output: false,
     }
 }
@@ -4227,6 +4697,341 @@ mod tests {
                 "trusted numeric runtime evidence summary leaked forbidden marker: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_runtime_evidence_artifact_contract()
+     {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_runtime_evidence_artifact_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA)
+        );
+        assert_eq!(contract["default_artifact_write"].as_bool(), Some(false));
+        assert_eq!(
+            contract["allowed_artifact_path_scope"].as_str(),
+            Some(".tmp")
+        );
+
+        let required_fields = contract["required_artifact_fields"]
+            .as_array()
+            .expect("required artifact fields should be an array");
+        for field in [
+            "schema",
+            "current_commit",
+            "generated_at",
+            "evidence.availability_marker",
+            "evidence.preflight_duration_marker",
+            "evidence.estimate_duration_marker",
+            "evidence.source_marker",
+            "evidence.token_count_marker",
+            "evidence.reservation_acquire_ready",
+        ] {
+            assert!(
+                required_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "artifact contract should require {field}"
+            );
+        }
+
+        let summary_fields = contract["safe_summary_fields"]
+            .as_array()
+            .expect("artifact safe summary fields should be an array");
+        for field in [
+            "trusted_source_artifact.status",
+            "trusted_source_artifact.blocker",
+            "trusted_source_artifact.artifact_path_scope",
+            "trusted_source_artifact.artifact_written",
+            "trusted_source_artifact.artifact_read",
+            "trusted_source_artifact.generated_at_present",
+            "trusted_source_artifact.duration_markers_present",
+            "trusted_source_artifact.source_marker_present",
+            "trusted_source_artifact.token_count_marker_present",
+            "trusted_source_artifact.reservation_acquire_ready_present",
+            "trusted_source_artifact.raw_value_omitted",
+            "trusted_source_artifact.material_in_output",
+        ] {
+            assert!(
+                summary_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "artifact safe summary should include {field}"
+            );
+        }
+
+        for required_state in [
+            "default_no_write",
+            "opt_in_write_repo_tmp_artifact",
+            "read_valid_artifact",
+            "read_stale_commit_blocks",
+            "read_simulated_artifact_blocks",
+            "read_missing_duration_blocks",
+            "read_missing_source_blocks",
+        ] {
+            assert!(
+                contract["states"]
+                    .as_array()
+                    .expect("artifact states should be an array")
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "artifact contract missing state: {required_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_runtime_evidence_artifact_write_read_blocks_invalid_readback()
+     {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("artifact states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing artifact state: {name}"))
+        }
+
+        fn assert_artifact_summary(
+            summary: &GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA
+            );
+            assert_eq!(summary.operation, expected["operation"].as_str().unwrap());
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.blocker,
+                expected["blocker"].as_str().map(|blocker| match blocker {
+                    "opt_in_missing" => "opt_in_missing",
+                    "stale_commit" => "stale_commit",
+                    "simulated_artifact" => "simulated_artifact",
+                    "missing_duration_marker" => "missing_duration_marker",
+                    "missing_source_marker" => "missing_source_marker",
+                    other => panic!("unexpected artifact blocker: {other}"),
+                })
+            );
+            assert_eq!(summary.artifact_path_scope, ".tmp");
+            if let Some(written) = expected["artifact_written"].as_bool() {
+                assert_eq!(summary.artifact_written, written);
+            }
+            if let Some(read) = expected["artifact_read"].as_bool() {
+                assert_eq!(summary.artifact_read, read);
+            }
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_runtime_evidence_artifact_contract"];
+        let evidence = ready_runtime_evidence_projection_for_artifact_test();
+        let path = Path::new(".tmp/gateway_tpm_runtime_evidence_artifact_test.json");
+        let stale_path = Path::new(".tmp/gateway_tpm_runtime_evidence_artifact_stale_test.json");
+        let simulated_path =
+            Path::new(".tmp/gateway_tpm_runtime_evidence_artifact_simulated_test.json");
+        let missing_duration_path =
+            Path::new(".tmp/gateway_tpm_runtime_evidence_artifact_missing_duration_test.json");
+        let missing_source_path =
+            Path::new(".tmp/gateway_tpm_runtime_evidence_artifact_missing_source_test.json");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(stale_path);
+        let _ = fs::remove_file(simulated_path);
+        let _ = fs::remove_file(missing_duration_path);
+        let _ = fs::remove_file(missing_source_path);
+
+        let disabled_write = gateway_trusted_numeric_source_runtime_evidence_artifact_write(
+            false,
+            path,
+            "commit-a",
+            "2026-06-04T00:00:00Z",
+            &evidence,
+        );
+        assert_artifact_summary(&disabled_write, state(contract, "default_no_write"));
+        assert!(!path.exists());
+
+        let write = gateway_trusted_numeric_source_runtime_evidence_artifact_write(
+            true,
+            path,
+            "commit-a",
+            "2026-06-04T00:00:00Z",
+            &evidence,
+        );
+        assert_artifact_summary(&write, state(contract, "opt_in_write_repo_tmp_artifact"));
+        assert!(path.exists());
+
+        let read = gateway_trusted_numeric_source_runtime_evidence_artifact_read(path, "commit-a");
+        assert_artifact_summary(&read, state(contract, "read_valid_artifact"));
+        assert!(read.current_commit_present);
+        assert!(read.generated_at_present);
+        assert!(read.duration_markers_present);
+        assert!(read.source_marker_present);
+        assert!(read.token_count_marker_present);
+        assert!(read.reservation_acquire_ready_present);
+        assert!(read.reservation_acquire_ready);
+        assert!(read.live_gap_closure_ready);
+
+        let stale = gateway_trusted_numeric_source_runtime_evidence_artifact_read(path, "commit-b");
+        assert_artifact_summary(&stale, state(contract, "read_stale_commit_blocks"));
+
+        let simulated_evidence = serde_json::to_value(evidence.safe_summary())
+            .expect("runtime evidence summary should serialize");
+        write_artifact_variant(
+            simulated_path,
+            "commit-a",
+            "2026-06-04T00:00:00Z",
+            true,
+            &simulated_evidence,
+        );
+        let simulated = gateway_trusted_numeric_source_runtime_evidence_artifact_read(
+            simulated_path,
+            "commit-a",
+        );
+        assert_artifact_summary(
+            &simulated,
+            state(contract, "read_simulated_artifact_blocks"),
+        );
+
+        let mut missing_duration_evidence = serde_json::to_value(evidence.safe_summary())
+            .expect("runtime evidence summary should serialize");
+        missing_duration_evidence["estimate_duration_marker"] = Value::Null;
+        write_artifact_variant(
+            missing_duration_path,
+            "commit-a",
+            "2026-06-04T00:00:00Z",
+            false,
+            &missing_duration_evidence,
+        );
+        let missing_duration = gateway_trusted_numeric_source_runtime_evidence_artifact_read(
+            missing_duration_path,
+            "commit-a",
+        );
+        assert_artifact_summary(
+            &missing_duration,
+            state(contract, "read_missing_duration_blocks"),
+        );
+
+        let mut missing_source_evidence = serde_json::to_value(evidence.safe_summary())
+            .expect("runtime evidence summary should serialize");
+        missing_source_evidence["source_marker"] = Value::Null;
+        write_artifact_variant(
+            missing_source_path,
+            "commit-a",
+            "2026-06-04T00:00:00Z",
+            false,
+            &missing_source_evidence,
+        );
+        let missing_source = gateway_trusted_numeric_source_runtime_evidence_artifact_read(
+            missing_source_path,
+            "commit-a",
+        );
+        assert_artifact_summary(
+            &missing_source,
+            state(contract, "read_missing_source_blocks"),
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "artifact": [
+                disabled_write,
+                write,
+                read,
+                stale,
+                simulated,
+                missing_duration,
+                missing_source
+            ]
+        }))
+        .expect("artifact summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric runtime evidence artifact summary leaked forbidden marker: {forbidden}"
+            );
+        }
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(stale_path);
+        let _ = fs::remove_file(simulated_path);
+        let _ = fs::remove_file(missing_duration_path);
+        let _ = fs::remove_file(missing_source_path);
+    }
+
+    fn ready_runtime_evidence_projection_for_artifact_test()
+    -> GatewayTrustedNumericSourceRuntimeEvidenceProjection {
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+        let env_config = gateway_trusted_numeric_source_env_config_read(
+            GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, true, false),
+        );
+        let preflight = gateway_trusted_numeric_source_config_preflight(
+            env_config.runtime_config.preflight_input,
+        );
+        let adapter = GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+            status: GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready,
+            endpoint: GatewayTpmEstimateEndpoint::OpenAiChat,
+            preflight_status: preflight.status,
+            availability: available_prompt,
+            adapter_invoked: true,
+            fallback_required: false,
+            conservative_fallback_tokens: 256,
+            material_in_output: false,
+            provider_side_effect_required: false,
+        };
+        let opt_in = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &preflight,
+                &available_prompt,
+                400,
+                400,
+                400,
+                400,
+            ),
+        );
+        let reservation_projection = gateway_trusted_numeric_source_reservation_projection(&opt_in);
+        gateway_trusted_numeric_source_runtime_evidence_projection(
+            &env_config,
+            &adapter,
+            &reservation_projection,
+        )
+    }
+
+    fn write_artifact_variant(
+        path: &Path,
+        current_commit: &str,
+        generated_at: &str,
+        simulated: bool,
+        evidence: &Value,
+    ) {
+        let payload = json!({
+            "schema": GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA,
+            "current_commit": current_commit,
+            "generated_at": generated_at,
+            "simulated": simulated,
+            "evidence": evidence,
+        });
+        let parent = path
+            .parent()
+            .expect("artifact variant path should have parent");
+        fs::create_dir_all(parent).expect("artifact variant parent should be creatable");
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&payload).expect("artifact variant should serialize"),
+        )
+        .expect("artifact variant should be writable");
     }
 
     #[test]

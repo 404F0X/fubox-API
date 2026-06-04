@@ -14669,6 +14669,131 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_trusted_source_runtime_evidence_artifact_contract_does_not_change_runtime_ordering()
+     {
+        let main_source = include_str!("main.rs");
+        let tpm_estimate_source = include_str!("tpm_estimate.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let artifact = &fixture["trusted_numeric_source_runtime_evidence_artifact_contract"];
+
+        assert_eq!(
+            artifact["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_runtime_evidence_artifact_v1")
+        );
+        assert_eq!(artifact["default_artifact_write"].as_bool(), Some(false));
+        assert_eq!(
+            artifact["allowed_artifact_path_scope"].as_str(),
+            Some(".tmp")
+        );
+        for required_marker in [
+            "gateway_trusted_numeric_source_runtime_evidence_artifact_write(",
+            "gateway_trusted_numeric_source_runtime_evidence_artifact_read(",
+            "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA",
+        ] {
+            assert!(
+                tpm_estimate_source.contains(required_marker),
+                "runtime evidence artifact helper should exist for opt-in smoke wiring: {required_marker}"
+            );
+        }
+        for field in [
+            "trusted_source_artifact.generated_at_present",
+            "trusted_source_artifact.duration_markers_present",
+            "trusted_source_artifact.source_marker_present",
+            "trusted_source_artifact.token_count_marker_present",
+            "trusted_source_artifact.reservation_acquire_ready_present",
+            "trusted_source_artifact.raw_value_omitted",
+            "trusted_source_artifact.material_in_output",
+        ] {
+            assert!(
+                artifact["safe_summary_fields"]
+                    .as_array()
+                    .expect("artifact safe summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "runtime evidence artifact summary should include {field}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(
+                section,
+                estimate_marker,
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+            for helper in [
+                "gateway_trusted_numeric_source_runtime_evidence_artifact_write(",
+                "gateway_trusted_numeric_source_runtime_evidence_artifact_read(",
+                "gateway_tpm_trusted_numeric_source_runtime_evidence_artifact_v1",
+                ".tmp/gateway_tpm",
+                "fs::write",
+                "fs::read_to_string",
+            ] {
+                assert!(
+                    !estimate_section.contains(helper),
+                    "{section_name} runtime must not write/read trusted numeric evidence artifacts by default: {helper}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_trusted_source_runtime_adapter_boundary_does_not_change_runtime_ordering()
      {
         let main_source = include_str!("main.rs");

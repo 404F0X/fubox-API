@@ -922,6 +922,124 @@
       "maybe"
     ]
   },
+  "trusted_numeric_source_runtime_evidence_artifact_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_runtime_evidence_artifact_v1",
+    "implementation_status": "artifact write/read opt-in contract only; default request path does not write artifacts or call tokenizer/read-model providers",
+    "default_artifact_write": false,
+    "allowed_artifact_path_scope": ".tmp",
+    "required_artifact_fields": [
+      "schema",
+      "current_commit",
+      "generated_at",
+      "simulated",
+      "evidence.schema",
+      "evidence.availability_marker",
+      "evidence.preflight_duration_marker",
+      "evidence.estimate_duration_marker",
+      "evidence.source_marker",
+      "evidence.token_count_marker",
+      "evidence.reservation_acquire_ready",
+      "evidence.live_gap_closure_ready"
+    ],
+    "safe_summary_fields": [
+      "trusted_source_artifact.schema",
+      "trusted_source_artifact.operation",
+      "trusted_source_artifact.status",
+      "trusted_source_artifact.blocker",
+      "trusted_source_artifact.artifact_path_scope",
+      "trusted_source_artifact.artifact_written",
+      "trusted_source_artifact.artifact_read",
+      "trusted_source_artifact.current_commit_present",
+      "trusted_source_artifact.generated_at_present",
+      "trusted_source_artifact.source_marker_present",
+      "trusted_source_artifact.token_count_marker_present",
+      "trusted_source_artifact.duration_markers_present",
+      "trusted_source_artifact.reservation_acquire_ready_present",
+      "trusted_source_artifact.reservation_acquire_ready",
+      "trusted_source_artifact.live_gap_closure_ready",
+      "trusted_source_artifact.raw_value_omitted",
+      "trusted_source_artifact.material_in_output"
+    ],
+    "states": [
+      {
+        "name": "default_no_write",
+        "operation": "write",
+        "status": "disabled",
+        "blocker": "opt_in_missing",
+        "artifact_written": false,
+        "artifact_read": false
+      },
+      {
+        "name": "opt_in_write_repo_tmp_artifact",
+        "operation": "write",
+        "status": "written",
+        "blocker": null,
+        "artifact_written": true,
+        "artifact_read": false
+      },
+      {
+        "name": "read_valid_artifact",
+        "operation": "read",
+        "status": "read",
+        "blocker": null,
+        "artifact_written": false,
+        "artifact_read": true,
+        "current_commit_present": true,
+        "generated_at_present": true,
+        "source_marker_present": true,
+        "token_count_marker_present": true,
+        "duration_markers_present": true,
+        "reservation_acquire_ready_present": true
+      },
+      {
+        "name": "read_stale_commit_blocks",
+        "operation": "read",
+        "status": "blocked",
+        "blocker": "stale_commit"
+      },
+      {
+        "name": "read_simulated_artifact_blocks",
+        "operation": "read",
+        "status": "blocked",
+        "blocker": "simulated_artifact"
+      },
+      {
+        "name": "read_missing_duration_blocks",
+        "operation": "read",
+        "status": "blocked",
+        "blocker": "missing_duration_marker"
+      },
+      {
+        "name": "read_missing_source_blocks",
+        "operation": "read",
+        "status": "blocked",
+        "blocker": "missing_source_marker"
+      }
+    ],
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\"",
+      "maybe"
+    ]
+  },
   "trusted_numeric_source_runtime_adapter_boundary_contract": {
     "schema": "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1",
     "implementation_status": "runtime adapter boundary only; concrete tokenizer/read-model providers and live DB/provider smoke are not wired",
