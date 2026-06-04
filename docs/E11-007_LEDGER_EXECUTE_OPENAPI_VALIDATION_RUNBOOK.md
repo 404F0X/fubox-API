@@ -4,11 +4,12 @@ This runbook covers the non-default acceptance item for TODO lane
 `E11-007-S14`: full OpenAPI semantic validation and generated-client contract
 inspection for the Control Plane ledger adjustment/refund execute API.
 
-The default repository gate remains
-`scripts/verify_control_plane_ledger_adjustment_openapi_contract.ps1`. That gate
-is intentionally lightweight and offline-friendly. The checks below are stronger
-semantic/tooling checks and may require Node, npm, Java, Python, or a preseeded
-tool cache.
+The default repository gate remains lightweight and offline-friendly. For this
+lane, prefer the wrapper
+`scripts/verify_control_plane_ledger_adjustment_openapi_semantic.ps1`: without
+flags it runs only the lightweight contract gate, while explicit flags opt in to
+semantic validators and generated-client checks. The stronger checks may require
+Node, npm, Java, Python, or a preseeded tool cache.
 
 ## Scope
 
@@ -37,6 +38,8 @@ Always run the default repository gate first. It has no external service
 dependency and should pass before using any external OpenAPI tooling.
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_contract.ps1
 ```
 
@@ -47,6 +50,30 @@ Expected result:
 
 If this fails, do not proceed to semantic validator or client generation until
 the OpenAPI skeleton is fixed.
+
+The wrapper default mode must not download packages or generate clients. It
+returns:
+
+- exit `0` when the lightweight gate passes.
+- exit `1` when the OpenAPI contract/schema shape fails.
+- exit `2` only for an external blocker such as a missing shell needed to run
+  the lightweight gate.
+
+Wrapper env opt-ins are equivalent to the flags:
+
+- `CONTROL_PLANE_LEDGER_OPENAPI_SEMANTIC=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_REDOCLY=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_GENERATOR_VALIDATE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_CLIENT_GENERATION=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_TYPESCRIPT_FETCH=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_CLEAN=1`
+
+Optional path/env overrides:
+
+- `CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT`
+- `CONTROL_PLANE_LEDGER_OPENAPI_NPM_CACHE`
 
 ## Tool Availability And Blocker Semantics
 
@@ -72,6 +99,14 @@ Do not close the OpenAPI semantic/client-generation gap from a blocker. A schema
 lint failure, validation error, or generated-client contract mismatch is a test
 failure, not an external blocker.
 
+The S16 wrapper uses the same exit semantics for opt-in checks:
+
+- exit `0`: all requested checks passed.
+- exit `1`: OpenAPI semantic validation failed or generated client contract
+  inspection found a mismatch.
+- exit `2`: missing `node`/`npm`/`java`, offline npm package cache, or package
+  download/network blocker prevented requested external tooling from running.
+
 Recommended preflight:
 
 ```powershell
@@ -94,6 +129,19 @@ Redocly and OpenAPI Generator validation because they catch different classes of
 schema drift.
 
 ### Redocly CLI
+
+Wrapper opt-in, using the npm cache in offline mode by default:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Redocly
+```
+
+Equivalent env opt-in:
+
+```powershell
+$env:CONTROL_PLANE_LEDGER_OPENAPI_REDOCLY = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1
+```
 
 Online or preseeded npm-cache install/run:
 
@@ -118,6 +166,12 @@ schemas and refs are semantically valid.
 
 This check requires Java.
 
+Wrapper opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiGeneratorValidate
+```
+
 ```powershell
 $env:npm_config_cache = ".tool-cache\npm"
 npx --yes @openapitools/openapi-generator-cli validate `
@@ -136,6 +190,20 @@ Expected result:
   - `LedgerAdjustmentExecutorRefusalSummaryContract`
   - `LedgerAdjustmentExecutorRollbackSummaryContract`
   - `LedgerAdjustmentExecutorSummary`
+
+To run both recommended semantic validators through the wrapper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic
+```
+
+By default the wrapper uses npm offline mode so a missing package cache exits
+`2` instead of attempting a download. To explicitly permit package download in a
+controlled environment:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -AllowPackageDownload
+```
 
 ### Optional Python Validator
 
@@ -161,6 +229,12 @@ repository unless a separate client-generation lane explicitly asks for it.
 
 This is the lighter generated-type check and does not require Java.
 
+Wrapper opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiTypescript
+```
+
 ```powershell
 New-Item -ItemType Directory -Force .tmp\openapi | Out-Null
 $env:npm_config_cache = ".tool-cache\npm"
@@ -176,6 +250,12 @@ Expected result:
 ### TypeScript Fetch Client Generation
 
 This is the fuller client-generation check and requires Java.
+
+Wrapper opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -TypescriptFetch
+```
 
 ```powershell
 Remove-Item -Recurse -Force .tmp\openapi-admin-typescript-fetch -ErrorAction SilentlyContinue
@@ -194,6 +274,18 @@ Expected result:
   summary contract, executor summary, refusal summary contract, and rollback
   summary contract.
 - Generated API surface includes `POST /admin/ledger/adjustments/dry-run`.
+
+To run both generated-client checks through the wrapper:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -ClientGeneration
+```
+
+To run all semantic and generated-client checks in one opt-in command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -ClientGeneration
+```
 
 ## Generated Client Contract Inspection
 
@@ -281,9 +373,18 @@ Generated artifacts are temporary evidence. Remove them after recording the
 acceptance result unless a separate lane asks to keep them.
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Clean
+
 Remove-Item -Recurse -Force .tmp\openapi -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force .tmp\openapi-admin-typescript-fetch -ErrorAction SilentlyContinue
 ```
+
+The wrapper writes generated artifacts under
+`.tmp\ledger-adjustment-openapi-semantic` unless `-TempRoot` or
+`CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT` is supplied. The temp root must stay
+inside the repository. The wrapper npm cache defaults to `.tool-cache\npm`; if
+overridden with `-NpmCache` or `CONTROL_PLANE_LEDGER_OPENAPI_NPM_CACHE`, it must
+also stay inside the repository.
 
 ## Acceptance Record
 

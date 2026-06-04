@@ -372,12 +372,36 @@ The default OpenAPI drift gate is lightweight and contract-only. Full semantic
 validation and generated-client inspection are a separate E11 acceptance item;
 use `docs/E11-007_LEDGER_EXECUTE_OPENAPI_VALIDATION_RUNBOOK.md`.
 
+Default wrapper command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1
+```
+
+Semantic/client generation opt-in commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -ClientGeneration
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -ClientGeneration
+```
+
+The wrapper exits `0` when all requested checks pass, `1` for OpenAPI schema or
+generated-client contract mismatch, and `2` for external blockers such as
+missing Node/npm/Java or an offline npm package cache. Generated artifacts stay
+under `.tmp\ledger-adjustment-openapi-semantic` and can be removed with
+`-Clean`. Env opt-ins are also accepted, including
+`CONTROL_PLANE_LEDGER_OPENAPI_SEMANTIC=1` and
+`CONTROL_PLANE_LEDGER_OPENAPI_CLIENT_GENERATION=1`.
+
 That runbook records recommended Redocly/OpenAPI Generator validator commands,
 client generation commands, missing-tool/offline blocker semantics, and the
 generated ledger execute/executor summary fields that must remain secret-safe.
-A clean run can close the E11 OpenAPI semantic/client-generation gap only. It
-does not close live Postgres, success audit live evidence, Admin UI E2E, or
-billing-ledger runtime writer gaps.
+A clean semantic/client-generation run can close the E11 OpenAPI
+semantic/client-generation gap only. It does not close live Postgres, success
+audit live evidence, Admin UI E2E, or billing-ledger runtime writer gaps.
 
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
