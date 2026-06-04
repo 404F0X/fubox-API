@@ -1,6 +1,7 @@
 param(
   [switch]$Live,
   [switch]$LiveExecutionProbe,
+  [switch]$SimulateProbeRowCountMismatch,
   [switch]$RuntimeWriterAvailable,
   [int]$BlockedExitCode = 2
 )
@@ -14,6 +15,7 @@ $readinessContract = $contract.readiness_smoke_wrapper_contract
 $evidenceMatrixContract = $readinessContract.live_cutover_evidence_matrix_contract
 $dryRunEvidenceContract = $readinessContract.runtime_writer_dry_run_execution_evidence_contract
 $liveExecutionHandoffContract = $readinessContract.live_execution_handoff_contract
+$liveProbeArtifactContract = $readinessContract.live_probe_evidence_artifact_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -153,6 +155,33 @@ function Assert-Contract {
   if ([bool]$liveExecutionHandoffContract.rollback_no_commit_guard.dual_commit_allowed) {
     throw "live execution probe must not allow dual commit"
   }
+  if ([string]$liveProbeArtifactContract.schema_version -ne "control_plane_billing_ledger_live_probe_evidence_artifact.v1") {
+    throw "live probe evidence artifact schema mismatch"
+  }
+  $artifactClassifications = @($liveProbeArtifactContract.classification_values | ForEach-Object { [string]$_ })
+  foreach ($requiredArtifactClassification in @("blocker", "pass", "fail")) {
+    if ($requiredArtifactClassification -notin $artifactClassifications) {
+      throw "live probe evidence artifact missing classification: $requiredArtifactClassification"
+    }
+  }
+  $artifactRowFields = @($liveProbeArtifactContract.row_count_evidence_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredRowField in @("statement_kind", "expected_rows", "actual_rows", "rows_match", "mismatch_classification")) {
+    if ($requiredRowField -notin $artifactRowFields) {
+      throw "live probe evidence artifact missing row-count field: $requiredRowField"
+    }
+  }
+  $artifactTimingFields = @($liveProbeArtifactContract.transaction_timing_duration_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredDurationField in @("begin_transaction_duration_ms", "row_count_enforcement_duration_ms", "rollback_transaction_duration_ms")) {
+    if ($requiredDurationField -notin $artifactTimingFields) {
+      throw "live probe evidence artifact missing timing duration field: $requiredDurationField"
+    }
+  }
+  $artifactProofFields = @($liveProbeArtifactContract.rollback_no_commit_proof_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredProofField in @("rollback_observed", "commit_observed", "probe_commits_billing_ledger", "production_writer_replaced", "dual_commit_observed")) {
+    if ($requiredProofField -notin $artifactProofFields) {
+      throw "live probe evidence artifact missing rollback/no-commit proof field: $requiredProofField"
+    }
+  }
   $handoffRowEvidenceNames = @($liveExecutionHandoffContract.row_count_evidence_names | ForEach-Object { [string]$_ })
   foreach ($requiredRowEvidence in @("lock_idempotency_scope", "lock_wallet_scope", "insert_ledger_entry", "mark_idempotency_applied")) {
     if ($requiredRowEvidence -notin $handoffRowEvidenceNames) {
@@ -223,6 +252,111 @@ function New-EvidenceItem {
     required = $Required
     evidence_output = $EvidenceOutput
     raw_value_echoed = $false
+  }
+}
+
+function New-LiveProbeEvidenceArtifact {
+  param(
+    [Parameter(Mandatory = $true)][string]$Readiness,
+    [Parameter(Mandatory = $true)][bool]$ProbeRequested,
+    [Parameter(Mandatory = $true)][bool]$RowCountMismatch,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Blockers
+  )
+
+  $artifactBlockers = New-Object System.Collections.Generic.List[string]
+  foreach ($blocker in @($Blockers)) {
+    [void]$artifactBlockers.Add([string]$blocker)
+  }
+
+  if (-not $ProbeRequested) {
+    [void]$artifactBlockers.Add("probe_not_requested")
+  }
+  if ($ProbeRequested -and $Readiness -eq "ready" -and -not $RowCountMismatch) {
+    [void]$artifactBlockers.Add("live_probe_measurements_unavailable")
+  }
+
+  $classification = "blocker"
+  if ($RowCountMismatch) {
+    $classification = "fail"
+  }
+
+  $rowCountEvidence = @(
+    $dryRunEvidenceContract.row_count_expectations | ForEach-Object {
+      $statementKind = [string]$_.statement_kind
+      $expectedRows = [string]$_.expected_rows
+      $actualRows = $null
+      $rowsMatch = $null
+      $mismatchClassification = [string]$_.mismatch_classification
+      if ($RowCountMismatch -and $statementKind -eq "insert_ledger_entry") {
+        $actualRows = 0
+        $rowsMatch = $false
+        $mismatchClassification = "fail"
+      }
+      [ordered]@{
+        statement_kind = $statementKind
+        expected_rows = $expectedRows
+        actual_rows = $actualRows
+        rows_match = $rowsMatch
+        mismatch_classification = $mismatchClassification
+        measurement_source = if ($RowCountMismatch) { "contract_simulated_no_db_io" } else { "pending_live_probe_executor" }
+      }
+    }
+  )
+
+  return [ordered]@{
+    schema_version = [string]$liveProbeArtifactContract.schema_version
+    artifact_mode = [string]$liveProbeArtifactContract.artifact_mode
+    classification = $classification
+    supported_classifications = @($liveProbeArtifactContract.classification_values | ForEach-Object { [string]$_ })
+    db_write_performed = $false
+    production_writer_replaced = $false
+    production_source_of_truth_switch_allowed = $false
+    dual_commit_allowed = $false
+    safe_command_summary = [ordered]@{
+      script = [string]$liveExecutionHandoffContract.safe_live_probe_command.script
+      flags = @($liveExecutionHandoffContract.safe_live_probe_command.flags | ForEach-Object { [string]$_ })
+      required_env_markers = @($modeEnvVar, $databaseUrlEnvVar, $featureEnvVar)
+      database_url_output = "presence_marker_only"
+      env_value_output = "omitted"
+      raw_env_values_echoed = $false
+    }
+    row_count_evidence = $rowCountEvidence
+    transaction_timing_durations = [ordered]@{
+      begin_transaction_duration_ms = $null
+      lock_idempotency_scope_duration_ms = $null
+      lock_wallet_scope_duration_ms = $null
+      lock_budget_scope_duration_ms = $null
+      execute_bounded_commands_duration_ms = $null
+      row_count_enforcement_duration_ms = $null
+      rollback_transaction_duration_ms = $null
+      measurement_source = "pending_live_probe_executor"
+    }
+    rollback_no_commit_proof = [ordered]@{
+      rollback_observed = $false
+      commit_observed = $false
+      probe_commits_billing_ledger = $false
+      production_writer_replaced = $false
+      dual_commit_observed = $false
+      local_writer_fallback = "control_plane_local_sql_writer"
+      proof_source = "pending_live_probe_executor"
+    }
+    classification_rules = [ordered]@{
+      blocker = @($liveProbeArtifactContract.classification_rules.blocker | ForEach-Object { [string]$_ })
+      pass = @($liveProbeArtifactContract.classification_rules.pass | ForEach-Object { [string]$_ })
+      fail = @($liveProbeArtifactContract.classification_rules.fail | ForEach-Object { [string]$_ })
+    }
+    blockers = @($artifactBlockers)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      dedupe_material_echoed = $false
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
   }
 }
 
@@ -527,6 +661,7 @@ $summary = [ordered]@{
     }
   }
   live_execution_handoff = (New-LiveExecutionHandoff -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
+  live_probe_evidence_artifact = (New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -Blockers @($blockers))
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version
