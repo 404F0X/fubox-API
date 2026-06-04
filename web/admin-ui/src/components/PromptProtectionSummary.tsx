@@ -4,6 +4,8 @@ import { StateChip, isJsonRecord, safeFieldValue } from "./adminUtils";
 type PromptProtectionSummaryData = {
   action: string;
   auditReadiness: string;
+  closureChecklist: string;
+  closureGaps: string;
   closureRule: string;
   configuredActions: string;
   configuredHitCount: string;
@@ -86,6 +88,14 @@ export function PromptProtectionSummary({
         <div>
           <dt>Closure rule</dt>
           <dd>{summary.closureRule}</dd>
+        </div>
+        <div>
+          <dt>Closure checklist</dt>
+          <dd>{summary.closureChecklist}</dd>
+        </div>
+        <div>
+          <dt>Closure gaps</dt>
+          <dd>{summary.closureGaps}</dd>
         </div>
         <div>
           <dt>Reason</dt>
@@ -210,6 +220,8 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
   return {
     action: enumField(record.action),
     auditReadiness: auditReadinessField(record),
+    closureChecklist: closureChecklistField(record),
+    closureGaps: closureGapsField(record),
     closureRule: closureRuleField(record),
     configuredActions: countMapField(record.configured_actions),
     configuredHitCount: numberField(record.configured_hit_count),
@@ -655,6 +667,26 @@ function closureRuleField(record: Record<string, JsonValue>): string {
   ].filter((rule): rule is string => Boolean(rule));
 
   return rules.length > 0 ? rules.join(", ") : "-";
+}
+
+function closureChecklistField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return "-";
+  }
+
+  return listField(handoff.closure_checklist);
+}
+
+function closureGapsField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return "-";
+  }
+
+  return listField(handoff.closure_gaps);
 }
 
 function auditHandoffRecord(record: Record<string, JsonValue>): Record<string, JsonValue> | null {

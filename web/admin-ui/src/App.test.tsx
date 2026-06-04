@@ -24,6 +24,8 @@ const SK_UNDERSCORE_PREFIX = ["s", "k", "_"].join("");
 const VK_UNDERSCORE_PREFIX = ["v", "k", "_"].join("");
 const GITHUB_PAT_PREFIX = ["github", "_", "pat", "_"].join("");
 const SESSION_PREFIX = ["se", "ss", "_"].join("");
+const PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT =
+  "gateway_live_proof, postgres_audit_row, mock_provider_upstream_refusal, provider_attempts_zero, latency_envelope, current_provenance, duration_available, freshness_replay_classification";
 
 function bearerPlaceholder(value: string): string {
   return `${BEARER_SCHEME} ${value}`;
@@ -214,10 +216,22 @@ function stubAdminFetch(
     request_count: 1,
     returned_count: 1,
   };
+  const promptProtectionClosureChecklist = [
+    "gateway_live_proof",
+    "postgres_audit_row",
+    "mock_provider_upstream_refusal",
+    "provider_attempts_zero",
+    "latency_envelope",
+    "current_provenance",
+    "duration_available",
+    "freshness_replay_classification",
+  ];
   const promptProtectionSignal = {
     action: "reject",
     audit_readiness: {
       classification: "blocked",
+      closure_checklist: promptProtectionClosureChecklist,
+      closure_gaps: ["gateway_live_proof_blocker", "postgres_audit_row_missing", "mock_provider_upstream_refusal_missing"],
       command_summary: "live_proof_report",
       current_provenance_required: true,
       duration_available_required: true,
@@ -314,6 +328,8 @@ function stubAdminFetch(
     ...promptProtectionSignal,
     audit_readiness: {
       classification: "pass",
+      closure_checklist: promptProtectionClosureChecklist,
+      closure_gaps: ["none"],
       command_summary: "live_proof_report",
       current_provenance_required: true,
       duration_available_required: true,
@@ -377,6 +393,8 @@ function stubAdminFetch(
     ...promptProtectionSignal,
     audit_readiness: {
       classification: "fail",
+      closure_checklist: promptProtectionClosureChecklist,
+      closure_gaps: ["latency_envelope_failed", "duration_unavailable"],
       command_summary: "live_proof_report",
       current_provenance_required: true,
       duration_available_required: true,
@@ -425,6 +443,7 @@ function stubAdminFetch(
     audit_readiness: {
       ...liveEligiblePromptProtectionSignal.audit_readiness,
       classification: "blocked",
+      closure_gaps: ["stale_generated_at"],
       freshness_replay_classification: "stale_generated_at_refused",
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-stale-generated-command-hidden")}`,
       raw_report_path: "C:\\secret\\prompt-stale-generated-report-hidden.json",
@@ -454,6 +473,7 @@ function stubAdminFetch(
     audit_readiness: {
       ...liveEligiblePromptProtectionSignal.audit_readiness,
       classification: "fail",
+      closure_gaps: ["stale_repo_commit"],
       freshness_replay_classification: "stale_repo_commit_refused",
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-stale-commit-command-hidden")}`,
       raw_report_path: "C:\\secret\\prompt-stale-commit-report-hidden.json",
@@ -484,6 +504,7 @@ function stubAdminFetch(
     audit_readiness: {
       ...liveEligiblePromptProtectionSignal.audit_readiness,
       classification: "fail",
+      closure_gaps: ["duplicate_proof_run"],
       freshness_replay_classification: "duplicate_proof_run_refused",
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-duplicate-run-command-hidden")}`,
       raw_report_path: "C:\\secret\\prompt-duplicate-run-report-hidden.json",
@@ -510,6 +531,7 @@ function stubAdminFetch(
     audit_readiness: {
       ...promptProtectionSignal.audit_readiness,
       classification: "blocked",
+      closure_gaps: ["simulated_replay"],
       freshness_replay_classification: "simulated_replay_refused",
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-simulated-replay-command-hidden")}`,
       raw_report_path: "C:\\secret\\prompt-simulated-replay-report-hidden.json",
@@ -2748,6 +2770,12 @@ describe("App", () => {
     expect(within(promptProtectionPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
+    expect(within(promptProtectionPanel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "gateway_live_proof_blocker, postgres_audit_row_missing, mock_provider_upstream_refusal_missing",
+      ),
+    ).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
@@ -2947,6 +2975,12 @@ describe("App", () => {
     expect(within(auditPromptPanel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
+    expect(
+      within(auditPromptPanel as HTMLElement).getByText(
+        "gateway_live_proof_blocker, postgres_audit_row_missing, mock_provider_upstream_refusal_missing",
+      ),
+    ).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("0")).toBeInTheDocument();
@@ -3027,6 +3061,8 @@ describe("App", () => {
     expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("none")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getAllByText("eligible").length).toBeGreaterThanOrEqual(2);
     expect(within(panel as HTMLElement).getByText("not_blocked")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("2026-06-04T14:05:00Z")).toBeInTheDocument();
@@ -3067,6 +3103,8 @@ describe("App", () => {
     expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("latency_envelope_failed, duration_unavailable")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
     expect(within(panel as HTMLElement).getByText("freshness_or_replay_refused")).toBeInTheDocument();
@@ -3149,6 +3187,8 @@ describe("App", () => {
       expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
       expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
       expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getByText(classification.replace("_refused", ""))).toBeInTheDocument();
       expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
 
       expect(document.body.textContent).not.toContain(forbiddenReportPath);
