@@ -435,6 +435,31 @@ Live preflight without sending evidence requests:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -PreflightOnly
 ```
 
+Unified test wrapper commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -PromptProtectionPostgresProofOnly
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -PromptProtectionPostgresProofOnly -PromptProtectionPostgresProofLive
+```
+
+The first command is contract-only and must not require live services. The
+second command is the explicit live opt-in and preserves script exit semantics:
+`0` pass, `1` evidence mismatch, and `2` external blocker.
+
+Release smoke gate commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke -RunRuntimeSmoke
+```
+
+The default release smoke gate runs Prompt Protection Postgres proof
+`-ContractOnly`. `-RunRuntimeSmoke` is the only release path that invokes
+`-Live`; blocker exit `2` then fails the explicit runtime smoke instead of being
+reported as a default-gate failure.
+
 A passing run can close the E13 Postgres `provider_attempts` no-side-effect gap
 for the four Gateway surfaces above. It cannot close Admin UI or audit
 visualization gaps; those require separate UI/audit evidence.

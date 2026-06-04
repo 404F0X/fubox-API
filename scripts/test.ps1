@@ -3,7 +3,9 @@ param(
   [switch]$GatewayRateLimitReservationSmokePreflight,
   [switch]$GatewayRateLimitReservationSmokeLive,
   [switch]$ControlPlaneLedgerAdjustmentExecuteSmokeOnly,
-  [switch]$ControlPlaneLedgerAdjustmentExecuteSmokeLive
+  [switch]$ControlPlaneLedgerAdjustmentExecuteSmokeLive,
+  [switch]$PromptProtectionPostgresProofOnly,
+  [switch]$PromptProtectionPostgresProofLive
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,6 +85,26 @@ function Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke {
     -Parameters (Get-ControlPlaneLedgerAdjustmentExecuteSmokeParameters)
 }
 
+function Get-PromptProtectionPostgresProofParameters {
+  if ($PromptProtectionPostgresProofLive) {
+    return @{ Live = $true }
+  }
+
+  return @{ ContractOnly = $true }
+}
+
+function Invoke-PromptProtectionPostgresProof {
+  $mode = "contract-only"
+  if ($PromptProtectionPostgresProofLive) {
+    $mode = "live"
+  }
+
+  Write-Host "Prompt Protection Postgres proof mode: $mode"
+  Invoke-CheckedScript `
+    -Path "$PSScriptRoot\verify_prompt_protection_postgres_proof.ps1" `
+    -Parameters (Get-PromptProtectionPostgresProofParameters)
+}
+
 if (Test-TruthyEnv $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_ONLY) {
   $GatewayRateLimitReservationSmokeOnly = $true
 }
@@ -98,11 +120,28 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_ONLY) {
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_LIVE) {
   $ControlPlaneLedgerAdjustmentExecuteSmokeLive = $true
 }
+if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_ONLY) {
+  $PromptProtectionPostgresProofOnly = $true
+}
+if (Test-TruthyEnv $env:E13_PROMPT_PROTECTION_POSTGRES_PROOF_ONLY) {
+  $PromptProtectionPostgresProofOnly = $true
+}
+if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) {
+  $PromptProtectionPostgresProofLive = $true
+}
+if (Test-TruthyEnv $env:E13_PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) {
+  $PromptProtectionPostgresProofLive = $true
+}
 
 if ($GatewayRateLimitReservationSmokePreflight -and $GatewayRateLimitReservationSmokeLive) {
   throw "Use either -GatewayRateLimitReservationSmokePreflight or -GatewayRateLimitReservationSmokeLive, not both."
 }
-if ($GatewayRateLimitReservationSmokeOnly -and $ControlPlaneLedgerAdjustmentExecuteSmokeOnly) {
+$smokeOnlyCount = @(
+  $GatewayRateLimitReservationSmokeOnly,
+  $ControlPlaneLedgerAdjustmentExecuteSmokeOnly,
+  $PromptProtectionPostgresProofOnly
+) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+if ($smokeOnlyCount -gt 1) {
   throw "Use only one smoke-only switch at a time."
 }
 
@@ -112,6 +151,10 @@ if ($GatewayRateLimitReservationSmokeOnly) {
 }
 if ($ControlPlaneLedgerAdjustmentExecuteSmokeOnly) {
   Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke
+  exit 0
+}
+if ($PromptProtectionPostgresProofOnly) {
+  Invoke-PromptProtectionPostgresProof
   exit 0
 }
 
@@ -129,6 +172,7 @@ Invoke-CheckedScript -Path "$PSScriptRoot\verify_gateway_retry_fallback_smoke.ps
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_provider_key_runtime_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-GatewayRateLimitReservationSmoke
 Invoke-ControlPlaneLedgerAdjustmentExecuteSmoke
+Invoke-PromptProtectionPostgresProof
 Invoke-CheckedScript -Path "$PSScriptRoot\verify_compose_smoke.ps1" -Parameters @{ DryRun = $true }
 Invoke-CheckedScript -Path "$PSScriptRoot\test_supply_chain_scan.ps1"
 Invoke-CheckedScript -Path "$PSScriptRoot\test_supply_chain_artifacts.ps1"

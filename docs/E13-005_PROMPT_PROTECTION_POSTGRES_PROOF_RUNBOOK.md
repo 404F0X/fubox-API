@@ -148,6 +148,61 @@ Script exit semantics:
 - Exit `1`: Gateway/Postgres are reachable, but HTTP/DB evidence mismatches.
 - Exit `2`: external blocker prevents the live proof from being authoritative.
 
+## Test And Release Gate Wiring
+
+S12 wires the script into the unified test and release gates.
+
+Default test smoke-only command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -PromptProtectionPostgresProofOnly
+```
+
+Equivalent env:
+
+```powershell
+$env:PROMPT_PROTECTION_POSTGRES_PROOF_ONLY = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
+```
+
+Default full `scripts\test.ps1` also invokes the proof in `-ContractOnly` mode.
+It must not require Docker, Gateway, Postgres, mock-provider, or credentials.
+
+Live test opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -PromptProtectionPostgresProofOnly -PromptProtectionPostgresProofLive
+
+$env:PROMPT_PROTECTION_POSTGRES_PROOF_ONLY = "1"
+$env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
+```
+
+Default release smoke gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke
+```
+
+The default release smoke gate runs
+`scripts\verify_prompt_protection_postgres_proof.ps1 -ContractOnly` and does not
+require live services.
+
+Release live opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke -RunRuntimeSmoke
+
+$env:RELEASE_RUN_RUNTIME_SMOKE = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke
+```
+
+When runtime smoke is explicitly requested, the release smoke gate invokes
+`scripts\verify_prompt_protection_postgres_proof.ps1 -Live`. The proof script's
+exit `2` external blocker is a release smoke failure only in this explicit live
+mode. Exit `1` remains evidence mismatch/failure, and exit `0` is the only live
+pass.
+
 ## Request Commands
 
 Use a unique run id so each request can be found by `request_body_hash`.

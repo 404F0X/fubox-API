@@ -557,6 +557,7 @@ function Invoke-SmokeCheck {
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_gateway_rate_limit_reservation_smoke.ps1" -Arguments @("-DryRun")))
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_openapi_contract.ps1"))
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1" -Arguments @("-ContractOnly")))
+  [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_prompt_protection_postgres_proof.ps1" -Arguments @("-ContractOnly")))
 
   $missingSdkTools = New-Object System.Collections.Generic.List[string]
   if (-not (Test-ToolAvailable "node")) {
@@ -566,7 +567,7 @@ function Invoke-SmokeCheck {
     [void]$missingSdkTools.Add("npm")
   }
 
-  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks plus Control Plane ledger adjustment execute OpenAPI and contract-only checks; SDK dry-run runs when node and npm are available.")
+  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks plus Control Plane ledger adjustment execute OpenAPI/contract-only and Prompt Protection Postgres proof contract-only checks; SDK dry-run runs when node and npm are available.")
   if ($RunRuntimeSmoke) {
     $notes += "runtime smoke was requested explicitly."
   }
@@ -607,10 +608,11 @@ function Invoke-SmokeCheck {
     [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_compose_smoke.ps1"))
     [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_gateway_rate_limit_reservation_smoke.ps1"))
     [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1"))
+    [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_prompt_protection_postgres_proof.ps1" -Arguments @("-Live")))
     [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_sdk_smoke.ps1" -Arguments @("-SkipInstall", "-AllowStreamingSkip")))
   }
 
-  $notes += "pass -RunRuntimeSmoke only after the local compose stack is up; gateway rate-limit reservation live smoke requires seeded Postgres, Gateway, and mock-provider, and Control Plane ledger adjustment execute live smoke requires seeded Postgres and control-plane."
+  $notes += "pass -RunRuntimeSmoke only after the local compose stack is up; gateway rate-limit reservation live smoke and Prompt Protection Postgres proof require seeded Postgres, Gateway, and mock-provider, and Control Plane ledger adjustment execute live smoke requires seeded Postgres and control-plane."
 
   return New-CommandsCheckResult `
     -Id "smoke" `
