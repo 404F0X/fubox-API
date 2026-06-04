@@ -6,6 +6,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 pub(crate) const GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA: &str = "gateway_tpm_estimate_mapper_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_availability_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum GatewayTpmEstimateEndpoint {
@@ -82,6 +84,242 @@ impl GatewayTpmEstimateSignals {
             total_tokens: None,
             conservative_fallback_tokens,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceType {
+    Tokenizer,
+    ReadModel,
+}
+
+impl GatewayTrustedNumericSourceType {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tokenizer => "tokenizer",
+            Self::ReadModel => "read_model",
+        }
+    }
+
+    pub(crate) fn from_str(source_type: &str) -> Option<Self> {
+        match source_type {
+            "tokenizer" => Some(Self::Tokenizer),
+            "read_model" => Some(Self::ReadModel),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericTokenKind {
+    PromptTokens,
+    InputTokens,
+}
+
+impl GatewayTrustedNumericTokenKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PromptTokens => "prompt_tokens",
+            Self::InputTokens => "input_tokens",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceCandidate<'a> {
+    pub(crate) source_type: &'a str,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) tokens: Option<i64>,
+}
+
+impl<'a> GatewayTrustedNumericSourceCandidate<'a> {
+    pub(crate) const fn new(
+        source_type: &'a str,
+        token_kind: GatewayTrustedNumericTokenKind,
+        tokens: Option<i64>,
+    ) -> Self {
+        Self {
+            source_type,
+            token_kind,
+            tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceAvailabilityStatus {
+    Available,
+    Unavailable,
+    Invalid,
+}
+
+impl GatewayTrustedNumericSourceAvailabilityStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceInvalidReason {
+    SourceTypeNotAllowed,
+    NegativeTokens,
+}
+
+impl GatewayTrustedNumericSourceInvalidReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceTypeNotAllowed => "source_type_not_allowed",
+            Self::NegativeTokens => "negative_tokens",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceAvailability {
+    pub(crate) status: GatewayTrustedNumericSourceAvailabilityStatus,
+    pub(crate) source_type: Option<GatewayTrustedNumericSourceType>,
+    pub(crate) token_kind: Option<GatewayTrustedNumericTokenKind>,
+    pub(crate) tokens: Option<u64>,
+    pub(crate) token_lower_bound: u64,
+    pub(crate) token_upper_bound: u64,
+    pub(crate) fallback_required: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) invalid_reason: Option<GatewayTrustedNumericSourceInvalidReason>,
+}
+
+impl GatewayTrustedNumericSourceAvailability {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceAvailabilitySummary {
+        GatewayTrustedNumericSourceAvailabilitySummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA,
+            status: self.status.as_str(),
+            source_type: self
+                .source_type
+                .map(GatewayTrustedNumericSourceType::as_str),
+            token_kind: self.token_kind.map(GatewayTrustedNumericTokenKind::as_str),
+            tokens: self.tokens,
+            token_lower_bound: self.token_lower_bound,
+            token_upper_bound: self.token_upper_bound,
+            fallback_required: self.fallback_required,
+            material_in_output: self.material_in_output,
+            invalid_reason: self
+                .invalid_reason
+                .map(GatewayTrustedNumericSourceInvalidReason::as_str),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceAvailabilitySummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) source_type: Option<&'static str>,
+    pub(crate) token_kind: Option<&'static str>,
+    pub(crate) tokens: Option<u64>,
+    pub(crate) token_lower_bound: u64,
+    pub(crate) token_upper_bound: u64,
+    pub(crate) fallback_required: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) invalid_reason: Option<&'static str>,
+}
+
+pub(crate) fn gateway_trusted_numeric_source_availability(
+    candidate: Option<GatewayTrustedNumericSourceCandidate<'_>>,
+) -> GatewayTrustedNumericSourceAvailability {
+    const TOKEN_LOWER_BOUND: u64 = 0;
+    const TOKEN_UPPER_BOUND: u64 = i64::MAX as u64;
+
+    let Some(candidate) = candidate else {
+        return GatewayTrustedNumericSourceAvailability {
+            status: GatewayTrustedNumericSourceAvailabilityStatus::Unavailable,
+            source_type: None,
+            token_kind: None,
+            tokens: None,
+            token_lower_bound: TOKEN_LOWER_BOUND,
+            token_upper_bound: TOKEN_UPPER_BOUND,
+            fallback_required: true,
+            material_in_output: false,
+            invalid_reason: None,
+        };
+    };
+    let Some(source_type) = GatewayTrustedNumericSourceType::from_str(candidate.source_type) else {
+        return GatewayTrustedNumericSourceAvailability {
+            status: GatewayTrustedNumericSourceAvailabilityStatus::Invalid,
+            source_type: None,
+            token_kind: None,
+            tokens: None,
+            token_lower_bound: TOKEN_LOWER_BOUND,
+            token_upper_bound: TOKEN_UPPER_BOUND,
+            fallback_required: true,
+            material_in_output: false,
+            invalid_reason: Some(GatewayTrustedNumericSourceInvalidReason::SourceTypeNotAllowed),
+        };
+    };
+    let Some(tokens) = candidate.tokens else {
+        return GatewayTrustedNumericSourceAvailability {
+            status: GatewayTrustedNumericSourceAvailabilityStatus::Unavailable,
+            source_type: Some(source_type),
+            token_kind: Some(candidate.token_kind),
+            tokens: None,
+            token_lower_bound: TOKEN_LOWER_BOUND,
+            token_upper_bound: TOKEN_UPPER_BOUND,
+            fallback_required: true,
+            material_in_output: false,
+            invalid_reason: None,
+        };
+    };
+    if tokens < 0 {
+        return GatewayTrustedNumericSourceAvailability {
+            status: GatewayTrustedNumericSourceAvailabilityStatus::Invalid,
+            source_type: Some(source_type),
+            token_kind: Some(candidate.token_kind),
+            tokens: None,
+            token_lower_bound: TOKEN_LOWER_BOUND,
+            token_upper_bound: TOKEN_UPPER_BOUND,
+            fallback_required: true,
+            material_in_output: false,
+            invalid_reason: Some(GatewayTrustedNumericSourceInvalidReason::NegativeTokens),
+        };
+    }
+
+    GatewayTrustedNumericSourceAvailability {
+        status: GatewayTrustedNumericSourceAvailabilityStatus::Available,
+        source_type: Some(source_type),
+        token_kind: Some(candidate.token_kind),
+        tokens: Some(tokens as u64),
+        token_lower_bound: TOKEN_LOWER_BOUND,
+        token_upper_bound: TOKEN_UPPER_BOUND,
+        fallback_required: false,
+        material_in_output: false,
+        invalid_reason: None,
+    }
+}
+
+pub(crate) fn gateway_tpm_signals_from_trusted_numeric_source(
+    availability: &GatewayTrustedNumericSourceAvailability,
+    conservative_fallback_tokens: i64,
+) -> GatewayTpmEstimateSignals {
+    if availability.status != GatewayTrustedNumericSourceAvailabilityStatus::Available {
+        return GatewayTpmEstimateSignals::missing_tokenizer(conservative_fallback_tokens);
+    }
+
+    match (availability.token_kind, availability.tokens) {
+        (Some(GatewayTrustedNumericTokenKind::InputTokens), Some(tokens)) => {
+            GatewayTpmEstimateSignals::trusted_input_tokens(
+                Some(tokens.min(i64::MAX as u64) as i64),
+                conservative_fallback_tokens,
+            )
+        }
+        (Some(GatewayTrustedNumericTokenKind::PromptTokens), Some(tokens)) => {
+            GatewayTpmEstimateSignals::trusted_prompt_tokens(
+                Some(tokens.min(i64::MAX as u64) as i64),
+                conservative_fallback_tokens,
+            )
+        }
+        _ => GatewayTpmEstimateSignals::missing_tokenizer(conservative_fallback_tokens),
     }
 }
 
@@ -602,6 +840,316 @@ mod tests {
             assert!(
                 !handoff_text.contains(forbidden),
                 "smoke handoff contract leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_availability_contract() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_availability_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA)
+        );
+        assert_eq!(
+            contract["runtime_wiring_status"].as_str(),
+            Some(
+                "not wired; runtime remains missing-tokenizer fallback until a trusted numeric tokenizer/read-model source exists"
+            )
+        );
+        assert_eq!(
+            contract["accepted_material"].as_str(),
+            Some("numeric token counts from whitelisted trusted sources only")
+        );
+
+        let allowed_source_types = contract["allowed_source_types"]
+            .as_array()
+            .expect("allowed source types should be an array");
+        assert_eq!(allowed_source_types.len(), 2);
+        for source_type in ["tokenizer", "read_model"] {
+            assert!(
+                allowed_source_types
+                    .iter()
+                    .any(|source| source.as_str() == Some(source_type)),
+                "trusted source availability should allow {source_type}"
+            );
+            assert!(
+                GatewayTrustedNumericSourceType::from_str(source_type).is_some(),
+                "trusted source helper should accept {source_type}"
+            );
+        }
+
+        for source_type in contract["forbidden_source_types"]
+            .as_array()
+            .expect("forbidden source types should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                GatewayTrustedNumericSourceType::from_str(source_type).is_none(),
+                "trusted source helper must reject raw or untrusted source type: {source_type}"
+            );
+        }
+
+        let numeric_fields = contract["numeric_only_output_fields"]
+            .as_array()
+            .expect("numeric-only output fields should be an array");
+        for field in [
+            "schema",
+            "status",
+            "source_type",
+            "token_kind",
+            "tokens",
+            "token_lower_bound",
+            "token_upper_bound",
+            "fallback_required",
+            "material_in_output",
+            "invalid_reason",
+        ] {
+            assert!(
+                numeric_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "trusted source availability output should include {field}"
+            );
+        }
+        assert_eq!(contract["token_bounds"]["lower"], 0);
+        assert_eq!(contract["token_bounds"]["upper"], i64::MAX);
+
+        let states = contract["states"]
+            .as_array()
+            .expect("availability states should be an array");
+        for required_state in [
+            "available_tokenizer_prompt_tokens",
+            "available_read_model_input_tokens",
+            "unavailable_missing_source",
+            "unavailable_missing_tokens",
+            "invalid_raw_source_type",
+            "invalid_negative_tokens",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "trusted source availability contract missing state: {required_state}"
+            );
+        }
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "trusted source availability contract should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_availability_controls_fallback() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_availability_contract"];
+
+        let available_prompt = gateway_trusted_numeric_source_availability(Some(
+            GatewayTrustedNumericSourceCandidate::new(
+                "tokenizer",
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+        let available_prompt_summary = available_prompt.safe_summary();
+        assert_eq!(
+            available_prompt.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Available
+        );
+        assert_eq!(available_prompt_summary.status, "available");
+        assert_eq!(available_prompt_summary.source_type, Some("tokenizer"));
+        assert_eq!(available_prompt_summary.token_kind, Some("prompt_tokens"));
+        assert_eq!(available_prompt_summary.tokens, Some(321));
+        assert_eq!(available_prompt_summary.token_lower_bound, 0);
+        assert_eq!(available_prompt_summary.token_upper_bound, i64::MAX as u64);
+        assert!(!available_prompt_summary.fallback_required);
+        assert!(!available_prompt_summary.material_in_output);
+
+        let prompt_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "sk-live-provider-secret raw prompt" }],
+                "max_completion_tokens": 79
+            }),
+            gateway_tpm_signals_from_trusted_numeric_source(&available_prompt, 256),
+        );
+        assert_eq!(
+            prompt_plan.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(prompt_plan.estimate.required_tokens, 400);
+        assert!(!prompt_plan.estimate.used_conservative_fallback);
+
+        let available_input = gateway_trusted_numeric_source_availability(Some(
+            GatewayTrustedNumericSourceCandidate::new(
+                "read_model",
+                GatewayTrustedNumericTokenKind::InputTokens,
+                Some(222),
+            ),
+        ));
+        let input_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "sk-live-provider-secret raw embedding input" }),
+            gateway_tpm_signals_from_trusted_numeric_source(&available_input, 256),
+        );
+        assert_eq!(
+            input_plan.estimate.source,
+            RateLimitTpmEstimateSource::TotalTokens
+        );
+        assert_eq!(input_plan.estimate.required_tokens, 222);
+        assert!(!input_plan.estimate.used_conservative_fallback);
+
+        let unavailable_missing_source = gateway_trusted_numeric_source_availability(None);
+        let unavailable_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiResponses,
+            &json!({
+                "input": "raw response input must not be counted",
+                "max_output_tokens": 128
+            }),
+            gateway_tpm_signals_from_trusted_numeric_source(&unavailable_missing_source, 256),
+        );
+        assert_eq!(
+            unavailable_missing_source.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Unavailable
+        );
+        assert_eq!(
+            unavailable_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(unavailable_plan.estimate.required_tokens, 384);
+        assert!(unavailable_plan.estimate.used_conservative_fallback);
+
+        let unavailable_missing_tokens = gateway_trusted_numeric_source_availability(Some(
+            GatewayTrustedNumericSourceCandidate::new(
+                "tokenizer",
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                None,
+            ),
+        ));
+        assert_eq!(
+            unavailable_missing_tokens.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Unavailable
+        );
+        assert_eq!(
+            unavailable_missing_tokens.safe_summary().source_type,
+            Some("tokenizer")
+        );
+        assert_eq!(unavailable_missing_tokens.safe_summary().tokens, None);
+        assert!(unavailable_missing_tokens.safe_summary().fallback_required);
+
+        let invalid_raw_source = gateway_trusted_numeric_source_availability(Some(
+            GatewayTrustedNumericSourceCandidate::new(
+                "request_body",
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(9_999),
+            ),
+        ));
+        let invalid_raw_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "raw prompt length must not be counted" }],
+                "max_completion_tokens": 128
+            }),
+            gateway_tpm_signals_from_trusted_numeric_source(&invalid_raw_source, 256),
+        );
+        assert_eq!(
+            invalid_raw_source.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Invalid
+        );
+        assert_eq!(
+            invalid_raw_source.invalid_reason,
+            Some(GatewayTrustedNumericSourceInvalidReason::SourceTypeNotAllowed)
+        );
+        assert_eq!(invalid_raw_source.safe_summary().source_type, None);
+        assert_eq!(
+            invalid_raw_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(invalid_raw_plan.estimate.required_tokens, 384);
+        assert!(invalid_raw_plan.estimate.used_conservative_fallback);
+
+        let invalid_negative = gateway_trusted_numeric_source_availability(Some(
+            GatewayTrustedNumericSourceCandidate::new(
+                "read_model",
+                GatewayTrustedNumericTokenKind::InputTokens,
+                Some(-7),
+            ),
+        ));
+        let invalid_negative_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw embedding input must not be counted" }),
+            gateway_tpm_signals_from_trusted_numeric_source(&invalid_negative, 256),
+        );
+        assert_eq!(
+            invalid_negative.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Invalid
+        );
+        assert_eq!(
+            invalid_negative.invalid_reason,
+            Some(GatewayTrustedNumericSourceInvalidReason::NegativeTokens)
+        );
+        assert_eq!(
+            invalid_negative_plan.estimate.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(invalid_negative_plan.estimate.required_tokens, 256);
+        assert!(invalid_negative_plan.estimate.used_conservative_fallback);
+
+        let serialized = serde_json::to_string(&json!({
+            "availability": [
+                available_prompt.safe_summary(),
+                available_input.safe_summary(),
+                unavailable_missing_source.safe_summary(),
+                unavailable_missing_tokens.safe_summary(),
+                invalid_raw_source.safe_summary(),
+                invalid_negative.safe_summary()
+            ],
+            "plans": [
+                prompt_plan.safe_summary(),
+                input_plan.safe_summary(),
+                unavailable_plan.safe_summary(),
+                invalid_raw_plan.safe_summary(),
+                invalid_negative_plan.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric availability summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric source availability output leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in [
+            "raw prompt",
+            "raw response input",
+            "raw embedding input",
+            "request_body",
+            "body_length",
+            "string_length",
+            "\"messages\"",
+            "\"content\"",
+        ] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "trusted numeric source availability output leaked raw marker: {raw_marker}"
             );
         }
     }

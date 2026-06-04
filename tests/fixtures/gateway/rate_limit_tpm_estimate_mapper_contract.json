@@ -13,6 +13,125 @@
     "negative_signal_behavior": "sanitize to missing and use fallback",
     "overflow_behavior": "required_tokens_i64 clamps to i64::MAX"
   },
+  "trusted_numeric_source_availability_contract": {
+    "schema": "gateway_tpm_trusted_numeric_source_availability_v1",
+    "runtime_wiring_status": "not wired; runtime remains missing-tokenizer fallback until a trusted numeric tokenizer/read-model source exists",
+    "allowed_source_types": ["tokenizer", "read_model"],
+    "forbidden_source_types": [
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "string_length",
+      "body_length",
+      "message_text",
+      "embedding_text",
+      "header_material",
+      "provider_response",
+      "provider_endpoint"
+    ],
+    "accepted_material": "numeric token counts from whitelisted trusted sources only",
+    "numeric_only_output_fields": [
+      "schema",
+      "status",
+      "source_type",
+      "token_kind",
+      "tokens",
+      "token_lower_bound",
+      "token_upper_bound",
+      "fallback_required",
+      "material_in_output",
+      "invalid_reason"
+    ],
+    "token_bounds": {
+      "lower": 0,
+      "upper": 9223372036854775807
+    },
+    "states": [
+      {
+        "name": "available_tokenizer_prompt_tokens",
+        "source_type": "tokenizer",
+        "token_kind": "prompt_tokens",
+        "tokens": 321,
+        "status": "available",
+        "fallback_required": false,
+        "material_in_output": false
+      },
+      {
+        "name": "available_read_model_input_tokens",
+        "source_type": "read_model",
+        "token_kind": "input_tokens",
+        "tokens": 222,
+        "status": "available",
+        "fallback_required": false,
+        "material_in_output": false
+      },
+      {
+        "name": "unavailable_missing_source",
+        "source_type": null,
+        "token_kind": null,
+        "tokens": null,
+        "status": "unavailable",
+        "fallback_required": true,
+        "material_in_output": false
+      },
+      {
+        "name": "unavailable_missing_tokens",
+        "source_type": "tokenizer",
+        "token_kind": "prompt_tokens",
+        "tokens": null,
+        "status": "unavailable",
+        "fallback_required": true,
+        "material_in_output": false
+      },
+      {
+        "name": "invalid_raw_source_type",
+        "source_type": "request_body",
+        "token_kind": "prompt_tokens",
+        "tokens": 9999,
+        "status": "invalid",
+        "invalid_reason": "source_type_not_allowed",
+        "fallback_required": true,
+        "material_in_output": false
+      },
+      {
+        "name": "invalid_negative_tokens",
+        "source_type": "read_model",
+        "token_kind": "input_tokens",
+        "tokens": -7,
+        "status": "invalid",
+        "invalid_reason": "negative_tokens",
+        "fallback_required": true,
+        "material_in_output": false
+      }
+    ],
+    "unavailable_or_invalid_behavior": "use GatewayTpmEstimateSignals::missing_tokenizer with conservative fallback; do not infer tokens from request body, prompt/input text, headers, or provider material",
+    "side_effect_contract": {
+      "reservation_acquire": false,
+      "provider_attempt": false,
+      "provider_key_open": false,
+      "upstream_call": false,
+      "billing_side_effect": false
+    },
+    "forbidden_output_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "body_length",
+      "string_length",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state"
+    ]
+  },
   "runtime_source_guard": {
     "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
     "trusted_signal_runtime_sources": [],
