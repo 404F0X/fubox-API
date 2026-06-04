@@ -8,6 +8,8 @@ use serde_json::Value;
 pub(crate) const GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA: &str = "gateway_tpm_estimate_mapper_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_availability_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_readiness_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum GatewayTpmEstimateEndpoint {
@@ -165,6 +167,112 @@ impl GatewayTrustedNumericSourceAdapterOutput {
             tokens,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceReadinessInput {
+    pub(crate) tokenizer_enabled: bool,
+    pub(crate) tokenizer_available: bool,
+    pub(crate) read_model_enabled: bool,
+    pub(crate) read_model_available: bool,
+}
+
+impl GatewayTrustedNumericSourceReadinessInput {
+    pub(crate) const fn new(
+        tokenizer_enabled: bool,
+        tokenizer_available: bool,
+        read_model_enabled: bool,
+        read_model_available: bool,
+    ) -> Self {
+        Self {
+            tokenizer_enabled,
+            tokenizer_available,
+            read_model_enabled,
+            read_model_available,
+        }
+    }
+
+    pub(crate) const fn disabled_by_default() -> Self {
+        Self {
+            tokenizer_enabled: false,
+            tokenizer_available: false,
+            read_model_enabled: false,
+            read_model_available: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceReadinessStatus {
+    Unavailable,
+    Available,
+}
+
+impl GatewayTrustedNumericSourceReadinessStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Available => "available",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProviderReadinessStatus {
+    Disabled,
+    Unavailable,
+    Available,
+}
+
+impl GatewayTrustedNumericSourceProviderReadinessStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+            Self::Available => "available",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceReadiness {
+    pub(crate) status: GatewayTrustedNumericSourceReadinessStatus,
+    pub(crate) tokenizer_status: GatewayTrustedNumericSourceProviderReadinessStatus,
+    pub(crate) read_model_status: GatewayTrustedNumericSourceProviderReadinessStatus,
+    pub(crate) tokenizer_enabled: bool,
+    pub(crate) read_model_enabled: bool,
+    pub(crate) feature_available: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceReadiness {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceReadinessSummary {
+        GatewayTrustedNumericSourceReadinessSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA,
+            status: self.status.as_str(),
+            tokenizer_status: self.tokenizer_status.as_str(),
+            read_model_status: self.read_model_status.as_str(),
+            tokenizer_enabled: self.tokenizer_enabled,
+            read_model_enabled: self.read_model_enabled,
+            feature_available: self.feature_available,
+            fallback_required: self.fallback_required,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceReadinessSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) tokenizer_status: &'static str,
+    pub(crate) read_model_status: &'static str,
+    pub(crate) tokenizer_enabled: bool,
+    pub(crate) read_model_enabled: bool,
+    pub(crate) feature_available: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) material_in_output: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +437,56 @@ pub(crate) fn gateway_trusted_numeric_source_availability_from_adapter(
             output.tokens,
         )
     }))
+}
+
+pub(crate) fn gateway_trusted_numeric_source_readiness(
+    input: GatewayTrustedNumericSourceReadinessInput,
+) -> GatewayTrustedNumericSourceReadiness {
+    let tokenizer_status =
+        provider_readiness_status(input.tokenizer_enabled, input.tokenizer_available);
+    let read_model_status =
+        provider_readiness_status(input.read_model_enabled, input.read_model_available);
+    let feature_available = tokenizer_status
+        == GatewayTrustedNumericSourceProviderReadinessStatus::Available
+        || read_model_status == GatewayTrustedNumericSourceProviderReadinessStatus::Available;
+
+    GatewayTrustedNumericSourceReadiness {
+        status: if feature_available {
+            GatewayTrustedNumericSourceReadinessStatus::Available
+        } else {
+            GatewayTrustedNumericSourceReadinessStatus::Unavailable
+        },
+        tokenizer_status,
+        read_model_status,
+        tokenizer_enabled: input.tokenizer_enabled,
+        read_model_enabled: input.read_model_enabled,
+        feature_available,
+        fallback_required: !feature_available,
+        material_in_output: false,
+    }
+}
+
+fn provider_readiness_status(
+    enabled: bool,
+    available: bool,
+) -> GatewayTrustedNumericSourceProviderReadinessStatus {
+    match (enabled, available) {
+        (false, _) => GatewayTrustedNumericSourceProviderReadinessStatus::Disabled,
+        (true, true) => GatewayTrustedNumericSourceProviderReadinessStatus::Available,
+        (true, false) => GatewayTrustedNumericSourceProviderReadinessStatus::Unavailable,
+    }
+}
+
+pub(crate) fn gateway_tpm_signals_for_readiness(
+    readiness: &GatewayTrustedNumericSourceReadiness,
+    availability: &GatewayTrustedNumericSourceAvailability,
+    conservative_fallback_tokens: i64,
+) -> GatewayTpmEstimateSignals {
+    if !readiness.feature_available {
+        return GatewayTpmEstimateSignals::missing_tokenizer(conservative_fallback_tokens);
+    }
+
+    gateway_tpm_signals_from_trusted_numeric_source(availability, conservative_fallback_tokens)
 }
 
 pub(crate) fn gateway_tpm_signals_from_trusted_numeric_source(
@@ -1183,6 +1341,373 @@ mod tests {
             assert!(
                 !serialized.contains(raw_marker),
                 "trusted numeric source availability output leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_readiness_guard() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_readiness_guard_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA)
+        );
+        assert_eq!(
+            contract["implementation_status"].as_str(),
+            Some("readiness guard only; tokenizer/read-model adapters are not wired into runtime")
+        );
+        assert_eq!(
+            contract["runtime_config_default"].as_str(),
+            Some("disabled")
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(
+            contract["feature_availability_marker"].as_str(),
+            Some("feature_available")
+        );
+
+        let provider_status_fields = contract["provider_status_fields"]
+            .as_array()
+            .expect("provider status fields should be an array");
+        for field in ["tokenizer_status", "read_model_status"] {
+            assert!(
+                provider_status_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "readiness evidence should include provider status field: {field}"
+            );
+        }
+
+        let allowed_statuses = contract["allowed_provider_statuses"]
+            .as_array()
+            .expect("allowed provider statuses should be an array");
+        for status in ["disabled", "unavailable", "available"] {
+            assert!(
+                allowed_statuses
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(status)),
+                "readiness evidence should allow provider status: {status}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("readiness states should be an array");
+        for required_state in [
+            "disabled_by_default",
+            "tokenizer_enabled_unavailable",
+            "read_model_enabled_unavailable",
+            "tokenizer_available",
+            "read_model_available",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "readiness guard contract missing state: {required_state}"
+            );
+        }
+
+        let evidence_fields = contract["smoke_evidence_projection_fields"]
+            .as_array()
+            .expect("smoke evidence projection fields should be an array");
+        for field in [
+            "trusted_source_readiness.schema",
+            "trusted_source_readiness.status",
+            "trusted_source_readiness.tokenizer_status",
+            "trusted_source_readiness.read_model_status",
+            "trusted_source_readiness.feature_available",
+            "trusted_source_readiness.fallback_required",
+            "trusted_source_readiness.material_in_output",
+        ] {
+            assert!(
+                evidence_fields
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "smoke readiness evidence should include {field}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "readiness guard contract should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_readiness_controls_fallback() {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("readiness states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing readiness state: {name}"))
+        }
+
+        fn assert_readiness_summary(
+            summary: &GatewayTrustedNumericSourceReadinessSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.tokenizer_status,
+                expected["tokenizer_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.read_model_status,
+                expected["read_model_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.tokenizer_enabled,
+                expected["tokenizer_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.read_model_enabled,
+                expected["read_model_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.feature_available,
+                expected["feature_available"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_readiness_guard_contract"];
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+        let available_input = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::ReadModel,
+                GatewayTrustedNumericTokenKind::InputTokens,
+                Some(222),
+            ),
+        ));
+
+        let disabled = gateway_trusted_numeric_source_readiness(
+            GatewayTrustedNumericSourceReadinessInput::disabled_by_default(),
+        );
+        assert_eq!(
+            disabled.status,
+            GatewayTrustedNumericSourceReadinessStatus::Unavailable
+        );
+        assert_eq!(
+            disabled.tokenizer_status,
+            GatewayTrustedNumericSourceProviderReadinessStatus::Disabled
+        );
+        assert_eq!(
+            disabled.read_model_status,
+            GatewayTrustedNumericSourceProviderReadinessStatus::Disabled
+        );
+        assert!(!disabled.feature_available);
+        assert!(disabled.fallback_required);
+        assert_readiness_summary(
+            &disabled.safe_summary(),
+            state(contract, "disabled_by_default"),
+        );
+        let disabled_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "sk-live raw prompt must not influence tokens" }],
+                "max_completion_tokens": 79
+            }),
+            gateway_tpm_signals_for_readiness(&disabled, &available_prompt, 256),
+        );
+        assert_eq!(
+            disabled_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(disabled_plan.estimate.required_tokens, 335);
+        assert!(disabled_plan.estimate.used_conservative_fallback);
+
+        let tokenizer_unavailable = gateway_trusted_numeric_source_readiness(
+            GatewayTrustedNumericSourceReadinessInput::new(true, false, false, false),
+        );
+        assert_eq!(
+            tokenizer_unavailable.status,
+            GatewayTrustedNumericSourceReadinessStatus::Unavailable
+        );
+        assert_eq!(
+            tokenizer_unavailable.tokenizer_status,
+            GatewayTrustedNumericSourceProviderReadinessStatus::Unavailable
+        );
+        assert!(!tokenizer_unavailable.feature_available);
+        assert_readiness_summary(
+            &tokenizer_unavailable.safe_summary(),
+            state(contract, "tokenizer_enabled_unavailable"),
+        );
+        let tokenizer_unavailable_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiResponses,
+            &json!({
+                "input": "raw response input must not influence tokens",
+                "max_output_tokens": 128
+            }),
+            gateway_tpm_signals_for_readiness(&tokenizer_unavailable, &available_prompt, 256),
+        );
+        assert_eq!(
+            tokenizer_unavailable_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(tokenizer_unavailable_plan.estimate.required_tokens, 384);
+        assert!(
+            tokenizer_unavailable_plan
+                .estimate
+                .used_conservative_fallback
+        );
+
+        let read_model_unavailable = gateway_trusted_numeric_source_readiness(
+            GatewayTrustedNumericSourceReadinessInput::new(false, false, true, false),
+        );
+        assert_eq!(
+            read_model_unavailable.status,
+            GatewayTrustedNumericSourceReadinessStatus::Unavailable
+        );
+        assert_eq!(
+            read_model_unavailable.read_model_status,
+            GatewayTrustedNumericSourceProviderReadinessStatus::Unavailable
+        );
+        assert!(!read_model_unavailable.feature_available);
+        assert_readiness_summary(
+            &read_model_unavailable.safe_summary(),
+            state(contract, "read_model_enabled_unavailable"),
+        );
+
+        let tokenizer_available = gateway_trusted_numeric_source_readiness(
+            GatewayTrustedNumericSourceReadinessInput::new(true, true, false, false),
+        );
+        assert_eq!(
+            tokenizer_available.status,
+            GatewayTrustedNumericSourceReadinessStatus::Available
+        );
+        assert_eq!(
+            tokenizer_available.tokenizer_status,
+            GatewayTrustedNumericSourceProviderReadinessStatus::Available
+        );
+        assert!(tokenizer_available.feature_available);
+        assert!(!tokenizer_available.fallback_required);
+        assert_readiness_summary(
+            &tokenizer_available.safe_summary(),
+            state(contract, "tokenizer_available"),
+        );
+        let tokenizer_available_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "raw prompt must not appear in summary" }],
+                "max_completion_tokens": 79
+            }),
+            gateway_tpm_signals_for_readiness(&tokenizer_available, &available_prompt, 256),
+        );
+        assert_eq!(
+            tokenizer_available_plan.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(tokenizer_available_plan.estimate.required_tokens, 400);
+        assert!(!tokenizer_available_plan.estimate.used_conservative_fallback);
+
+        let read_model_available = gateway_trusted_numeric_source_readiness(
+            GatewayTrustedNumericSourceReadinessInput::new(false, false, true, true),
+        );
+        assert_eq!(
+            read_model_available.status,
+            GatewayTrustedNumericSourceReadinessStatus::Available
+        );
+        assert_eq!(
+            read_model_available.read_model_status,
+            GatewayTrustedNumericSourceProviderReadinessStatus::Available
+        );
+        assert!(read_model_available.feature_available);
+        assert!(!read_model_available.fallback_required);
+        assert_readiness_summary(
+            &read_model_available.safe_summary(),
+            state(contract, "read_model_available"),
+        );
+        let read_model_available_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw embedding input must not appear in summary" }),
+            gateway_tpm_signals_for_readiness(&read_model_available, &available_input, 256),
+        );
+        assert_eq!(
+            read_model_available_plan.estimate.source,
+            RateLimitTpmEstimateSource::TotalTokens
+        );
+        assert_eq!(read_model_available_plan.estimate.required_tokens, 222);
+        assert!(
+            !read_model_available_plan
+                .estimate
+                .used_conservative_fallback
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "readiness": [
+                disabled.safe_summary(),
+                tokenizer_unavailable.safe_summary(),
+                read_model_unavailable.safe_summary(),
+                tokenizer_available.safe_summary(),
+                read_model_available.safe_summary()
+            ],
+            "availability": [
+                available_prompt.safe_summary(),
+                available_input.safe_summary()
+            ],
+            "plans": [
+                disabled_plan.safe_summary(),
+                tokenizer_unavailable_plan.safe_summary(),
+                tokenizer_available_plan.safe_summary(),
+                read_model_available_plan.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric readiness summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric source readiness output leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in [
+            "raw prompt",
+            "raw response input",
+            "raw embedding input",
+            "request_body",
+            "body_length",
+            "string_length",
+            "\"messages\"",
+            "\"content\"",
+            "\"input\"",
+        ] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "trusted numeric source readiness output leaked raw marker: {raw_marker}"
             );
         }
     }

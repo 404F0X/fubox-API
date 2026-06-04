@@ -13883,6 +13883,138 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_trusted_source_readiness_guard_does_not_change_runtime_ordering() {
+        let main_source = include_str!("main.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let readiness = &fixture["trusted_numeric_source_readiness_guard_contract"];
+
+        assert_eq!(
+            readiness["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_readiness_v1")
+        );
+        assert_eq!(
+            readiness["implementation_status"].as_str(),
+            Some("readiness guard only; tokenizer/read-model adapters are not wired into runtime")
+        );
+        assert_eq!(
+            readiness["runtime_config_default"].as_str(),
+            Some("disabled")
+        );
+        assert_eq!(readiness["runtime_wiring_changed"].as_bool(), Some(false));
+
+        for field in [
+            "trusted_source_readiness.schema",
+            "trusted_source_readiness.status",
+            "trusted_source_readiness.tokenizer_status",
+            "trusted_source_readiness.read_model_status",
+            "trusted_source_readiness.feature_available",
+            "trusted_source_readiness.fallback_required",
+            "trusted_source_readiness.material_in_output",
+        ] {
+            assert!(
+                readiness["smoke_evidence_projection_fields"]
+                    .as_array()
+                    .expect("readiness smoke evidence projection fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "readiness smoke evidence should project {field}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(
+                section,
+                estimate_marker,
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+            for helper in [
+                "GatewayTrustedNumericSourceReadinessInput",
+                "gateway_trusted_numeric_source_readiness(",
+                "gateway_tpm_signals_for_readiness(",
+                "GatewayTrustedNumericSourceAdapterOutput",
+                "gateway_trusted_numeric_source_availability_from_adapter(",
+                "gateway_tpm_signals_from_trusted_numeric_source(",
+            ] {
+                assert!(
+                    !estimate_section.contains(helper),
+                    "{section_name} runtime must not wire tokenizer/read-model readiness before adapter implementation is ready: {helper}"
+                );
+            }
+            for forbidden in [
+                ".len()",
+                ".chars()",
+                ".bytes()",
+                "split_whitespace",
+                ".tokenize(",
+                "tokenize_raw",
+                "token_count",
+            ] {
+                assert!(
+                    !estimate_section.contains(forbidden),
+                    "{section_name} runtime must not infer trusted TPM tokens from raw request material: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_runtime_noop_summaries_remain_secret_safe() {
         fn endpoint_expectation<'a>(guard: &'a Value, endpoint: &str) -> &'a serde_json::Value {
             guard["endpoint_expectations"]
