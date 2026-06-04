@@ -94,6 +94,16 @@ type LedgerAdjustmentExecuteErrorState = {
   message: string;
 };
 
+type LedgerAdjustmentExecuteRefreshState = {
+  message?: string;
+  status: "idle" | "pending" | "success" | "error";
+};
+
+type LedgerEntriesLoadResult = {
+  message?: string;
+  ok: boolean;
+};
+
 type ReconciliationFilterState = {
   day: string;
   limit: string;
@@ -499,6 +509,7 @@ function LedgerOverviewSection() {
   const [executeCheckResult, setExecuteCheckResult] = useState<LedgerAdjustmentExecuteState | null>(null);
   const [executeError, setExecuteError] = useState<LedgerAdjustmentExecuteErrorState | null>(null);
   const [executeLoading, setExecuteLoading] = useState(false);
+  const [executeRefreshState, setExecuteRefreshState] = useState<LedgerAdjustmentExecuteRefreshState>({ status: "idle" });
   const [executeResult, setExecuteResult] = useState<LedgerAdjustmentExecuteState | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -506,7 +517,7 @@ function LedgerOverviewSection() {
   const [loading, setLoading] = useState(true);
   const [selectedEntry, setSelectedEntry] = useState<LedgerEntry | null>(null);
 
-  async function loadEntries(nextFilters = filters) {
+  async function loadEntries(nextFilters = filters): Promise<LedgerEntriesLoadResult> {
     setError(null);
     setLoading(true);
 
@@ -514,10 +525,13 @@ function LedgerOverviewSection() {
       const nextEntries = await listLedgerEntries(toLedgerFilters(nextFilters));
       setEntries(nextEntries);
       setSelectedEntry((current) => (current ? nextEntries.find((entry) => entry.id === current.id) ?? null : null));
+      return { ok: true };
     } catch (requestError) {
+      const message = errorMessage(requestError);
       setEntries([]);
-      setError(errorMessage(requestError));
+      setError(message);
       setSelectedEntry(null);
+      return { message, ok: false };
     } finally {
       setLoading(false);
     }
@@ -533,6 +547,7 @@ function LedgerOverviewSection() {
     setExecuteCheckError(null);
     setExecuteCheckResult(null);
     setExecuteError(null);
+    setExecuteRefreshState({ status: "idle" });
     setExecuteResult(null);
   }
 
@@ -543,6 +558,7 @@ function LedgerOverviewSection() {
     setExecuteCheckError(null);
     setExecuteCheckResult(null);
     setExecuteError(null);
+    setExecuteRefreshState({ status: "idle" });
     setExecuteResult(null);
     setDryRunLoading(true);
 
@@ -559,6 +575,9 @@ function LedgerOverviewSection() {
 
   async function handleExecuteContractCheck() {
     setExecuteCheckError(null);
+    setExecuteError(null);
+    setExecuteRefreshState({ status: "idle" });
+    setExecuteResult(null);
 
     if (!dryRunPlan || !isLedgerAdjustmentDryRunFresh(dryRunPlan.request, dryRunForm)) {
       setExecuteCheckResult(null);
@@ -581,6 +600,9 @@ function LedgerOverviewSection() {
 
   async function handleExecuteLedgerAdjustment() {
     setExecuteError(null);
+    setExecuteCheckResult(null);
+    setExecuteRefreshState({ status: "idle" });
+    setExecuteResult(null);
 
     if (!dryRunPlan || !isLedgerAdjustmentDryRunFresh(dryRunPlan.request, dryRunForm)) {
       setExecuteResult(null);
@@ -596,9 +618,18 @@ function LedgerOverviewSection() {
     try {
       const result = await executeLedgerAdjustment(dryRunPlan.request);
       setExecuteResult({ request: dryRunPlan.request, result });
-      await loadEntries(filters);
+      if (shouldRefreshLedgerEntriesAfterExecute(result)) {
+        setExecuteRefreshState({ status: "pending" });
+        const refreshResult = await loadEntries(filters);
+        setExecuteRefreshState(
+          refreshResult.ok
+            ? { status: "success" }
+            : { message: refreshResult.message ?? "Ledger entries refresh failed.", status: "error" },
+        );
+      }
     } catch (requestError) {
       setExecuteResult(null);
+      setExecuteRefreshState({ status: "idle" });
       setExecuteError(executeErrorState(requestError));
     } finally {
       setExecuteLoading(false);
@@ -707,6 +738,7 @@ function LedgerOverviewSection() {
         error={executeCheckError}
         executeError={executeError}
         executeFresh={isLedgerAdjustmentDryRunFresh(executeResult?.request, dryRunForm)}
+        executeRefreshState={executeRefreshState}
         executeResult={executeResult?.result ?? null}
         executing={executeLoading}
         hasDryRun={Boolean(dryRunPlan)}
@@ -858,6 +890,7 @@ function LedgerAdjustmentExecuteAffordance({
   error,
   executeError,
   executeFresh,
+  executeRefreshState,
   executeResult,
   executing,
   hasDryRun,
@@ -871,6 +904,7 @@ function LedgerAdjustmentExecuteAffordance({
   error: string | null;
   executeError: LedgerAdjustmentExecuteErrorState | null;
   executeFresh: boolean;
+  executeRefreshState: LedgerAdjustmentExecuteRefreshState;
   executeResult: LedgerAdjustmentExecuteResult | null;
   executing: boolean;
   hasDryRun: boolean;
@@ -891,6 +925,7 @@ function LedgerAdjustmentExecuteAffordance({
   const flags = executeResult ? executeFlags(executeResult) : contractResult ? executeFlags(contractResult) : null;
   const activeResult = executeResult ?? contractResult;
   const activeFresh = executeResult ? executeFresh : contractFresh;
+  const refreshText = executeResult && executeFresh ? executeRefreshStatusText(executeRefreshState) : null;
 
   return (
     <section className="admin-panel" aria-label="Ledger adjustment execute readiness">
@@ -898,6 +933,7 @@ function LedgerAdjustmentExecuteAffordance({
         <div>
           <h2>Execute Readiness</h2>
           <p>{statusText}</p>
+          {refreshText ? <p className="muted-copy">{refreshText}</p> : null}
         </div>
         <StateChip
           status={executeStatus(activeResult, {
@@ -917,7 +953,11 @@ function LedgerAdjustmentExecuteAffordance({
         <span>contract_check_network_call={String(Boolean(contractResult))}</span>
         <span>execute_write_network_call={String(Boolean(executeResult || executeError))}</span>
         {executeResult && executeResult.kind === "future_execute" ? (
-          <span>execute_outcome={safeFieldValue(executeOutcome(executeResult.response))}</span>
+          <>
+            <span>execute_result_fresh={String(executeFresh)}</span>
+            <span>execute_outcome={safeFieldValue(executeOutcome(executeResult.response))}</span>
+            <span>ledger_entries_refresh_after_execute={executeRefreshState.status}</span>
+          </>
         ) : null}
         {flags ? (
           <>
@@ -1459,6 +1499,38 @@ function executeStatus(
   }
 
   return "execute_preflight";
+}
+
+function shouldRefreshLedgerEntriesAfterExecute(result: LedgerAdjustmentExecuteResult): boolean {
+  if (result.kind !== "future_execute") {
+    return false;
+  }
+
+  const outcome = executeOutcome(result.response);
+
+  return (
+    outcome === "applied" ||
+    outcome === "idempotent" ||
+    Boolean(result.response.ledger_write || result.response.audit_log_write)
+  );
+}
+
+function executeRefreshStatusText(state: LedgerAdjustmentExecuteRefreshState): string {
+  if (state.status === "pending") {
+    return "Refreshing ledger entries after execute.";
+  }
+
+  if (state.status === "success") {
+    return "Ledger entries refreshed after execute; this execute result matches the current dry-run payload.";
+  }
+
+  if (state.status === "error") {
+    return `Execute result matches the current dry-run payload, but ledger entries refresh failed. ${safeFieldValue(
+      state.message ?? "Request failed.",
+    )}`;
+  }
+
+  return "Execute result matches the current dry-run payload.";
 }
 
 function executeBlockedReasons(result: LedgerAdjustmentExecuteResult, fresh: boolean): string[] {

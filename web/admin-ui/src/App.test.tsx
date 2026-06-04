@@ -119,6 +119,7 @@ function stubAdminFetch(
   options: {
     ledgerAdjustmentDryRunFails?: boolean;
     ledgerAdjustmentExecuteStatus?: "applied" | "idempotent" | "blocked" | "failed";
+    ledgerAdjustmentExecuteStatuses?: Array<"applied" | "idempotent" | "blocked" | "failed">;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
     payloadStored?: boolean;
     promptProtectionSignals?: boolean;
@@ -1118,14 +1119,16 @@ function stubAdminFetch(
       }
 
       if (body.mode === "execute") {
-        if (options.ledgerAdjustmentExecuteStatus === "blocked") {
+        const executeStatus = options.ledgerAdjustmentExecuteStatuses?.shift() ?? options.ledgerAdjustmentExecuteStatus;
+
+        if (executeStatus === "blocked") {
           return jsonError(
             `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-execute-blocked-hidden")} idempotency_key raw metadata`,
             409,
           );
         }
 
-        if (options.ledgerAdjustmentExecuteStatus === "failed") {
+        if (executeStatus === "failed") {
           return jsonError(
             `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-execute-failed-hidden")} ${skPlaceholder(
               "ledger-execute-failed-hidden",
@@ -1134,7 +1137,7 @@ function stubAdminFetch(
           );
         }
 
-        const outcome = options.ledgerAdjustmentExecuteStatus ?? "applied";
+        const outcome = executeStatus ?? "applied";
         return jsonResponseWithStatus(
           ledgerAdjustmentExecutePayload(outcome, validatedPlan),
           outcome === "applied" ? 201 : 200,
@@ -2903,7 +2906,10 @@ describe("App", () => {
     expect(await screen.findByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Ledger adjustment execute result" })).toBeInTheDocument();
     expect(screen.getByText("execute_write_network_call=true")).toBeInTheDocument();
+    expect(screen.getByText("execute_result_fresh=true")).toBeInTheDocument();
     expect(screen.getByText("execute_outcome=applied")).toBeInTheDocument();
+    expect(await screen.findByText("Ledger entries refreshed after execute; this execute result matches the current dry-run payload.")).toBeInTheDocument();
+    expect(screen.getByText("ledger_entries_refresh_after_execute=success")).toBeInTheDocument();
     expect(screen.getAllByText("ledger_write=true").length).toBeGreaterThan(0);
     expect(screen.getAllByText("audit_log_write=true").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { level: 3, name: "Execute Summary" })).toBeInTheDocument();
@@ -2948,6 +2954,13 @@ describe("App", () => {
       related_ledger_entry_id: "00000000-0000-0000-0000-000000000091",
       request_id: "00000000-0000-0000-0000-000000000090",
     });
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) => String(url).includes("/admin/ledger/entries") && (init?.method ?? "GET") === "GET",
+        ).length,
+      ).toBeGreaterThanOrEqual(2),
+    );
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
     expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
@@ -2964,6 +2977,24 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-response-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-response-hidden"));
+
+    await user.clear(dryRunPanel.getByLabelText("Amount"));
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
+
+    expect(await screen.findByText("Form changed after dry-run. Run dry-run again before execute can be considered.")).toBeInTheDocument();
+    expect(screen.getAllByText("fresh_dry_run=false").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expect(screen.queryByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).not.toBeInTheDocument();
+    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/admin/ledger/adjustments/dry-run") &&
+          init?.method === "POST" &&
+          JSON.parse(String(init.body)).mode === "execute",
+      ),
+    ).toHaveLength(1);
   });
 
   it("renders idempotent ledger adjustment execute replay without claiming new writes", async () => {
@@ -2985,7 +3016,10 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
 
     expect(await screen.findByText("Idempotent replay: existing ledger entry returned without new ledger or audit writes.")).toBeInTheDocument();
+    expect(screen.getByText("execute_result_fresh=true")).toBeInTheDocument();
     expect(screen.getByText("execute_outcome=idempotent")).toBeInTheDocument();
+    expect(await screen.findByText("Ledger entries refreshed after execute; this execute result matches the current dry-run payload.")).toBeInTheDocument();
+    expect(screen.getByText("ledger_entries_refresh_after_execute=success")).toBeInTheDocument();
     expect(screen.getAllByText("ledger_write=false").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("audit_log_write=false").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("idempotent").length).toBeGreaterThan(0);
@@ -3058,6 +3092,62 @@ describe("App", () => {
           JSON.parse(String(init.body)).mode === "execute",
       ),
     ).toHaveLength(1);
+  });
+
+  it("clears prior ledger execute success when a later execute fails", async () => {
+    const fetchMock = stubAdminFetch({ ledgerAdjustmentExecuteStatuses: ["applied", "failed"] });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunPanel = within(dryRunRegion);
+
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
+    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
+    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    expect(await screen.findByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).toBeInTheDocument();
+    expect(screen.getByText("execute_outcome=applied")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Ledger Executor Summary" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Check execute contract" }));
+
+    expect(await screen.findByText(/future_writer_required: backend validated the plan/)).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Ledger adjustment execute readiness" })).getByText("blocked")).toBeInTheDocument();
+    expect(screen.queryByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).not.toBeInTheDocument();
+    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Refusal Executor Summary" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+
+    expect((await screen.findAllByText("Ledger adjustment execute failed.")).length).toBeGreaterThan(0);
+    const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
+    expect(within(readinessRegion).getByText("failed")).toBeInTheDocument();
+    expect(screen.queryByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).not.toBeInTheDocument();
+    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
+    expect(screen.queryByText("ledger_entries_refresh_after_execute=success")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Refusal Executor Summary" })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-failed-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-failed-hidden"));
+    expect(document.body.textContent).not.toContain("operation_key");
+    expect(document.body.textContent).not.toContain("raw metadata");
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/admin/ledger/adjustments/dry-run") &&
+          init?.method === "POST" &&
+          JSON.parse(String(init.body)).mode === "execute",
+      ),
+    ).toHaveLength(2);
   });
 
   it("marks ledger adjustment execute readiness stale after form changes without execute calls", async () => {
