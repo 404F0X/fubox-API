@@ -142,6 +142,33 @@
       "credential_material_echoed": false,
       "raw_executor_error_detail_echoed": false
     },
+    "billing_ledger_writer_shadow_invocation_contract": {
+      "schema_version": "control_plane_billing_ledger_writer_shadow_invocation.v1",
+      "source": "control_plane_execute_validated_plan",
+      "target": "billing_ledger_consistent_writer_runtime_shadow",
+      "default_shadow_enabled": false,
+      "supported_shadow_modes": ["disabled", "enabled_contract_only"],
+      "db_io_performed": false,
+      "production_writer_replaced": false,
+      "source_of_truth": "control_plane_local_sql_writer",
+      "local_sql_writer_remains_authoritative": true,
+      "billing_ledger_shadow_ledger_write_allowed": false,
+      "billing_ledger_shadow_audit_write_allowed": false,
+      "billing_ledger_shadow_transaction_commit_allowed": false,
+      "dual_commit_allowed": false,
+      "cutover_required_before_billing_ledger_writer_can_commit": true,
+      "response_summary_field": "ledger_executor_summary",
+      "response_parity_required_when_enabled": true,
+      "audit_parity_required_when_enabled": true,
+      "success_audit_only_for_applied": true,
+      "idempotent_or_refused_success_audit_write": false,
+      "operation_key_bind_only": true,
+      "operation_key_output": "omitted",
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "raw_executor_error_detail_echoed": false
+    },
     "preflight_refusal_summary": {
       "schema_version": "billing_ledger_postgres_executor_summary.v1",
       "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
@@ -359,6 +386,33 @@
       "raw_metadata_echoed": false,
       "credential_material_echoed": false,
       "raw_executor_error_detail_echoed": false
+    },
+    "billing_ledger_writer_shadow_invocation_contract": {
+      "schema_version": "control_plane_billing_ledger_writer_shadow_invocation.v1",
+      "source": "control_plane_execute_validated_plan",
+      "target": "billing_ledger_consistent_writer_runtime_shadow",
+      "default_shadow_enabled": false,
+      "supported_shadow_modes": ["disabled", "enabled_contract_only"],
+      "db_io_performed": false,
+      "production_writer_replaced": false,
+      "source_of_truth": "control_plane_local_sql_writer",
+      "local_sql_writer_remains_authoritative": true,
+      "billing_ledger_shadow_ledger_write_allowed": false,
+      "billing_ledger_shadow_audit_write_allowed": false,
+      "billing_ledger_shadow_transaction_commit_allowed": false,
+      "dual_commit_allowed": false,
+      "cutover_required_before_billing_ledger_writer_can_commit": true,
+      "response_summary_field": "ledger_executor_summary",
+      "response_parity_required_when_enabled": true,
+      "audit_parity_required_when_enabled": true,
+      "success_audit_only_for_applied": true,
+      "idempotent_or_refused_success_audit_write": false,
+      "operation_key_bind_only": true,
+      "operation_key_output": "omitted",
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "raw_executor_error_detail_echoed": false
     }
   },
   "billing_ledger_runtime_writer_mapping_contract": {
@@ -514,6 +568,46 @@
     "raw_metadata_echoed": false,
     "credential_material_echoed": false,
     "raw_executor_error_detail_echoed": false
+  },
+  "billing_ledger_writer_shadow_invocation_contract": {
+    "schema_version": "control_plane_billing_ledger_writer_shadow_invocation.v1",
+    "source": "control_plane_execute_validated_plan",
+    "target": "billing_ledger_consistent_writer_runtime_shadow",
+    "default_shadow_enabled": false,
+    "supported_shadow_modes": ["disabled", "enabled_contract_only"],
+    "db_io_performed": false,
+    "production_writer_replaced": false,
+    "source_of_truth": "control_plane_local_sql_writer",
+    "no_double_write_contract": {
+      "local_sql_writer_remains_authoritative": true,
+      "billing_ledger_shadow_ledger_write_allowed": false,
+      "billing_ledger_shadow_audit_write_allowed": false,
+      "billing_ledger_shadow_transaction_commit_allowed": false,
+      "dual_commit_allowed": false,
+      "cutover_required_before_billing_ledger_writer_can_commit": true
+    },
+    "response_parity_summary_contract": {
+      "response_summary_field": "ledger_executor_summary",
+      "parity_required_when_enabled": true,
+      "operation_key_output": "omitted",
+      "error_detail_output": "omitted"
+    },
+    "audit_parity_summary_contract": {
+      "success_audit_summary_field": "ledger_executor_summary",
+      "success_audit_only_for_applied": true,
+      "idempotent_or_refused_success_audit_write": false,
+      "parity_required_when_enabled": true,
+      "operation_key_output": "omitted",
+      "error_detail_output": "omitted"
+    },
+    "safe_output_contract": {
+      "operation_key_output": "omitted",
+      "operation_key_bind_only": true,
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "raw_executor_error_detail_echoed": false
+    }
   },
   "future_write_audit_contract": {
     "future_actions": ["ledger.adjust", "ledger.refund"],

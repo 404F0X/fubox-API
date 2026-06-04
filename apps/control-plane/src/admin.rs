@@ -88,6 +88,8 @@ const CONTROL_PLANE_BILLING_LEDGER_RUNTIME_MAPPING_SCHEMA: &str =
     "control_plane_billing_ledger_runtime_writer_mapping.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_ADAPTER_BOUNDARY_SCHEMA: &str =
     "control_plane_billing_ledger_writer_adapter_boundary.v1";
+const CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA: &str =
+    "control_plane_billing_ledger_writer_shadow_invocation.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -2546,6 +2548,12 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
         .to_string();
     let billing_ledger_writer_adapter_boundary =
         ledger_adjustment_billing_ledger_writer_adapter_boundary(&plan, "refused_preflight");
+    let billing_ledger_writer_shadow_invocation =
+        ledger_adjustment_billing_ledger_writer_shadow_invocation(
+            &plan,
+            "refused_preflight",
+            false,
+        );
     json!({
         "error": {
             "code": "future_writer_required",
@@ -2556,6 +2564,7 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
             "validated_plan": plan,
             "execute_contract": ledger_adjustment_execute_contract(),
             "billing_ledger_writer_adapter_boundary": billing_ledger_writer_adapter_boundary,
+            "billing_ledger_writer_shadow_invocation": billing_ledger_writer_shadow_invocation,
             "ledger_executor_summary": ledger_adjustment_executor_refusal_summary(
                 operation.as_str(),
                 "refused_preflight",
@@ -2596,6 +2605,7 @@ fn ledger_adjustment_execute_contract() -> Value {
         "ledger_executor_refusal_summary_contract": ledger_adjustment_executor_refusal_summary_contract(),
         "billing_ledger_runtime_writer_mapping_contract": ledger_adjustment_billing_runtime_writer_mapping_contract(),
         "billing_ledger_writer_adapter_boundary_contract": ledger_adjustment_billing_ledger_writer_adapter_boundary_contract(),
+        "billing_ledger_writer_shadow_invocation_contract": ledger_adjustment_billing_ledger_writer_shadow_invocation_contract(),
         "preflight_refusal_summary": ledger_adjustment_executor_refusal_summary(
             "execute_contract",
             "refused_preflight",
@@ -3315,6 +3325,12 @@ fn ledger_adjustment_execute_success_response(
 ) -> Value {
     let billing_ledger_writer_adapter_boundary =
         ledger_adjustment_billing_ledger_writer_adapter_boundary(&validated_plan, "applied");
+    let billing_ledger_writer_shadow_invocation =
+        ledger_adjustment_billing_ledger_writer_shadow_invocation(
+            &validated_plan,
+            "applied",
+            false,
+        );
     json!({
         "mode": "execute",
         "outcome": "applied",
@@ -3331,6 +3347,7 @@ fn ledger_adjustment_execute_success_response(
         "ledger_executor_summary_contract": ledger_adjustment_executor_summary_contract(),
         "billing_ledger_runtime_writer_mapping_contract": ledger_adjustment_billing_runtime_writer_mapping_contract(),
         "billing_ledger_writer_adapter_boundary": billing_ledger_writer_adapter_boundary,
+        "billing_ledger_writer_shadow_invocation": billing_ledger_writer_shadow_invocation,
         "transaction_contract": ledger_adjustment_execute_transaction_contract(true),
         "ledger_entry": ledger_adjustment_executed_entry_response(entry),
         "ledger_executor_summary": ledger_adjustment_executor_summary_for_entry_type(
@@ -3353,6 +3370,12 @@ fn ledger_adjustment_execute_idempotent_response(
 ) -> Value {
     let billing_ledger_writer_adapter_boundary =
         ledger_adjustment_billing_ledger_writer_adapter_boundary(&validated_plan, "idempotent");
+    let billing_ledger_writer_shadow_invocation =
+        ledger_adjustment_billing_ledger_writer_shadow_invocation(
+            &validated_plan,
+            "idempotent",
+            false,
+        );
     json!({
         "mode": "execute",
         "outcome": "idempotent",
@@ -3368,6 +3391,7 @@ fn ledger_adjustment_execute_idempotent_response(
         "ledger_executor_summary_contract": ledger_adjustment_executor_summary_contract(),
         "billing_ledger_runtime_writer_mapping_contract": ledger_adjustment_billing_runtime_writer_mapping_contract(),
         "billing_ledger_writer_adapter_boundary": billing_ledger_writer_adapter_boundary,
+        "billing_ledger_writer_shadow_invocation": billing_ledger_writer_shadow_invocation,
         "transaction_contract": ledger_adjustment_execute_transaction_contract(false),
         "ledger_entry": ledger_adjustment_executed_entry_response(entry),
         "ledger_executor_summary": ledger_adjustment_executor_summary_for_entry_type(
@@ -3903,6 +3927,186 @@ fn ledger_adjustment_billing_ledger_writer_adapter_refusal_boundary(
     })
 }
 
+fn ledger_adjustment_billing_ledger_writer_shadow_invocation_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA,
+        "source": "control_plane_execute_validated_plan",
+        "target": "billing_ledger_consistent_writer_runtime_shadow",
+        "default_shadow_enabled": false,
+        "supported_shadow_modes": [
+            "disabled",
+            "enabled_contract_only"
+        ],
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "source_of_truth": "control_plane_local_sql_writer",
+        "no_double_write_contract": {
+            "local_sql_writer_remains_authoritative": true,
+            "billing_ledger_shadow_ledger_write_allowed": false,
+            "billing_ledger_shadow_audit_write_allowed": false,
+            "billing_ledger_shadow_transaction_commit_allowed": false,
+            "dual_commit_allowed": false,
+            "cutover_required_before_billing_ledger_writer_can_commit": true
+        },
+        "response_parity_summary_contract": {
+            "summary_schema_version": BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA,
+            "response_summary_field": "ledger_executor_summary",
+            "parity_required_when_enabled": true,
+            "compared_fields": [
+                "operation",
+                "outcome",
+                "committed",
+                "rolled_back",
+                "statement_count",
+                "executed_statement_count",
+                "refused_statement_count",
+                "total_rows_affected",
+                "final_statement_kind",
+                "row_count_mismatch"
+            ],
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted"
+        },
+        "audit_parity_summary_contract": {
+            "success_audit_summary_field": "ledger_executor_summary",
+            "success_audit_only_for_applied": true,
+            "idempotent_or_refused_success_audit_write": false,
+            "parity_required_when_enabled": true,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted"
+        },
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_writer_shadow_invocation(
+    validated_plan: &Value,
+    outcome: &'static str,
+    shadow_enabled: bool,
+) -> Value {
+    let target_operation = ledger_adjustment_billing_runtime_operation_mapping(validated_plan);
+    let writer_request = target_operation
+        .get("writer_request")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "variant": "unmapped",
+                "operation_key": "bind_only",
+                "public_operation_key_output": "omitted"
+            })
+        });
+    let response_executor_summary =
+        ledger_adjustment_billing_runtime_writer_response_summary(validated_plan, outcome);
+    let success_audit_write = outcome == "applied";
+    let local_audit_executor_summary = if success_audit_write {
+        response_executor_summary.clone()
+    } else {
+        Value::Null
+    };
+    let shadow_response_executor_summary = if shadow_enabled {
+        response_executor_summary.clone()
+    } else {
+        Value::Null
+    };
+    let shadow_audit_executor_summary = if shadow_enabled && success_audit_write {
+        response_executor_summary.clone()
+    } else {
+        Value::Null
+    };
+
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA,
+        "source": "control_plane_execute_validated_plan",
+        "target": "billing_ledger_consistent_writer_runtime_shadow",
+        "shadow_enabled": shadow_enabled,
+        "shadow_mode": if shadow_enabled {
+            "enabled_contract_only"
+        } else {
+            "disabled"
+        },
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "source_of_truth": "control_plane_local_sql_writer",
+        "adapter_input": {
+            "source_operation": ledger_adjustment_validated_plan_operation(validated_plan),
+            "source_entry_type": ledger_adjustment_validated_plan_entry_type(validated_plan),
+            "billing_ledger_operation": target_operation
+                .get("billing_ledger_operation")
+                .cloned()
+                .unwrap_or_else(|| json!("unmapped")),
+            "writer_request": writer_request,
+            "operation_key": {
+                "runtime_bind_marker": "operation_key_bind",
+                "public_output": "omitted",
+                "raw_operation_key_echoed": false
+            },
+            "dedupe_material_echoed": false,
+            "metadata": {
+                "metadata_policy": "bounded_admin_adjustment_metadata_only",
+                "raw_metadata_echoed": false,
+                "credential_material_echoed": false
+            }
+        },
+        "no_double_write": {
+            "local_sql_writer_remains_authoritative": true,
+            "local_sql_writer_ledger_write_allowed": success_audit_write,
+            "billing_ledger_shadow_invocation_attempted": shadow_enabled,
+            "billing_ledger_shadow_ledger_write_allowed": false,
+            "billing_ledger_shadow_audit_write_allowed": false,
+            "billing_ledger_shadow_transaction_commit_allowed": false,
+            "dual_commit_allowed": false,
+            "cutover_required_before_billing_ledger_writer_can_commit": true
+        },
+        "response_parity_summary": {
+            "status": if shadow_enabled {
+                "shadow_contract_parity_required"
+            } else {
+                "shadow_disabled_not_compared"
+            },
+            "response_summary_field": "ledger_executor_summary",
+            "local_response_executor_summary": response_executor_summary,
+            "shadow_response_executor_summary": shadow_response_executor_summary,
+            "parity_required_when_enabled": true,
+            "api_ui_summary_shape_preserved": true,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted"
+        },
+        "audit_parity_summary": {
+            "status": if shadow_enabled {
+                "shadow_audit_parity_required"
+            } else {
+                "shadow_disabled_not_compared"
+            },
+            "success_audit_write": success_audit_write,
+            "success_audit_summary_field": if success_audit_write {
+                "ledger_executor_summary"
+            } else {
+                "not_written"
+            },
+            "local_audit_executor_summary": local_audit_executor_summary,
+            "shadow_audit_executor_summary": shadow_audit_executor_summary,
+            "idempotent_or_refused_success_audit_write": false,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted"
+        },
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
 fn ledger_adjustment_billing_runtime_writer_mapping(
     validated_plan: &Value,
     outcome: &'static str,
@@ -4241,8 +4445,23 @@ fn ledger_adjustment_success_audit_metadata(
         "ledger_executor_summary_contract": ledger_adjustment_executor_summary_contract(),
         "ledger_executor_summary": ledger_executor_summary.clone(),
         "billing_ledger_writer_adapter_boundary_contract": ledger_adjustment_billing_ledger_writer_adapter_boundary_contract(),
-        "billing_ledger_writer_adapter_audit_summary": ledger_executor_summary,
+        "billing_ledger_writer_adapter_audit_summary": ledger_executor_summary.clone(),
         "billing_ledger_writer_adapter_audit_summary_source": "response_ledger_executor_summary",
+        "billing_ledger_writer_shadow_invocation_contract": ledger_adjustment_billing_ledger_writer_shadow_invocation_contract(),
+        "billing_ledger_writer_shadow_audit_parity_summary": {
+            "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA,
+            "shadow_enabled": false,
+            "status": "shadow_disabled_not_compared",
+            "source_of_truth": "control_plane_local_sql_writer",
+            "success_audit_write": true,
+            "local_audit_executor_summary": ledger_executor_summary,
+            "shadow_audit_executor_summary": null,
+            "billing_ledger_shadow_audit_write_allowed": false,
+            "billing_ledger_shadow_transaction_commit_allowed": false,
+            "dual_commit_allowed": false,
+            "operation_key_output": "omitted",
+            "error_detail_output": "omitted"
+        },
         "success_audit_same_transaction": true,
         "audit_insert_failure_rolls_back_ledger_write": true,
         "refund_remaining_recomputed_after_locks": refund_remaining_summary.is_some(),
@@ -10903,6 +11122,38 @@ mod tests {
             json!("omitted")
         );
         assert_eq!(
+            body["data"]["execute_contract"]["billing_ledger_writer_shadow_invocation_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_shadow_invocation"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_shadow_invocation"]["shadow_enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_shadow_invocation"]["no_double_write"]["billing_ledger_shadow_transaction_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["billing_ledger_writer_shadow_invocation"]["response_parity_summary"]["local_response_executor_summary"],
+            body["data"]["ledger_executor_summary"]
+        );
+        assert!(
+            body["data"]["billing_ledger_writer_shadow_invocation"]["response_parity_summary"]
+                ["shadow_response_executor_summary"]
+                .is_null(),
+            "disabled execute_contract shadow must not include a shadow response summary"
+        );
+        assert!(
+            body["data"]["billing_ledger_writer_shadow_invocation"]["audit_parity_summary"]
+                ["local_audit_executor_summary"]
+                .is_null(),
+            "execute_contract refusal must not include local success audit summary"
+        );
+        assert_eq!(
             body["data"]["validated_plan"]["refund_remaining_summary"]["remaining_refundable_amount"],
             json!("0.15000000")
         );
@@ -11717,6 +11968,258 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_billing_runtime_shadow_invocation_preserves_parity_without_double_write() {
+        let request_id = Uuid::from_u128(90);
+        let related_entry =
+            ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let refund_summary = validate_refund_remaining_amount(
+            "0.15000000",
+            &related_entry.amount,
+            "0.10000000",
+            1,
+            "USD",
+        )
+        .expect("refund should fit remaining amount");
+        let adjust_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "-0.10000000",
+            "USD",
+            Some(Uuid::from_u128(20)),
+            Some(Uuid::from_u128(40)),
+            Some(request_id),
+            None,
+            None,
+            false,
+        );
+        let refund_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Refund,
+            "0.15000000",
+            "USD",
+            related_entry.project_id,
+            related_entry.wallet_id,
+            related_entry.request_id,
+            Some(&related_entry),
+            Some(&refund_summary),
+            true,
+        );
+
+        let shadow_contract = ledger_adjustment_billing_ledger_writer_shadow_invocation_contract();
+        assert_eq!(
+            shadow_contract["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(shadow_contract["default_shadow_enabled"], json!(false));
+        assert_eq!(shadow_contract["db_io_performed"], json!(false));
+        assert_eq!(
+            shadow_contract["no_double_write_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            shadow_contract["no_double_write_contract"]["billing_ledger_shadow_transaction_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            shadow_contract["response_parity_summary_contract"]["parity_required_when_enabled"],
+            json!(true)
+        );
+        assert_eq!(
+            shadow_contract["audit_parity_summary_contract"]["success_audit_only_for_applied"],
+            json!(true)
+        );
+
+        for (plan_label, plan, expected_variant) in [
+            (
+                "adjust",
+                &adjust_plan,
+                "ConsistentLedgerWriteRequest::AdminAdjustment",
+            ),
+            (
+                "refund",
+                &refund_plan,
+                "ConsistentLedgerWriteRequest::RefundPartial",
+            ),
+        ] {
+            for outcome in [
+                "applied",
+                "idempotent",
+                "refused_preflight",
+                "refused_rollback",
+            ] {
+                let expected_mapping =
+                    ledger_adjustment_billing_runtime_writer_mapping(plan, outcome);
+                for shadow_enabled in [false, true] {
+                    let invocation = ledger_adjustment_billing_ledger_writer_shadow_invocation(
+                        plan,
+                        outcome,
+                        shadow_enabled,
+                    );
+                    let serialized = serde_json::to_string(&invocation)
+                        .expect("shadow invocation should serialize");
+
+                    assert_eq!(
+                        invocation["schema_version"],
+                        json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA),
+                        "{plan_label} {outcome} shadow schema"
+                    );
+                    assert_eq!(
+                        invocation["shadow_enabled"],
+                        json!(shadow_enabled),
+                        "{plan_label} {outcome} shadow enabled"
+                    );
+                    assert_eq!(
+                        invocation["db_io_performed"],
+                        json!(false),
+                        "{plan_label} {outcome} db io"
+                    );
+                    assert_eq!(
+                        invocation["production_writer_replaced"],
+                        json!(false),
+                        "{plan_label} {outcome} production replacement"
+                    );
+                    assert_eq!(
+                        invocation["adapter_input"]["writer_request"]["variant"],
+                        json!(expected_variant),
+                        "{plan_label} {outcome} writer request variant"
+                    );
+                    assert_eq!(
+                        invocation["adapter_input"]["writer_request"]["operation_key"],
+                        json!("bind_only"),
+                        "{plan_label} {outcome} operation key"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["local_sql_writer_remains_authoritative"],
+                        json!(true),
+                        "{plan_label} {outcome} source of truth"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["local_sql_writer_ledger_write_allowed"],
+                        json!(outcome == "applied"),
+                        "{plan_label} {outcome} local write allowance"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["billing_ledger_shadow_invocation_attempted"],
+                        json!(shadow_enabled),
+                        "{plan_label} {outcome} shadow attempt"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["billing_ledger_shadow_ledger_write_allowed"],
+                        json!(false),
+                        "{plan_label} {outcome} shadow ledger write"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["billing_ledger_shadow_audit_write_allowed"],
+                        json!(false),
+                        "{plan_label} {outcome} shadow audit write"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["billing_ledger_shadow_transaction_commit_allowed"],
+                        json!(false),
+                        "{plan_label} {outcome} shadow commit"
+                    );
+                    assert_eq!(
+                        invocation["no_double_write"]["dual_commit_allowed"],
+                        json!(false),
+                        "{plan_label} {outcome} dual commit"
+                    );
+                    assert_eq!(
+                        invocation["response_parity_summary"]["local_response_executor_summary"],
+                        expected_mapping["response_summary"],
+                        "{plan_label} {outcome} local response parity"
+                    );
+                    if shadow_enabled {
+                        assert_eq!(
+                            invocation["response_parity_summary"]["shadow_response_executor_summary"],
+                            invocation["response_parity_summary"]["local_response_executor_summary"],
+                            "{plan_label} {outcome} shadow response parity"
+                        );
+                        assert_eq!(
+                            invocation["response_parity_summary"]["status"],
+                            json!("shadow_contract_parity_required"),
+                            "{plan_label} {outcome} shadow response status"
+                        );
+                    } else {
+                        assert!(
+                            invocation["response_parity_summary"]
+                                ["shadow_response_executor_summary"]
+                                .is_null(),
+                            "{plan_label} {outcome} disabled shadow response"
+                        );
+                        assert_eq!(
+                            invocation["response_parity_summary"]["status"],
+                            json!("shadow_disabled_not_compared"),
+                            "{plan_label} {outcome} disabled response status"
+                        );
+                    }
+                    assert_eq!(
+                        invocation["response_parity_summary"]["operation_key_output"],
+                        json!("omitted"),
+                        "{plan_label} {outcome} response operation key"
+                    );
+                    assert_eq!(
+                        invocation["response_parity_summary"]["error_detail_output"],
+                        json!("omitted"),
+                        "{plan_label} {outcome} response error detail"
+                    );
+                    assert_eq!(
+                        invocation["audit_parity_summary"]["success_audit_write"],
+                        json!(outcome == "applied"),
+                        "{plan_label} {outcome} audit write"
+                    );
+                    if outcome == "applied" {
+                        assert_eq!(
+                            invocation["audit_parity_summary"]["local_audit_executor_summary"],
+                            invocation["response_parity_summary"]["local_response_executor_summary"],
+                            "{plan_label} applied local audit parity"
+                        );
+                        if shadow_enabled {
+                            assert_eq!(
+                                invocation["audit_parity_summary"]["shadow_audit_executor_summary"],
+                                invocation["audit_parity_summary"]["local_audit_executor_summary"],
+                                "{plan_label} applied shadow audit parity"
+                            );
+                        } else {
+                            assert!(
+                                invocation["audit_parity_summary"]["shadow_audit_executor_summary"]
+                                    .is_null(),
+                                "{plan_label} applied disabled shadow audit"
+                            );
+                        }
+                    } else {
+                        assert!(
+                            invocation["audit_parity_summary"]["local_audit_executor_summary"]
+                                .is_null(),
+                            "{plan_label} {outcome} local audit must not be written"
+                        );
+                        assert!(
+                            invocation["audit_parity_summary"]["shadow_audit_executor_summary"]
+                                .is_null(),
+                            "{plan_label} {outcome} shadow audit must not be written"
+                        );
+                    }
+
+                    for forbidden in [
+                        "ledger-idempotency-never-return",
+                        "idempotency_key",
+                        "dedupe_key",
+                        "raw ledger payload",
+                        "Authorization",
+                        "Bearer",
+                        "sk-live",
+                        "raw executor failure detail",
+                        "raw credential value",
+                        "raw metadata value",
+                    ] {
+                        assert!(
+                            !serialized.contains(forbidden),
+                            "{plan_label} {outcome} shadow invocation must not contain {forbidden}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ledger_adjustment_billing_runtime_mapping_summaries_match_response_contract() {
         let request_id = Uuid::from_u128(90);
         let related_entry =
@@ -11968,6 +12471,42 @@ mod tests {
             json!("ConsistentLedgerWriteRequest::RefundPartial")
         );
         assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["shadow_enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["no_double_write"]["local_sql_writer_ledger_write_allowed"],
+            json!(true)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["no_double_write"]["billing_ledger_shadow_ledger_write_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["response_parity_summary"]["local_response_executor_summary"],
+            response["ledger_executor_summary"]
+        );
+        assert!(
+            response["billing_ledger_writer_shadow_invocation"]["response_parity_summary"]
+                ["shadow_response_executor_summary"]
+                .is_null(),
+            "disabled applied shadow must not include a shadow response summary"
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["audit_parity_summary"]["local_audit_executor_summary"],
+            response["ledger_executor_summary"]
+        );
+        assert!(
+            response["billing_ledger_writer_shadow_invocation"]["audit_parity_summary"]
+                ["shadow_audit_executor_summary"]
+                .is_null(),
+            "disabled applied shadow must not include a shadow audit summary"
+        );
+        assert_eq!(
             response["refund_remaining_summary"]["remaining_refundable_amount"],
             json!("0.15000000")
         );
@@ -11999,6 +12538,26 @@ mod tests {
         assert_eq!(
             audit_metadata["billing_ledger_writer_adapter_audit_summary_source"],
             json!("response_ledger_executor_summary")
+        );
+        assert_eq!(
+            audit_metadata["billing_ledger_writer_shadow_invocation_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            audit_metadata["billing_ledger_writer_shadow_audit_parity_summary"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            audit_metadata["billing_ledger_writer_shadow_audit_parity_summary"]["local_audit_executor_summary"],
+            audit_metadata["ledger_executor_summary"]
+        );
+        assert_eq!(
+            audit_metadata["billing_ledger_writer_shadow_audit_parity_summary"]["billing_ledger_shadow_audit_write_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            audit_metadata["billing_ledger_writer_shadow_audit_parity_summary"]["dual_commit_allowed"],
+            json!(false)
         );
         let serialized_audit_metadata =
             serde_json::to_string(&audit_metadata).expect("audit metadata should serialize");
@@ -12114,6 +12673,38 @@ mod tests {
         assert_eq!(
             response["billing_ledger_writer_adapter_boundary"]["adapter_input"]["writer_request"]["variant"],
             json!("ConsistentLedgerWriteRequest::AdminAdjustment")
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["shadow_enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["no_double_write"]["local_sql_writer_ledger_write_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["no_double_write"]["billing_ledger_shadow_transaction_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            response["billing_ledger_writer_shadow_invocation"]["response_parity_summary"]["local_response_executor_summary"],
+            response["ledger_executor_summary"]
+        );
+        assert!(
+            response["billing_ledger_writer_shadow_invocation"]["audit_parity_summary"]
+                ["local_audit_executor_summary"]
+                .is_null(),
+            "idempotent response must not include local audit parity summary"
+        );
+        assert!(
+            response["billing_ledger_writer_shadow_invocation"]["audit_parity_summary"]
+                ["shadow_audit_executor_summary"]
+                .is_null(),
+            "idempotent response must not include shadow audit parity summary"
         );
         assert!(
             response.get("audit_log_id").is_none(),
@@ -12284,6 +12875,18 @@ mod tests {
             json!("refused_rollback")
         );
         assert_eq!(
+            fixture["execute_contract"]["billing_ledger_writer_shadow_invocation_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["billing_ledger_writer_shadow_invocation_contract"]["default_shadow_enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["billing_ledger_writer_shadow_invocation_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["execute"]["writer"],
             json!("control_plane_transactional_admin_ledger_adjustment_writer")
         );
@@ -12328,6 +12931,18 @@ mod tests {
         assert_eq!(
             fixture["execute"]["billing_ledger_writer_adapter_boundary_contract"]["success_audit_only_for_applied"],
             json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["billing_ledger_writer_shadow_invocation_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            fixture["execute"]["billing_ledger_writer_shadow_invocation_contract"]["local_sql_writer_remains_authoritative"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["billing_ledger_writer_shadow_invocation_contract"]["billing_ledger_shadow_transaction_commit_allowed"],
+            json!(false)
         );
         assert_eq!(
             fixture["billing_ledger_runtime_writer_mapping_contract"]["schema_version"],
@@ -12428,6 +13043,38 @@ mod tests {
             fixture["billing_ledger_writer_adapter_boundary_contract"]["failure_classification"][2]
                 ["error_detail_output"],
             json!("omitted")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["default_shadow_enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["no_double_write_contract"]
+                ["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["no_double_write_contract"]
+                ["billing_ledger_shadow_ledger_write_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["response_parity_summary_contract"]
+                ["parity_required_when_enabled"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["audit_parity_summary_contract"]
+                ["parity_required_when_enabled"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_shadow_invocation_contract"]["safe_output_contract"]["operation_key_bind_only"],
+            json!(true)
         );
         assert_eq!(
             fixture["execute"]["idempotent_replay_does_not_write_ledger_or_audit"],
