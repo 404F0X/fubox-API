@@ -106,6 +106,8 @@ const CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA: &str =
     "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1";
 const CONTROL_PLANE_BILLING_LEDGER_LIVE_CUTOVER_EVIDENCE_MATRIX_SCHEMA: &str =
     "control_plane_billing_ledger_live_cutover_evidence_matrix.v1";
+const CONTROL_PLANE_BILLING_LEDGER_RUNTIME_DRY_RUN_EVIDENCE_SCHEMA: &str =
+    "control_plane_billing_ledger_runtime_writer_dry_run_execution_evidence.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4320,9 +4322,97 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
             "transaction_summary": "unavailable_marker_without_db_io"
         },
         "live_cutover_evidence_matrix_contract": ledger_adjustment_billing_ledger_live_cutover_evidence_matrix_contract(),
+        "runtime_writer_dry_run_execution_evidence_contract": ledger_adjustment_billing_ledger_runtime_dry_run_execution_evidence_contract(),
         "safe_output_contract": {
             "env_value_output": "omitted",
             "database_url_output": "omitted",
+            "operation_key_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_runtime_dry_run_execution_evidence_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_RUNTIME_DRY_RUN_EVIDENCE_SCHEMA,
+        "source": "billing_ledger_runtime_writer_readiness_smoke_wrapper",
+        "target": "billing_ledger_runtime_writer_dry_run_execution",
+        "execution_mode": "dry_run_evidence_only",
+        "db_write_performed": false,
+        "production_writer_replaced": false,
+        "production_source_of_truth_switch_allowed": false,
+        "billing_ledger_writer_commit_allowed": false,
+        "dual_commit_allowed": false,
+        "bounded_command_count": {
+            "min": 0,
+            "max": 8,
+            "source": "normalized_billing_ledger_writer_plan",
+            "unbounded_scan_allowed": false
+        },
+        "bounded_command_kinds": [
+            "lock_idempotency_scope",
+            "lock_wallet_scope",
+            "lock_budget_scope",
+            "insert_ledger_entry",
+            "insert_audit_metadata",
+            "mark_idempotency_applied",
+            "rollback_refusal"
+        ],
+        "row_count_expectations": [
+            {
+                "statement_kind": "lock_idempotency_scope",
+                "expected_rows": "zero_or_one",
+                "mismatch_classification": "blocker"
+            },
+            {
+                "statement_kind": "lock_wallet_scope",
+                "expected_rows": "one",
+                "mismatch_classification": "blocker"
+            },
+            {
+                "statement_kind": "insert_ledger_entry",
+                "expected_rows": "one",
+                "mismatch_classification": "blocker"
+            },
+            {
+                "statement_kind": "mark_idempotency_applied",
+                "expected_rows": "one",
+                "mismatch_classification": "blocker"
+            }
+        ],
+        "transaction_step_timing_names": [
+            "begin_transaction",
+            "lock_idempotency_scope",
+            "lock_wallet_scope",
+            "lock_budget_scope",
+            "execute_bounded_commands",
+            "row_count_enforcement",
+            "commit_transaction",
+            "rollback_transaction"
+        ],
+        "rollback_fallback_guard": {
+            "rollback_required_on_row_count_mismatch": true,
+            "rollback_required_on_adapter_refusal": true,
+            "local_writer_fallback": "control_plane_local_sql_writer",
+            "fallback_after_billing_commit_allowed": false,
+            "rollback_summary_required": true
+        },
+        "failure_blocker_classification": {
+            "runtime_writer_unavailable": "blocker",
+            "live_database_url_missing": "blocker",
+            "row_count_expectation_missing": "fail",
+            "bounded_command_count_exceeded": "fail",
+            "transaction_timing_name_missing": "fail",
+            "unsafe_output_detected": "fail"
+        },
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
             "operation_key_output": "omitted",
             "dedupe_material_echoed": false,
             "raw_env_value_echoed": false,
@@ -14901,6 +14991,69 @@ mod tests {
             json!("fail")
         );
         assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_RUNTIME_DRY_RUN_EVIDENCE_SCHEMA)
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["execution_mode"],
+            json!("dry_run_evidence_only")
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["db_write_performed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["production_source_of_truth_switch_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["bounded_command_count"]
+                ["max"],
+            json!(8)
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["row_count_expectations"]
+                [2]["statement_kind"],
+            json!("insert_ledger_entry")
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["row_count_expectations"]
+                [2]["expected_rows"],
+            json!("one")
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["transaction_step_timing_names"],
+            json!([
+                "begin_transaction",
+                "lock_idempotency_scope",
+                "lock_wallet_scope",
+                "lock_budget_scope",
+                "execute_bounded_commands",
+                "row_count_enforcement",
+                "commit_transaction",
+                "rollback_transaction"
+            ])
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["rollback_fallback_guard"]
+                ["local_writer_fallback"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["failure_blocker_classification"]
+                ["bounded_command_count_exceeded"],
+            json!("fail")
+        );
+        assert_eq!(
+            contract["runtime_writer_dry_run_execution_evidence_contract"]["safe_output_contract"]
+                ["raw_database_url_echoed"],
+            json!(false)
+        );
+        assert_eq!(
             contract["safe_output_contract"]["database_url_output"],
             json!("omitted")
         );
@@ -16084,6 +16237,56 @@ mod tests {
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
                 ["live_cutover_evidence_matrix_contract"]["safe_output_contract"]["raw_database_url_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_RUNTIME_DRY_RUN_EVIDENCE_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["execution_mode"],
+            json!("dry_run_evidence_only")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["db_write_performed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["bounded_command_count"]["max"],
+            json!(8)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["row_count_expectations"][2]
+                ["statement_kind"],
+            json!("insert_ledger_entry")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["transaction_step_timing_names"],
+            json!([
+                "begin_transaction",
+                "lock_idempotency_scope",
+                "lock_wallet_scope",
+                "lock_budget_scope",
+                "execute_bounded_commands",
+                "row_count_enforcement",
+                "commit_transaction",
+                "rollback_transaction"
+            ])
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["rollback_fallback_guard"]["local_writer_fallback"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["runtime_writer_dry_run_execution_evidence_contract"]["safe_output_contract"]["raw_database_url_echoed"],
             json!(false)
         );
         assert_eq!(

@@ -11,6 +11,7 @@ $fixturePath = Join-Path $repoRoot "tests\fixtures\control-plane\ledger_adjustme
 $contract = (Get-Content -Raw $fixturePath | ConvertFrom-Json).billing_ledger_writer_cutover_preflight_contract
 $readinessContract = $contract.readiness_smoke_wrapper_contract
 $evidenceMatrixContract = $readinessContract.live_cutover_evidence_matrix_contract
+$dryRunEvidenceContract = $readinessContract.runtime_writer_dry_run_execution_evidence_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -99,6 +100,33 @@ function Assert-Contract {
   if ([bool]$evidenceMatrixContract.dual_commit_allowed) {
     throw "evidence matrix must not allow dual commit"
   }
+  if ([string]$dryRunEvidenceContract.schema_version -ne "control_plane_billing_ledger_runtime_writer_dry_run_execution_evidence.v1") {
+    throw "dry-run execution evidence schema mismatch"
+  }
+  if ([bool]$dryRunEvidenceContract.db_write_performed) {
+    throw "dry-run execution evidence must not write DB"
+  }
+  if ([bool]$dryRunEvidenceContract.dual_commit_allowed) {
+    throw "dry-run execution evidence must not allow dual commit"
+  }
+  if ([int]$dryRunEvidenceContract.bounded_command_count.max -le 0) {
+    throw "dry-run execution evidence must define a positive bounded command count"
+  }
+  $rowExpectationStatementKinds = @($dryRunEvidenceContract.row_count_expectations | ForEach-Object { [string]$_.statement_kind })
+  foreach ($requiredStatementKind in @("lock_idempotency_scope", "lock_wallet_scope", "insert_ledger_entry", "mark_idempotency_applied")) {
+    if ($requiredStatementKind -notin $rowExpectationStatementKinds) {
+      throw "dry-run execution evidence missing row-count expectation: $requiredStatementKind"
+    }
+  }
+  $timingNames = @($dryRunEvidenceContract.transaction_step_timing_names | ForEach-Object { [string]$_ })
+  foreach ($requiredTimingName in @("begin_transaction", "row_count_enforcement", "rollback_transaction")) {
+    if ($requiredTimingName -notin $timingNames) {
+      throw "dry-run execution evidence missing transaction timing name: $requiredTimingName"
+    }
+  }
+  if ([string]$dryRunEvidenceContract.rollback_fallback_guard.local_writer_fallback -ne "control_plane_local_sql_writer") {
+    throw "dry-run execution evidence must preserve local writer fallback"
+  }
   $evidenceKeys = @($evidenceMatrixContract.required_evidence | ForEach-Object { [string]$_.key })
   foreach ($requiredEvidence in @("migrated_db", "runtime_writer_feature", "source_of_truth_switch", "rollback_path", "performance_summaries", "schema_markers")) {
     if ($requiredEvidence -notin $evidenceKeys) {
@@ -157,6 +185,89 @@ function New-EvidenceItem {
     required = $Required
     evidence_output = $EvidenceOutput
     raw_value_echoed = $false
+  }
+}
+
+function New-DryRunExecutionEvidence {
+  param(
+    [Parameter(Mandatory = $true)][string]$Readiness,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Blockers
+  )
+
+  $classification = "blocker"
+  if ($Readiness -eq "ready") {
+    $classification = "ready"
+  } elseif ($Readiness -eq "unavailable") {
+    $classification = "blocker"
+  }
+
+  $rowCountExpectations = @(
+    $dryRunEvidenceContract.row_count_expectations | ForEach-Object {
+      [ordered]@{
+        statement_kind = [string]$_.statement_kind
+        expected_rows = [string]$_.expected_rows
+        mismatch_classification = [string]$_.mismatch_classification
+        actual_rows = $null
+        output = "expectation_only_no_db_io"
+      }
+    }
+  )
+
+  $timingNames = @($dryRunEvidenceContract.transaction_step_timing_names | ForEach-Object { [string]$_ })
+
+  return [ordered]@{
+    schema_version = [string]$dryRunEvidenceContract.schema_version
+    execution_mode = [string]$dryRunEvidenceContract.execution_mode
+    classification = $classification
+    db_write_performed = $false
+    production_writer_replaced = $false
+    production_source_of_truth_switch_allowed = $false
+    billing_ledger_writer_commit_allowed = $false
+    dual_commit_allowed = $false
+    bounded_command_count = [ordered]@{
+      observed = 0
+      min = [int]$dryRunEvidenceContract.bounded_command_count.min
+      max = [int]$dryRunEvidenceContract.bounded_command_count.max
+      source = [string]$dryRunEvidenceContract.bounded_command_count.source
+      unbounded_scan_allowed = $false
+      output = "bounded_numeric"
+    }
+    bounded_command_kinds = @($dryRunEvidenceContract.bounded_command_kinds | ForEach-Object { [string]$_ })
+    row_count_expectations = $rowCountExpectations
+    transaction_step_timing_names = $timingNames
+    transaction_step_timing = [ordered]@{
+      measurement_available = $false
+      names = $timingNames
+      duration_ms = $null
+      output = "names_only_no_db_io"
+    }
+    rollback_fallback_guard = [ordered]@{
+      rollback_required_on_row_count_mismatch = $true
+      rollback_required_on_adapter_refusal = $true
+      local_writer_fallback = "control_plane_local_sql_writer"
+      fallback_after_billing_commit_allowed = $false
+      rollback_summary_required = $true
+    }
+    blockers = @($Blockers)
+    failure_blocker_classification = [ordered]@{
+      runtime_writer_unavailable = [string]$dryRunEvidenceContract.failure_blocker_classification.runtime_writer_unavailable
+      live_database_url_missing = [string]$dryRunEvidenceContract.failure_blocker_classification.live_database_url_missing
+      row_count_expectation_missing = [string]$dryRunEvidenceContract.failure_blocker_classification.row_count_expectation_missing
+      bounded_command_count_exceeded = [string]$dryRunEvidenceContract.failure_blocker_classification.bounded_command_count_exceeded
+      transaction_timing_name_missing = [string]$dryRunEvidenceContract.failure_blocker_classification.transaction_timing_name_missing
+      unsafe_output_detected = [string]$dryRunEvidenceContract.failure_blocker_classification.unsafe_output_detected
+    }
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      dedupe_material_echoed = $false
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
   }
 }
 
@@ -299,6 +410,7 @@ $summary = [ordered]@{
       raw_executor_error_detail_echoed = $false
     }
   }
+  dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version
     available = $false
