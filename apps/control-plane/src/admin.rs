@@ -94,6 +94,8 @@ const CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA: &str =
     "control_plane_billing_ledger_writer_cutover_preflight.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR: &str =
     "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE";
+const CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA: &str =
+    "control_plane_billing_ledger_writer_handoff_performance.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4113,6 +4115,107 @@ fn ledger_adjustment_billing_ledger_writer_cutover_env_config_summary(
     })
 }
 
+fn ledger_adjustment_billing_ledger_writer_handoff_performance_summary(
+    validated_plan: &Value,
+    mode: LedgerAdjustmentBillingLedgerWriterCutoverMode,
+    failure_kind: Option<&'static str>,
+) -> Value {
+    let state = mode.as_str();
+    let target_operation = ledger_adjustment_billing_runtime_operation_mapping(validated_plan);
+    let writer_request = target_operation
+        .get("writer_request")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "variant": "unmapped",
+                "operation_key": "bind_only",
+                "public_operation_key_output": "omitted"
+            })
+        });
+    let row_count_mismatch = matches!(failure_kind, Some("row_count_mismatch"));
+    let refused_statement_count = if row_count_mismatch { 1 } else { 0 };
+    let ready_but_not_cutover =
+        mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && failure_kind.is_none();
+    let outcome_observation = match failure_kind {
+        Some("row_count_mismatch") => "refused_rollback",
+        Some(_) => "refused_preflight",
+        None if ready_but_not_cutover => "ready_but_not_cutover",
+        None => "not_handed_off",
+    };
+
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA,
+        "source": "control_plane_execute_validated_plan",
+        "target": "billing_ledger_runtime_writer_handoff",
+        "handoff_state": state,
+        "outcome_observation": outcome_observation,
+        "db_io_performed": false,
+        "production_writer_replaced": false,
+        "ready_but_not_cutover": ready_but_not_cutover,
+        "current_execution_source_of_truth": "control_plane_local_sql_writer",
+        "target_operation": {
+            "source_operation": ledger_adjustment_validated_plan_operation(validated_plan),
+            "source_entry_type": ledger_adjustment_validated_plan_entry_type(validated_plan),
+            "billing_ledger_operation": target_operation
+                .get("billing_ledger_operation")
+                .cloned()
+                .unwrap_or_else(|| json!("unmapped")),
+            "writer_request": writer_request
+        },
+        "latency_summary": {
+            "measurement_available": false,
+            "unit": "milliseconds",
+            "transaction_latency_ms": Value::Null,
+            "begin_latency_ms": Value::Null,
+            "lock_wait_latency_ms": Value::Null,
+            "statement_latency_ms": Value::Null,
+            "commit_latency_ms": Value::Null,
+            "rollback_latency_ms": Value::Null,
+            "latency_output": "numeric_or_null",
+            "timer_source": "future_billing_ledger_writer_runtime",
+            "raw_timer_output": "omitted"
+        },
+        "row_count_summary": {
+            "measurement_available": false,
+            "row_count_enforcement_required": true,
+            "bounded_statement_scope": "tenant_project_request_operation",
+            "unbounded_scan_allowed": false,
+            "statement_count": "bounded_by_billing_ledger_writer_plan",
+            "executed_statement_count": 0,
+            "refused_statement_count": refused_statement_count,
+            "actual_rows_affected": Value::Null,
+            "total_rows_affected": Value::Null,
+            "row_count_mismatch": row_count_mismatch,
+            "rows_affected_output": "numeric_or_null"
+        },
+        "transaction_timing_summary": {
+            "begin_observed": false,
+            "commit_observed": false,
+            "rollback_observed": false,
+            "commit_expected_after_external_cutover": ready_but_not_cutover,
+            "rollback_required_for_future_writer": row_count_mismatch,
+            "commit_latency_ms": Value::Null,
+            "rollback_latency_ms": Value::Null,
+            "commit_or_rollback_timing_output": "numeric_or_null"
+        },
+        "no_double_write": {
+            "dual_commit_allowed": false,
+            "local_sql_writer_remains_authoritative_in_this_contract": true,
+            "billing_ledger_writer_commit_allowed_in_this_contract": false,
+            "ready_requires_separate_live_cutover_acceptance": true
+        },
+        "safe_output_contract": {
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false,
+            "raw_transaction_timing_detail_echoed": false
+        }
+    })
+}
+
 fn ledger_adjustment_billing_ledger_writer_shadow_invocation_contract() -> Value {
     json!({
         "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA,
@@ -4333,6 +4436,44 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_contract() -> Value
             "billing_ledger_writer_commit_allowed_in_this_contract": false,
             "dual_commit_allowed": false
         },
+        "handoff_performance_guard_contract": {
+            "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA,
+            "summary_field": "handoff_performance_summary",
+            "db_io_performed": false,
+            "production_writer_replaced": false,
+            "ready_but_not_cutover_supported": true,
+            "latency_fields": [
+                "transaction_latency_ms",
+                "begin_latency_ms",
+                "lock_wait_latency_ms",
+                "statement_latency_ms",
+                "commit_latency_ms",
+                "rollback_latency_ms"
+            ],
+            "latency_output": "numeric_or_null",
+            "row_count_fields": [
+                "statement_count",
+                "executed_statement_count",
+                "refused_statement_count",
+                "actual_rows_affected",
+                "total_rows_affected",
+                "row_count_mismatch"
+            ],
+            "rows_affected_output": "numeric_or_null",
+            "commit_rollback_timing_fields": [
+                "commit_observed",
+                "rollback_observed",
+                "commit_latency_ms",
+                "rollback_latency_ms"
+            ],
+            "bounded_statement_scope": "tenant_project_request_operation",
+            "unbounded_scan_allowed": false,
+            "dual_commit_allowed": false,
+            "billing_ledger_writer_commit_allowed_in_this_contract": false,
+            "raw_timer_output": "omitted",
+            "operation_key_output": "omitted",
+            "raw_executor_error_detail_echoed": false
+        },
         "mode_parser_contract": {
             "parser": "billing_ledger_writer_cutover_mode_parser.v1",
             "default_mode": "disabled",
@@ -4444,6 +4585,12 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_from_config(
         })
         .unwrap_or(Value::Null);
     let local_writer_remains_source_of_truth = state != "ready" || preflight_failed;
+    let handoff_performance_summary =
+        ledger_adjustment_billing_ledger_writer_handoff_performance_summary(
+            validated_plan,
+            mode,
+            failure_kind,
+        );
 
     json!({
         "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA,
@@ -4534,6 +4681,7 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_from_config(
             "error_detail_output": "omitted",
             "raw_executor_error_detail_echoed": false
         },
+        "handoff_performance_summary": handoff_performance_summary,
         "refusal_mapping": refusal_mapping,
         "safe_output_contract": {
             "operation_key_output": "omitted",
@@ -12815,6 +12963,34 @@ mod tests {
             contract["env_config_summary_contract"]["dual_commit_allowed"],
             json!(false)
         );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA)
+        );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["summary_field"],
+            json!("handoff_performance_summary")
+        );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["latency_output"],
+            json!("numeric_or_null")
+        );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["rows_affected_output"],
+            json!("numeric_or_null")
+        );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["unbounded_scan_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["handoff_performance_guard_contract"]["billing_ledger_writer_commit_allowed_in_this_contract"],
+            json!(false)
+        );
         assert_eq!(contract["supported_states"][0]["state"], json!("disabled"));
         assert_eq!(contract["supported_states"][1]["state"], json!("shadow"));
         assert_eq!(contract["supported_states"][2]["state"], json!("ready"));
@@ -13575,6 +13751,266 @@ mod tests {
                 assert!(
                     !serialized.contains(forbidden),
                     "{label} env/config preflight must not contain {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_billing_runtime_handoff_performance_guard_carries_timing_rows_and_is_secret_safe()
+     {
+        let plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "-0.10000000",
+            "USD",
+            Some(Uuid::from_u128(20)),
+            Some(Uuid::from_u128(40)),
+            Some(Uuid::from_u128(90)),
+            None,
+            None,
+            false,
+        );
+
+        for (
+            label,
+            raw_mode,
+            failure_kind,
+            expected_state,
+            expected_outcome,
+            expected_ready_but_not_cutover,
+            expected_row_count_mismatch,
+            expected_refused_statement_count,
+        ) in [
+            (
+                "disabled default",
+                None,
+                None,
+                "disabled",
+                "not_handed_off",
+                false,
+                false,
+                0,
+            ),
+            (
+                "ready but not cutover",
+                Some("ready"),
+                None,
+                "ready",
+                "ready_but_not_cutover",
+                true,
+                false,
+                0,
+            ),
+            (
+                "ready row-count rollback",
+                Some("ready"),
+                Some("row_count_mismatch"),
+                "ready",
+                "refused_rollback",
+                false,
+                true,
+                1,
+            ),
+        ] {
+            let preflight =
+                ledger_adjustment_billing_ledger_writer_cutover_preflight_from_env_config(
+                    &plan,
+                    raw_mode,
+                    failure_kind,
+                );
+            let summary = &preflight["handoff_performance_summary"];
+            let serialized =
+                serde_json::to_string(&preflight).expect("performance preflight should serialize");
+
+            assert_eq!(
+                summary["schema_version"],
+                json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA),
+                "{label} schema"
+            );
+            assert_eq!(
+                summary["handoff_state"],
+                json!(expected_state),
+                "{label} state"
+            );
+            assert_eq!(
+                summary["outcome_observation"],
+                json!(expected_outcome),
+                "{label} outcome observation"
+            );
+            assert_eq!(
+                summary["ready_but_not_cutover"],
+                json!(expected_ready_but_not_cutover),
+                "{label} ready-but-not-cutover"
+            );
+            assert_eq!(summary["db_io_performed"], json!(false), "{label} db io");
+            assert_eq!(
+                summary["production_writer_replaced"],
+                json!(false),
+                "{label} production replacement"
+            );
+            assert_eq!(
+                summary["current_execution_source_of_truth"],
+                json!("control_plane_local_sql_writer"),
+                "{label} source of truth"
+            );
+            assert_eq!(
+                summary["target_operation"]["writer_request"]["variant"],
+                json!("ConsistentLedgerWriteRequest::AdminAdjustment"),
+                "{label} writer request"
+            );
+            assert_eq!(
+                summary["target_operation"]["writer_request"]["operation_key"],
+                json!("bind_only"),
+                "{label} operation key binding"
+            );
+            assert_eq!(
+                summary["latency_summary"]["measurement_available"],
+                json!(false),
+                "{label} latency availability"
+            );
+            assert_eq!(
+                summary["latency_summary"]["unit"],
+                json!("milliseconds"),
+                "{label} latency unit"
+            );
+            assert!(
+                summary["latency_summary"]["transaction_latency_ms"].is_null(),
+                "{label} transaction latency must be null without runtime observation"
+            );
+            assert!(
+                summary["latency_summary"]["commit_latency_ms"].is_null(),
+                "{label} commit latency must be null without runtime observation"
+            );
+            assert!(
+                summary["latency_summary"]["rollback_latency_ms"].is_null(),
+                "{label} rollback latency must be null without runtime observation"
+            );
+            assert_eq!(
+                summary["latency_summary"]["latency_output"],
+                json!("numeric_or_null"),
+                "{label} latency output"
+            );
+            assert_eq!(
+                summary["latency_summary"]["raw_timer_output"],
+                json!("omitted"),
+                "{label} raw timer"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["measurement_available"],
+                json!(false),
+                "{label} row measurement"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["row_count_enforcement_required"],
+                json!(true),
+                "{label} row enforcement"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["bounded_statement_scope"],
+                json!("tenant_project_request_operation"),
+                "{label} bounded scope"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["unbounded_scan_allowed"],
+                json!(false),
+                "{label} unbounded scan"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["executed_statement_count"],
+                json!(0),
+                "{label} executed statements"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["refused_statement_count"],
+                json!(expected_refused_statement_count),
+                "{label} refused statements"
+            );
+            assert!(
+                summary["row_count_summary"]["actual_rows_affected"].is_null(),
+                "{label} actual rows must be null without runtime observation"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["row_count_mismatch"],
+                json!(expected_row_count_mismatch),
+                "{label} row mismatch"
+            );
+            assert_eq!(
+                summary["row_count_summary"]["rows_affected_output"],
+                json!("numeric_or_null"),
+                "{label} rows output"
+            );
+            assert_eq!(
+                summary["transaction_timing_summary"]["commit_observed"],
+                json!(false),
+                "{label} commit observed"
+            );
+            assert_eq!(
+                summary["transaction_timing_summary"]["rollback_observed"],
+                json!(false),
+                "{label} rollback observed"
+            );
+            assert_eq!(
+                summary["transaction_timing_summary"]["commit_expected_after_external_cutover"],
+                json!(expected_ready_but_not_cutover),
+                "{label} commit expected"
+            );
+            assert_eq!(
+                summary["transaction_timing_summary"]["rollback_required_for_future_writer"],
+                json!(expected_row_count_mismatch),
+                "{label} rollback required"
+            );
+            assert!(
+                summary["transaction_timing_summary"]["commit_latency_ms"].is_null(),
+                "{label} commit timing must be null without runtime observation"
+            );
+            assert!(
+                summary["transaction_timing_summary"]["rollback_latency_ms"].is_null(),
+                "{label} rollback timing must be null without runtime observation"
+            );
+            assert_eq!(
+                summary["no_double_write"]["dual_commit_allowed"],
+                json!(false),
+                "{label} dual commit"
+            );
+            assert_eq!(
+                summary["no_double_write"]["billing_ledger_writer_commit_allowed_in_this_contract"],
+                json!(false),
+                "{label} contract writer commit"
+            );
+            assert_eq!(
+                summary["no_double_write"]["ready_requires_separate_live_cutover_acceptance"],
+                json!(true),
+                "{label} live cutover gate"
+            );
+            assert_eq!(
+                summary["safe_output_contract"]["operation_key_output"],
+                json!("omitted"),
+                "{label} operation key output"
+            );
+            assert_eq!(
+                summary["safe_output_contract"]["raw_transaction_timing_detail_echoed"],
+                json!(false),
+                "{label} raw timing detail"
+            );
+
+            for forbidden in [
+                "ledger-idempotency-never-return",
+                "idempotency_key",
+                "dedupe_key",
+                "raw ledger payload",
+                "Authorization",
+                "Bearer",
+                "sk-live",
+                "postgres://",
+                "raw timer",
+                "raw transaction",
+                "raw executor failure detail",
+                "raw credential value",
+                "raw metadata value",
+            ] {
+                assert!(
+                    !serialized.contains(forbidden),
+                    "{label} handoff performance summary must not contain {forbidden}"
                 );
             }
         }
@@ -14583,6 +15019,41 @@ mod tests {
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["env_config_summary_contract"]
                 ["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["summary_field"],
+            json!("handoff_performance_summary")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["latency_output"],
+            json!("numeric_or_null")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["rows_affected_output"],
+            json!("numeric_or_null")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["unbounded_scan_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["handoff_performance_guard_contract"]
+                ["billing_ledger_writer_commit_allowed_in_this_contract"],
             json!(false)
         );
         assert_eq!(

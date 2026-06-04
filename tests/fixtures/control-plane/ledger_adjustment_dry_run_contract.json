@@ -648,6 +648,44 @@
       "billing_ledger_writer_commit_allowed_in_this_contract": false,
       "dual_commit_allowed": false
     },
+    "handoff_performance_guard_contract": {
+      "schema_version": "control_plane_billing_ledger_writer_handoff_performance.v1",
+      "summary_field": "handoff_performance_summary",
+      "db_io_performed": false,
+      "production_writer_replaced": false,
+      "ready_but_not_cutover_supported": true,
+      "latency_fields": [
+        "transaction_latency_ms",
+        "begin_latency_ms",
+        "lock_wait_latency_ms",
+        "statement_latency_ms",
+        "commit_latency_ms",
+        "rollback_latency_ms"
+      ],
+      "latency_output": "numeric_or_null",
+      "row_count_fields": [
+        "statement_count",
+        "executed_statement_count",
+        "refused_statement_count",
+        "actual_rows_affected",
+        "total_rows_affected",
+        "row_count_mismatch"
+      ],
+      "rows_affected_output": "numeric_or_null",
+      "commit_rollback_timing_fields": [
+        "commit_observed",
+        "rollback_observed",
+        "commit_latency_ms",
+        "rollback_latency_ms"
+      ],
+      "bounded_statement_scope": "tenant_project_request_operation",
+      "unbounded_scan_allowed": false,
+      "dual_commit_allowed": false,
+      "billing_ledger_writer_commit_allowed_in_this_contract": false,
+      "raw_timer_output": "omitted",
+      "operation_key_output": "omitted",
+      "raw_executor_error_detail_echoed": false
+    },
     "mode_parser_contract": {
       "parser": "billing_ledger_writer_cutover_mode_parser.v1",
       "default_mode": "disabled",
