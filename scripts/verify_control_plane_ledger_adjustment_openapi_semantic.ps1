@@ -33,6 +33,10 @@ param(
   [switch]$SimulatePackageMaterializationBoundary,
   [switch]$SimulateRealToolReadinessCurrent,
   [switch]$SimulateRealToolReadinessStale,
+  [switch]$SimulateClosureMarkerCurrent,
+  [switch]$SimulateClosureMarkerStale,
+  [switch]$SimulateClosureMarkerSimulated,
+  [switch]$SimulateClosureMarkerMissingGenerated,
   [switch]$SimulateRealExecutionEvidencePass,
   [switch]$SimulateRealExecutionEvidenceFailure,
   [switch]$SimulateRealExecutionEvidenceBlocker
@@ -84,6 +88,10 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CACHE_PROBE) { $Si
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY) { $SimulatePackageMaterializationBoundary = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_CURRENT) { $SimulateRealToolReadinessCurrent = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_STALE) { $SimulateRealToolReadinessStale = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_CURRENT) { $SimulateClosureMarkerCurrent = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_STALE) { $SimulateClosureMarkerStale = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_SIMULATED) { $SimulateClosureMarkerSimulated = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_MISSING_GENERATED) { $SimulateClosureMarkerMissingGenerated = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS) { $SimulateRealExecutionEvidencePass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE) { $SimulateRealExecutionEvidenceFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER) { $SimulateRealExecutionEvidenceBlocker = $true }
@@ -252,6 +260,10 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-package-materialization-boundary"),
     (Join-Path $TempRoot "self-test-real-tool-readiness-current"),
     (Join-Path $TempRoot "self-test-real-tool-readiness-stale"),
+    (Join-Path $TempRoot "self-test-closure-marker-current"),
+    (Join-Path $TempRoot "self-test-closure-marker-stale"),
+    (Join-Path $TempRoot "self-test-closure-marker-simulated"),
+    (Join-Path $TempRoot "self-test-closure-marker-missing-generated"),
     (Join-Path $TempRoot "self-test-real-execution-pass"),
     (Join-Path $TempRoot "self-test-real-execution-failure"),
     (Join-Path $TempRoot "self-test-real-execution-blocker"),
@@ -406,6 +418,10 @@ function Get-WrapperCommandSummary {
   if ($SimulatePackageMaterializationBoundary) { [void]$simulatedModes.Add("package_materialization_boundary") }
   if ($SimulateRealToolReadinessCurrent) { [void]$simulatedModes.Add("real_tool_readiness_current") }
   if ($SimulateRealToolReadinessStale) { [void]$simulatedModes.Add("real_tool_readiness_stale") }
+  if ($SimulateClosureMarkerCurrent) { [void]$simulatedModes.Add("closure_marker_current") }
+  if ($SimulateClosureMarkerStale) { [void]$simulatedModes.Add("closure_marker_stale") }
+  if ($SimulateClosureMarkerSimulated) { [void]$simulatedModes.Add("closure_marker_simulated") }
+  if ($SimulateClosureMarkerMissingGenerated) { [void]$simulatedModes.Add("closure_marker_missing_generated") }
   if ($SimulateRealExecutionEvidencePass) { [void]$simulatedModes.Add("real_execution_evidence_pass") }
   if ($SimulateRealExecutionEvidenceFailure) { [void]$simulatedModes.Add("real_execution_evidence_failure") }
   if ($SimulateRealExecutionEvidenceBlocker) { [void]$simulatedModes.Add("real_execution_evidence_blocker") }
@@ -673,7 +689,7 @@ function Get-OpenApiCommandMatrix {
       cache_policy = $cachePolicy
       expected_exit_classification = "0 pass_with_readiness; 1 generated_client_mismatch; 2 tool_or_cache_blocker"
       evidence_kind = "client_generation"
-      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
+      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker", "closure_readiness_marker")
       safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiTypescript"
     },
     [ordered]@{
@@ -686,7 +702,7 @@ function Get-OpenApiCommandMatrix {
       cache_policy = $cachePolicy
       expected_exit_classification = "0 pass_with_readiness; 1 generated_client_mismatch; 2 tool_or_cache_blocker"
       evidence_kind = "client_generation"
-      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
+      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker", "closure_readiness_marker")
       safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -TypescriptFetch"
     }
   )
@@ -729,6 +745,13 @@ function Assert-OpenApiCommandMatrixContract {
     foreach ($requiredField in @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail")) {
       if (-not @($entry.evidence_fields).Contains($requiredField)) {
         Add-Failure "[FAIL] command matrix contract - '$($entry.name)' missing evidence field '$requiredField'"
+      }
+    }
+    if ([string]$entry.evidence_kind -eq "client_generation") {
+      foreach ($requiredClientField in @("readiness_marker", "closure_readiness_marker")) {
+        if (-not @($entry.evidence_fields).Contains($requiredClientField)) {
+          Add-Failure "[FAIL] command matrix contract - '$($entry.name)' missing generated-client evidence field '$requiredClientField'"
+        }
       }
     }
     foreach ($tool in @($entry.required_tools)) {
@@ -1076,14 +1099,15 @@ function Add-EvidenceRecord {
 function Set-ClientGenerationEvidenceReadiness {
   param(
     [Parameter(Mandatory = $true)][string]$Tool,
-    [Parameter(Mandatory = $true)][ValidateSet("current", "missing", "stale", "not_applicable", "pending")][string]$Status
+    [Parameter(Mandatory = $true)][ValidateSet("current", "missing", "stale", "not_applicable", "pending")][string]$Status,
+    [bool]$ClosureReady = $false
   )
 
   for ($index = $script:EvidenceRecords.Count - 1; $index -ge 0; $index -= 1) {
     $record = $script:EvidenceRecords[$index]
     if ([string]$record.kind -eq "client_generation" -and [string]$record.tool -eq $Tool) {
       $record.readiness_marker_status = $Status
-      if ([string]$record.provenance_mode -eq "real" -and [string]$record.execution_mode -eq "real_tool_execution" -and [bool]$record.real_command_executed -and [string]$record.classification -eq "pass" -and $Status -eq "current") {
+      if ([string]$record.provenance_mode -eq "real" -and [string]$record.execution_mode -eq "real_tool_execution" -and [bool]$record.real_command_executed -and [string]$record.classification -eq "pass" -and $Status -eq "current" -and [bool]$ClosureReady) {
         $record.closure_eligible = $true
       }
       return
@@ -1287,8 +1311,8 @@ function Assert-EvidenceReportContract {
     if ($null -eq $record.closure_eligible) {
       Add-Failure "[FAIL] evidence report contract - missing closure_eligible"
     }
-    if ([bool]$record.closure_eligible -and (-not ([string]$record.provenance_mode -eq "real" -and [string]$record.execution_mode -eq "real_tool_execution" -and [bool]$record.real_command_executed -and [string]$record.classification -eq "pass"))) {
-      Add-Failure "[FAIL] evidence report contract - closure_eligible requires real pass execution"
+    if ([bool]$record.closure_eligible -and (-not ([string]$record.kind -eq "client_generation" -and [string]$record.provenance_mode -eq "real" -and [string]$record.execution_mode -eq "real_tool_execution" -and [bool]$record.real_command_executed -and [string]$record.classification -eq "pass" -and [string]$record.readiness_marker_status -eq "current"))) {
+      Add-Failure "[FAIL] evidence report contract - closure_eligible requires real client-generation pass with current markers"
     }
     if (-not @("download_allowed", "offline_repo_cache_present", "offline_repo_cache_missing", "simulated", "not_applicable").Contains([string]$record.package_cache_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid package_cache_status '$($record.package_cache_status)'"
@@ -1734,7 +1758,7 @@ function Invoke-NpmTool {
       -ExecutionMode "real_tool_execution" `
       -RealCommandExecuted $true `
       -ReadinessMarkerStatus $(if ($EvidenceKind -eq "client_generation") { "pending" } else { "not_applicable" }) `
-      -ClosureEligible $($result.Classification -eq "pass" -and $EvidenceKind -eq "semantic_validator")
+      -ClosureEligible $false
     return $result
   } finally {
     $env:npm_config_cache = $oldCache
@@ -1999,6 +2023,12 @@ function Get-GeneratedClientReadinessMarkerPath {
   return Join-Path (Get-GeneratedClientReadinessRoot -Path $Path) ".ledger-openapi-generated-client-readiness.json"
 }
 
+function Get-RealToolClosureReadinessMarkerPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  return Join-Path (Get-GeneratedClientReadinessRoot -Path $Path) ".ledger-openapi-real-tool-closure-readiness.json"
+}
+
 function Write-GeneratedClientReadinessMarker {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -2126,6 +2156,144 @@ function Assert-GeneratedClientReadinessGate {
     return
   }
   Assert-GeneratedClientInspectionContract -Path $Path -Label $Label
+}
+
+function Write-RealToolClosureReadinessMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Target,
+    [Parameter(Mandatory = $true)][string]$Tool,
+    [Parameter(Mandatory = $true)][string]$Package,
+    [ValidateSet("real", "simulated")][string]$ProvenanceMode = "real",
+    [string]$OpenApiSha256 = "",
+    [string]$GeneratedClientReadinessStatus = "current",
+    [string]$MaterializationStatus = "current",
+    [int64]$DurationMs = 0,
+    [string]$PackageCacheStatus = "",
+    [bool]$PackageDownloadAllowed = [bool]$AllowPackageDownload
+  )
+
+  if (-not (Assert-GeneratedClientTargetSafe -Path $Path -Label "$Target real-tool closure marker")) {
+    return
+  }
+
+  $fixture = Get-OpenApiFixtureFingerprint
+  if ([string]::IsNullOrWhiteSpace($OpenApiSha256)) {
+    $OpenApiSha256 = $fixture.Sha256
+  }
+  if ([string]::IsNullOrWhiteSpace($PackageCacheStatus)) {
+    $PackageCacheStatus = Get-NpmPackageCacheStatus
+  }
+  if ($DurationMs -lt 0) {
+    $DurationMs = 0
+  }
+  $repoCommit = Get-RepoCommitProvenance
+  $marker = [ordered]@{
+    schema_version = "ledger_openapi_real_tool_closure_readiness.v1"
+    target = Redact-SafeText $Target
+    tool = Redact-SafeText $Tool
+    package = Redact-SafeText $Package
+    provenance_mode = $ProvenanceMode
+    checked_schema = Get-RepoRelativePath $OpenApiPath
+    openapi_fixture_sha256 = Redact-SafeText $OpenApiSha256
+    repo_commit = $repoCommit.Commit
+    repo_commit_status = $repoCommit.Status
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    package_cache_status = Redact-SafeText $PackageCacheStatus
+    package_download_allowed = [bool]$PackageDownloadAllowed
+    package_cache_path = Format-BoundedPath $NpmCache
+    package_cache_bytes = [int64](Get-BoundedDirectorySizeBytes -Path $NpmCache)
+    materialization_marker_status = Redact-SafeText $MaterializationStatus
+    generated_client_readiness_marker_status = Redact-SafeText $GeneratedClientReadinessStatus
+    duration_ms = [int64]$DurationMs
+  }
+
+  $markerPath = Get-RealToolClosureReadinessMarkerPath -Path $Path
+  Assert-WrapperOwnedArtifactPath -Path $markerPath -Label "real-tool closure readiness marker"
+  New-Item -ItemType Directory -Force (Split-Path -Parent $markerPath) | Out-Null
+  ($marker | ConvertTo-Json -Depth 5) | Set-Content -Path $markerPath -Encoding ascii
+}
+
+function Assert-RealToolClosureReadinessMarker {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  if (-not (Assert-GeneratedClientReadinessMarker -Path $Path -Label $Label)) {
+    return $false
+  }
+
+  $markerPath = Get-RealToolClosureReadinessMarkerPath -Path $Path
+  if (-not (Test-Path $markerPath -PathType Leaf)) {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker is missing: $(Format-BoundedPath $markerPath)"
+    return $false
+  }
+
+  $raw = Get-Content -Path $markerPath -Raw
+  foreach ($pattern in @(
+      "(?i)Authorization\s*[:=]",
+      "(?i)Cookie\s*[:=]",
+      "(?i)Bearer\s+[A-Za-z0-9._~+/\-]+=*",
+      "(?i)(password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key|package[_-]?token|npm[_-]?token|raw[_-]?metadata|metadata)\s*[:=]\s*[^,\s]+"
+    )) {
+    if ($raw -match $pattern) {
+      Add-Failure "[FAIL] $Label - real-tool closure readiness marker contains forbidden material pattern"
+      return $false
+    }
+  }
+
+  $marker = $raw | ConvertFrom-Json
+  foreach ($field in @($marker.PSObject.Properties.Name)) {
+    if (-not @("schema_version", "target", "tool", "package", "provenance_mode", "checked_schema", "openapi_fixture_sha256", "repo_commit", "repo_commit_status", "generated_at_utc", "package_cache_status", "package_download_allowed", "package_cache_path", "package_cache_bytes", "materialization_marker_status", "generated_client_readiness_marker_status", "duration_ms").Contains($field)) {
+      Add-Failure "[FAIL] $Label - real-tool closure readiness marker has unexpected field '$field'"
+    }
+  }
+  if ([string]$marker.schema_version -ne "ledger_openapi_real_tool_closure_readiness.v1") {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker schema_version mismatch"
+  }
+  if ([string]$marker.provenance_mode -ne "real") {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker must have real provenance"
+  }
+  if ([string]$marker.checked_schema -ne (Get-RepoRelativePath $OpenApiPath)) {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker checked_schema drifted"
+  }
+  $fixture = Get-OpenApiFixtureFingerprint
+  if ([string]$marker.openapi_fixture_sha256 -ne $fixture.Sha256) {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker is stale for current OpenAPI fixture"
+  }
+  if (-not @("resolved", "unavailable").Contains([string]$marker.repo_commit_status)) {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker repo_commit_status mismatch"
+  }
+  if ([string]$marker.materialization_marker_status -ne "current") {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker materialization status is not current"
+  }
+  if ([string]$marker.generated_client_readiness_marker_status -ne "current") {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker generated-client status is not current"
+  }
+  try {
+    [void][datetime]::Parse([string]$marker.generated_at_utc)
+  } catch {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker generated_at_utc is not parseable"
+  }
+  try {
+    $cacheBytes = [int64]$marker.package_cache_bytes
+    if ($cacheBytes -lt 0 -or $cacheBytes -gt 1099511627776) {
+      Add-Failure "[FAIL] $Label - real-tool closure readiness marker package_cache_bytes is unbounded"
+    }
+  } catch {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker package_cache_bytes is not numeric"
+  }
+  try {
+    $durationMs = [int64]$marker.duration_ms
+    if ($durationMs -lt 0 -or $durationMs -gt 86400000) {
+      Add-Failure "[FAIL] $Label - real-tool closure readiness marker duration_ms is unbounded"
+    }
+  } catch {
+    Add-Failure "[FAIL] $Label - real-tool closure readiness marker duration_ms is not numeric"
+  }
+
+  return $script:Failures.Count -eq 0
 }
 
 function Get-GeneratedClientInspectionText {
@@ -2762,7 +2930,21 @@ function Invoke-OpenApiTypescript {
       -PackageCacheStatus (Get-NpmPackageCacheStatus) `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload)
     Assert-GeneratedClientReadinessGate -Path $outFile -Label "openapi-typescript ledger execute generated-client readiness"
-    Set-ClientGenerationEvidenceReadiness -Tool "openapi-typescript" -Status $(if ($script:Failures.Count -eq 0) { "current" } else { "missing" })
+    if ($script:Failures.Count -eq 0) {
+      Write-RealToolClosureReadinessMarker `
+        -Path $outFile `
+        -Target "openapi-typescript" `
+        -Tool "openapi-typescript" `
+        -Package "openapi-typescript" `
+        -ProvenanceMode "real" `
+        -GeneratedClientReadinessStatus "current" `
+        -MaterializationStatus "current" `
+        -DurationMs $result.DurationMs `
+        -PackageCacheStatus (Get-NpmPackageCacheStatus) `
+        -PackageDownloadAllowed ([bool]$AllowPackageDownload)
+    }
+    $closureReady = if ($script:Failures.Count -eq 0) { Assert-RealToolClosureReadinessMarker -Path $outFile -Label "openapi-typescript real-tool closure readiness" } else { $false }
+    Set-ClientGenerationEvidenceReadiness -Tool "openapi-typescript" -Status $(if ($script:Failures.Count -eq 0 -and $closureReady) { "current" } else { "missing" }) -ClosureReady $closureReady
   }
 }
 
@@ -2800,8 +2982,61 @@ function Invoke-TypescriptFetch {
       -PackageCacheStatus (Get-NpmPackageCacheStatus) `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload)
     Assert-GeneratedClientReadinessGate -Path $outDir -Label "typescript-fetch ledger execute generated-client readiness"
-    Set-ClientGenerationEvidenceReadiness -Tool "openapi-generator-cli" -Status $(if ($script:Failures.Count -eq 0) { "current" } else { "missing" })
+    if ($script:Failures.Count -eq 0) {
+      Write-RealToolClosureReadinessMarker `
+        -Path $outDir `
+        -Target "typescript-fetch" `
+        -Tool "openapi-generator-cli" `
+        -Package "@openapitools/openapi-generator-cli" `
+        -ProvenanceMode "real" `
+        -GeneratedClientReadinessStatus "current" `
+        -MaterializationStatus "current" `
+        -DurationMs $result.DurationMs `
+        -PackageCacheStatus (Get-NpmPackageCacheStatus) `
+        -PackageDownloadAllowed ([bool]$AllowPackageDownload)
+    }
+    $closureReady = if ($script:Failures.Count -eq 0) { Assert-RealToolClosureReadinessMarker -Path $outDir -Label "typescript-fetch real-tool closure readiness" } else { $false }
+    Set-ClientGenerationEvidenceReadiness -Tool "openapi-generator-cli" -Status $(if ($script:Failures.Count -eq 0 -and $closureReady) { "current" } else { "missing" }) -ClosureReady $closureReady
   }
+}
+
+function Invoke-SimulatedClosureMarkerCase {
+  param(
+    [Parameter(Mandatory = $true)][ValidateSet("current", "stale", "simulated", "missing_generated")][string]$Case
+  )
+
+  $casePathName = $Case.Replace("_", "-")
+  $path = Join-Path $TempRoot "self-test-closure-marker-$casePathName"
+  if ($Case -ne "missing_generated") {
+    Write-SimulatedGeneratedClientFixture -Path $path
+    Write-GeneratedClientReadinessMarker `
+      -Path $path `
+      -Target "simulated-closure-marker-$Case" `
+      -Tool "openapi-typescript" `
+      -ProvenanceMode "real" `
+      -DurationMs 9 `
+      -PackageCacheStatus "offline_repo_cache_present" `
+      -PackageDownloadAllowed $false
+  } else {
+    New-Item -ItemType Directory -Force $path | Out-Null
+  }
+
+  $openApiSha = if ($Case -eq "stale") { "0000000000000000000000000000000000000000000000000000000000000000" } else { "" }
+  $provenance = if ($Case -eq "simulated") { "simulated" } else { "real" }
+  Write-RealToolClosureReadinessMarker `
+    -Path $path `
+    -Target "simulated-closure-marker-$Case" `
+    -Tool "openapi-typescript" `
+    -Package "openapi-typescript" `
+    -ProvenanceMode $provenance `
+    -OpenApiSha256 $openApiSha `
+    -GeneratedClientReadinessStatus $(if ($Case -eq "missing_generated") { "missing" } else { "current" }) `
+    -MaterializationStatus "current" `
+    -DurationMs 11 `
+    -PackageCacheStatus "offline_repo_cache_present" `
+    -PackageDownloadAllowed $false
+  [void](Assert-RealToolClosureReadinessMarker -Path $path -Label "simulated real-tool closure marker $Case")
+  Exit-WithResult
 }
 
 function Assert-SelfTestOutputSecretSafe {
@@ -2965,6 +3200,30 @@ function Invoke-SelfTest {
     -ExpectedExitCode 2 `
     -ExpectedEvidenceClassifications @("blocker") `
     -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool closure marker current" `
+    -Arguments @("-SimulateClosureMarkerCurrent") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-closure-marker-current") `
+    -ExpectedExitCode 0 `
+    -ExpectedEvidenceAbsent
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool closure marker stale" `
+    -Arguments @("-SimulateClosureMarkerStale") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-closure-marker-stale") `
+    -ExpectedExitCode 1 `
+    -ExpectedEvidenceAbsent
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool closure marker simulated provenance" `
+    -Arguments @("-SimulateClosureMarkerSimulated") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-closure-marker-simulated") `
+    -ExpectedExitCode 1 `
+    -ExpectedEvidenceAbsent
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool closure marker missing generated-client marker" `
+    -Arguments @("-SimulateClosureMarkerMissingGenerated") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-closure-marker-missing-generated") `
+    -ExpectedExitCode 1 `
+    -ExpectedEvidenceAbsent
   Invoke-SelfTestChild `
     -Name "simulated real-tool execution evidence pass" `
     -Arguments @("-SimulateRealExecutionEvidencePass") `
@@ -3202,6 +3461,18 @@ if ($SimulateRealToolReadinessCurrent) {
 if ($SimulateRealToolReadinessStale) {
   [void](Add-RealToolReadinessEvidence -SimulatedStale)
   Exit-WithResult
+}
+if ($SimulateClosureMarkerCurrent) {
+  Invoke-SimulatedClosureMarkerCase -Case "current"
+}
+if ($SimulateClosureMarkerStale) {
+  Invoke-SimulatedClosureMarkerCase -Case "stale"
+}
+if ($SimulateClosureMarkerSimulated) {
+  Invoke-SimulatedClosureMarkerCase -Case "simulated"
+}
+if ($SimulateClosureMarkerMissingGenerated) {
+  Invoke-SimulatedClosureMarkerCase -Case "missing_generated"
 }
 if ($SimulateRealExecutionEvidencePass) {
   Add-SimulatedRealExecutionEvidence -Classification "pass"

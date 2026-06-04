@@ -92,6 +92,10 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_PACKAGE_MATERIALIZATION_BOUNDARY=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_CURRENT=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_TOOL_READINESS_STALE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_CURRENT=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_STALE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_SIMULATED=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_CLOSURE_MARKER_MISSING_GENERATED=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_REAL_EXECUTION_EVIDENCE_BLOCKER=1`
@@ -155,6 +159,14 @@ Expected result:
   per-tool readiness evidence without executing validators/generators.
 - Child case `simulated real-tool readiness stale` returns exit `2` and writes
   stale/incomplete cache blocker evidence without executing validators/generators.
+- Child case `simulated real-tool closure marker current` returns exit `0`
+  after writing and reading a current closure marker under validated `TempRoot`
+  without writing an evidence report.
+- Child cases `simulated real-tool closure marker stale`, `simulated real-tool
+  closure marker simulated provenance`, and `simulated real-tool closure marker
+  missing generated-client marker` return exit `1`, proving stale,
+  simulated-provenance, or missing generated-client marker state cannot be
+  closure eligible.
 - Child case `simulated real-tool execution evidence pass` returns exit `0` and
   writes execution-shaped evidence with real-command fields but simulated
   provenance, so it cannot close the real gap.
@@ -222,6 +234,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealToolReadinessStale -RealToolReadiness
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClosureMarkerCurrent
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClosureMarkerStale
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClosureMarkerSimulated
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateClosureMarkerMissingGenerated
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidenceFailure
@@ -245,17 +265,19 @@ return `1` for missing output, stale marker, and unsafe target. The command
 matrix dry-run returns `0`. The simulated cache probe returns `2`. The semantic
 evidence commands return `0`, `1`, and `2`. The simulated real execution
 evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
-returns `2`. They prove wrapper failure-path classification, generated-client
-readiness gating, command matrix coverage, cache/tool availability evidence,
-package download opt-in provenance, package materialization boundary evidence,
-real-tool readiness evidence, real-execution evidence shape, bounded evidence
+returns `2`. The simulated closure marker commands return `0`, `1`, `1`, and
+`1`, and they do not write an evidence report. They prove wrapper failure-path
+classification, generated-client readiness gating, command matrix coverage,
+cache/tool availability evidence, package download opt-in provenance, package
+materialization boundary evidence, real-tool readiness evidence, real-tool
+closure marker readback, real-execution evidence shape, bounded evidence
 lifecycle, path/output hardening, preflight/performance evidence shape, and
 redaction only. They do not run Redocly, OpenAPI Generator,
 `openapi-typescript`, generated-client inspection against real generated output,
 download packages in self-test, or any live Postgres checks. Do not use
 simulated passes, cache-probe blockers, simulated execution evidence, simulated
 download opt-in evidence, simulated materialization evidence, simulated
-readiness evidence, or the matrix dry-run to close the real
+readiness evidence, simulated closure marker checks, or the matrix dry-run to close the real
 semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
@@ -526,8 +548,30 @@ Real-tool execution evidence:
   it can be used as acceptance evidence.
 - `closure_eligible=true` is allowed only for `provenance_mode=real`,
   `execution_mode=real_tool_execution`, `real_command_executed=true`,
-  `classification=pass`, and a current readiness marker when the evidence kind
-  is `client_generation`.
+  `classification=pass`, a current generated-client readiness marker, and a
+  current real-tool closure marker when the evidence kind is `client_generation`.
+
+Real-tool closure marker contract:
+
+- The wrapper writes `.ledger-openapi-real-tool-closure-readiness.json` only
+  after a real generated-client command succeeds, the generated-client
+  inspection passes, and the generated-client readiness marker is current.
+- The marker has schema `ledger_openapi_real_tool_closure_readiness.v1` and is
+  written beside the generated output under the validated `TempRoot`.
+- The marker binds `openapi_fixture_sha256`, `repo_commit` or an explicit
+  unavailable marker, `generated_at_utc`, tool/package names, package cache
+  path/status/bytes/download policy, materialization marker status,
+  generated-client readiness marker status, and bounded command `duration_ms`.
+- Readback requires `provenance_mode=real`, a current OpenAPI fixture SHA-256, a
+  current materialization marker, a current generated-client readiness marker,
+  bounded cache size, bounded duration, and secret-safe marker content.
+- A stale closure marker, a simulated-provenance marker, a cache/readiness-only
+  marker, or a marker without a current generated-client readiness marker is a
+  mismatch and cannot set `closure_eligible=true`.
+- Default lightweight runs, `-CommandMatrix`, `-CacheProbe`,
+  `-MaterializePackageCache`, `-RealToolReadiness`, and simulated closure marker
+  self-tests do not write acceptance evidence that can close the real
+  semantic/client-generation gap.
 
 Do not close the semantic validator gap from a report with outcome `blocker`.
 Do not close it from a simulated or mixed-provenance report; simulated evidence
@@ -593,8 +637,8 @@ The matrix must include exactly these real opt-in entries:
 | --- | --- | --- | --- | --- | --- |
 | Redocly semantic validation | `-Redocly` | `node`, `npm` | `@redocly/cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass, `1` schema failure, `2` tool/cache blocker |
 | OpenAPI Generator validate | `-OpenApiGeneratorValidate` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass, `1` schema failure, `2` tool/cache blocker |
-| openapi-typescript generation | `-OpenApiTypescript` | `node`, `npm` | `openapi-typescript` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness marker, `1` generated-client mismatch, `2` tool/cache blocker |
-| typescript-fetch generation | `-TypescriptFetch` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness marker, `1` generated-client mismatch, `2` tool/cache blocker |
+| openapi-typescript generation | `-OpenApiTypescript` | `node`, `npm` | `openapi-typescript` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness and closure markers, `1` generated-client mismatch, `2` tool/cache blocker |
+| typescript-fetch generation | `-TypescriptFetch` | `node`, `npm`, `java` | `@openapitools/openapi-generator-cli` | offline repo cache by default; `-AllowPackageDownload` only when explicit | `0` pass with readiness and closure markers, `1` generated-client mismatch, `2` tool/cache blocker |
 
 Each matrix row must document these evidence fields before a real opt-in run is
 accepted:
@@ -614,6 +658,7 @@ accepted:
 - `command`
 - `output_tail`
 - `readiness_marker` for generated-client rows
+- `closure_readiness_marker` for generated-client rows
 
 The safe command examples must use the wrapper path and scoped flags only. They
 must not contain Authorization, Cookie, bearer tokens, package credentials,
@@ -1011,6 +1056,7 @@ the validated temp root:
 - `ledger-adjustment-openapi-semantic-evidence.json`
 - wrapper-generated `openapi-typescript` and `typescript-fetch` directories
 - generated-client readiness markers under wrapper-generated output directories
+- real-tool closure readiness markers under wrapper-generated output directories
 - wrapper self-test artifact directories and markers
 
 It does not delete source files, `.git`, repo-external paths, non-temp paths, or
@@ -1047,6 +1093,10 @@ Record all of the following when closing the semantic/client-generation gap:
 - Real execution evidence fields for each opt-in command:
   `execution_mode`, `real_command_executed`, `duration_ms`,
   `readiness_marker_status`, `closure_eligible`, and exit classification.
+- Real-tool closure marker readback when generated-client commands are used:
+  schema `ledger_openapi_real_tool_closure_readiness.v1`, current OpenAPI
+  fixture SHA-256, repo commit/status, package/cache provenance, materialization
+  status, generated-client readiness status, and bounded duration summary.
 - Generated client target, for example `openapi-typescript` or
   `typescript-fetch`.
 - Confirmation that ledger execute/executor summary fields listed above were
@@ -1056,7 +1106,9 @@ Record all of the following when closing the semantic/client-generation gap:
 ## TODO Closure Guidance
 
 A clean semantic validator run plus successful client generation can close the
-E11 OpenAPI semantic/client-generation gap for `E11-007-S14`.
+E11 OpenAPI semantic/client-generation gap for `E11-007-S14` only when the
+evidence report is real-provenance, the generated-client evidence is
+`closure_eligible=true`, and the real-tool closure marker readback is current.
 
 It can also satisfy the remaining OpenAPI-only residual noted after `E11-007-S11`
 and `E11-007-S13`, provided the generated client preserves the ledger execute
