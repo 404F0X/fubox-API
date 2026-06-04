@@ -1,5 +1,6 @@
 param(
   [switch]$Live,
+  [switch]$LiveExecutionProbe,
   [switch]$RuntimeWriterAvailable,
   [int]$BlockedExitCode = 2
 )
@@ -12,6 +13,7 @@ $contract = (Get-Content -Raw $fixturePath | ConvertFrom-Json).billing_ledger_wr
 $readinessContract = $contract.readiness_smoke_wrapper_contract
 $evidenceMatrixContract = $readinessContract.live_cutover_evidence_matrix_contract
 $dryRunEvidenceContract = $readinessContract.runtime_writer_dry_run_execution_evidence_contract
+$liveExecutionHandoffContract = $readinessContract.live_execution_handoff_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -127,6 +129,42 @@ function Assert-Contract {
   if ([string]$dryRunEvidenceContract.rollback_fallback_guard.local_writer_fallback -ne "control_plane_local_sql_writer") {
     throw "dry-run execution evidence must preserve local writer fallback"
   }
+  if ([string]$liveExecutionHandoffContract.schema_version -ne "control_plane_billing_ledger_live_execution_handoff.v1") {
+    throw "live execution handoff schema mismatch"
+  }
+  if ([string]$liveExecutionHandoffContract.execution_mode -ne "live_probe_handoff_only") {
+    throw "live execution handoff must remain handoff-only"
+  }
+  $handoffFlags = @($liveExecutionHandoffContract.safe_live_probe_command.flags | ForEach-Object { [string]$_ })
+  foreach ($requiredHandoffFlag in @("-Live", "-LiveExecutionProbe")) {
+    if ($requiredHandoffFlag -notin $handoffFlags) {
+      throw "live execution handoff missing required flag: $requiredHandoffFlag"
+    }
+  }
+  if ([string]$liveExecutionHandoffContract.expected_classification.live_probe_ready -ne "pass") {
+    throw "live execution handoff must classify ready probe as pass"
+  }
+  if ([string]$liveExecutionHandoffContract.expected_classification.row_count_mismatch -ne "fail") {
+    throw "live execution handoff must classify row-count mismatch as fail"
+  }
+  if ([bool]$liveExecutionHandoffContract.rollback_no_commit_guard.probe_commits_billing_ledger) {
+    throw "live execution probe must not commit billing ledger"
+  }
+  if ([bool]$liveExecutionHandoffContract.rollback_no_commit_guard.dual_commit_allowed) {
+    throw "live execution probe must not allow dual commit"
+  }
+  $handoffRowEvidenceNames = @($liveExecutionHandoffContract.row_count_evidence_names | ForEach-Object { [string]$_ })
+  foreach ($requiredRowEvidence in @("lock_idempotency_scope", "lock_wallet_scope", "insert_ledger_entry", "mark_idempotency_applied")) {
+    if ($requiredRowEvidence -notin $handoffRowEvidenceNames) {
+      throw "live execution handoff missing row-count evidence name: $requiredRowEvidence"
+    }
+  }
+  $handoffTimingNames = @($liveExecutionHandoffContract.timing_evidence_names | ForEach-Object { [string]$_ })
+  foreach ($requiredTimingEvidence in @("begin_transaction", "row_count_enforcement", "rollback_transaction")) {
+    if ($requiredTimingEvidence -notin $handoffTimingNames) {
+      throw "live execution handoff missing timing evidence name: $requiredTimingEvidence"
+    }
+  }
   $evidenceKeys = @($evidenceMatrixContract.required_evidence | ForEach-Object { [string]$_.key })
   foreach ($requiredEvidence in @("migrated_db", "runtime_writer_feature", "source_of_truth_switch", "rollback_path", "performance_summaries", "schema_markers")) {
     if ($requiredEvidence -notin $evidenceKeys) {
@@ -185,6 +223,84 @@ function New-EvidenceItem {
     required = $Required
     evidence_output = $EvidenceOutput
     raw_value_echoed = $false
+  }
+}
+
+function New-LiveExecutionHandoff {
+  param(
+    [Parameter(Mandatory = $true)][string]$Readiness,
+    [Parameter(Mandatory = $true)][bool]$ProbeRequested,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Blockers
+  )
+
+  $classification = "blocker"
+  if ($ProbeRequested -and $Readiness -eq "ready") {
+    $classification = "pass"
+  } elseif ($ProbeRequested -and $Readiness -eq "blocked") {
+    $classification = "blocker"
+  }
+
+  $rowEvidenceNames = @($liveExecutionHandoffContract.row_count_evidence_names | ForEach-Object { [string]$_ })
+  $timingEvidenceNames = @($liveExecutionHandoffContract.timing_evidence_names | ForEach-Object { [string]$_ })
+
+  return [ordered]@{
+    schema_version = [string]$liveExecutionHandoffContract.schema_version
+    execution_mode = [string]$liveExecutionHandoffContract.execution_mode
+    probe_requested = $ProbeRequested
+    classification = $classification
+    safe_live_probe_command = [ordered]@{
+      script = [string]$liveExecutionHandoffContract.safe_live_probe_command.script
+      flags = @($liveExecutionHandoffContract.safe_live_probe_command.flags | ForEach-Object { [string]$_ })
+      required_env_markers = @(
+        $modeEnvVar,
+        $databaseUrlEnvVar,
+        $featureEnvVar
+      )
+      env_value_output = "omitted"
+      database_url_output = "presence_marker_only"
+      raw_env_values_echoed = $false
+    }
+    expected_classification = [ordered]@{
+      default_no_live_probe = [string]$liveExecutionHandoffContract.expected_classification.default_no_live_probe
+      missing_live_database_url = [string]$liveExecutionHandoffContract.expected_classification.missing_live_database_url
+      runtime_writer_unavailable = [string]$liveExecutionHandoffContract.expected_classification.runtime_writer_unavailable
+      invalid_cutover_mode_guard = [string]$liveExecutionHandoffContract.expected_classification.invalid_cutover_mode_guard
+      row_count_mismatch = [string]$liveExecutionHandoffContract.expected_classification.row_count_mismatch
+      unsafe_output_detected = [string]$liveExecutionHandoffContract.expected_classification.unsafe_output_detected
+      live_probe_ready = [string]$liveExecutionHandoffContract.expected_classification.live_probe_ready
+    }
+    row_count_evidence = [ordered]@{
+      measurement_available = $false
+      names = $rowEvidenceNames
+      expected_rows_output = "expectation_names_only_until_probe_executor_runs"
+      raw_sql_output = "omitted"
+    }
+    timing_evidence = [ordered]@{
+      measurement_available = $false
+      names = $timingEvidenceNames
+      duration_ms = $null
+      output = "timing_names_only_until_probe_executor_runs"
+    }
+    rollback_no_commit_guard = [ordered]@{
+      probe_commits_billing_ledger = $false
+      rollback_required_after_probe = $true
+      production_writer_replaced = $false
+      production_source_of_truth_switch_allowed = $false
+      dual_commit_allowed = $false
+      local_writer_fallback = "control_plane_local_sql_writer"
+    }
+    blockers = @($Blockers)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      dedupe_material_echoed = $false
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
   }
 }
 
@@ -410,6 +526,7 @@ $summary = [ordered]@{
       raw_executor_error_detail_echoed = $false
     }
   }
+  live_execution_handoff = (New-LiveExecutionHandoff -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version
