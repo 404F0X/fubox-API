@@ -11,8 +11,8 @@
 - **E8-004-S4（Mencius）**：收口 rate-limit-aware key selection 的 live Postgres/concurrency smoke。
 - **E9-004-S4（Confucius）**：收口 reserve/settle/refund ledger 的 SQLx/live schema 验证缺口。
 - **E11-007-S4 Backend（Goodall）**：推进 Billing/Price 页面的 ledger adjustment execute 后端真实写入边界。
-- **E11-007-S5 UI（Godel，已完成待合并）**：Billing/Price 页面已区分 dry-run、execute-preflight、blocked 和 future execute 状态。
-- **E13-005-S3 Gateway（Pauli，已完成待合并）**：Prompt Protection 已扩展覆盖 Anthropic `/v1/messages`。
+- **E13-005-S4 Gateway（Pauli）**：Prompt Protection 扩展覆盖 Gemini native passthrough。
+- **E13-005-S5 UI（Godel）**：Prompt Protection 的 Admin UI/audit 展示缺口。
 - 多方向并行允许，但每个方向必须有明确 owner、切片目标、写入范围、验收检查和退出条件；没有切片记录的并行工作不能合并。
 
 多人协作规则：
@@ -31,6 +31,8 @@
 - **E11-007-S4，进行中，owner Goodall**：ledger adjustment execute 后端真实写入边界。原因：Control Plane 目前已有 execute preflight contract，但 Billing/Price 页面最终验收需要后端存在可事务化写 ledger + success audit 的真实边界或明确阻塞点。范围：`apps/control-plane/**`、`examples/openapi_admin_skeleton.yaml`、control-plane fixtures；不改 Admin UI。验收：execute 前置校验、dedupe key、billing permission、transaction plan、success audit 同事务边界被 contract 固定；若缺少底层 ledger writer，则写明不可伪造执行并保留阻塞。
 - **E11-007-S5，已完成，2026-06-04，owner Godel**：Admin UI execute-contract v2 呈现与错误流。原因：后端真实执行落地前，UI 需要把 execute contract v2 的预检、dedupe、事务/audit 摘要和阻塞原因展示清楚，避免用户把 plan-only 当成已入账。范围：`web/admin-ui/**`；不改后端。验收：UI 明确区分 dry-run/execute-preflight/blocked/success；错误不泄露 secret；相关 UI 测试和 bundle check 覆盖。结果：Billing/Price 页面已区分 dry-run、execute-preflight、blocked 和 future execute 状态，并展示 v2 transaction/dedupe/audit/safe-output 摘要，未暴露 raw credential 或 idempotency material。剩余缺口：后端真实 execute submit 尚未接通。
 - **E13-005-S3，已完成，2026-06-04，owner Pauli**：Prompt Protection Gateway endpoint 覆盖。原因：embeddings 已完成，但 Prompt Protection 最终验收需要覆盖 remaining native/provider paths，并保持 billing/log/audit 的 sanitized prompt_protection signals。范围：`apps/gateway/**`、Gateway fixtures；不改 Admin UI/Control Plane。验收：至少一个 remaining endpoint/provider path 的 protection ordering、block response、log metadata sanitizer 和 regression fixture 固定；未覆盖路径列入剩余缺口。结果：Anthropic `/v1/messages` stream/non-stream shared preflight 已在 routing/request_started/provider-key/upstream side effect 前执行，reject metadata 保持 secret-safe，并更新 runtime ordering fixture。剩余缺口：Gemini native passthrough、audit UI 展示仍未覆盖。
+- **E13-005-S4，进行中，owner Pauli**：Prompt Protection Gemini native Gateway 覆盖。原因：S3 已覆盖 Anthropic，但 final E13 Gateway path 仍缺 Gemini native passthrough，必须证明 provider-native endpoint 同样在 request/provider side effect 前拒绝。范围：`apps/gateway/**`、`tests/fixtures/gateway/prompt_protection_runtime_contract.json`；不改 Admin UI/Control Plane，不碰 rate-limit smoke fixture。验收：Gemini native passthrough 至少一个 stream/non-stream 相关路径有 preflight、block response、secret-safe metadata 和 runtime ordering fixture；targeted Gateway tests 通过。
+- **E13-005-S5，进行中，owner Godel**：Prompt Protection Admin UI/audit 展示缺口。原因：Gateway 已产生 sanitized prompt_protection signals，但最终验收还需要 Admin UI 可读地展示 request/audit log 中的 protection summary，并避免显示 raw prompt/secret。范围：`web/admin-ui/**`；不改后端/Gateway。验收：UI 对 prompt_protection action/reason/hit summary 有可识别呈现；原始 prompt、Authorization、Cookie、secret-like pattern 不渲染；相关 UI tests 和 bundle check 覆盖。
 
 > 使用方式：开发组可以直接把本文件拆到 Jira/GitHub Issues。每个任务的完成必须满足 `TEST_AND_ACCEPTANCE.md` 中 Definition of Done。
 
