@@ -137,7 +137,7 @@ function stubAdminFetch(
     ledgerAdjustmentExecuteStatuses?: Array<"applied" | "idempotent" | "blocked" | "failed">;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
     payloadStored?: boolean;
-    promptProtectionProofVariant?: "liveEligible" | "simulatedRefused";
+    promptProtectionProofVariant?: "failedRefused" | "liveEligible" | "simulatedRefused";
     promptProtectionSignals?: boolean;
   } = {},
 ) {
@@ -209,6 +209,18 @@ function stubAdminFetch(
   };
   const promptProtectionSignal = {
     action: "reject",
+    audit_readiness: {
+      classification: "blocked",
+      command_summary: "live_proof_report",
+      current_provenance_required: true,
+      duration_available_required: true,
+      evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      latency_envelope_required: true,
+      provider_attempts_zero_required: true,
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-handoff-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-handoff-report-hidden.json",
+      secret_dsn: "postgres://prompt-handoff-dsn-hidden",
+    },
     authorization: bearerPlaceholder("prompt-protection-hidden"),
     configured_actions: {
       reject: 1,
@@ -291,6 +303,18 @@ function stubAdminFetch(
   };
   const liveEligiblePromptProtectionSignal = {
     ...promptProtectionSignal,
+    audit_readiness: {
+      classification: "pass",
+      command_summary: "live_proof_report",
+      current_provenance_required: true,
+      duration_available_required: true,
+      evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      latency_envelope_required: true,
+      provider_attempts_zero_required: true,
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-live-handoff-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-live-handoff-report-hidden.json",
+      secret_dsn: "postgres://prompt-live-handoff-dsn-hidden",
+    },
     freshness: {
       generated_at_utc: "2026-06-04T14:05:00.000Z",
       live_evidence_closure_eligible: true,
@@ -338,8 +362,57 @@ function stubAdminFetch(
       },
     },
   };
+  const failedPromptProtectionSignal = {
+    ...promptProtectionSignal,
+    audit_readiness: {
+      classification: "fail",
+      command_summary: "live_proof_report",
+      current_provenance_required: true,
+      duration_available_required: true,
+      evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      latency_envelope_required: true,
+      provider_attempts_zero_required: true,
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-fail-handoff-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-fail-handoff-report-hidden.json",
+      secret_dsn: "postgres://prompt-fail-handoff-dsn-hidden",
+    },
+    freshness: {
+      generated_at_utc: "2026-06-04T14:15:00.000Z",
+      live_evidence_closure_eligible: false,
+      proof_run_id_hash: "facefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeed",
+      raw_report_path: "C:\\secret\\prompt-fail-proof-report-hidden.json",
+      repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
+      stale_or_simulated_report_closes_live_gap: false,
+    },
+    generated_at_utc: "2026-06-04T14:15:00.000Z",
+    performance_envelope: {
+      ...promptProtectionSignal.performance_envelope,
+      all_endpoint_performance_within_bounds: false,
+      external_blocker_count: 0,
+      latency_envelope_closure_eligible: false,
+      live_blocker_status: "not_blocked",
+    },
+    provenance: {
+      ...promptProtectionSignal.provenance,
+      generated_at_utc: "2026-06-04T14:15:00.000Z",
+      kind: "live",
+      mode: "live",
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-fail-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-fail-artifact-provider-hidden"),
+        report_path: "C:\\secret\\prompt-fail-proof-report-hidden.json",
+      },
+      repo: {
+        head_commit: "1234567890abcdef1234567890abcdef12345678",
+      },
+    },
+  };
   const effectivePromptProtectionSignal =
-    options.promptProtectionProofVariant === "liveEligible" ? liveEligiblePromptProtectionSignal : promptProtectionSignal;
+    options.promptProtectionProofVariant === "liveEligible"
+      ? liveEligiblePromptProtectionSignal
+      : options.promptProtectionProofVariant === "failedRefused"
+        ? failedPromptProtectionSignal
+        : promptProtectionSignal;
   const requestDetail = {
     ledger: requestLedgerSummary,
     provider_attempts: [
@@ -2543,7 +2616,7 @@ describe("App", () => {
     expect(within(promptProtectionPanel as HTMLElement).getByText("0")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("blocked")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
     expect(within(promptProtectionPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
@@ -2738,12 +2811,16 @@ describe("App", () => {
     expect(auditPromptPanel).not.toBeNull();
     expect(within(auditPromptPanel as HTMLElement).getByText("enforce")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getAllByText("reject").length).toBeGreaterThanOrEqual(2);
+    expect(within(auditPromptPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
+    expect(within(auditPromptPanel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("0")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("blocked")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
     expect(within(auditPromptPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
@@ -2775,6 +2852,9 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-artifact-command-hidden"));
     expect(document.body.textContent).not.toContain("postgres://prompt-artifact-dsn-hidden");
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-artifact-provider-hidden"));
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-handoff-report-hidden.json");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-handoff-command-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-handoff-dsn-hidden");
     expect(document.body.textContent).not.toContain("feedfacefeedface");
     expect(document.body.textContent).not.toContain("prompt_protection");
     expect(document.body.textContent).not.toContain("raw_headers");
@@ -2810,6 +2890,10 @@ describe("App", () => {
 
     expect(within(panel as HTMLElement).getByText("0")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("total 24 ms / preflight 9 ms / db 15 ms")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("pass")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getAllByText("eligible").length).toBeGreaterThanOrEqual(2);
     expect(within(panel as HTMLElement).getByText("not_blocked")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("2026-06-04T14:05:00Z")).toBeInTheDocument();
@@ -2820,6 +2904,9 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("C:\\secret\\prompt-live-proof-report-hidden.json");
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-artifact-command-hidden"));
     expect(document.body.textContent).not.toContain("postgres://prompt-live-artifact-dsn-hidden");
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-live-handoff-report-hidden.json");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-handoff-command-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-live-handoff-dsn-hidden");
     expect(document.body.textContent).not.toContain("postgres://prompt-live-performance-dsn-hidden");
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-performance-command-hidden"));
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-performance-header-hidden"));
@@ -2827,6 +2914,38 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-live-unavailable-hidden"));
     expect(document.body.textContent).not.toContain("deadc0dedeadc0de");
     expect(document.body.textContent).not.toContain("raw live prompt proof performance body hidden");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+  });
+
+  it("renders prompt protection audit failed handoff as not closure eligible", async () => {
+    stubAdminFetch({ promptProtectionProofVariant: "failedRefused" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
+    await user.click(await screen.findByRole("button", { name: "View audit log audit-1" }));
+
+    const auditPromptPanel = await screen.findByRole("heading", { level: 2, name: "Prompt Protection" });
+    const panel = auditPromptPanel.closest("article");
+    expect(panel).not.toBeNull();
+
+    expect(within(panel as HTMLElement).getByText("fail")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
+    expect(within(panel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("live / live")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("1234567890ab")).toBeInTheDocument();
+
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-fail-handoff-report-hidden.json");
+    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-fail-proof-report-hidden.json");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-fail-handoff-command-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-fail-handoff-dsn-hidden");
+    expect(document.body.textContent).not.toContain("postgres://prompt-fail-artifact-dsn-hidden");
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-fail-artifact-provider-hidden"));
+    expect(document.body.textContent).not.toContain("facefeedfacefeed");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
   });
 

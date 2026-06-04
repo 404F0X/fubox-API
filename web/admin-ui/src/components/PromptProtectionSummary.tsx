@@ -3,6 +3,8 @@ import { StateChip, isJsonRecord, safeFieldValue } from "./adminUtils";
 
 type PromptProtectionSummaryData = {
   action: string;
+  auditReadiness: string;
+  closureRule: string;
   configuredActions: string;
   configuredHitCount: string;
   configuredPatternTypes: string;
@@ -21,6 +23,8 @@ type PromptProtectionSummaryData = {
   omittedMaterial: string;
   providerAttempts: string;
   proofClosure: string;
+  proofCommand: string;
+  proofEvidence: string;
   provenanceMode: string;
   reason: string;
   scopes: string;
@@ -65,6 +69,22 @@ export function PromptProtectionSummary({
         <div>
           <dt>Action</dt>
           <dd>{summary.action}</dd>
+        </div>
+        <div>
+          <dt>Audit readiness</dt>
+          <dd>{summary.auditReadiness}</dd>
+        </div>
+        <div>
+          <dt>Proof command</dt>
+          <dd>{summary.proofCommand}</dd>
+        </div>
+        <div>
+          <dt>Proof evidence</dt>
+          <dd>{summary.proofEvidence}</dd>
+        </div>
+        <div>
+          <dt>Closure rule</dt>
+          <dd>{summary.closureRule}</dd>
         </div>
         <div>
           <dt>Reason</dt>
@@ -184,6 +204,8 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
 
   return {
     action: enumField(record.action),
+    auditReadiness: auditReadinessField(record),
+    closureRule: closureRuleField(record),
     configuredActions: countMapField(record.configured_actions),
     configuredHitCount: numberField(record.configured_hit_count),
     configuredPatternTypes: countMapField(record.configured_pattern_types),
@@ -202,6 +224,8 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
     omittedMaterial: omittedMaterialField(record),
     providerAttempts: providerAttemptsField(record),
     proofClosure: proofClosureField(record),
+    proofCommand: proofCommandField(record),
+    proofEvidence: proofEvidenceField(record),
     provenanceMode: provenanceModeField(record),
     reason: enumField(record.reason),
     scopes: listField(record.scopes),
@@ -535,6 +559,69 @@ function staleSimulatedMarkerField(record: Record<string, JsonValue>): string {
   }
 
   return "-";
+}
+
+function auditReadinessField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return "-";
+  }
+
+  return enumField(handoff.classification);
+}
+
+function proofCommandField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return "-";
+  }
+
+  return enumField(handoff.command_summary);
+}
+
+function proofEvidenceField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return "-";
+  }
+
+  return listField(handoff.evidence_fields);
+}
+
+function closureRuleField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (!handoff) {
+    return "-";
+  }
+
+  const rules = [
+    handoff.provider_attempts_zero_required === true ? "provider_attempts=0" : null,
+    handoff.latency_envelope_required === true ? "latency bounded" : null,
+    handoff.duration_available_required === true ? "duration available" : null,
+    handoff.current_provenance_required === true ? "current provenance" : null,
+  ].filter((rule): rule is string => Boolean(rule));
+
+  return rules.length > 0 ? rules.join(", ") : "-";
+}
+
+function auditHandoffRecord(record: Record<string, JsonValue>): Record<string, JsonValue> | null {
+  if (isJsonRecord(record.audit_readiness)) {
+    return record.audit_readiness;
+  }
+
+  if (isJsonRecord(record.audit_handoff)) {
+    return record.audit_handoff;
+  }
+
+  if (isJsonRecord(record.proof_handoff)) {
+    return record.proof_handoff;
+  }
+
+  return null;
 }
 
 function isoDateField(value: JsonValue | undefined): string {
