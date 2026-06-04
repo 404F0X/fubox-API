@@ -156,6 +156,16 @@
       "secret_safe": true
     },
     {
+      "key": "ledger_adjustment.dry_run",
+      "method": "POST",
+      "path": "/admin/ledger/adjustments/dry-run",
+      "required_permission": "billing_adjust",
+      "allowed_roles": ["owner", "billing"],
+      "denied_roles": ["admin", "ops", "developer", "viewer"],
+      "credential_sensitive_read": false,
+      "secret_safe": true
+    },
+    {
       "key": "manual_test.run",
       "method": "POST",
       "path": "/admin/channels/{id}/manual-test",

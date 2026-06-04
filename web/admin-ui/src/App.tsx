@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import {
+  clearAdminSessionToken,
+  getAdminMe,
   getProviderHealthSummary,
   type HealthSummary,
   logoutAdmin,
@@ -10,7 +12,7 @@ import {
 import { errorMessage } from "./components/adminUtils";
 import { HealthDashboard } from "./components/HealthDashboard";
 import { Activity, Database, Key, Network, ScrollText, ShieldCheck } from "./components/icons";
-import { type AdminSession, LoginPanel } from "./components/LoginPanel";
+import { adminSessionFromMe, type AdminSession, LoginPanel } from "./components/LoginPanel";
 import { Navigation, type NavItem } from "./components/Navigation";
 
 type AppView =
@@ -88,6 +90,7 @@ const navItems: NavItem<AppView>[] = [
 export function App() {
   const [session, setSession] = useState<AdminSession | null>(null);
   const [activeView, setActiveView] = useState<AppView>("overview");
+  const [authChecking, setAuthChecking] = useState(true);
   const [results, setResults] = useState<ProbeResult[]>([]);
   const [healthSummary, setHealthSummary] = useState<HealthSummary | null>(null);
   const [healthSummaryError, setHealthSummaryError] = useState<string | null>(null);
@@ -95,6 +98,36 @@ export function App() {
   const [lastChecked, setLastChecked] = useState<string | null>(null);
   const [recoveryRequests, setRecoveryRequests] = useState<Record<string, "pending" | "succeeded" | "failed">>({});
   const [recoveryErrors, setRecoveryErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreSession() {
+      try {
+        const me = await getAdminMe();
+
+        if (!cancelled) {
+          setSession(adminSessionFromMe(me));
+        }
+      } catch {
+        clearAdminSessionToken();
+
+        if (!cancelled) {
+          setSession(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthChecking(false);
+        }
+      }
+    }
+
+    void restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function refresh() {
     setLoading(true);
@@ -159,9 +192,20 @@ export function App() {
     try {
       await logoutAdmin();
     } finally {
+      clearAdminSessionToken();
       setSession(null);
       setActiveView("overview");
+      setHealthSummary(null);
+      setHealthSummaryError(null);
+      setLastChecked(null);
+      setRecoveryErrors({});
+      setRecoveryRequests({});
+      setResults([]);
     }
+  }
+
+  if (authChecking) {
+    return <SessionRestorePanel />;
   }
 
   if (!session) {
@@ -314,6 +358,43 @@ export function App() {
             <VirtualKeysPage />
           </Suspense>
         ) : null}
+      </section>
+    </main>
+  );
+}
+
+function SessionRestorePanel() {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel" aria-label="Restoring admin session">
+        <div className="auth-brand">
+          <span className="brand-mark">AG</span>
+          <span>AI Gateway</span>
+        </div>
+        <p className="eyebrow">Admin Console</p>
+        <h1>Restoring session</h1>
+        <p className="muted-copy">Checking existing admin access.</p>
+      </section>
+
+      <section className="auth-context" aria-label="Access scope">
+        <ShieldCheck aria-hidden="true" size={26} />
+        <div>
+          <h2>Scoped operations</h2>
+          <dl>
+            <div>
+              <dt>Session</dt>
+              <dd>HttpOnly cookie</dd>
+            </div>
+            <div>
+              <dt>Navigation</dt>
+              <dd>Capability gated</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>Checking</dd>
+            </div>
+          </dl>
+        </div>
       </section>
     </main>
   );

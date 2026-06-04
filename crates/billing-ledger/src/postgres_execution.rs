@@ -57,6 +57,13 @@ pub struct ConsistentLedgerPostgresStatementResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ConsistentLedgerPostgresRowCountExpectation {
+    ExactlyOne,
+    ZeroOrMore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ConsistentLedgerPostgresStatementOutcome {
     Executed,
     Refused,
@@ -82,6 +89,14 @@ impl ConsistentLedgerPostgresExecutorError {
         Self {
             code: code.into(),
             category: "transaction".to_string(),
+            detail_output: "omitted",
+        }
+    }
+
+    pub fn row_count_mismatch(code: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            category: "row_count_enforcement".to_string(),
             detail_output: "omitted",
         }
     }
@@ -139,6 +154,7 @@ pub struct ConsistentLedgerPostgresStatement {
     pub ordered_by: Vec<&'static str>,
     pub command_order: Option<u16>,
     pub command_kind: Option<ConsistentLedgerBoundedCommandKind>,
+    pub row_count_expectation: ConsistentLedgerPostgresRowCountExpectation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,7 +225,7 @@ where
     for statement in &plan.sql_statements {
         match executor.execute_statement(statement) {
             Ok(result) => {
-                let result = sanitized_statement_result(statement, result);
+                let mut result = sanitized_statement_result(statement, result);
                 if result.outcome == ConsistentLedgerPostgresStatementOutcome::Refused {
                     statement_results.push(result);
                     let rolled_back = executor.rollback_transaction().is_ok();
@@ -222,6 +238,19 @@ where
                         Some(ConsistentLedgerPostgresExecutorError::statement_refused(
                             "statement_refused",
                         )),
+                    );
+                }
+                if let Some(error) = enforce_statement_row_count(statement, result.rows_affected) {
+                    result.outcome = ConsistentLedgerPostgresStatementOutcome::Refused;
+                    statement_results.push(result);
+                    let rolled_back = executor.rollback_transaction().is_ok();
+                    return executor_result(
+                        plan,
+                        ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+                        false,
+                        rolled_back,
+                        statement_results,
+                        Some(error),
                     );
                 }
                 statement_results.push(result);
@@ -309,6 +338,60 @@ fn refused_statement_result(
     }
 }
 
+fn enforce_statement_row_count(
+    statement: &ConsistentLedgerPostgresStatement,
+    rows_affected: u64,
+) -> Option<ConsistentLedgerPostgresExecutorError> {
+    match statement.row_count_expectation {
+        ConsistentLedgerPostgresRowCountExpectation::ExactlyOne if rows_affected != 1 => {
+            Some(ConsistentLedgerPostgresExecutorError::row_count_mismatch(
+                row_count_mismatch_code(statement.kind, rows_affected),
+            ))
+        }
+        ConsistentLedgerPostgresRowCountExpectation::ExactlyOne
+        | ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore => None,
+    }
+}
+
+fn row_count_mismatch_code(
+    kind: ConsistentLedgerPostgresStatementKind,
+    rows_affected: u64,
+) -> &'static str {
+    match (kind, rows_affected) {
+        (ConsistentLedgerPostgresStatementKind::LockWallet, 0) => "wallet_lock_missing_row",
+        (ConsistentLedgerPostgresStatementKind::LockWallet, _) => "wallet_lock_row_count_mismatch",
+        (ConsistentLedgerPostgresStatementKind::AssertBalanceWindow, 0) => {
+            "balance_assert_missing_row"
+        }
+        (ConsistentLedgerPostgresStatementKind::AssertBalanceWindow, _) => {
+            "balance_assert_row_count_mismatch"
+        }
+        (ConsistentLedgerPostgresStatementKind::AssertBudgetWindow, 0) => {
+            "budget_assert_missing_row"
+        }
+        (ConsistentLedgerPostgresStatementKind::AssertBudgetWindow, _) => {
+            "budget_assert_row_count_mismatch"
+        }
+        (ConsistentLedgerPostgresStatementKind::InsertLedgerEntry, 0) => {
+            "ledger_insert_conflict_no_row"
+        }
+        (ConsistentLedgerPostgresStatementKind::InsertLedgerEntry, _) => {
+            "ledger_insert_row_count_mismatch"
+        }
+        (ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus, 0) => {
+            "ledger_update_missing_row"
+        }
+        (ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus, _) => {
+            "ledger_update_row_count_mismatch"
+        }
+        (ConsistentLedgerPostgresStatementKind::LockCreditGrants, _)
+        | (ConsistentLedgerPostgresStatementKind::LockBudgets, _)
+        | (ConsistentLedgerPostgresStatementKind::LockLedgerEntries, _) => {
+            "lock_row_count_mismatch"
+        }
+    }
+}
+
 fn ordered_lock_statements(
     writer_plan: &ConsistentLedgerWriterPlan,
 ) -> Vec<ConsistentLedgerPostgresStatement> {
@@ -323,6 +406,7 @@ fn ordered_lock_statements(
             ordered_by: Vec::new(),
             command_order: None,
             command_kind: None,
+            row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ExactlyOne,
             request_id: None,
             ledger_entry_id: None,
             related_ledger_entry_id: None,
@@ -339,6 +423,7 @@ fn ordered_lock_statements(
             ordered_by: vec!["id"],
             command_order: None,
             command_kind: None,
+            row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore,
             request_id: None,
             ledger_entry_id: None,
             related_ledger_entry_id: None,
@@ -355,6 +440,7 @@ fn ordered_lock_statements(
             ordered_by: vec!["dimension", "id"],
             command_order: None,
             command_kind: None,
+            row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore,
             request_id: None,
             ledger_entry_id: None,
             related_ledger_entry_id: None,
@@ -381,6 +467,7 @@ fn ledger_lock_statement(
                 ordered_by: vec!["created_at", "id"],
                 command_order: None,
                 command_kind: None,
+                row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore,
                 request_id: None,
                 ledger_entry_id: None,
                 related_ledger_entry_id: None,
@@ -404,6 +491,7 @@ fn ledger_lock_statement(
                 ordered_by: vec!["created_at", "id"],
                 command_order: None,
                 command_kind: None,
+                row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore,
                 request_id: None,
                 ledger_entry_id: None,
                 related_ledger_entry_id: None,
@@ -430,6 +518,7 @@ fn command_statement(
                 ordered_by: Vec::new(),
                 command_order: Some(command.order),
                 command_kind: Some(command.kind),
+                row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ExactlyOne,
                 request_id: command.request_id,
                 ledger_entry_id: command.ledger_entry_id,
                 related_ledger_entry_id: command.related_ledger_entry_id,
@@ -448,6 +537,7 @@ fn command_statement(
                 ordered_by: Vec::new(),
                 command_order: Some(command.order),
                 command_kind: Some(command.kind),
+                row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ExactlyOne,
                 request_id: command.request_id,
                 ledger_entry_id: command.ledger_entry_id,
                 related_ledger_entry_id: command.related_ledger_entry_id,
@@ -471,6 +561,7 @@ fn command_statement(
                 ordered_by: Vec::new(),
                 command_order: Some(command.order),
                 command_kind: Some(command.kind),
+                row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ExactlyOne,
                 request_id: command.request_id,
                 ledger_entry_id: command.ledger_entry_id,
                 related_ledger_entry_id: command.related_ledger_entry_id,
@@ -489,6 +580,7 @@ fn command_statement(
                 ordered_by: Vec::new(),
                 command_order: Some(command.order),
                 command_kind: Some(command.kind),
+                row_count_expectation: ConsistentLedgerPostgresRowCountExpectation::ExactlyOne,
                 request_id: command.request_id,
                 ledger_entry_id: command.ledger_entry_id,
                 related_ledger_entry_id: None,

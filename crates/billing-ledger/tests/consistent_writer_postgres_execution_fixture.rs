@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use ai_gateway_billing_ledger::{
     CONSISTENT_LEDGER_POSTGRES_EXECUTION_SCHEMA, ConsistentBudgetDimension,
-    ConsistentBudgetSnapshot, ConsistentCreditGrantSnapshot, ConsistentLedgerPostgresStatement,
+    ConsistentBudgetSnapshot, ConsistentCreditGrantSnapshot,
+    ConsistentLedgerPostgresRowCountExpectation, ConsistentLedgerPostgresStatement,
     ConsistentLedgerPostgresStatementKind, ConsistentLedgerPostgresTransactionStepKind,
     ConsistentLedgerScope, ConsistentLedgerWriteRequest, ConsistentLedgerWriterState,
     ConsistentWalletSnapshot, FixedDecimal, LedgerEntryRecord, LedgerEntryStatus, LedgerEntryType,
@@ -179,6 +180,7 @@ fn postgres_execution_fixture_matches_statement_contract() {
             &expected.name,
         );
         assert_bounded_sql_shapes(&postgres_plan.sql_statements, &expected.name);
+        assert_row_count_expectations(&postgres_plan.sql_statements, &expected.name);
         assert_command_statement_mapping(
             &postgres_plan.sql_statements,
             &expected.expected_command_statement_kinds,
@@ -461,6 +463,30 @@ fn assert_bounded_sql_shapes(statements: &[ConsistentLedgerPostgresStatement], l
                 );
             }
         }
+    }
+}
+
+fn assert_row_count_expectations(statements: &[ConsistentLedgerPostgresStatement], label: &str) {
+    for statement in statements {
+        let expected = match statement.kind {
+            ConsistentLedgerPostgresStatementKind::LockWallet
+            | ConsistentLedgerPostgresStatementKind::AssertBalanceWindow
+            | ConsistentLedgerPostgresStatementKind::AssertBudgetWindow
+            | ConsistentLedgerPostgresStatementKind::InsertLedgerEntry
+            | ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus => {
+                ConsistentLedgerPostgresRowCountExpectation::ExactlyOne
+            }
+            ConsistentLedgerPostgresStatementKind::LockCreditGrants
+            | ConsistentLedgerPostgresStatementKind::LockBudgets
+            | ConsistentLedgerPostgresStatementKind::LockLedgerEntries => {
+                ConsistentLedgerPostgresRowCountExpectation::ZeroOrMore
+            }
+        };
+        assert_eq!(
+            statement.row_count_expectation, expected,
+            "{label} statement {} row count expectation",
+            statement.order
+        );
     }
 }
 

@@ -68,7 +68,7 @@ pub(crate) struct ControlPlaneCapabilitySummary {
     secret_safe: bool,
 }
 
-pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 18] = [
+pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 19] = [
     ControlPlaneCapability {
         key: "provider.read",
         method: "GET",
@@ -161,6 +161,14 @@ pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 18] = [
         key: "price_version.create",
         method: "POST",
         path: "/admin/price-versions",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "ledger_adjustment.dry_run",
+        method: "POST",
+        path: "/admin/ledger/adjustments/dry-run",
         required_permission: Some(Permission::BillingAdjust),
         credential_sensitive_read: false,
         secret_safe: true,
@@ -334,7 +342,11 @@ fn billing_read_path(path: &str) -> bool {
 }
 
 fn billing_adjust_path(method: &Method, path: &str) -> bool {
-    *method == Method::POST && path == "/admin/price-versions"
+    *method == Method::POST
+        && matches!(
+            path,
+            "/admin/price-versions" | "/admin/ledger/adjustments/dry-run"
+        )
 }
 
 fn alert_webhook_path(path: &str) -> bool {
@@ -616,6 +628,13 @@ mod tests {
                 .expect("price version create capability should exist"),
         );
         assert_eq!(billing_adjust_allowed, vec!["owner", "billing"]);
+        let ledger_adjustment_allowed = role_names_for_capability(
+            CONTROL_PLANE_CAPABILITIES
+                .iter()
+                .find(|capability| capability.key == "ledger_adjustment.dry_run")
+                .expect("ledger adjustment dry-run capability should exist"),
+        );
+        assert_eq!(ledger_adjustment_allowed, vec!["owner", "billing"]);
 
         for capability in CONTROL_PLANE_CAPABILITIES
             .iter()
@@ -641,6 +660,7 @@ mod tests {
         assert!(viewer.denied.contains(&"provider.read"));
         assert!(viewer.denied.contains(&"key.read"));
         assert!(viewer.denied.contains(&"price_version.create"));
+        assert!(viewer.denied.contains(&"ledger_adjustment.dry_run"));
 
         let owner = capability_summary_for_roles(&[Role::Owner]);
         assert_eq!(owner.roles, vec!["owner"]);
@@ -962,30 +982,37 @@ mod tests {
     }
 
     #[test]
-    fn price_version_create_requires_billing_adjust() {
-        let path = "/admin/price-versions";
-
-        assert_eq!(
-            permission_for_admin_request(&Method::POST, path),
-            Some(Permission::BillingAdjust)
-        );
-        assert!(role_allows_admin_request(
-            Role::Billing,
-            &Method::POST,
-            path
-        ));
-        assert!(role_allows_admin_request(Role::Owner, &Method::POST, path));
-        assert!(!role_allows_admin_request(
-            Role::Viewer,
-            &Method::POST,
-            path
-        ));
-        assert!(!role_allows_admin_request(
-            Role::Developer,
-            &Method::POST,
-            path
-        ));
-        assert!(!role_allows_admin_request(Role::Ops, &Method::POST, path));
-        assert!(!role_allows_admin_request(Role::Admin, &Method::POST, path));
+    fn billing_adjust_writes_require_billing_adjust() {
+        for path in ["/admin/price-versions", "/admin/ledger/adjustments/dry-run"] {
+            assert_eq!(
+                permission_for_admin_request(&Method::POST, path),
+                Some(Permission::BillingAdjust),
+                "{path}"
+            );
+            assert!(
+                role_allows_admin_request(Role::Billing, &Method::POST, path),
+                "billing unexpectedly denied {path}"
+            );
+            assert!(
+                role_allows_admin_request(Role::Owner, &Method::POST, path),
+                "owner unexpectedly denied {path}"
+            );
+            assert!(
+                !role_allows_admin_request(Role::Viewer, &Method::POST, path),
+                "viewer unexpectedly allowed {path}"
+            );
+            assert!(
+                !role_allows_admin_request(Role::Developer, &Method::POST, path),
+                "developer unexpectedly allowed {path}"
+            );
+            assert!(
+                !role_allows_admin_request(Role::Ops, &Method::POST, path),
+                "ops unexpectedly allowed {path}"
+            );
+            assert!(
+                !role_allows_admin_request(Role::Admin, &Method::POST, path),
+                "admin unexpectedly allowed {path}"
+            );
+        }
     }
 }

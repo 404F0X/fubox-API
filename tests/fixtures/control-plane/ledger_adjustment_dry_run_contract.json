@@ -1,0 +1,115 @@
+{
+  "todo": ["E1-004", "E11-007"],
+  "endpoint": {
+    "method": "POST",
+    "path": "/admin/ledger/adjustments/dry-run"
+  },
+  "request_contract": {
+    "required_permission": "billing_adjust",
+    "plan_only": true,
+    "ledger_write": false,
+    "upstream_call": false,
+    "operation_enum": ["adjust", "refund"],
+    "amount_decimal_string": true,
+    "currency_uppercase": true,
+    "refund_requires_related_ledger_entry_id": true,
+    "adjust_requires_wallet_id_without_related_entry": true,
+    "reason_max_bytes": 256,
+    "reason_value_not_echoed": true,
+    "raw_dedupe_material_rejected": true,
+    "raw_request_material_rejected": true,
+    "credential_material_rejected": true
+  },
+  "response_contract": {
+    "ledger_write": false,
+    "upstream_call": false,
+    "request_log_write": false,
+    "audit_log_write": false,
+    "omits_raw_ledger_snapshots": true,
+    "omits_raw_metadata": true,
+    "omits_raw_request_material": true,
+    "omits_credential_material": true
+  },
+  "future_write_audit_contract": {
+    "future_actions": ["ledger.adjust", "ledger.refund"],
+    "business_and_success_audit_share_transaction": true,
+    "success_audit_only_after_ledger_write": true,
+    "audit_insert_failure_rolls_back_ledger_write": true,
+    "refusal_does_not_build_success_audit": true,
+    "snapshot_policy": "bounded public ids and amounts only"
+  },
+  "examples": {
+    "refund": {
+      "request": {
+        "operation": "refund",
+        "amount": "0.25000000",
+        "currency": "USD",
+        "request_id": "00000000-0000-0000-0000-000000000090",
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000091",
+        "reason": "customer credit"
+      },
+      "response": {
+        "data": {
+          "operation": "refund",
+          "plan_only": true,
+          "ledger_write": false,
+          "upstream_call": false,
+          "request_log_write": false,
+          "audit_log_write": false,
+          "tenant_id": "00000000-0000-0000-0000-000000000001",
+          "project_id": "00000000-0000-0000-0000-000000000020",
+          "wallet_id": "00000000-0000-0000-0000-000000000040",
+          "request_id": "00000000-0000-0000-0000-000000000090",
+          "related_ledger_entry": {
+            "id": "00000000-0000-0000-0000-000000000091",
+            "project_id": "00000000-0000-0000-0000-000000000020",
+            "wallet_id": "00000000-0000-0000-0000-000000000040",
+            "request_id": "00000000-0000-0000-0000-000000000090",
+            "related_ledger_entry_id": null,
+            "entry_type": "settle",
+            "amount": "-0.25000000",
+            "currency": "USD",
+            "status": "confirmed"
+          },
+          "planned_ledger_entry": {
+            "entry_type": "refund",
+            "amount": "0.25000000",
+            "currency": "USD",
+            "status": "planned",
+            "related_ledger_entry_id": "00000000-0000-0000-0000-000000000091",
+            "project_id": "00000000-0000-0000-0000-000000000020",
+            "wallet_id": "00000000-0000-0000-0000-000000000040",
+            "request_id": "00000000-0000-0000-0000-000000000090",
+            "dedupe_policy": "server_generated_on_execute",
+            "metadata_policy": "bounded_admin_adjustment_metadata_only"
+          },
+          "validation": {
+            "amount_checked": true,
+            "currency_checked": true,
+            "related_ledger_entry_checked": true,
+            "reason_provided": true,
+            "sensitive_material_policy": "rejected_by_schema"
+          },
+          "future_write_contract": {
+            "business_and_success_audit_share_transaction": true,
+            "success_audit_only_after_ledger_write": true,
+            "audit_insert_failure_rolls_back_ledger_write": true,
+            "refusal_does_not_build_success_audit": true,
+            "audit_action": "ledger.refund",
+            "audit_snapshot_policy": "bounded public ids and amounts only",
+            "omitted_material_policy": "no raw request, raw ledger snapshot, raw metadata, or credential material",
+            "ledger_write": false,
+            "upstream_call": false
+          },
+          "omitted_material": [
+            "dedupe material",
+            "ledger snapshots",
+            "raw metadata",
+            "raw request material",
+            "credential material"
+          ]
+        }
+      }
+    }
+  }
+}

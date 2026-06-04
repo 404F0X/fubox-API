@@ -42,12 +42,15 @@ struct PostgresExecutorCaseFixture {
     name: String,
     source_case: String,
     fail_on_statement_kind: Option<String>,
+    row_count_override_statement_kind: Option<String>,
+    row_count_override: Option<u64>,
     failure_code: Option<String>,
     internal_failure_detail: Option<String>,
     expected_outcome: String,
     expected_committed: bool,
     expected_rolled_back: bool,
     expected_error_code: Option<String>,
+    expected_error_category: Option<String>,
     expected_statement_result_count: usize,
     expected_event_suffix: String,
 }
@@ -157,6 +160,10 @@ fn postgres_executor_fixture_matches_boundary_contract() {
             case.fail_on_statement_kind
                 .as_deref()
                 .map(statement_kind_from_name),
+            case.row_count_override_statement_kind
+                .as_deref()
+                .map(statement_kind_from_name),
+            case.row_count_override,
             case.failure_code.clone(),
             case.internal_failure_detail.clone(),
         );
@@ -205,7 +212,12 @@ fn postgres_executor_fixture_matches_boundary_contract() {
             &case.expected_event_suffix,
             &case.name,
         );
-        assert_error_contract(&result.error, &case.expected_error_code, &case.name);
+        assert_error_contract(
+            &result.error,
+            &case.expected_error_code,
+            &case.expected_error_category,
+            &case.name,
+        );
 
         if case.expected_outcome == "idempotent" {
             assert!(
@@ -267,7 +279,7 @@ fn postgres_executor_public_statement_results_are_normalized() {
     assert_eq!(first_result.order, first_statement.order);
     assert_eq!(first_result.kind, first_statement.kind);
     assert_eq!(first_result.target, first_statement.target);
-    assert_eq!(first_result.rows_affected, 7);
+    assert_eq!(first_result.rows_affected, 1);
     assert_eq!(first_result.operation_key_output, "omitted");
 
     let serialized = serde_json::to_string(&result).expect("result should serialize");
@@ -316,6 +328,8 @@ fn postgres_executor_ok_refused_rolls_back_and_sanitizes_statement_result() {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FakePostgresExecutor {
     fail_on_statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+    row_count_override_statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+    row_count_override: Option<u64>,
     failure_code: Option<String>,
     internal_failure_detail: Option<String>,
     observed_internal_failure_detail_len: usize,
@@ -325,11 +339,15 @@ struct FakePostgresExecutor {
 impl FakePostgresExecutor {
     fn new(
         fail_on_statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+        row_count_override_statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+        row_count_override: Option<u64>,
         failure_code: Option<String>,
         internal_failure_detail: Option<String>,
     ) -> Self {
         Self {
             fail_on_statement_kind,
+            row_count_override_statement_kind,
+            row_count_override,
             failure_code,
             internal_failure_detail,
             observed_internal_failure_detail_len: 0,
@@ -362,12 +380,18 @@ impl ConsistentLedgerPostgresTransactionExecutor for FakePostgresExecutor {
             ));
         }
 
+        let rows_affected = if self.row_count_override_statement_kind == Some(statement.kind) {
+            self.row_count_override.unwrap_or(1)
+        } else {
+            1
+        };
+
         Ok(ConsistentLedgerPostgresStatementResult {
             order: statement.order,
             kind: statement.kind,
             target: statement.target,
             outcome: ConsistentLedgerPostgresStatementOutcome::Executed,
-            rows_affected: 1,
+            rows_affected,
             operation_key_output: "omitted",
         })
     }
@@ -401,7 +425,7 @@ impl ConsistentLedgerPostgresTransactionExecutor for MisreportingPostgresExecuto
             kind: ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus,
             target: "idempotency_key",
             outcome: ConsistentLedgerPostgresStatementOutcome::Executed,
-            rows_affected: 7,
+            rows_affected: 1,
             operation_key_output: "reserve:00000000 raw private key",
         })
     }
@@ -635,15 +659,19 @@ fn assert_executor_events_match(
 fn assert_error_contract(
     error: &Option<ConsistentLedgerPostgresExecutorError>,
     expected_code: &Option<String>,
+    expected_category: &Option<String>,
     label: &str,
 ) {
-    match (error, expected_code) {
-        (Some(error), Some(expected_code)) => {
+    match (error, expected_code, expected_category) {
+        (Some(error), Some(expected_code), Some(expected_category)) => {
             assert_eq!(&error.code, expected_code, "{label} error code");
+            assert_eq!(&error.category, expected_category, "{label} error category");
             assert_eq!(error.detail_output, "omitted", "{label} error detail");
         }
-        (None, None) => {}
-        (actual, expected) => panic!("{label} error mismatch: {actual:?} != {expected:?}"),
+        (None, None, None) => {}
+        (actual, expected_code, expected_category) => {
+            panic!("{label} error mismatch: {actual:?} != {expected_code:?}/{expected_category:?}")
+        }
     }
 }
 

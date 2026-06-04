@@ -643,6 +643,7 @@ async fn chat_completions(
     }
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -661,16 +662,23 @@ async fn chat_completions(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error(
-                repository,
-                &auth,
-                request_id,
-                started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -868,7 +876,30 @@ async fn chat_completions(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            &auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error(
+        repository,
+        &auth,
+        request_id,
+        started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 async fn responses(
@@ -1119,6 +1150,7 @@ async fn responses(
     }
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -1137,17 +1169,23 @@ async fn responses(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error_for_endpoint(
-                METRICS_ENDPOINT_RESPONSES,
-                repository,
-                &auth,
-                request_id,
-                started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -1365,7 +1403,31 @@ async fn responses(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            &auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        METRICS_ENDPOINT_RESPONSES,
+        repository,
+        &auth,
+        request_id,
+        started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 async fn embeddings(
@@ -1599,6 +1661,7 @@ async fn embeddings(
 
     let mut upstream_clients = OpenAiClientCache::with_capacity(attempt_routes.len());
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -1617,17 +1680,23 @@ async fn embeddings(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error_for_endpoint(
-                METRICS_ENDPOINT_EMBEDDINGS,
-                repository,
-                &auth,
-                request_id,
-                started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -1846,7 +1915,31 @@ async fn embeddings(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            &auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        METRICS_ENDPOINT_EMBEDDINGS,
+        repository,
+        &auth,
+        request_id,
+        started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 async fn anthropic_messages(
@@ -2097,6 +2190,7 @@ async fn anthropic_messages(
     }
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -2115,17 +2209,23 @@ async fn anthropic_messages(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error_for_endpoint(
-                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
-                repository,
-                &auth,
-                request_id,
-                started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -2371,7 +2471,31 @@ async fn anthropic_messages(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            &auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+        repository,
+        &auth,
+        request_id,
+        started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 async fn gemini_generate_content_native_passthrough(
@@ -2673,6 +2797,7 @@ async fn gemini_generate_content_native_passthrough(
     }
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -2691,17 +2816,23 @@ async fn gemini_generate_content_native_passthrough(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&native_path.requested_model);
-            finish_request_with_error_for_endpoint(
-                METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
-                repository,
-                &auth,
-                request_id,
-                started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -2969,7 +3100,31 @@ async fn gemini_generate_content_native_passthrough(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&native_path.requested_model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            &auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+        repository,
+        &auth,
+        request_id,
+        started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 async fn models(
@@ -4771,6 +4926,28 @@ pub(crate) fn provider_attempt_metadata_with_rate_limit_reservation(
     }
 }
 
+pub(crate) fn rate_limit_reservation_skip_event(
+    attempt_no: i32,
+    route: &ResolvedChatRoute,
+    next_route: &ResolvedChatRoute,
+    reservation: &GatewayRateLimitReservationAttempt,
+) -> Value {
+    json!({
+        "schema": "gateway_rate_limit_reservation_skip_v1",
+        "attempt_no": attempt_no,
+        "reason": "rate_limit_reservation_rejected",
+        "action": "try_next_route",
+        "failed_provider_id": route.provider_id,
+        "failed_channel_id": route.channel_id,
+        "failed_upstream_model": route.upstream_model,
+        "next_attempt_no": attempt_no.saturating_add(1),
+        "next_provider_id": next_route.provider_id,
+        "next_channel_id": next_route.channel_id,
+        "next_upstream_model": next_route.upstream_model,
+        "rate_limit_reservation": reservation.metadata("reservation_rejected_skip"),
+    })
+}
+
 pub(crate) fn rate_limit_reservation_rejected_error(_model: &str) -> GatewayApiError {
     GatewayApiError {
         status: StatusCode::TOO_MANY_REQUESTS,
@@ -5131,6 +5308,38 @@ fn route_snapshot_with_final_attempt(
     }
 }
 
+fn route_snapshot_with_rate_limit_reservation_rejection(
+    mut snapshot: Value,
+    attempt_count: usize,
+    rejection_count: usize,
+    fallback_events: &[Value],
+) -> Value {
+    let reservation_skip_events = fallback_events
+        .iter()
+        .filter(|event| {
+            event.get("schema").and_then(Value::as_str)
+                == Some("gateway_rate_limit_reservation_skip_v1")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let metadata = json!({
+        "schema": "gateway_rate_limit_reservation_rejection_v1",
+        "attempt_count": attempt_count,
+        "reservation_rejection_count": rejection_count,
+        "skip_event_count": reservation_skip_events.len(),
+        "skip_events": reservation_skip_events,
+        "final_error": "rate_limit_exceeded",
+        "final_route_selected": false,
+    });
+
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("rate_limit_reservation_rejection".to_string(), metadata);
+        snapshot
+    } else {
+        json!({ "rate_limit_reservation_rejection": metadata })
+    }
+}
+
 fn fallback_event(
     attempt_no: i32,
     summary: &ErrorLogSummary,
@@ -5433,6 +5642,40 @@ async fn record_request_final_route(
         tracing::warn!(
             message = %error.message,
             "failed to update request log final provider route"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_request_rate_limit_reservation_rejection(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    request_id: uuid::Uuid,
+    selected_route: &ResolvedChatRoute,
+    route_decision_snapshot: Value,
+    attempt_count: usize,
+    rejection_count: usize,
+    fallback_events: &[Value],
+) {
+    if let Err(error) = repository
+        .update_request_route_selection(
+            auth,
+            request_id,
+            RequestRouteLog::for_route(
+                selected_route,
+                route_snapshot_with_rate_limit_reservation_rejection(
+                    route_decision_snapshot,
+                    attempt_count,
+                    rejection_count,
+                    fallback_events,
+                ),
+            ),
+        )
+        .await
+    {
+        tracing::warn!(
+            message = %error.message,
+            "failed to update request log rate-limit reservation rejection"
         );
     }
 }
@@ -9851,6 +10094,17 @@ mod tests {
                 section_name,
             );
             assert_marker_before(section, reservation_marker, upstream_marker, section_name);
+
+            let reservation_reject_section = source_section(
+                section,
+                "if !rate_limit_reservation.acquired()",
+                "let attempt_id = match repository",
+            );
+            assert!(reservation_reject_section.contains("rate_limit_reservation_skip_event("));
+            assert!(reservation_reject_section.contains("continue;"));
+            assert!(!reservation_reject_section.contains(".create_provider_attempt_started("));
+            assert!(!reservation_reject_section.contains("open_provider_key_for_route("));
+            assert!(!reservation_reject_section.contains(upstream_marker));
         }
     }
 
@@ -9943,6 +10197,132 @@ mod tests {
         );
         assert_eq!(metadata["acquire"]["conservative_reject"], true);
         assert_eq!(metadata["finalize"]["counter_updates_planned"], 0);
+    }
+
+    #[test]
+    fn rate_limit_reservation_reject_skip_event_is_secret_safe() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(53),
+            0,
+            Some(60),
+            None,
+            None,
+            json!({
+                "authorization": "Bearer sk-live-secret",
+                "endpoint": "https://provider.example.test/v1",
+                "payload": "raw request body"
+            }),
+        );
+        let next_route = test_route(uuid::Uuid::from_u128(54), "enabled", 0, 1, 100, 1.0);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let event = rate_limit_reservation_skip_event(1, &route, &next_route, &reservation);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+
+        assert_eq!(
+            event["schema"],
+            fixture["expected"]["reservation_reject_skip_schema"]
+        );
+        assert_eq!(
+            event["reason"],
+            fixture["expected"]["reservation_reject_skip_reason"]
+        );
+        assert_eq!(
+            event["action"],
+            fixture["expected"]["reservation_reject_skip_action"]
+        );
+        assert_eq!(event["attempt_no"], 1);
+        assert_eq!(event["next_attempt_no"], 2);
+        assert_eq!(
+            event["rate_limit_reservation"]["acquire"]["status"],
+            fixture["expected"]["missing_window_acquire_status"]
+        );
+        assert_eq!(
+            event["rate_limit_reservation"]["finalize"]["status"],
+            fixture["expected"]["missing_window_finalize_status"]
+        );
+
+        let event_text = event.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !event_text.contains(&marker.to_ascii_lowercase()),
+                "rate-limit reservation skip event leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_reservation_final_rejection_snapshot_is_secret_safe() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(55),
+            0,
+            Some(60),
+            None,
+            None,
+            json!({
+                "authorization": "Bearer sk-live-secret",
+                "endpoint": "https://provider.example.test/v1",
+                "payload": "raw request body"
+            }),
+        );
+        let next_route = test_route(uuid::Uuid::from_u128(56), "enabled", 0, 1, 100, 1.0);
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let skip_event = rate_limit_reservation_skip_event(1, &route, &next_route, &reservation);
+        let provider_event = fallback_event(
+            1,
+            &ErrorLogSummary {
+                http_status: 429,
+                error_owner: "provider".to_string(),
+                error_code: "provider_429".to_string(),
+                retryable: Some(true),
+            },
+            &route,
+            &next_route,
+        );
+        let snapshot = route_snapshot_with_rate_limit_reservation_rejection(
+            json!({ "selected_channel_id": route.channel_id }),
+            2,
+            2,
+            &[provider_event, skip_event],
+        );
+        let rejection = &snapshot["rate_limit_reservation_rejection"];
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+
+        assert_eq!(
+            rejection["schema"],
+            fixture["expected"]["reservation_final_rejection_schema"]
+        );
+        assert_eq!(rejection["final_error"], "rate_limit_exceeded");
+        assert_eq!(rejection["final_route_selected"], false);
+        assert_eq!(rejection["reservation_rejection_count"], 2);
+        assert_eq!(rejection["skip_event_count"], 1);
+        assert_eq!(
+            rejection["skip_events"][0]["schema"],
+            "gateway_rate_limit_reservation_skip_v1"
+        );
+
+        let snapshot_text = snapshot.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !snapshot_text.contains(&marker.to_ascii_lowercase()),
+                "rate-limit reservation final rejection snapshot leaked forbidden marker: {marker}"
+            );
+        }
     }
 
     #[test]

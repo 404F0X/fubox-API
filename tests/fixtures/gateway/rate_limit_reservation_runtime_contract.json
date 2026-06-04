@@ -17,6 +17,16 @@
       "finalize_status": "release_noop",
       "request_rejected_before_upstream": true
     },
+    "reservation_reject_fallback": {
+      "skip_schema": "gateway_rate_limit_reservation_skip_v1",
+      "final_rejection_schema": "gateway_rate_limit_reservation_rejection_v1",
+      "skip_reason": "rate_limit_reservation_rejected",
+      "skip_action": "try_next_route",
+      "skip_before_provider_attempt": true,
+      "try_next_route_when_present": true,
+      "final_error_when_all_candidates_reject": "rate_limit_exceeded",
+      "final_rejection_route_selected": false
+    },
     "stores_request_or_response_body": false,
     "stores_authorization_material": false,
     "stores_provider_key": false,
@@ -29,7 +39,11 @@
     "successful_finalize_status": "released",
     "successful_counter_updates_planned": 3,
     "missing_window_acquire_status": "rejected",
-    "missing_window_finalize_status": "release_noop"
+    "missing_window_finalize_status": "release_noop",
+    "reservation_reject_skip_schema": "gateway_rate_limit_reservation_skip_v1",
+    "reservation_final_rejection_schema": "gateway_rate_limit_reservation_rejection_v1",
+    "reservation_reject_skip_reason": "rate_limit_reservation_rejected",
+    "reservation_reject_skip_action": "try_next_route"
   },
   "forbidden_snapshot_markers": [
     "sk-live-secret",

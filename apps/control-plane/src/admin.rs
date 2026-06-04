@@ -59,6 +59,7 @@ const BILLING_READ_DEFAULT_LIMIT: i64 = 50;
 const BILLING_READ_MAX_LIMIT: i64 = 500;
 const RECONCILIATION_DEFAULT_DISCREPANCY_LIMIT: usize = 50;
 const RECONCILIATION_MAX_DISCREPANCY_LIMIT: usize = 500;
+const LEDGER_ADJUSTMENT_REASON_MAX_BYTES: usize = 256;
 const PRICE_VERSION_DEFAULT_MONEY_SCALE: u32 = 8;
 const PRICE_VERSION_MAX_MONEY_SCALE: u32 = 18;
 const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64";
@@ -168,6 +169,10 @@ pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
             get(list_price_versions).post(create_price_version),
         )
         .route("/admin/ledger/entries", get(list_ledger_entries))
+        .route(
+            "/admin/ledger/adjustments/dry-run",
+            axum::routing::post(dry_run_ledger_adjustment),
+        )
         .route(
             "/admin/billing/reconciliation",
             get(get_billing_reconciliation),
@@ -615,6 +620,19 @@ struct ListLedgerEntriesQuery {
     project_id: Option<Uuid>,
     request_id: Option<Uuid>,
     wallet_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LedgerAdjustmentDryRunRequest {
+    operation: String,
+    amount: String,
+    currency: String,
+    project_id: Option<Uuid>,
+    wallet_id: Option<Uuid>,
+    request_id: Option<Uuid>,
+    related_ledger_entry_id: Option<Uuid>,
+    reason: Option<String>,
 }
 
 impl ListLedgerEntriesQuery {
@@ -2044,6 +2062,16 @@ async fn list_ledger_entries(
     Ok(Json(json!({ "data": ledger_entries })).into_response())
 }
 
+async fn dry_run_ledger_adjustment(
+    State(state): State<Arc<ControlPlaneState>>,
+    Json(request): Json<LedgerAdjustmentDryRunRequest>,
+) -> Result<Response, AdminError> {
+    let repository = repo(&state);
+    let plan = build_ledger_adjustment_dry_run_plan(&repository, request).await?;
+
+    Ok(Json(json!({ "data": plan })).into_response())
+}
+
 async fn list_ledger_entries_for_request_ids(
     state: &ControlPlaneState,
     tenant_id: Uuid,
@@ -2439,6 +2467,194 @@ fn ledger_entry_response(entry: LedgerEntry) -> Value {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerAdjustmentOperation {
+    Adjust,
+    Refund,
+}
+
+impl LedgerAdjustmentOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Adjust => "adjust",
+            Self::Refund => "refund",
+        }
+    }
+
+    fn planned_entry_type(self) -> &'static str {
+        match self {
+            Self::Adjust => "adjust",
+            Self::Refund => "refund",
+        }
+    }
+
+    fn future_audit_action(self) -> &'static str {
+        match self {
+            Self::Adjust => "ledger.adjust",
+            Self::Refund => "ledger.refund",
+        }
+    }
+}
+
+async fn build_ledger_adjustment_dry_run_plan(
+    repository: &DbRepository,
+    request: LedgerAdjustmentDryRunRequest,
+) -> Result<Value, AdminError> {
+    let operation = normalize_ledger_adjustment_operation(request.operation)?;
+    let amount = normalize_ledger_adjustment_amount(request.amount, operation)?;
+    let currency = normalize_ledger_adjustment_currency(request.currency)?;
+    let reason_provided = normalize_ledger_adjustment_reason(request.reason)?.is_some();
+    let related_ledger_entry = match request.related_ledger_entry_id {
+        Some(ledger_entry_id) => get_ledger_entry_for_adjustment_plan(repository, ledger_entry_id)
+            .await?
+            .ok_or_else(|| AdminError::not_found("ledger entry"))?,
+        None if operation == LedgerAdjustmentOperation::Refund => {
+            return Err(AdminError::bad_request(
+                "related_ledger_entry_id is required for refund dry-run",
+            ));
+        }
+        None => {
+            if request.wallet_id.is_none() {
+                return Err(AdminError::bad_request(
+                    "wallet_id is required for adjustment dry-run without related_ledger_entry_id",
+                ));
+            }
+            return Ok(ledger_adjustment_dry_run_response(
+                operation,
+                &amount,
+                &currency,
+                request.project_id,
+                request.wallet_id,
+                request.request_id,
+                None,
+                reason_provided,
+            ));
+        }
+    };
+
+    validate_related_ledger_entry_for_adjustment_plan(
+        operation,
+        &related_ledger_entry,
+        &currency,
+        request.project_id,
+        request.wallet_id,
+        request.request_id,
+    )?;
+
+    Ok(ledger_adjustment_dry_run_response(
+        operation,
+        &amount,
+        &currency,
+        request.project_id.or(related_ledger_entry.project_id),
+        request.wallet_id.or(related_ledger_entry.wallet_id),
+        request.request_id.or(related_ledger_entry.request_id),
+        Some(&related_ledger_entry),
+        reason_provided,
+    ))
+}
+
+async fn get_ledger_entry_for_adjustment_plan(
+    repository: &DbRepository,
+    ledger_entry_id: Uuid,
+) -> Result<Option<LedgerEntry>, AdminError> {
+    let row = sqlx::query(
+        r#"
+        select
+          id, tenant_id, project_id, wallet_id, request_id, virtual_key_id, trace_id,
+          related_ledger_entry_id, entry_type, amount::text as amount, currency, status,
+          idempotency_key, price_version_id, usage_snapshot, policy_snapshot, metadata,
+          occurred_at::text as occurred_at, created_at::text as created_at
+        from ledger_entries
+        where tenant_id = $1 and id = $2
+        "#,
+    )
+    .bind(DEFAULT_TENANT_ID)
+    .bind(ledger_entry_id)
+    .fetch_optional(repository.pool())
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    row.map(ledger_entry_from_row)
+        .transpose()
+        .map_err(|error| AdminError::from(DbError::Query(error)))
+}
+
+fn ledger_adjustment_dry_run_response(
+    operation: LedgerAdjustmentOperation,
+    amount: &str,
+    currency: &str,
+    project_id: Option<Uuid>,
+    wallet_id: Option<Uuid>,
+    request_id: Option<Uuid>,
+    related_ledger_entry: Option<&LedgerEntry>,
+    reason_provided: bool,
+) -> Value {
+    json!({
+        "operation": operation.as_str(),
+        "plan_only": true,
+        "ledger_write": false,
+        "upstream_call": false,
+        "request_log_write": false,
+        "audit_log_write": false,
+        "tenant_id": DEFAULT_TENANT_ID,
+        "project_id": project_id,
+        "wallet_id": wallet_id,
+        "request_id": request_id,
+        "related_ledger_entry": related_ledger_entry.map(ledger_adjustment_related_entry_summary),
+        "planned_ledger_entry": {
+            "entry_type": operation.planned_entry_type(),
+            "amount": amount,
+            "currency": currency,
+            "status": "planned",
+            "related_ledger_entry_id": related_ledger_entry.map(|entry| entry.id),
+            "project_id": project_id,
+            "wallet_id": wallet_id,
+            "request_id": request_id,
+            "dedupe_policy": "server_generated_on_execute",
+            "metadata_policy": "bounded_admin_adjustment_metadata_only"
+        },
+        "validation": {
+            "amount_checked": true,
+            "currency_checked": true,
+            "related_ledger_entry_checked": related_ledger_entry.is_some(),
+            "reason_provided": reason_provided,
+            "sensitive_material_policy": "rejected_by_schema"
+        },
+        "future_write_contract": {
+            "business_and_success_audit_share_transaction": true,
+            "success_audit_only_after_ledger_write": true,
+            "audit_insert_failure_rolls_back_ledger_write": true,
+            "refusal_does_not_build_success_audit": true,
+            "audit_action": operation.future_audit_action(),
+            "audit_snapshot_policy": "bounded public ids and amounts only",
+            "omitted_material_policy": "no raw request, raw ledger snapshot, raw metadata, or credential material",
+            "ledger_write": false,
+            "upstream_call": false
+        },
+        "omitted_material": [
+            "dedupe material",
+            "ledger snapshots",
+            "raw metadata",
+            "raw request material",
+            "credential material"
+        ]
+    })
+}
+
+fn ledger_adjustment_related_entry_summary(entry: &LedgerEntry) -> Value {
+    json!({
+        "id": entry.id,
+        "project_id": entry.project_id,
+        "wallet_id": entry.wallet_id,
+        "request_id": entry.request_id,
+        "related_ledger_entry_id": entry.related_ledger_entry_id,
+        "entry_type": entry.entry_type,
+        "amount": entry.amount,
+        "currency": entry.currency,
+        "status": entry.status
+    })
+}
+
 fn ledger_entry_from_row(row: PgRow) -> Result<LedgerEntry, sqlx::Error> {
     Ok(LedgerEntry {
         id: row.try_get("id")?,
@@ -2549,6 +2765,167 @@ fn is_sensitive_billing_json_key(key: &str) -> bool {
         || normalized.contains("refresh_token")
         || normalized.contains("session_token")
         || normalized.contains("bearer_token")
+}
+
+fn normalize_ledger_adjustment_operation(
+    operation: String,
+) -> Result<LedgerAdjustmentOperation, AdminError> {
+    match operation.trim().to_ascii_lowercase().as_str() {
+        "adjust" | "adjustment" => Ok(LedgerAdjustmentOperation::Adjust),
+        "refund" => Ok(LedgerAdjustmentOperation::Refund),
+        _ => Err(AdminError::bad_request(
+            "operation must be adjust or refund",
+        )),
+    }
+}
+
+fn normalize_ledger_adjustment_currency(currency: String) -> Result<String, AdminError> {
+    let currency = non_empty(currency, "currency")?;
+    validate_price_version_currency(&currency)
+        .map_err(|_| AdminError::bad_request("currency must be an uppercase currency code"))?;
+    Ok(currency)
+}
+
+fn normalize_ledger_adjustment_amount(
+    amount: String,
+    operation: LedgerAdjustmentOperation,
+) -> Result<String, AdminError> {
+    let amount = non_empty(amount, "amount")?;
+    validate_decimal_amount_string("amount", &amount, PRICE_VERSION_DEFAULT_MONEY_SCALE)?;
+    if decimal_amount_is_zero(&amount) {
+        return Err(AdminError::bad_request("amount must not be zero"));
+    }
+    if operation == LedgerAdjustmentOperation::Refund && amount.starts_with('-') {
+        return Err(AdminError::bad_request(
+            "refund amount must be a positive credit amount",
+        ));
+    }
+    Ok(amount)
+}
+
+fn normalize_ledger_adjustment_reason(
+    reason: Option<String>,
+) -> Result<Option<String>, AdminError> {
+    let Some(reason) = reason else {
+        return Ok(None);
+    };
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Ok(None);
+    }
+    if reason.len() > LEDGER_ADJUSTMENT_REASON_MAX_BYTES {
+        return Err(AdminError::bad_request(format!(
+            "reason must be at most {LEDGER_ADJUSTMENT_REASON_MAX_BYTES} bytes"
+        )));
+    }
+    if looks_like_secret_value(reason) {
+        return Err(AdminError::bad_request(
+            "reason must not contain credential material",
+        ));
+    }
+
+    Ok(Some(reason.to_string()))
+}
+
+fn validate_decimal_amount_string(
+    field: &'static str,
+    value: &str,
+    scale: u32,
+) -> Result<(), AdminError> {
+    if value.starts_with('+') {
+        return Err(AdminError::bad_request(format!(
+            "{field} must be a decimal string"
+        )));
+    }
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    if unsigned.is_empty() || unsigned == "." {
+        return Err(AdminError::bad_request(format!(
+            "{field} must be a decimal string"
+        )));
+    }
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    if parts.next().is_some() || whole.is_empty() || !whole.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(AdminError::bad_request(format!(
+            "{field} must be a decimal string"
+        )));
+    }
+    if let Some(fraction) = fraction {
+        if fraction.is_empty() || !fraction.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err(AdminError::bad_request(format!(
+                "{field} must be a decimal string"
+            )));
+        }
+        if fraction.len() > scale as usize {
+            return Err(AdminError::bad_request(format!(
+                "{field} has more than {scale} fractional digits"
+            )));
+        }
+    }
+    if whole.len() > 18 {
+        return Err(AdminError::bad_request(format!(
+            "{field} has too many whole-number digits"
+        )));
+    }
+    Ok(())
+}
+
+fn decimal_amount_is_zero(value: &str) -> bool {
+    value
+        .trim_start_matches('-')
+        .chars()
+        .filter(|ch| *ch != '.')
+        .all(|ch| ch == '0')
+}
+
+fn validate_related_ledger_entry_for_adjustment_plan(
+    operation: LedgerAdjustmentOperation,
+    entry: &LedgerEntry,
+    currency: &str,
+    project_id: Option<Uuid>,
+    wallet_id: Option<Uuid>,
+    request_id: Option<Uuid>,
+) -> Result<(), AdminError> {
+    if entry.currency != currency {
+        return Err(AdminError::bad_request(
+            "currency must match related ledger entry currency",
+        ));
+    }
+    if let Some(project_id) = project_id
+        && entry.project_id != Some(project_id)
+    {
+        return Err(AdminError::bad_request(
+            "project_id must match related ledger entry",
+        ));
+    }
+    if let Some(wallet_id) = wallet_id
+        && entry.wallet_id != Some(wallet_id)
+    {
+        return Err(AdminError::bad_request(
+            "wallet_id must match related ledger entry",
+        ));
+    }
+    if let Some(request_id) = request_id
+        && entry.request_id != Some(request_id)
+    {
+        return Err(AdminError::bad_request(
+            "request_id must match related ledger entry",
+        ));
+    }
+    if operation == LedgerAdjustmentOperation::Refund {
+        if entry.status != "confirmed" || !entry.amount.starts_with('-') {
+            return Err(AdminError::bad_request(
+                "refund related ledger entry must be a confirmed debit",
+            ));
+        }
+        if !matches!(entry.entry_type.as_str(), "settle" | "adjust") {
+            return Err(AdminError::bad_request(
+                "refund related ledger entry must be settle or adjust",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_price_version_pricing_rules(value: Value) -> Result<Value, AdminError> {
@@ -8424,6 +8801,180 @@ mod tests {
             assert!(
                 !serialized.contains(forbidden),
                 "billing price version write fixture must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_dry_run_response_is_plan_only_and_secret_safe() {
+        let request_id = Uuid::from_u128(90);
+        let related_entry =
+            ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let response = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Refund,
+            "0.25000000",
+            "USD",
+            related_entry.project_id,
+            related_entry.wallet_id,
+            related_entry.request_id,
+            Some(&related_entry),
+            true,
+        );
+        let serialized = serde_json::to_string(&response).expect("response should serialize");
+
+        assert_eq!(response["operation"], json!("refund"));
+        assert_eq!(response["plan_only"], json!(true));
+        assert_eq!(response["ledger_write"], json!(false));
+        assert_eq!(response["upstream_call"], json!(false));
+        assert_eq!(response["audit_log_write"], json!(false));
+        assert_eq!(
+            response["planned_ledger_entry"]["entry_type"],
+            json!("refund")
+        );
+        assert_eq!(
+            response["future_write_contract"]["business_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            response["future_write_contract"]["refusal_does_not_build_success_audit"],
+            json!(true)
+        );
+
+        for forbidden in [
+            "ledger-idempotency-never-return",
+            "raw ledger payload",
+            "Bearer ledger-never-return",
+            "sk-live-ledger-never-return",
+            "sk-live-metadata-never-return",
+            "usage_snapshot",
+            "policy_snapshot",
+            "idempotency_key",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "ledger adjustment dry-run response must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_dry_run_validation_rejects_bad_amounts_and_sensitive_fields() {
+        assert_eq!(
+            normalize_ledger_adjustment_operation(" adjustment ".to_string()).unwrap(),
+            LedgerAdjustmentOperation::Adjust
+        );
+        assert!(normalize_ledger_adjustment_operation("settle".to_string()).is_err());
+        assert!(
+            normalize_ledger_adjustment_amount(
+                "-0.01000000".to_string(),
+                LedgerAdjustmentOperation::Refund
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_ledger_adjustment_amount(
+                "0.00000000".to_string(),
+                LedgerAdjustmentOperation::Adjust
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_ledger_adjustment_amount(
+                "0.000000001".to_string(),
+                LedgerAdjustmentOperation::Adjust
+            )
+            .is_err()
+        );
+        assert!(normalize_ledger_adjustment_currency("usd".to_string()).is_err());
+        assert_eq!(
+            normalize_ledger_adjustment_reason(Some(" customer credit ".to_string())).unwrap(),
+            Some("customer credit".to_string())
+        );
+        assert!(
+            normalize_ledger_adjustment_reason(Some("sk-live-never-accept".to_string())).is_err()
+        );
+        assert!(
+            normalize_ledger_adjustment_reason(Some(
+                "x".repeat(LEDGER_ADJUSTMENT_REASON_MAX_BYTES + 1)
+            ))
+            .is_err()
+        );
+
+        for field in [
+            "idempotency_key",
+            "payload",
+            "authorization",
+            "provider_key",
+            "secret",
+        ] {
+            let mut request = serde_json::Map::new();
+            request.insert("operation".to_string(), json!("adjust"));
+            request.insert("amount".to_string(), json!("1.00000000"));
+            request.insert("currency".to_string(), json!("USD"));
+            request.insert("wallet_id".to_string(), json!(Uuid::from_u128(40)));
+            request.insert(field.to_string(), json!("never-return"));
+            assert!(
+                serde_json::from_value::<LedgerAdjustmentDryRunRequest>(Value::Object(request))
+                    .is_err(),
+                "request must reject unexpected sensitive field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_dry_run_contract_fixture_covers_openapi_and_secret_safe_plan() {
+        let fixture = serde_json::from_str::<Value>(include_str!(
+            "../../../tests/fixtures/control-plane/ledger_adjustment_dry_run_contract.json"
+        ))
+        .expect("fixture should be valid json");
+        let serialized = serde_json::to_string(&fixture).expect("fixture should serialize");
+        let openapi = include_str!("../../../examples/openapi_admin_skeleton.yaml");
+
+        assert_eq!(
+            fixture["endpoint"]["path"],
+            json!("/admin/ledger/adjustments/dry-run")
+        );
+        assert_eq!(
+            fixture["request_contract"]["required_permission"],
+            json!("billing_adjust")
+        );
+        assert_eq!(fixture["request_contract"]["ledger_write"], json!(false));
+        assert_eq!(fixture["request_contract"]["upstream_call"], json!(false));
+        assert_eq!(fixture["request_contract"]["reason_max_bytes"], json!(256));
+        assert_eq!(
+            fixture["request_contract"]["reason_value_not_echoed"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["response_contract"]["omits_raw_ledger_snapshots"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["future_write_audit_contract"]["business_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["future_write_audit_contract"]["refusal_does_not_build_success_audit"],
+            json!(true)
+        );
+        assert!(openapi.contains("/admin/ledger/adjustments/dry-run"));
+        assert!(openapi.contains("LedgerAdjustmentDryRunRequest"));
+        assert!(openapi.contains("LedgerAdjustmentDryRunEnvelope"));
+
+        for forbidden in [
+            "usage_snapshot",
+            "policy_snapshot",
+            "idempotency_key",
+            "payload",
+            "Authorization",
+            "Bearer",
+            "sk-",
+            "raw ledger payload",
+            "never-return",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "ledger adjustment dry-run fixture must not contain {forbidden}"
             );
         }
     }

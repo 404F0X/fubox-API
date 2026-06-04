@@ -178,6 +178,7 @@ impl PromptProtectionConfig {
             let Some(object) = rule.as_object() else {
                 continue;
             };
+            validate_prompt_protection_rule_schema_keys(index, object)?;
             if let Some(value) = object.get("name").or_else(|| object.get("id")) {
                 validate_optional_string_bytes_limit(
                     &format!("security.prompt_protection.custom_rules[{index}].name"),
@@ -203,6 +204,34 @@ impl PromptProtectionConfig {
 
         Ok(())
     }
+}
+
+fn validate_prompt_protection_rule_schema_keys(
+    index: usize,
+    object: &serde_json::Map<String, Value>,
+) -> Result<(), ConfigError> {
+    for key in object.keys() {
+        if !matches!(key.as_str(), "name" | "id" | "action" | "scope" | "pattern") {
+            return Err(ConfigError::Invalid(format!(
+                "security.prompt_protection.custom_rules[{index}] contains unsupported field"
+            )));
+        }
+    }
+
+    if let Some(pattern) = object.get("pattern").and_then(Value::as_object) {
+        for key in pattern.keys() {
+            if !matches!(
+                key.as_str(),
+                "type" | "kind" | "value" | "literal" | "case_sensitive"
+            ) {
+                return Err(ConfigError::Invalid(format!(
+                    "security.prompt_protection.custom_rules[{index}].pattern contains unsupported field"
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -686,7 +715,30 @@ mod tests {
         assert!(config.server.trusted_proxy_allowlist.is_empty());
         assert_eq!(config.security.prompt_protection.mode, "enforce");
         assert!(config.security.prompt_protection.default_rules);
-        assert!(config.security.prompt_protection.custom_rules.is_empty());
+        assert_eq!(config.security.prompt_protection.custom_rules.len(), 1);
+        assert_eq!(config.security.prompt_protection.limits.max_rules, Some(4));
+        assert_eq!(
+            config.security.prompt_protection.limits.max_pattern_bytes,
+            Some(64)
+        );
+
+        let summary = config
+            .security
+            .prompt_protection
+            .safe_summary()
+            .expect("example prompt protection summary");
+        let summary_text = summary.to_string();
+
+        assert_eq!(summary["mode"], "enforce");
+        assert_eq!(summary["custom_rule_count"], 1);
+        assert_eq!(summary["raw_pattern_values_omitted"], true);
+        assert_eq!(
+            summary["custom_rules"]["limits"]["max_pattern_bytes"],
+            MAX_PROMPT_PROTECTION_RULE_PATTERN_BYTES
+        );
+        assert!(!summary_text.contains("demo-internal-marker"));
+        assert!(!summary_text.contains("Authorization: Bearer"));
+        assert!(!summary_text.contains("sk-live-secret"));
     }
 
     #[test]
@@ -787,6 +839,81 @@ mod tests {
 
         assert_eq!(summary["mode"], "audit");
         assert!(!summary_text.contains("project raven"));
+    }
+
+    #[test]
+    fn prompt_protection_schema_rejects_unknown_fields() {
+        let prompt_protection_unknown: Result<AppConfig, _> =
+            serde_yaml::from_str(&config_yaml_with_prompt_protection(
+                r#"
+  prompt_protection:
+    mode: enforce
+    default_rules: true
+    unexpected_field: true
+"#,
+            ));
+        let error = prompt_protection_unknown
+            .expect_err("unknown prompt_protection fields should fail")
+            .to_string();
+        assert!(error.contains("unknown field"));
+        assert!(error.contains("unexpected_field"));
+
+        let limits_unknown: Result<AppConfig, _> =
+            serde_yaml::from_str(&config_yaml_with_prompt_protection(
+                r#"
+  prompt_protection:
+    mode: enforce
+    default_rules: true
+    limits:
+      max_rules: 4
+      unexpected_limit: 1
+"#,
+            ));
+        let error = limits_unknown
+            .expect_err("unknown prompt_protection limit fields should fail")
+            .to_string();
+        assert!(error.contains("unknown field"));
+        assert!(error.contains("unexpected_limit"));
+
+        let unknown_rule_field = PromptProtectionConfig {
+            custom_rules: vec![json!({
+                "name": "gateway_rule",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": { "type": "contains", "value": "safe marker" },
+                "sk-live-secret": true
+            })],
+            ..PromptProtectionConfig::default()
+        };
+        let error = unknown_rule_field
+            .to_runtime_config()
+            .expect_err("unknown custom rule fields should fail")
+            .to_string();
+        assert!(error.contains("custom_rules[0]"));
+        assert!(error.contains("unsupported field"));
+        assert!(!error.contains("sk-live-secret"));
+
+        let unknown_pattern_field = PromptProtectionConfig {
+            custom_rules: vec![json!({
+                "name": "gateway_rule",
+                "action": "mask",
+                "scope": "messages",
+                "pattern": {
+                    "type": "contains",
+                    "value": "safe marker",
+                    "Authorization": "Bearer sk-live-secret"
+                }
+            })],
+            ..PromptProtectionConfig::default()
+        };
+        let error = unknown_pattern_field
+            .to_runtime_config()
+            .expect_err("unknown custom rule pattern fields should fail")
+            .to_string();
+        assert!(error.contains("custom_rules[0].pattern"));
+        assert!(error.contains("unsupported field"));
+        assert!(!error.contains("Authorization"));
+        assert!(!error.contains("sk-live-secret"));
     }
 
     #[test]

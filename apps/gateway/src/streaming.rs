@@ -49,8 +49,9 @@ use crate::{
     open_provider_key_for_route, pre_authorize_before_provider_attempt,
     provider_attempt_fallback_metadata, provider_attempt_metadata_with_rate_limit_reservation,
     provider_error_can_fallback, rate_limit_reservation_rejected_error,
-    record_endpoint_request_final_metrics, record_request_final_route, request_for_upstream,
-    responses_request_for_upstream, route_snapshot_with_final_attempt,
+    rate_limit_reservation_skip_event, record_endpoint_request_final_metrics,
+    record_request_final_route, record_request_rate_limit_reservation_rejection,
+    request_for_upstream, responses_request_for_upstream, route_snapshot_with_final_attempt,
     validate_anthropic_route_endpoint_for_provider_call, validate_route_endpoint_for_provider_call,
 };
 
@@ -130,6 +131,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
     debug_assert!(request.is_streaming());
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -148,16 +150,23 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error(
-                repository,
-                auth,
-                request_id,
-                request_started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback stream route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -355,7 +364,30 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error(
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) -> Response {
@@ -375,6 +407,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
     debug_assert!(request.is_streaming());
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -393,17 +426,23 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error_for_endpoint(
-                crate::METRICS_ENDPOINT_RESPONSES,
-                repository,
-                auth,
-                request_id,
-                request_started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback stream route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -601,7 +640,31 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        crate::METRICS_ENDPOINT_RESPONSES,
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 pub(crate) async fn anthropic_messages_streaming(
@@ -623,6 +686,7 @@ pub(crate) async fn anthropic_messages_streaming(
 
     let adapter = AnthropicAdapter::new();
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -641,17 +705,23 @@ pub(crate) async fn anthropic_messages_streaming(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&request.model);
-            finish_request_with_error_for_endpoint(
-                crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
-                repository,
-                auth,
-                request_id,
-                request_started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback stream route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -876,7 +946,31 @@ pub(crate) async fn anthropic_messages_streaming(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error(&request.model);
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 pub(crate) async fn gemini_generate_content_streaming(
@@ -897,6 +991,7 @@ pub(crate) async fn gemini_generate_content_streaming(
     } = context;
 
     let mut fallback_events = Vec::new();
+    let mut rate_limit_reservation_rejections = 0usize;
 
     for (attempt_index, route) in attempt_routes.iter().enumerate() {
         let attempt_no = i32::try_from(attempt_index + 1).unwrap_or(i32::MAX);
@@ -915,17 +1010,23 @@ pub(crate) async fn gemini_generate_content_streaming(
 
         let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
         if !rate_limit_reservation.acquired() {
-            let error = rate_limit_reservation_rejected_error(&route.canonical_model_key);
-            finish_request_with_error_for_endpoint(
-                crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
-                repository,
-                auth,
-                request_id,
-                request_started_at,
-                error.log_summary(),
-            )
-            .await;
-            return error.into_response();
+            rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
+            if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
+                fallback_events.push(rate_limit_reservation_skip_event(
+                    attempt_no,
+                    route,
+                    next_route,
+                    &rate_limit_reservation,
+                ));
+                tracing::warn!(
+                    attempt_no,
+                    provider_id = %route.provider_id,
+                    channel_id = %route.channel_id,
+                    "rate-limit reservation rejected; trying fallback stream route"
+                );
+                continue;
+            }
+            break;
         }
 
         let attempt_id = match repository
@@ -1200,7 +1301,31 @@ pub(crate) async fn gemini_generate_content_streaming(
         }
     }
 
-    unreachable!("non-empty provider attempt loop must return a response");
+    debug_assert!(rate_limit_reservation_rejections > 0);
+    let error = rate_limit_reservation_rejected_error("");
+    if let Some(selected_route) = attempt_routes.first() {
+        record_request_rate_limit_reservation_rejection(
+            repository,
+            auth,
+            request_id,
+            selected_route,
+            route_snapshot.clone(),
+            attempt_routes.len(),
+            rate_limit_reservation_rejections,
+            &fallback_events,
+        )
+        .await;
+    }
+    finish_request_with_error_for_endpoint(
+        crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+        repository,
+        auth,
+        request_id,
+        request_started_at,
+        error.log_summary(),
+    )
+    .await;
+    error.into_response()
 }
 
 #[derive(Debug, Clone)]

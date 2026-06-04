@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
-import { getAdminMe, loginAdmin, type AdminCapabilitySummary, type AdminUser } from "../api/client";
+import { getAdminMe, loginAdmin, type AdminCapabilitySummary, type AdminMeResponse, type AdminUser } from "../api/client";
+import { errorMessage } from "./adminUtils";
 import { LogIn, ShieldCheck } from "./icons";
 
 export type AdminSession = {
@@ -36,20 +37,10 @@ export function LoginPanel({ onLogin }: Props) {
       });
       const me = await getAdminMe();
 
-      onLogin({
-        capabilitySummary: me.capability_summary,
-        email: me.user.email,
-        expiresAt: me.session.expires_at,
-        name: me.user.display_name || displayNameFromEmail(me.user.email),
-        role: uiRole(me.user),
-        roles: me.user.roles,
-        sessionId: me.session.id,
-        tenantId: me.user.tenant_id,
-        userId: me.user.id,
-      });
+      onLogin(adminSessionFromMe(me));
       setPassword("");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Sign in failed.");
+      setError(errorMessage(requestError));
     } finally {
       setLoading(false);
     }
@@ -121,6 +112,20 @@ export function LoginPanel({ onLogin }: Props) {
       </section>
     </main>
   );
+}
+
+export function adminSessionFromMe(me: AdminMeResponse): AdminSession {
+  return {
+    capabilitySummary: me.capability_summary,
+    email: me.user.email,
+    expiresAt: me.session.expires_at,
+    name: me.user.display_name || displayNameFromEmail(me.user.email),
+    role: uiRole(me.user),
+    roles: me.user.roles,
+    sessionId: me.session.id,
+    tenantId: me.user.tenant_id,
+    userId: me.user.id,
+  };
 }
 
 function displayNameFromEmail(email: string): string {

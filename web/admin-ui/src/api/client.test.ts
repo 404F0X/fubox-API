@@ -915,6 +915,39 @@ describe("api client", () => {
     expect(fetchMock.mock.calls[4][1]?.body).toBeUndefined();
   });
 
+  it("loads the current admin session through cookie credentials without fallback headers", async () => {
+    const { ADMIN_SESSION_HEADER, getAdminMe } = await loadClient();
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({
+        capability_summary: {
+          allowed_capabilities: ["provider_health.read"],
+          denied_capabilities: [],
+          is_wildcard: false,
+        },
+        session: { expires_at: "2026-06-02T20:00:00Z", id: "session-1" },
+        user: {
+          display_name: "Local Admin",
+          email: "admin@example.com",
+          id: "user-1",
+          roles: ["owner"],
+          tenant_id: "tenant-1",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAdminMe()).resolves.toMatchObject({
+      session: { id: "session-1" },
+      user: { email: "admin@example.com" },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/control-plane/admin/auth/me");
+    expect(init).toMatchObject({ credentials: "include", method: "GET" });
+    expect(new Headers(init.headers).get(ADMIN_SESSION_HEADER)).toBeNull();
+    expect(init.body).toBeUndefined();
+  });
+
   it("keeps admin login cookie-only by default and only sends explicit fallback tokens", async () => {
     const { ADMIN_SESSION_HEADER, loginAdmin, listProviderKeys, setAdminSessionToken } = await loadClient();
     const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {

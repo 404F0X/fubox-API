@@ -1507,6 +1507,33 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /admin/ledger/adjustments/dry-run:
+    post:
+      tags: [Ledger]
+      summary: Dry-run ledger adjustment or refund plan
+      operationId: dryRunLedgerAdjustment
+      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Future execute semantics require the ledger write and success audit to share one database transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LedgerAdjustmentDryRunRequest'
+      responses:
+        '200':
+          description: Secret-safe adjustment/refund plan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerAdjustmentDryRunEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   securitySchemes:
     AdminBearerAuth:
@@ -1971,6 +1998,7 @@ components:
         - price.read
         - reconciliation.read
         - price_version.create
+        - ledger_adjustment.dry_run
         - manual_test.run
         - provider_health.read
         - alert_webhook.validate
@@ -5407,3 +5435,212 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/LedgerEntry'
+    LedgerAdjustmentDryRunRequest:
+      type: object
+      additionalProperties: false
+      required: [operation, amount, currency]
+      properties:
+        operation:
+          type: string
+          enum: [adjust, adjustment, refund]
+        amount:
+          type: string
+          description: Decimal amount string. Refund amounts must be positive credit amounts.
+        currency:
+          type: string
+          description: Uppercase currency code.
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+          description: Required for adjustment dry-runs that do not reference an existing ledger entry.
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        related_ledger_entry_id:
+          type: [string, 'null']
+          format: uuid
+          description: Required for refund dry-runs.
+        reason:
+          type: [string, 'null']
+          maxLength: 256
+          description: Bounded operator reason. Secret-like credential material is rejected and the value is not echoed in the response.
+    LedgerAdjustmentDryRunEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/LedgerAdjustmentDryRunPlan'
+    LedgerAdjustmentDryRunPlan:
+      type: object
+      additionalProperties: false
+      required:
+        - operation
+        - plan_only
+        - ledger_write
+        - upstream_call
+        - request_log_write
+        - audit_log_write
+        - tenant_id
+        - planned_ledger_entry
+        - validation
+        - future_write_contract
+        - omitted_material
+      properties:
+        operation:
+          type: string
+          enum: [adjust, refund]
+        plan_only:
+          type: boolean
+          const: true
+        ledger_write:
+          type: boolean
+          const: false
+        upstream_call:
+          type: boolean
+          const: false
+        request_log_write:
+          type: boolean
+          const: false
+        audit_log_write:
+          type: boolean
+          const: false
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        related_ledger_entry:
+          oneOf:
+            - $ref: '#/components/schemas/LedgerAdjustmentRelatedEntry'
+            - type: 'null'
+        planned_ledger_entry:
+          $ref: '#/components/schemas/LedgerAdjustmentPlannedEntry'
+        validation:
+          $ref: '#/components/schemas/LedgerAdjustmentValidation'
+        future_write_contract:
+          $ref: '#/components/schemas/LedgerAdjustmentFutureWriteContract'
+        omitted_material:
+          type: array
+          items:
+            type: string
+    LedgerAdjustmentRelatedEntry:
+      type: object
+      additionalProperties: false
+      required: [id, entry_type, amount, currency, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        related_ledger_entry_id:
+          type: [string, 'null']
+          format: uuid
+        entry_type:
+          type: string
+          enum: [reserve, settle, refund, adjust, expire, credit_grant, credit_expire]
+        amount:
+          type: string
+        currency:
+          type: string
+        status:
+          type: string
+    LedgerAdjustmentPlannedEntry:
+      type: object
+      additionalProperties: false
+      required: [entry_type, amount, currency, status, dedupe_policy, metadata_policy]
+      properties:
+        entry_type:
+          type: string
+          enum: [adjust, refund]
+        amount:
+          type: string
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [planned]
+        related_ledger_entry_id:
+          type: [string, 'null']
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        dedupe_policy:
+          type: string
+        metadata_policy:
+          type: string
+    LedgerAdjustmentValidation:
+      type: object
+      additionalProperties: false
+      required: [amount_checked, currency_checked, related_ledger_entry_checked, reason_provided, sensitive_material_policy]
+      properties:
+        amount_checked:
+          type: boolean
+        currency_checked:
+          type: boolean
+        related_ledger_entry_checked:
+          type: boolean
+        reason_provided:
+          type: boolean
+        sensitive_material_policy:
+          type: string
+    LedgerAdjustmentFutureWriteContract:
+      type: object
+      additionalProperties: false
+      required:
+        - business_and_success_audit_share_transaction
+        - success_audit_only_after_ledger_write
+        - audit_insert_failure_rolls_back_ledger_write
+        - refusal_does_not_build_success_audit
+        - audit_action
+        - audit_snapshot_policy
+        - omitted_material_policy
+        - ledger_write
+        - upstream_call
+      properties:
+        business_and_success_audit_share_transaction:
+          type: boolean
+        success_audit_only_after_ledger_write:
+          type: boolean
+        audit_insert_failure_rolls_back_ledger_write:
+          type: boolean
+        refusal_does_not_build_success_audit:
+          type: boolean
+        audit_action:
+          type: string
+          enum: [ledger.adjust, ledger.refund]
+        audit_snapshot_policy:
+          type: string
+        omitted_material_policy:
+          type: string
+        ledger_write:
+          type: boolean
+          const: false
+        upstream_call:
+          type: boolean
+          const: false

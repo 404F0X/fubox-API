@@ -41,17 +41,30 @@ function sessionPlaceholder(value: string): string {
 
 function stubHealthyFetch(
   roles = ["owner"],
-  options: { recoveryFails?: boolean; recoveryFailsWithSecret?: boolean } = {},
+  options: { meFailsWithSecret?: boolean; recoveryFails?: boolean; recoveryFailsWithSecret?: boolean; restoreSession?: boolean } = {},
 ) {
+  let loginSucceeded = false;
   const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = String(url);
     const method = init?.method ?? "GET";
 
     if (requestUrl.includes("/admin/auth/login")) {
+      loginSucceeded = true;
       return jsonResponse(loginPayload());
     }
 
     if (requestUrl.includes("/admin/auth/me")) {
+      if (options.meFailsWithSecret) {
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("session-restore-hidden")} ${skPlaceholder("session-restore-hidden")}`,
+          401,
+        );
+      }
+
+      if (!options.restoreSession && !loginSucceeded) {
+        return jsonError("No active admin session", 401);
+      }
+
       return jsonResponse(adminMePayload(roles));
     }
 
@@ -105,6 +118,7 @@ function stubAdminFetch(
 ) {
   let channelCreated = false;
   let associationCreated = false;
+  let loginSucceeded = false;
   let modelCreated = false;
   let providerCreated = false;
   let profileCreated = false;
@@ -647,10 +661,15 @@ function stubAdminFetch(
     const method = init?.method ?? "GET";
 
     if (requestUrl.includes("/admin/auth/login")) {
+      loginSucceeded = true;
       return jsonResponse(loginPayload());
     }
 
     if (requestUrl.includes("/admin/auth/me")) {
+      if (!loginSucceeded) {
+        return jsonError("No active admin session", 401);
+      }
+
       return jsonResponse(adminMePayload());
     }
 
@@ -1494,7 +1513,7 @@ async function renderSignedInApp() {
   const user = userEvent.setup();
   render(<App />);
 
-  await user.type(screen.getByLabelText("Email"), "operator@example.com");
+  await user.type(await screen.findByLabelText("Email"), "operator@example.com");
   await user.type(screen.getByLabelText("Password"), "local-password");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -1508,26 +1527,73 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("restores an existing admin cookie session on mount without showing the login form", async () => {
+    const fetchMock = stubHealthyFetch(["ops"], { restoreSession: true });
+
+    render(<App />);
+
+    expect(screen.getByRole("heading", { level: 1, name: "Restoring session" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("/api/control-plane/admin/auth/me");
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain("/api/control-plane/admin/auth/login");
+  });
+
+  it("falls back to the login page when session restore fails without exposing secrets", async () => {
+    stubHealthyFetch(["owner"], { meFailsWithSecret: true });
+
+    render(<App />);
+
+    expect(screen.getByRole("heading", { level: 1, name: "Restoring session" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Admin sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1, name: "Gateway Control" })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("session-restore-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("session-restore-hidden"));
+  });
+
+  it("clears restored session state on logout", async () => {
+    const fetchMock = stubHealthyFetch(["owner"], { restoreSession: true });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
+    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Admin sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1, name: "Gateway Control" })).not.toBeInTheDocument();
+    expect(screen.queryByText("2 requests / 1h")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("/api/control-plane/admin/auth/logout");
+  });
+
   it("waits for local sign-in before probing services and keeps refresh available", async () => {
     const fetchMock = stubHealthyFetch();
     const user = userEvent.setup();
 
     render(<App />);
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { level: 1, name: "Restoring session" })).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("Email"), "operator@example.com");
+    await user.type(await screen.findByLabelText("Email"), "operator@example.com");
     await user.type(screen.getByLabelText("Password"), "local-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7));
+    expect(
+      fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url === "/api/control-plane/admin/auth/me"),
+    ).toHaveLength(2);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
       "/api/control-plane/admin/providers/health-summary",
     );
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(10));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(11));
     expect(
       fetchMock.mock.calls
         .map(([url]) => String(url))
@@ -2234,14 +2300,20 @@ describe("App", () => {
       request_log: fastLog,
       route_decision_snapshot: { strategy: "fast-route" },
     });
+    let loginSucceeded = false;
     const fetchMock = vi.fn((url: RequestInfo | URL, _init?: RequestInit) => {
       const requestUrl = String(url);
 
       if (requestUrl.includes("/admin/auth/login")) {
+        loginSucceeded = true;
         return jsonResponse(loginPayload());
       }
 
       if (requestUrl.includes("/admin/auth/me")) {
+        if (!loginSucceeded) {
+          return jsonError("No active admin session", 401);
+        }
+
         return jsonResponse(adminMePayload());
       }
 
