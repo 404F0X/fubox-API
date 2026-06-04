@@ -452,6 +452,18 @@ provider_attempts/not-called fields, prompt-protection safe reason/scope,
 secret-safe omission markers, bounded blocker/failure arrays, and exit `0/1/2`
 status.
 
+Reports also include provenance/freshness fields: root/provenance
+`generated_at_utc`, repo `head_commit` or the explicit `unavailable` marker,
+dirty/untracked counts with file paths omitted, `provenance.mode`
+`live|preflight|contract|simulated`, `provenance.kind` `live|simulated`, a
+hashed proof run id, and a redacted command summary that records switches only,
+not URL/path/token/header/DSN/cookie/raw prompt/regex/provider-secret values.
+Only a current-run, current-commit report with `status=passed`, `exit_code=0`,
+`provenance.kind=live`, `provenance.mode=live`, all endpoint evidence passed,
+and `freshness.live_evidence_closure_eligible=true` can close the live
+provider_attempts proof gap. Blocker, failed, preflight, contract, simulated,
+stale, wrong-commit, or dirty/unreviewed reports cannot close it.
+
 Report paths must resolve under `.tmp/**` or
 `artifacts/prompt-protection-postgres-proof/**` with a `.json` file extension.
 Repo-outside paths, `.git` paths, source/script/docs paths, and unrelated worker
@@ -497,7 +509,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protec
 
 This self-test does not connect to live services or write a live report. It
 validates simulated pass, evidence mismatch, and external blocker reports for
-the four endpoint catalog entries and verifies the report JSON is secret-safe.
+the four endpoint catalog entries, covers live/preflight/contract/simulated
+provenance modes, validates closure eligibility, and verifies the report JSON is
+secret-safe.
 
 Evidence report path-safety self-test:
 

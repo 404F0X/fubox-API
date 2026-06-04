@@ -216,6 +216,31 @@ The root `report_status` maps to the JSON `status` field and is one of
 evidence mismatch, and `2` for external blocker. The report includes bounded
 `blockers` and `failures` arrays with redacted messages.
 
+The report also carries a provenance/freshness contract. `generated_at_utc` is
+recorded at the root and inside `provenance`/`freshness`. `provenance.repo`
+records the current `head_commit` when Git is available, otherwise the explicit
+`unavailable` marker, plus dirty/untracked counts with file paths omitted.
+`provenance.run.proof_run_id_hash` records a hash of the current proof run id;
+the raw run id is omitted. `provenance.mode` is one of `live`, `preflight`,
+`contract`, or `simulated`, and `provenance.kind` is `live` or `simulated`.
+`provenance.redacted_command_summary` records boolean switches and bounded
+timeout values only; URL, path, token, header, DSN, cookie, raw prompt, regex
+pattern, and provider-secret values are omitted.
+
+Freshness guidance:
+
+- Use `freshness.live_evidence_closure_eligible=true` only when `status=passed`,
+  `exit_code=0`, `provenance.kind=live`, `provenance.mode=live`, the report
+  `repo_head_commit` matches the commit under acceptance, `generated_at_utc`
+  belongs to the current run window, and all four endpoint reports have passed
+  evidence.
+- Do not use `blocked`, `failed`, `preflight`, `contract`, `simulated`, stale,
+  wrong-commit, or dirty/unreviewed report artifacts to close the live Postgres
+  provider_attempts evidence gap.
+- `freshness.stale_or_simulated_report_closes_live_gap=false` is a permanent
+  marker. A simulated or stale report can document the contract or blocker, but
+  it is not live evidence.
+
 Each endpoint report records:
 
 - `name`, endpoint label, and expected prompt-protection scope.

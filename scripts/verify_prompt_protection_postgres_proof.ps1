@@ -224,6 +224,11 @@ function Invoke-ExitSemanticsSelfTest {
 }
 
 function Invoke-EvidenceReportContractSelfTest {
+  $previousLive = $script:Live
+  $previousPreflightOnly = $script:PreflightOnly
+  $previousContractOnly = $script:ContractOnly
+  $previousSimulateLivePreflightBlocker = $script:SimulateLivePreflightBlocker
+  $previousSimulateEvidenceMismatch = $script:SimulateEvidenceMismatch
   $previousBlockers = $script:Blockers
   $previousFailures = $script:Failures
   $previousCaseReportByName = $script:CaseReportByName
@@ -242,19 +247,55 @@ function Invoke-EvidenceReportContractSelfTest {
         -ProviderAttemptsCount 0 `
         -PromptProtectionReason "prompt_injection_detected"
     }
-    $passed = New-EvidenceReport -Status "passed" -ExitCode 0
-    Assert-EvidenceReportContract -Report $passed -ExpectedStatus "passed" -ExpectedExitCode 0 -RequirePassedEndpoints
+    $script:Live = $true
+    $script:PreflightOnly = $false
+    $script:ContractOnly = $false
+    $script:SimulateLivePreflightBlocker = $false
+    $script:SimulateEvidenceMismatch = $false
+    $passed = New-EvidenceReport -Status "passed" -ExitCode 0 -ReportMode "live" -ProvenanceKind "live"
+    Assert-EvidenceReportContract -Report $passed -ExpectedStatus "passed" -ExpectedExitCode 0 -ExpectedMode "live" -ExpectedProvenanceKind "live" -RequirePassedEndpoints
+    if ($passed.freshness.live_evidence_closure_eligible -ne $true) {
+      throw "live passed evidence report was not closure eligible"
+    }
+
+    $script:Live = $true
+    $script:PreflightOnly = $true
+    $script:ContractOnly = $false
+    $preflight = New-EvidenceReport -Status "preflight_passed" -ExitCode 0 -ReportMode "preflight" -ProvenanceKind "live"
+    Assert-EvidenceReportContract -Report $preflight -ExpectedStatus "preflight_passed" -ExpectedExitCode 0 -ExpectedMode "preflight" -ExpectedProvenanceKind "live"
+    if ($preflight.freshness.live_evidence_closure_eligible -ne $false) {
+      throw "live preflight evidence report was closure eligible"
+    }
+
+    $script:Live = $false
+    $script:PreflightOnly = $false
+    $script:ContractOnly = $true
+    $contract = New-EvidenceReport -Status "preflight_passed" -ExitCode 0 -ReportMode "contract" -ProvenanceKind "simulated"
+    Assert-EvidenceReportContract -Report $contract -ExpectedStatus "preflight_passed" -ExpectedExitCode 0 -ExpectedMode "contract" -ExpectedProvenanceKind "simulated"
+    if ($contract.freshness.live_evidence_closure_eligible -ne $false) {
+      throw "contract evidence report was closure eligible"
+    }
 
     $script:CaseReportByName = @{}
     $script:Failures = @("[FAIL] simulated evidence mismatch - provider_attempts_count expected 0, got 1")
-    $failed = New-EvidenceReport -Status "failed" -ExitCode 1
-    Assert-EvidenceReportContract -Report $failed -ExpectedStatus "failed" -ExpectedExitCode 1
+    $script:Live = $false
+    $script:ContractOnly = $false
+    $script:SimulateEvidenceMismatch = $true
+    $failed = New-EvidenceReport -Status "failed" -ExitCode 1 -ReportMode "simulated" -ProvenanceKind "simulated"
+    Assert-EvidenceReportContract -Report $failed -ExpectedStatus "failed" -ExpectedExitCode 1 -ExpectedMode "simulated" -ExpectedProvenanceKind "simulated"
 
     $script:Failures = @()
     $script:Blockers = @("[BLOCKED] simulated live preflight blocker - Gateway/Postgres/psql/compose unavailable")
-    $blocked = New-EvidenceReport -Status "blocked" -ExitCode 2
-    Assert-EvidenceReportContract -Report $blocked -ExpectedStatus "blocked" -ExpectedExitCode 2
+    $script:SimulateEvidenceMismatch = $false
+    $script:SimulateLivePreflightBlocker = $true
+    $blocked = New-EvidenceReport -Status "blocked" -ExitCode 2 -ReportMode "simulated" -ProvenanceKind "simulated"
+    Assert-EvidenceReportContract -Report $blocked -ExpectedStatus "blocked" -ExpectedExitCode 2 -ExpectedMode "simulated" -ExpectedProvenanceKind "simulated"
   } finally {
+    $script:Live = $previousLive
+    $script:PreflightOnly = $previousPreflightOnly
+    $script:ContractOnly = $previousContractOnly
+    $script:SimulateLivePreflightBlocker = $previousSimulateLivePreflightBlocker
+    $script:SimulateEvidenceMismatch = $previousSimulateEvidenceMismatch
     $script:Blockers = $previousBlockers
     $script:Failures = $previousFailures
     $script:CaseReportByName = $previousCaseReportByName
@@ -484,6 +525,129 @@ function Get-Sha256Hex {
     return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
   } finally {
     $sha.Dispose()
+  }
+}
+
+function Invoke-GitCaptured {
+  param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if (-not $git) {
+    return $null
+  }
+
+  $oldNativeErrorPreference = $null
+  $hadNativeErrorPreference = $false
+  if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $hadNativeErrorPreference = $true
+    $oldNativeErrorPreference = $global:PSNativeCommandUseErrorActionPreference
+    $global:PSNativeCommandUseErrorActionPreference = $false
+  }
+
+  try {
+    $output = @(& $git.Source -C (Get-RepoRootFullPath) @Arguments 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+      return $null
+    }
+    return @($output)
+  } finally {
+    if ($hadNativeErrorPreference) {
+      $global:PSNativeCommandUseErrorActionPreference = $oldNativeErrorPreference
+    }
+  }
+}
+
+function Get-RepoCommitForEvidenceReport {
+  $output = Invoke-GitCaptured @("rev-parse", "HEAD")
+  if ($null -eq $output -or $output.Count -lt 1) {
+    return "unavailable"
+  }
+
+  $commit = ([string]$output[0]).Trim()
+  if ($commit -match '^[0-9a-f]{40}$') {
+    return $commit
+  }
+
+  return "unavailable"
+}
+
+function Get-WorkspaceChangeSummaryForEvidenceReport {
+  $output = Invoke-GitCaptured @("status", "--porcelain=v1")
+  if ($null -eq $output) {
+    return [ordered]@{
+      available = $false
+      dirty = $null
+      change_count = $null
+      untracked_count = $null
+      value_policy = "file paths omitted"
+    }
+  }
+
+  $lines = @($output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  $untracked = @($lines | Where-Object { ([string]$_).StartsWith("??") })
+  return [ordered]@{
+    available = $true
+    dirty = ($lines.Count -gt 0)
+    change_count = [int]$lines.Count
+    untracked_count = [int]$untracked.Count
+    value_policy = "file paths omitted"
+  }
+}
+
+function Get-EvidenceReportMode {
+  if ($SimulateLivePreflightBlocker -or $SimulateEvidenceMismatch) {
+    return "simulated"
+  }
+  if ($Live) {
+    if ($PreflightOnly) {
+      return "preflight"
+    }
+    return "live"
+  }
+  if ($ContractOnly) {
+    return "contract"
+  }
+  return "contract"
+}
+
+function Get-EvidenceReportProvenanceKind {
+  param([Parameter(Mandatory = $true)][string]$ReportMode)
+
+  if ($ReportMode -eq "live" -or $ReportMode -eq "preflight") {
+    return "live"
+  }
+  return "simulated"
+}
+
+function New-RedactedCommandSummary {
+  param(
+    [Parameter(Mandatory = $true)][string]$ReportMode,
+    [Parameter(Mandatory = $true)][string]$ProvenanceKind
+  )
+
+  return [ordered]@{
+    script = "scripts/verify_prompt_protection_postgres_proof.ps1"
+    mode = [string]$ReportMode
+    provenance_kind = [string]$ProvenanceKind
+    live = [bool]$Live
+    preflight_only = [bool]$PreflightOnly
+    contract_only = [bool]$ContractOnly
+    simulated_live_preflight_blocker = [bool]$SimulateLivePreflightBlocker
+    simulated_evidence_mismatch = [bool]$SimulateEvidenceMismatch
+    report_path_requested = (-not [string]::IsNullOrWhiteSpace($EvidenceReportPath))
+    cleanup_path_requested = (-not [string]::IsNullOrWhiteSpace($CleanupEvidenceReportPath))
+    cleanup_dry_run = [bool]$CleanupEvidenceReportDryRun
+    skip_compose_ps = [bool]$SkipComposePs
+    skip_mock_provider_health = [bool]$SkipMockProviderHealth
+    timeout_seconds = [int]$TimeoutSeconds
+    db_poll_seconds = [int]$DbPollSeconds
+    redaction = [ordered]@{
+      command_line_values_omitted = $true
+      path_values_omitted = $true
+      endpoint_url_values_omitted = $true
+      credential_values_omitted = $true
+      database_connection_values_omitted = $true
+    }
   }
 }
 
@@ -1089,7 +1253,9 @@ function New-ReportIssueObjects {
 function New-EvidenceReport {
   param(
     [Parameter(Mandatory = $true)][string]$Status,
-    [Parameter(Mandatory = $true)][int]$ExitCode
+    [Parameter(Mandatory = $true)][int]$ExitCode,
+    [string]$ReportMode = "",
+    [string]$ProvenanceKind = ""
   )
 
   $endpointReports = New-Object System.Collections.Generic.List[object]
@@ -1101,13 +1267,71 @@ function New-EvidenceReport {
     }
   }
 
+  $mode = [string]$ReportMode
+  if ([string]::IsNullOrWhiteSpace($mode)) {
+    $mode = Get-EvidenceReportMode
+  }
+
+  $kind = [string]$ProvenanceKind
+  if ([string]::IsNullOrWhiteSpace($kind)) {
+    $kind = Get-EvidenceReportProvenanceKind -ReportMode $mode
+  }
+
+  $generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+  $repoCommit = Get-RepoCommitForEvidenceReport
+  $workspaceSummary = Get-WorkspaceChangeSummaryForEvidenceReport
+  $runIdHash = Get-Sha256Hex $script:RunId
+  $allEndpointEvidencePassed = (
+    $endpointReports.Count -eq 4 -and
+    @($endpointReports | Where-Object { [string]$_.evidence_status -ne "passed" }).Count -eq 0
+  )
+  $closeLiveGapEligible = (
+    $kind -eq "live" -and
+    $mode -eq "live" -and
+    [string]$Status -eq "passed" -and
+    [int]$ExitCode -eq 0 -and
+    $allEndpointEvidencePassed
+  )
+
   return [ordered]@{
     schema_version = "prompt_protection_postgres_proof_evidence_report.v1"
     status = [string]$Status
     exit_code = [int]$ExitCode
-    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    generated_at_utc = $generatedAt
     live_requested = [bool]$Live
     preflight_only = [bool]$PreflightOnly
+    provenance = [ordered]@{
+      kind = [string]$kind
+      mode = [string]$mode
+      generated_at_utc = $generatedAt
+      repo = [ordered]@{
+        head_commit = [string]$repoCommit
+        head_commit_available = ([string]$repoCommit -ne "unavailable")
+        workspace = $workspaceSummary
+      }
+      run = [ordered]@{
+        proof_run_id_hash = [string]$runIdHash
+        raw_proof_run_id_omitted = $true
+      }
+      redacted_command_summary = New-RedactedCommandSummary -ReportMode $mode -ProvenanceKind $kind
+    }
+    freshness = [ordered]@{
+      generated_at_utc = $generatedAt
+      repo_head_commit = [string]$repoCommit
+      proof_run_id_hash = [string]$runIdHash
+      current_run_marker = "proof_run_id_hash"
+      live_evidence_closure_eligible = [bool]$closeLiveGapEligible
+      stale_or_simulated_report_closes_live_gap = $false
+      close_live_gap_requires = @(
+        "status=passed",
+        "exit_code=0",
+        "provenance.kind=live",
+        "provenance.mode=live",
+        "repo.head_commit matches accepted commit",
+        "generated_at_utc belongs to the current run",
+        "all endpoint evidence_status values are passed"
+      )
+    }
     report_bounds = [ordered]@{
       endpoint_count = 4
       max_issue_count = 8
@@ -1147,7 +1371,9 @@ function Assert-EvidenceReportSecretSafe {
       "https://",
       "postgres://",
       "postgresql://",
+      "pp-proof-",
       "sk-",
+      $script:RunId,
       $GatewayAuthToken,
       $DatabaseUrl
     )) {
@@ -1165,6 +1391,8 @@ function Assert-EvidenceReportContract {
     [Parameter(Mandatory = $true)]$Report,
     [Parameter(Mandatory = $true)][string]$ExpectedStatus,
     [Parameter(Mandatory = $true)][int]$ExpectedExitCode,
+    [string]$ExpectedMode = "",
+    [string]$ExpectedProvenanceKind = "",
     [switch]$RequirePassedEndpoints
   )
 
@@ -1183,8 +1411,100 @@ function Assert-EvidenceReportContract {
   if ([int]$Report.exit_semantics.pass -ne 0 -or [int]$Report.exit_semantics.evidence_mismatch -ne 1 -or [int]$Report.exit_semantics.external_blocker -ne 2) {
     throw "evidence report exit semantics mismatch"
   }
+  if ([string]::IsNullOrWhiteSpace([string]$Report.generated_at_utc)) {
+    throw "evidence report missing generated_at_utc"
+  }
+  try {
+    [void][DateTimeOffset]::Parse([string]$Report.generated_at_utc)
+  } catch {
+    throw "evidence report generated_at_utc was not parseable"
+  }
 
+  if ($null -eq $Report.provenance) {
+    throw "evidence report missing provenance"
+  }
+  $mode = [string]$Report.provenance.mode
+  $kind = [string]$Report.provenance.kind
+  if (@("live", "preflight", "contract", "simulated") -notcontains $mode) {
+    throw "evidence report provenance mode mismatch"
+  }
+  if (@("live", "simulated") -notcontains $kind) {
+    throw "evidence report provenance kind mismatch"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedMode) -and $mode -ne $ExpectedMode) {
+    throw "evidence report expected provenance mode mismatch"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedProvenanceKind) -and $kind -ne $ExpectedProvenanceKind) {
+    throw "evidence report expected provenance kind mismatch"
+  }
+  if ([string]$Report.provenance.generated_at_utc -ne [string]$Report.generated_at_utc) {
+    throw "evidence report provenance generated_at mismatch"
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$Report.provenance.repo.head_commit)) {
+    throw "evidence report missing repo commit marker"
+  }
+  if ([string]$Report.provenance.repo.head_commit -ne "unavailable" -and -not ([string]$Report.provenance.repo.head_commit -match '^[0-9a-f]{40}$')) {
+    throw "evidence report repo commit marker mismatch"
+  }
+  if ([string]$Report.provenance.run.proof_run_id_hash -notmatch '^[0-9a-f]{64}$') {
+    throw "evidence report proof run id hash mismatch"
+  }
+  if ($Report.provenance.run.raw_proof_run_id_omitted -ne $true) {
+    throw "evidence report raw proof run id omission mismatch"
+  }
+  if ([string]$Report.provenance.redacted_command_summary.script -ne "scripts/verify_prompt_protection_postgres_proof.ps1") {
+    throw "evidence report redacted command summary script mismatch"
+  }
+  if ([string]$Report.provenance.redacted_command_summary.mode -ne $mode) {
+    throw "evidence report redacted command summary mode mismatch"
+  }
+  if ([string]$Report.provenance.redacted_command_summary.provenance_kind -ne $kind) {
+    throw "evidence report redacted command summary kind mismatch"
+  }
+  if ($Report.provenance.redacted_command_summary.redaction.command_line_values_omitted -ne $true) {
+    throw "evidence report command summary redaction mismatch"
+  }
+  if ($Report.provenance.redacted_command_summary.redaction.credential_values_omitted -ne $true) {
+    throw "evidence report command summary credential redaction mismatch"
+  }
+  if ($Report.provenance.redacted_command_summary.redaction.database_connection_values_omitted -ne $true) {
+    throw "evidence report command summary database redaction mismatch"
+  }
+
+  if ($null -eq $Report.freshness) {
+    throw "evidence report missing freshness"
+  }
+  if ([string]$Report.freshness.generated_at_utc -ne [string]$Report.generated_at_utc) {
+    throw "evidence report freshness generated_at mismatch"
+  }
+  if ([string]$Report.freshness.repo_head_commit -ne [string]$Report.provenance.repo.head_commit) {
+    throw "evidence report freshness repo commit mismatch"
+  }
+  if ([string]$Report.freshness.proof_run_id_hash -ne [string]$Report.provenance.run.proof_run_id_hash) {
+    throw "evidence report freshness run hash mismatch"
+  }
+  if ([string]$Report.freshness.current_run_marker -ne "proof_run_id_hash") {
+    throw "evidence report freshness current run marker mismatch"
+  }
+  if ($Report.freshness.stale_or_simulated_report_closes_live_gap -ne $false) {
+    throw "evidence report freshness stale/simulated closure mismatch"
+  }
   $endpoints = @($Report.endpoints)
+  $allEndpointEvidencePassed = (
+    $endpoints.Count -eq 4 -and
+    @($endpoints | Where-Object { [string]$_.evidence_status -ne "passed" }).Count -eq 0
+  )
+  $closureEligible = (
+    $kind -eq "live" -and
+    $mode -eq "live" -and
+    [string]$Report.status -eq "passed" -and
+    [int]$Report.exit_code -eq 0 -and
+    $allEndpointEvidencePassed
+  )
+  if ([bool]$Report.freshness.live_evidence_closure_eligible -ne [bool]$closureEligible) {
+    throw "evidence report freshness closure eligibility mismatch"
+  }
+
   if ($endpoints.Count -ne 4) {
     throw "evidence report must include four endpoints"
   }
@@ -1347,6 +1667,12 @@ function Assert-RunbookContract {
       "cleanup/overwrite lifecycle",
       "overwrite refused",
       "cleanup dry-run",
+      "provenance/freshness",
+      "repo_head_commit",
+      "proof_run_id_hash",
+      "redacted_command_summary",
+      "live_evidence_closure_eligible",
+      "stale_or_simulated_report_closes_live_gap",
       ".git paths are not allowed",
       "report_status",
       "report_exit_code"
@@ -1389,6 +1715,15 @@ function Assert-ScriptContract {
       "Assert-EvidenceReportOverwriteAllowed",
       "Invoke-EvidenceReportCleanup",
       "Invoke-EvidenceReportLifecycleSelfTest",
+      "Get-RepoCommitForEvidenceReport",
+      "Get-WorkspaceChangeSummaryForEvidenceReport",
+      "New-RedactedCommandSummary",
+      "Get-EvidenceReportMode",
+      "provenance",
+      "freshness",
+      "redacted_command_summary",
+      "live_evidence_closure_eligible",
+      "stale_or_simulated_report_closes_live_gap",
       "Write-EvidenceReportIfRequested",
       "Assert-EvidenceReportContract",
       "request_log_hash_only_fields",
