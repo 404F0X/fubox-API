@@ -16,6 +16,7 @@ $evidenceMatrixContract = $readinessContract.live_cutover_evidence_matrix_contra
 $dryRunEvidenceContract = $readinessContract.runtime_writer_dry_run_execution_evidence_contract
 $liveExecutionHandoffContract = $readinessContract.live_execution_handoff_contract
 $liveProbeArtifactContract = $readinessContract.live_probe_evidence_artifact_contract
+$liveProbeExecutorBoundaryContract = $readinessContract.live_probe_executor_boundary_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -182,6 +183,53 @@ function Assert-Contract {
       throw "live probe evidence artifact missing rollback/no-commit proof field: $requiredProofField"
     }
   }
+  if ([string]$liveProbeExecutorBoundaryContract.schema_version -ne "control_plane_billing_ledger_live_probe_executor_boundary.v1") {
+    throw "live probe executor boundary schema mismatch"
+  }
+  if ([string]$liveProbeExecutorBoundaryContract.execution_mode -ne "rollback_only_live_probe") {
+    throw "live probe executor boundary must remain rollback-only"
+  }
+  if (-not [bool]$liveProbeExecutorBoundaryContract.rollback_required) {
+    throw "live probe executor boundary must require rollback"
+  }
+  if (-not [bool]$liveProbeExecutorBoundaryContract.commit_forbidden) {
+    throw "live probe executor boundary must forbid commit"
+  }
+  $executorSteps = @($liveProbeExecutorBoundaryContract.step_ordering | ForEach-Object { [string]$_ })
+  $expectedSteps = @(
+    "begin_transaction",
+    "lock_idempotency_scope",
+    "lock_wallet_scope",
+    "lock_budget_scope",
+    "insert_probe_ledger_entry",
+    "mark_probe_idempotency",
+    "capture_row_count_measurements",
+    "capture_timing_measurements",
+    "rollback_transaction"
+  )
+  for ($stepIndex = 0; $stepIndex -lt $expectedSteps.Count; $stepIndex++) {
+    if ($executorSteps[$stepIndex] -ne $expectedSteps[$stepIndex]) {
+      throw "live probe executor boundary step ordering mismatch at index ${stepIndex}"
+    }
+  }
+  $executorRowFields = @($liveProbeExecutorBoundaryContract.row_count_capture_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredExecutorRowField in @("expected_rows", "actual_rows", "rows_match", "rows_affected_source")) {
+    if ($requiredExecutorRowField -notin $executorRowFields) {
+      throw "live probe executor boundary missing row-count capture field: $requiredExecutorRowField"
+    }
+  }
+  $executorTimingFields = @($liveProbeExecutorBoundaryContract.timing_duration_capture_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredExecutorTimingField in @("begin_transaction_duration_ms", "insert_probe_ledger_entry_duration_ms", "row_count_capture_duration_ms", "rollback_transaction_duration_ms")) {
+    if ($requiredExecutorTimingField -notin $executorTimingFields) {
+      throw "live probe executor boundary missing timing capture field: $requiredExecutorTimingField"
+    }
+  }
+  if ([bool]$liveProbeExecutorBoundaryContract.rollback_no_commit_semantics.commit_statement_allowed) {
+    throw "live probe executor boundary must not allow commit statements"
+  }
+  if ([bool]$liveProbeExecutorBoundaryContract.bounded_scope.unbounded_scan_allowed) {
+    throw "live probe executor boundary must not allow unbounded scans"
+  }
   $handoffRowEvidenceNames = @($liveExecutionHandoffContract.row_count_evidence_names | ForEach-Object { [string]$_ })
   foreach ($requiredRowEvidence in @("lock_idempotency_scope", "lock_wallet_scope", "insert_ledger_entry", "mark_idempotency_applied")) {
     if ($requiredRowEvidence -notin $handoffRowEvidenceNames) {
@@ -346,6 +394,76 @@ function New-LiveProbeEvidenceArtifact {
       fail = @($liveProbeArtifactContract.classification_rules.fail | ForEach-Object { [string]$_ })
     }
     blockers = @($artifactBlockers)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      dedupe_material_echoed = $false
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
+function New-LiveProbeExecutorBoundary {
+  param(
+    [Parameter(Mandatory = $true)][bool]$ProbeRequested,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Blockers
+  )
+
+  $rowCountMeasurementInputs = @(
+    $liveProbeExecutorBoundaryContract.row_count_expectations | ForEach-Object {
+      [ordered]@{
+        statement_kind = [string]$_.statement_kind
+        expected_rows = [string]$_.expected_rows
+        actual_rows = $null
+        rows_match = $null
+        rows_affected_source = "pending_live_probe_executor"
+      }
+    }
+  )
+
+  return [ordered]@{
+    schema_version = [string]$liveProbeExecutorBoundaryContract.schema_version
+    execution_mode = [string]$liveProbeExecutorBoundaryContract.execution_mode
+    probe_requested = $ProbeRequested
+    db_write_performed = $false
+    production_writer_replaced = $false
+    production_source_of_truth_switch_allowed = $false
+    commit_forbidden = $true
+    rollback_required = $true
+    dual_commit_allowed = $false
+    step_ordering = @($liveProbeExecutorBoundaryContract.step_ordering | ForEach-Object { [string]$_ })
+    row_count_measurement_inputs = $rowCountMeasurementInputs
+    timing_duration_capture = [ordered]@{
+      begin_transaction_duration_ms = $null
+      lock_idempotency_scope_duration_ms = $null
+      lock_wallet_scope_duration_ms = $null
+      lock_budget_scope_duration_ms = $null
+      insert_probe_ledger_entry_duration_ms = $null
+      mark_probe_idempotency_duration_ms = $null
+      row_count_capture_duration_ms = $null
+      rollback_transaction_duration_ms = $null
+      capture_source = "pending_live_probe_executor"
+    }
+    rollback_no_commit_semantics = [ordered]@{
+      rollback_required_on_success = $true
+      rollback_required_on_row_count_mismatch = $true
+      rollback_required_on_executor_error = $true
+      commit_statement_allowed = $false
+      production_writer_unchanged = $true
+      local_writer_fallback = "control_plane_local_sql_writer"
+    }
+    bounded_scope = [ordered]@{
+      tenant_project_request_operation_required = $true
+      operation_key_bind_only = $true
+      unbounded_scan_allowed = $false
+      max_statement_count = [int]$liveProbeExecutorBoundaryContract.bounded_scope.max_statement_count
+    }
+    blockers = @($Blockers)
     safe_output = [ordered]@{
       database_url_output = "omitted"
       env_value_output = "omitted"
@@ -661,6 +779,7 @@ $summary = [ordered]@{
     }
   }
   live_execution_handoff = (New-LiveExecutionHandoff -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
+  live_probe_executor_boundary = (New-LiveProbeExecutorBoundary -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
   live_probe_evidence_artifact = (New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -Blockers @($blockers))
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
