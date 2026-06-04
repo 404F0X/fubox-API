@@ -187,3 +187,159 @@ Release Candidate 必须满足：
 - `project/QA_TEST_CASES.csv`：测试用例清单。
 - `project/ACCEPTANCE_CHECKLIST.md`：验收清单。
 - `project/RELEASE_CHECKLIST.md`：发布清单。
+
+## 11. Ledger Adjustment Execute Live Smoke Runbook
+
+This section is the acceptance runbook for TODO lane `E11-007-S9`. It covers the
+Control Plane ledger adjustment/refund `mode=execute` smoke created in S6 and
+wired into the test/release gates in S8.
+
+### 11.1 Default Contract-Only Commands
+
+These commands must not require Docker, Postgres, Redis, or a running Control
+Plane. They verify the smoke fixture, S4 transaction contract markers, and the
+test/release opt-in contract.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_execute_smoke.ps1 -ContractOnly
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -ControlPlaneLedgerAdjustmentExecuteSmokeOnly
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke
+```
+
+Expected result:
+
+- Direct smoke and `scripts/test.ps1` smoke-only return exit code `0`.
+- `release_check.ps1 -Checks smoke` reports `mode.smoke=dry-run+contract` and
+  includes `scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -ContractOnly`.
+- No live ledger rows or audit rows are written.
+
+### 11.2 Live Opt-In Commands
+
+Run live smoke only when the compose stack is intentionally available. Live mode
+is opt-in; do not add it to default PR checks.
+
+Direct live smoke:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_execute_smoke.ps1
+```
+
+Test wrapper opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1 -ControlPlaneLedgerAdjustmentExecuteSmokeOnly -ControlPlaneLedgerAdjustmentExecuteSmokeLive
+
+$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_ONLY = "1"
+$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_LIVE = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test.ps1
+```
+
+Release gate opt-in:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke -RunRuntimeSmoke
+
+$env:RELEASE_RUN_RUNTIME_SMOKE = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -Checks smoke
+```
+
+`RUN_RUNTIME_SMOKE=1` is also accepted by `release_check.ps1`.
+
+### 11.3 Live Environment Requirements
+
+Before running live smoke, ensure all of the following are true:
+
+- Docker Desktop or Docker daemon is running and `docker compose` can inspect
+  `deploy/docker-compose/docker-compose.yml`.
+- Compose services `postgres` and `control-plane` are running from the current
+  repository revision. The default compose file is expected unless `COMPOSE_FILE`
+  is set.
+- Postgres is migrated and contains the dev seed data required by the Control
+  Plane smoke:
+  - tenant `00000000-0000-0000-0000-000000000001`
+  - project `00000000-0000-0000-0000-000000000020`
+  - wallet `00000000-0000-0000-0000-000000000040`
+  - active admin user `admin@example.com`
+- Control Plane is reachable at `http://127.0.0.1:8081`, or
+  `CONTROL_PLANE_BASE_URL` points to the live endpoint.
+- Admin credentials are available. Defaults are
+  `CONTROL_PLANE_ADMIN_EMAIL=admin@example.com` and
+  `CONTROL_PLANE_ADMIN_PASSWORD=local-password`; alternatively set
+  `CONTROL_PLANE_ADMIN_SESSION_TOKEN`.
+
+Optional live parameters:
+
+- `COMPOSE_FILE`: override compose file path.
+- `CONTROL_PLANE_BASE_URL`: override Control Plane base URL.
+- `CONTROL_PLANE_ADMIN_EMAIL` / `CONTROL_PLANE_ADMIN_PASSWORD`: override login.
+- `CONTROL_PLANE_ADMIN_SESSION_TOKEN`: skip login and use an existing session.
+- `CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS=1` or `-KeepSmokeRows`:
+  keep seeded smoke ledger/audit rows for manual inspection.
+
+### 11.4 What Live Smoke Proves
+
+The live smoke must produce all of this evidence on the migrated schema:
+
+- Seeds a same-tenant confirmed debit ledger entry through compose Postgres.
+- Calls `POST /admin/ledger/adjustments/dry-run` with `mode=execute`.
+- Apply path returns HTTP `201`, `outcome=applied`, `ledger_write=true`, and
+  `audit_log_write=true`.
+- The inserted success audit has `resource_type=ledger_entry`, `action=ledger.refund`,
+  `resource_id` equal to the inserted ledger entry id, and transaction metadata
+  markers including `transactional_audit=true` and `ledger_adjustment_execute=true`.
+- Idempotent replay returns HTTP `200`, `outcome=idempotent`, and does not
+  increase ledger or audit counts.
+- Refund over remaining returns HTTP `400` with `bad_request` and does not
+  increase ledger or audit counts.
+- Concurrent refund race leaves one applied refund and one refusal, with exactly
+  one confirmed credit row and one success audit for that source debit.
+- Response and audit snapshot checks remain secret-safe: no raw idempotency key,
+  raw metadata, ledger snapshots, Authorization, provider key material, or secret
+  material is echoed.
+
+### 11.5 Blocker Semantics
+
+The direct live smoke uses exit code `2` for external blockers. A blocker is not
+a pass and must not be used to close the live acceptance gap.
+
+Expected blocker output contains `[BLOCKED]`, for example:
+
+```text
+[BLOCKED] live Docker compose control-plane/postgres availability - docker compose is unavailable ...
+Control Plane ledger adjustment execute smoke is externally blocked:
+```
+
+Common blockers:
+
+- Docker daemon is not running.
+- Compose `postgres` or `control-plane` service is not running.
+- Postgres is not migrated or dev seed rows are missing.
+- Control Plane is unreachable.
+- Admin login/session is unavailable.
+
+Wrapper behavior:
+
+- `scripts/test.ps1` propagates the direct live smoke non-zero exit.
+- `scripts/release_check.ps1 -RunRuntimeSmoke` records the live smoke command
+  with exit code `2` and the overall smoke check fails because runtime smoke was
+  explicitly requested.
+- Default contract-only gates continue to pass or fail based only on contract
+  checks, not live environment availability.
+
+### 11.6 Closing TODO Gaps After a Passing Live Run
+
+After a clean live run, record the exact command, timestamp, repo commit, compose
+file, and output summary in the TODO update. A passing live run is enough to
+close these E11-007 backend live gaps:
+
+- `E11-007-S4`: live verification for FK behavior, success audit actor/resource
+  linkage, idempotent replay, and concurrent refund race.
+- `E11-007-S6`: live Postgres/concurrency smoke no longer externally blocked.
+- `E11-007-S8`: opt-in live gate verified in an environment with Docker/Postgres
+  and running Control Plane.
+
+Do not close unrelated gaps from this smoke alone. In particular, Admin UI real
+execute submit flow, broader billing-ledger executor integration, staging release
+approval, and any Gateway/routing live smokes remain separate acceptance items.
