@@ -1057,6 +1057,7 @@ function stubAdminFetch(
                     "refund_remaining_amount_checked",
                   ],
                   future_writer_required: true,
+                  ledger_executor_summary_contract: ledgerExecutorSummaryContract(),
                   ledger_writer_contract: {
                     future_writer: "transactional_admin_ledger_adjustment_writer",
                     insert_status_on_success: "confirmed",
@@ -1187,6 +1188,65 @@ function jsonResponseWithStatus(data: unknown, status: number) {
   );
 }
 
+function ledgerExecutorSummaryContract() {
+  return {
+    compatible_fields: [
+      "schema_version",
+      "executor",
+      "operation",
+      "outcome",
+      "operation_key_output",
+      "committed",
+      "rolled_back",
+      "statement_count",
+      "executed_statement_count",
+      "refused_statement_count",
+      "total_rows_affected",
+      "final_statement_order",
+      "final_statement_kind",
+      "error_detail_output",
+      "row_count_mismatch",
+    ],
+    credential_material_echoed: false,
+    dedupe_material_echoed: false,
+    error_detail: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-executor-contract-hidden")}`,
+    error_detail_output: "omitted",
+    operation_key: "operation-key-secret-hidden",
+    operation_key_output: "omitted",
+    raw_metadata: "raw executor contract metadata hidden",
+    raw_metadata_echoed: false,
+    response_field: "ledger_executor_summary",
+    schema_version: "billing_ledger_postgres_executor_summary.v1",
+  };
+}
+
+function ledgerExecutorSummary(outcome: "applied" | "idempotent") {
+  const writePerformed = outcome === "applied";
+
+  return {
+    committed: true,
+    dedupe_material_echoed: false,
+    error_detail: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("ledger-executor-summary-hidden")}`,
+    error_detail_output: "omitted",
+    executed_statement_count: writePerformed ? 1 : 0,
+    executor: "control_plane_transactional_admin_ledger_adjustment_writer",
+    final_statement_kind: writePerformed ? "insert_ledger_entry" : null,
+    final_statement_order: writePerformed ? 1 : null,
+    omitted_material: ["dedupe material", "raw metadata", "credential material"],
+    operation: writePerformed ? "refund" : "adjust",
+    operation_key: "operation-key-secret-hidden",
+    operation_key_output: "omitted",
+    outcome,
+    raw_metadata: "raw executor summary metadata hidden",
+    refused_statement_count: 0,
+    rolled_back: false,
+    row_count_mismatch: false,
+    schema_version: "billing_ledger_postgres_executor_summary.v1",
+    statement_count: writePerformed ? 1 : 0,
+    total_rows_affected: writePerformed ? 1 : 0,
+  };
+}
+
 function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", validatedPlan: unknown) {
   const writePerformed = outcome === "applied";
 
@@ -1214,6 +1274,8 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
       tenant_id: "00000000-0000-0000-0000-000000000001",
       wallet_id: "00000000-0000-0000-0000-000000000040",
     },
+    ledger_executor_summary: ledgerExecutorSummary(outcome),
+    ledger_executor_summary_contract: ledgerExecutorSummaryContract(),
     ledger_write: writePerformed,
     mode: "execute",
     outcome,
@@ -2617,9 +2679,13 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 3, name: "Transaction Summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Writer / Audit Summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Safe Output Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Executor Summary Contract" })).toBeInTheDocument();
     expect(screen.getByText("read_committed_or_stronger")).toBeInTheDocument();
     expect(screen.getByText("digest_marker_only")).toBeInTheDocument();
     expect(screen.getByText("transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
+    expect(screen.getByText("billing_ledger_postgres_executor_summary.v1")).toBeInTheDocument();
+    expect(screen.getByText("ledger_executor_summary")).toBeInTheDocument();
+    expect(screen.getByText("Compatible fields")).toBeInTheDocument();
     expect(screen.getByText("Constraints checked")).toBeInTheDocument();
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
 
@@ -2656,7 +2722,14 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
     expect(document.body.textContent).not.toContain("dedupe_replay_state");
     expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
+    expect(document.body.textContent).not.toContain("operation_key");
+    expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
+    expect(document.body.textContent).not.toContain("error_detail");
+    expect(document.body.textContent).not.toContain("ledger-executor-contract-hidden");
+    expect(document.body.textContent).not.toContain("credential_material");
+    expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
+    expect(document.body.textContent).not.toContain("raw executor contract metadata hidden");
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(
@@ -2703,8 +2776,21 @@ describe("App", () => {
     expect(screen.getAllByText("audit_log_write=true").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { level: 3, name: "Execute Summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: "Executed Ledger Entry" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Ledger Executor Summary" })).toBeInTheDocument();
+    const executorSummaryPanel = screen
+      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .closest("article");
+    expect(executorSummaryPanel).not.toBeNull();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("billing_ledger_postgres_executor_summary.v1")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("control_plane_transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("refund")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("applied")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("insert_ledger_entry")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getAllByText("1").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByRole("heading", { level: 3, name: "Executor Summary Contract" })).toBeInTheDocument();
     expect(screen.getAllByText("00000000...").length).toBeGreaterThan(0);
-    expect(screen.getByText("control_plane_transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
+    expect(screen.getAllByText("control_plane_transactional_admin_ledger_adjustment_writer").length).toBeGreaterThan(0);
     expect(screen.getAllByText("6").length).toBeGreaterThan(0);
 
     const executeCall = fetchMock.mock.calls.find(
@@ -2726,9 +2812,16 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
     expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
+    expect(document.body.textContent).not.toContain("operation_key");
+    expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
+    expect(document.body.textContent).not.toContain("error_detail");
+    expect(document.body.textContent).not.toContain("ledger-executor-summary-hidden");
+    expect(document.body.textContent).not.toContain("credential_material");
+    expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
     expect(document.body.textContent).not.toContain("raw execute metadata hidden");
     expect(document.body.textContent).not.toContain("raw executed ledger metadata hidden");
+    expect(document.body.textContent).not.toContain("raw executor summary metadata hidden");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-response-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-response-hidden"));
@@ -2757,6 +2850,14 @@ describe("App", () => {
     expect(screen.getAllByText("ledger_write=false").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("audit_log_write=false").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("idempotent").length).toBeGreaterThan(0);
+    const executorSummaryPanel = screen
+      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .closest("article");
+    expect(executorSummaryPanel).not.toBeNull();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("adjust")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getByText("idempotent")).toBeInTheDocument();
+    expect(within(executorSummaryPanel as HTMLElement).getAllByText("0").length).toBeGreaterThanOrEqual(4);
+    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
 
     const executeCall = fetchMock.mock.calls.find(
       ([url, init]) =>
@@ -2773,6 +2874,12 @@ describe("App", () => {
     });
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
+    expect(document.body.textContent).not.toContain("operation_key");
+    expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
+    expect(document.body.textContent).not.toContain("error_detail");
+    expect(document.body.textContent).not.toContain("ledger-executor-summary-hidden");
+    expect(document.body.textContent).not.toContain("credential_material");
+    expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
   });
 

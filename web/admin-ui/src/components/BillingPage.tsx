@@ -11,6 +11,8 @@ import {
   type LedgerAdjustmentDryRunResponse,
   type LedgerAdjustmentExecuteResult,
   type LedgerAdjustmentFutureExecuteResponse,
+  type LedgerExecutorSummary,
+  type LedgerExecutorSummaryContract,
   type LedgerEntryListFilters,
   type PriceVersion,
   type PriceVersionListFilters,
@@ -996,6 +998,8 @@ function LedgerAdjustmentExecuteContractResult({
 
 function LedgerAdjustmentExecutedSummary({ response }: { response: LedgerAdjustmentFutureExecuteResponse }) {
   const entry = response.ledger_entry;
+  const executorContract = response.ledger_executor_summary_contract;
+  const executorSummary = response.ledger_executor_summary;
   const transaction = response.transaction_contract;
   const refund = response.refund_remaining_summary;
 
@@ -1043,6 +1047,9 @@ function LedgerAdjustmentExecutedSummary({ response }: { response: LedgerAdjustm
           <p className="muted-copy">No safe ledger entry summary returned.</p>
         )}
       </article>
+
+      <LedgerExecutorSummaryPanel summary={executorSummary} />
+      <LedgerExecutorSummaryContractPanel contract={executorContract} />
 
       <article>
         <h3>Transaction Summary</h3>
@@ -1096,6 +1103,7 @@ function LedgerAdjustmentExecuteV2Summary({
   const dedupe = contract.dedupe_contract;
   const writer = contract.ledger_writer_contract;
   const audit = contract.audit_contract;
+  const executorContract = contract.ledger_executor_summary_contract;
   const requestLog = contract.request_log_contract;
   const safeOutput = contract.safe_output_contract;
 
@@ -1158,14 +1166,102 @@ function LedgerAdjustmentExecuteV2Summary({
             ["Request log write", String(requestLog?.write_performed ?? contract.request_log_write)],
             ["Request log mutation", String(requestLog?.request_log_mutation_allowed ?? "-")],
             ["Request material echoed", String(requestLog?.request_material_echoed ?? safeOutput?.request_material_echoed ?? false)],
-            ["Credential material echoed", String(safeOutput?.credential_material_echoed ?? false)],
+            ["Sensitive material echoed", String(safeOutput?.credential_material_echoed ?? false)],
             ["Output marker echoed", String(safeOutput?.dedupe_material_echoed ?? contract.dedupe_material_echoed ?? false)],
             ["Constraints checked", String(contract.dry_run_constraints_enforced_before_refusal?.length ?? 0)],
           ]}
         />
       </article>
+
+      <LedgerExecutorSummaryContractPanel contract={executorContract} />
     </div>
   );
+}
+
+function LedgerExecutorSummaryContractPanel({ contract }: { contract: LedgerExecutorSummaryContract | null | undefined }) {
+  if (!contract) {
+    return null;
+  }
+
+  return (
+    <article>
+      <h3>Executor Summary Contract</h3>
+      <Fields
+        items={[
+          ["Schema", safeExecutorField(contract.schema_version)],
+          ["Response field", safeExecutorField(contract.response_field)],
+          ["Private operation output", safeExecutorField(contract.operation_key_output)],
+          ["Failure output", safeExecutorField(contract.error_detail_output)],
+          ["Replay marker echoed", String(contract.dedupe_material_echoed ?? false)],
+          ["Unsafe metadata echoed", String(contract.raw_metadata_echoed ?? false)],
+          ["Sensitive material echoed", String(contract.credential_material_echoed ?? false)],
+          ["Compatible fields", String(contract.compatible_fields?.length ?? 0)],
+        ]}
+      />
+    </article>
+  );
+}
+
+function LedgerExecutorSummaryPanel({ summary }: { summary: LedgerExecutorSummary | null | undefined }) {
+  if (!summary) {
+    return null;
+  }
+
+  return (
+    <article>
+      <h3>Ledger Executor Summary</h3>
+      <Fields
+        items={[
+          ["Schema", safeExecutorField(summary.schema_version)],
+          ["Executor", safeExecutorField(summary.executor)],
+          ["Operation", safeExecutorField(summary.operation)],
+          ["Outcome", safeExecutorField(summary.outcome)],
+          ["Private operation output", safeExecutorField(summary.operation_key_output)],
+          ["Committed", String(summary.committed ?? "-")],
+          ["Rolled back", String(summary.rolled_back ?? "-")],
+          ["Statements", safeExecutorNumber(summary.statement_count)],
+          ["Executed statements", safeExecutorNumber(summary.executed_statement_count)],
+          ["Refused statements", safeExecutorNumber(summary.refused_statement_count)],
+          ["Rows affected", safeExecutorNumber(summary.total_rows_affected)],
+          ["Final statement order", safeExecutorNumber(summary.final_statement_order)],
+          ["Final statement kind", safeExecutorField(summary.final_statement_kind)],
+          ["Failure output", safeExecutorField(summary.error_detail_output)],
+          ["Row count mismatch", String(summary.row_count_mismatch ?? "-")],
+          ["Replay marker echoed", String(summary.dedupe_material_echoed ?? false)],
+          ["Omitted categories", String(summary.omitted_material?.length ?? 0)],
+        ]}
+      />
+    </article>
+  );
+}
+
+function safeExecutorField(value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+
+  if (typeof value !== "string") {
+    return safeFieldValue(value);
+  }
+
+  const safeValue = safeFieldValue(value.trim());
+
+  if (
+    safeValue === "-" ||
+    safeValue === "[redacted]" ||
+    containsUnsafeReasonText(safeValue) ||
+    /\b(?:operation[_\s-]?key|error[_\s-]?detail|dedupe[_\s-]?material|credential|authorization|cookie|token)\b/i.test(
+      safeValue,
+    )
+  ) {
+    return "[redacted]";
+  }
+
+  return /^[a-z0-9_.:-]{1,160}$/i.test(safeValue) ? safeValue : "[redacted]";
+}
+
+function safeExecutorNumber(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? safeFieldValue(value) : "-";
 }
 
 type LedgerAdjustmentExecuteDisplayFlags = {

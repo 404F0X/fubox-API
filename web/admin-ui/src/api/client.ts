@@ -922,6 +922,7 @@ export type LedgerAdjustmentExecuteContractFlags = {
   };
   dry_run_constraints_enforced_before_refusal?: string[];
   future_writer_required?: boolean;
+  ledger_executor_summary_contract?: LedgerExecutorSummaryContract;
   ledger_write: boolean;
   ledger_writer_contract?: {
     future_writer?: string;
@@ -978,6 +979,37 @@ export type LedgerAdjustmentExecuteContractResponse = {
 
 export type LedgerAdjustmentExecuteOutcome = "applied" | "idempotent" | "blocked" | "failed" | string;
 
+export type LedgerExecutorSummaryContract = {
+  compatible_fields?: string[];
+  credential_material_echoed?: boolean;
+  dedupe_material_echoed?: boolean;
+  error_detail_output?: string;
+  operation_key_output?: string;
+  raw_metadata_echoed?: boolean;
+  response_field?: string;
+  schema_version?: string;
+};
+
+export type LedgerExecutorSummary = {
+  committed?: boolean;
+  dedupe_material_echoed?: boolean;
+  error_detail_output?: string;
+  executed_statement_count?: number;
+  executor?: string;
+  final_statement_kind?: string | null;
+  final_statement_order?: number | null;
+  omitted_material?: string[];
+  operation?: string;
+  operation_key_output?: string;
+  outcome?: string;
+  refused_statement_count?: number;
+  rolled_back?: boolean;
+  row_count_mismatch?: boolean;
+  schema_version?: string;
+  statement_count?: number;
+  total_rows_affected?: number;
+};
+
 export type LedgerAdjustmentExecutedEntrySummary = LedgerAdjustmentRelatedEntrySummary & {
   omitted_material?: string[];
   tenant_id?: string | null;
@@ -1007,6 +1039,8 @@ export type LedgerAdjustmentFutureExecuteResponse = {
   dedupe_public_output?: string;
   executed?: boolean;
   ledger_entry?: LedgerAdjustmentExecutedEntrySummary;
+  ledger_executor_summary?: LedgerExecutorSummary;
+  ledger_executor_summary_contract?: LedgerExecutorSummaryContract;
   ledger_write: boolean;
   mode: "execute";
   outcome?: LedgerAdjustmentExecuteOutcome;
