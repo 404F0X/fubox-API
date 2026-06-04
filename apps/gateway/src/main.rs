@@ -1,6 +1,7 @@
 mod db;
 mod errors;
 mod streaming;
+mod tpm_estimate;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},

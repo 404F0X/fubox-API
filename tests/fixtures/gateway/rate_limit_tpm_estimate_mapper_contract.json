@@ -1,0 +1,176 @@
+{
+  "scenario": "gateway_tpm_estimate_mapper_contract",
+  "schema": "gateway_tpm_estimate_mapper_v1",
+  "routing_contract": "rate_limit_tpm_estimate_contract_v1",
+  "runtime_scope": "DB-free endpoint request signal mapper only; no reservation acquire, provider attempt, provider key open, upstream call, or billing side effect",
+  "endpoint_mappings": [
+    {
+      "endpoint": "openai_chat",
+      "path": "POST /v1/chat/completions",
+      "max_output_fields": ["max_completion_tokens", "max_tokens"],
+      "preferred_source_when_prompt_estimate_present": "PromptAndMaxCompletion",
+      "missing_tokenizer_behavior": "PartialEstimateWithConservativeFallback when max output exists; ConservativeFallback when it does not"
+    },
+    {
+      "endpoint": "openai_responses",
+      "path": "POST /v1/responses",
+      "max_output_fields": ["max_output_tokens"],
+      "preferred_source_when_prompt_estimate_present": "PromptAndMaxCompletion",
+      "missing_tokenizer_behavior": "PartialEstimateWithConservativeFallback when max output exists; ConservativeFallback when it does not"
+    },
+    {
+      "endpoint": "anthropic_messages",
+      "path": "POST /v1/messages",
+      "max_output_fields": ["max_tokens"],
+      "preferred_source_when_prompt_estimate_present": "PromptAndMaxCompletion",
+      "missing_tokenizer_behavior": "PartialEstimateWithConservativeFallback when max output exists; ConservativeFallback when it does not"
+    },
+    {
+      "endpoint": "gemini_native",
+      "path": "POST /v1beta/models/{model}:generateContent|:streamGenerateContent",
+      "max_output_fields": ["generationConfig.maxOutputTokens"],
+      "preferred_source_when_prompt_estimate_present": "PromptAndMaxCompletion",
+      "missing_tokenizer_behavior": "PartialEstimateWithConservativeFallback when max output exists; ConservativeFallback when it does not"
+    }
+  ],
+  "stable_behaviors": [
+    {
+      "name": "openai_chat_max_completion_tokens",
+      "endpoint": "openai_chat",
+      "request_numeric_signal": { "max_completion_tokens": 400 },
+      "trusted_prompt_tokens": 200,
+      "max_completion_tokens": 400,
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 600,
+      "required_tokens_i64": 600,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "openai_responses_max_output_tokens",
+      "endpoint": "openai_responses",
+      "request_numeric_signal": { "max_output_tokens": 300 },
+      "trusted_prompt_tokens": 120,
+      "max_completion_tokens": 300,
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 420,
+      "required_tokens_i64": 420,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "anthropic_messages_max_tokens",
+      "endpoint": "anthropic_messages",
+      "request_numeric_signal": { "max_tokens": 512 },
+      "trusted_prompt_tokens": 300,
+      "max_completion_tokens": 512,
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 812,
+      "required_tokens_i64": 812,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "gemini_native_max_output_tokens",
+      "endpoint": "gemini_native",
+      "request_numeric_signal": { "generationConfig.maxOutputTokens": 256 },
+      "trusted_prompt_tokens": 90,
+      "max_completion_tokens": 256,
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 346,
+      "required_tokens_i64": 346,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "missing_tokenizer_and_missing_max_output",
+      "endpoint": "openai_chat",
+      "request_numeric_signal": {},
+      "trusted_prompt_tokens": null,
+      "max_completion_tokens": null,
+      "source": "ConservativeFallback",
+      "required_tokens": 256,
+      "required_tokens_i64": 256,
+      "used_conservative_fallback": true
+    },
+    {
+      "name": "missing_tokenizer_with_max_output",
+      "endpoint": "openai_responses",
+      "request_numeric_signal": { "max_output_tokens": 128 },
+      "trusted_prompt_tokens": null,
+      "max_completion_tokens": 128,
+      "source": "PartialEstimateWithConservativeFallback",
+      "required_tokens": 384,
+      "required_tokens_i64": 384,
+      "used_conservative_fallback": true
+    },
+    {
+      "name": "negative_max_output_uses_fallback",
+      "endpoint": "anthropic_messages",
+      "request_numeric_signal": { "max_tokens": -5 },
+      "trusted_prompt_tokens": 100,
+      "max_completion_tokens": null,
+      "source": "PartialEstimateWithConservativeFallback",
+      "required_tokens": 400,
+      "required_tokens_i64": 400,
+      "used_conservative_fallback": true,
+      "sanitized_negative_estimate": true
+    },
+    {
+      "name": "large_max_output_saturates_to_i64",
+      "endpoint": "gemini_native",
+      "request_numeric_signal": { "generationConfig.maxOutputTokens": "u64_greater_than_i64_max" },
+      "trusted_prompt_tokens": 1,
+      "max_completion_tokens": 9223372036854775807,
+      "source": "PromptAndMaxCompletion",
+      "required_tokens_i64": 9223372036854775807,
+      "clamped_to_i64_max": true
+    },
+    {
+      "name": "zero_prompt_and_zero_max_output_clamps_to_one",
+      "endpoint": "openai_chat",
+      "request_numeric_signal": { "max_completion_tokens": 0 },
+      "trusted_prompt_tokens": 0,
+      "max_completion_tokens": 0,
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 1,
+      "required_tokens_i64": 1,
+      "used_conservative_fallback": false
+    }
+  ],
+  "safe_summary_fields": [
+    "schema",
+    "endpoint",
+    "source",
+    "required_tokens",
+    "required_tokens_i64",
+    "prompt_tokens",
+    "completion_tokens",
+    "max_completion_tokens",
+    "completion_reservation_tokens",
+    "fallback_tokens",
+    "used_conservative_fallback",
+    "sanitized_negative_estimate",
+    "clamped_to_i64_max"
+  ],
+  "side_effect_contract": {
+    "reservation_acquire": false,
+    "provider_attempt": false,
+    "provider_key_open": false,
+    "upstream_call": false,
+    "billing_side_effect": false
+  },
+  "forbidden_output_markers": [
+    "sk-live",
+    "authorization",
+    "bearer",
+    "provider_key",
+    "api_key",
+    "encrypted_secret",
+    "payload",
+    "request_body",
+    "raw_prompt",
+    "raw_completion",
+    "raw_header",
+    "current_window_state",
+    "messages",
+    "contents",
+    "input"
+  ]
+}
