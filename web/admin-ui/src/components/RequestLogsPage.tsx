@@ -22,6 +22,7 @@ import {
   shortId,
 } from "./adminUtils";
 import { Eye, RefreshCw, Search } from "./icons";
+import { PromptProtectionSummary } from "./PromptProtectionSummary";
 
 type FilterState = {
   channelId: string;
@@ -399,6 +400,8 @@ function RequestLogDetailPanel({
       </article>
 
       <RouteTracePanel detail={detail} />
+
+      <PromptProtectionSummary sourceLabel="Route snapshot sanitized signal" value={detail.route_decision_snapshot} />
 
       <PayloadPreviewPanel key={log.id} log={log} />
 

@@ -366,6 +366,7 @@ export type RequestLogSummary = {
   inbound_protocol?: string | null;
   input_tokens: number;
   latency_ms?: number | null;
+  metadata?: JsonValue | null;
   outbound_protocol?: string | null;
   output_tokens: number;
   partial_sent: boolean;

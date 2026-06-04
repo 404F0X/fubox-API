@@ -118,6 +118,7 @@ function stubAdminFetch(
     ledgerAdjustmentDryRunFails?: boolean;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
     payloadStored?: boolean;
+    promptProtectionSignals?: boolean;
   } = {},
 ) {
   let channelCreated = false;
@@ -185,6 +186,38 @@ function stubAdminFetch(
     request_count: 1,
     returned_count: 1,
   };
+  const promptProtectionSignal = {
+    action: "reject",
+    authorization: bearerPlaceholder("prompt-protection-hidden"),
+    configured_actions: {
+      reject: 1,
+    },
+    configured_hit_count: 1,
+    configured_pattern_types: {
+      regex: 1,
+    },
+    configured_rules: ["custom-reject-rule", skPlaceholder("prompt-rule-hidden")],
+    cookie: "session prompt protection hidden",
+    default_hit_count: 1,
+    detected_action: "reject",
+    effective_action: "reject",
+    hit_count: 2,
+    hit_kinds: {
+      authorization_bearer: 1,
+      prompt_injection_phrase: 1,
+    },
+    mode: "enforce",
+    pattern: skPlaceholder("prompt-pattern-hidden"),
+    provider_secret: skPlaceholder("prompt-provider-hidden"),
+    raw_pattern: "secret-like prompt protection pattern hidden",
+    raw_pattern_values_omitted: true,
+    raw_payload_omitted: true,
+    raw_prompt: "raw prompt protection prompt hidden",
+    reason: "prompt_injection_detected",
+    schema: "gateway_prompt_protection_v1",
+    scopes: ["messages", "metadata"],
+    token: skPlaceholder("prompt-token-hidden"),
+  };
   const requestDetail = {
     ledger: requestLedgerSummary,
     provider_attempts: [
@@ -220,6 +253,7 @@ function stubAdminFetch(
         token: bearerPlaceholder("nested-route-hidden"),
       },
       payload_ref: "payload-123-hidden",
+      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: promptProtectionSignal }),
       request_body: {
         body: "raw prompt hidden",
       },
@@ -708,6 +742,7 @@ function stubAdminFetch(
       payload: {
         body: "raw audit metadata payload hidden",
       },
+      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: promptProtectionSignal }),
       raw_headers: {
         cookie: "session hidden",
       },
@@ -2014,6 +2049,18 @@ describe("App", () => {
     expect(within(routeTracePanel as HTMLElement).getByText("ZeroWeight, CoolingDown")).toBeInTheDocument();
     expect(within(routeTracePanel as HTMLElement).getByText("2144483738")).toBeInTheDocument();
     expect(within(routeTracePanel as HTMLElement).getByText("Disabled")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Prompt Protection" })).toBeInTheDocument();
+    const promptProtectionPanel = screen
+      .getByRole("heading", { level: 2, name: "Prompt Protection" })
+      .closest("article");
+    expect(promptProtectionPanel).not.toBeNull();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("enforce")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getAllByText("reject").length).toBeGreaterThanOrEqual(2);
+    expect(within(promptProtectionPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("authorization_bearer: 1, prompt_injection_phrase: 1")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("regex: 1")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("raw payload, raw pattern values")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
     expect(screen.getByText("settle")).toBeInTheDocument();
     expect(screen.getByText("-0.01230000 USD")).toBeInTheDocument();
@@ -2025,12 +2072,32 @@ describe("App", () => {
     expect(screen.queryByText("weighted-fallback")).not.toBeInTheDocument();
     expect(screen.queryByText("payload-123-hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("raw prompt hidden")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("raw prompt protection prompt hidden");
+    expect(document.body.textContent).not.toContain("secret-like prompt protection pattern hidden");
+    expect(document.body.textContent).not.toContain("custom-reject-rule");
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-rule-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-pattern-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-provider-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-token-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-protection-hidden"));
     expect(screen.queryByText("provider-key-1")).not.toBeInTheDocument();
     expect(screen.queryByText("settle:request-1")).not.toBeInTheDocument();
     expect(screen.queryByText("price-version-1")).not.toBeInTheDocument();
     expect(screen.queryByText(skPlaceholder("route-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("route-hidden"))).not.toBeInTheDocument();
     expect(screen.queryByText(bearerPlaceholder("nested-route-hidden"))).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy request logs without prompt protection metadata compatible", async () => {
+    stubAdminFetch({ promptProtectionSignals: false });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+
+    expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 2, name: "Prompt Protection" })).not.toBeInTheDocument();
   });
 
   it("lazy loads request payload preview only after explicit action and renders safe fields", async () => {
@@ -2165,6 +2232,15 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Before Snapshot" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "After Snapshot" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Metadata" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Prompt Protection" })).toBeInTheDocument();
+    const auditPromptPanel = screen
+      .getByRole("heading", { level: 2, name: "Prompt Protection" })
+      .closest("article");
+    expect(auditPromptPanel).not.toBeNull();
+    expect(within(auditPromptPanel as HTMLElement).getByText("enforce")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getAllByText("reject").length).toBeGreaterThanOrEqual(2);
+    expect(within(auditPromptPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
     expect(document.body.textContent).toContain("manual_disabled");
     expect(document.body.textContent).toContain("client-ip-hash");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
@@ -2174,6 +2250,15 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(skPlaceholder("audit-after-hidden"));
     expect(document.body.textContent).not.toContain("raw before payload hidden");
     expect(document.body.textContent).not.toContain("raw audit metadata payload hidden");
+    expect(document.body.textContent).not.toContain("raw prompt protection prompt hidden");
+    expect(document.body.textContent).not.toContain("secret-like prompt protection pattern hidden");
+    expect(document.body.textContent).not.toContain("custom-reject-rule");
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-rule-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-pattern-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-provider-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-token-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-protection-hidden"));
+    expect(document.body.textContent).not.toContain("prompt_protection");
     expect(document.body.textContent).not.toContain("raw_headers");
     expect(document.body.textContent).not.toContain('"payload"');
 

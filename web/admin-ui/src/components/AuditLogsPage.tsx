@@ -7,6 +7,7 @@ import {
 } from "../api/client";
 import { errorMessage, isJsonRecord, jsonSize, safeFieldValue, sanitizeDisplayJson, shortId } from "./adminUtils";
 import { Eye, RefreshCw, Search } from "./icons";
+import { PromptProtectionSummary, stripPromptProtectionSignals } from "./PromptProtectionSummary";
 
 type FilterState = {
   action: string;
@@ -283,9 +284,11 @@ function AuditLogDetailPanel({ auditLog }: { auditLog: AuditLog | null }) {
         </dl>
       </article>
 
-      <JsonSummaryPanel title="Metadata" value={auditLog.metadata} />
-      <JsonSummaryPanel title="Before Snapshot" value={auditLog.before_snapshot ?? null} />
-      <JsonSummaryPanel title="After Snapshot" value={auditLog.after_snapshot ?? null} />
+      <PromptProtectionSummary sourceLabel="Audit log sanitized signal" value={auditLog} />
+
+      <JsonSummaryPanel title="Metadata" value={stripPromptProtectionSignals(auditLog.metadata)} />
+      <JsonSummaryPanel title="Before Snapshot" value={stripPromptProtectionSignals(auditLog.before_snapshot ?? null)} />
+      <JsonSummaryPanel title="After Snapshot" value={stripPromptProtectionSignals(auditLog.after_snapshot ?? null)} />
     </section>
   );
 }

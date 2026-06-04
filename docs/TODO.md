@@ -12,7 +12,7 @@
 - **E9-004-S5（Confucius）**：billing-ledger SQLx live smoke opt-in/preflight 入口。
 - **E11-007-S6 Backend（Goodall）**：Control Plane ledger adjustment execute live Postgres/concurrency smoke。
 - **E13-005-S6 Gateway（Pauli）**：Prompt Protection reject 的 HTTP/repository no-side-effect 回归覆盖。
-- **E13-005-S5 UI（Godel）**：Prompt Protection 的 Admin UI/audit 展示缺口。
+- **E13-005-S5 UI（Godel，已完成待合并）**：Admin UI 已展示 secret-safe prompt_protection summary。
 - 多方向并行允许，但每个方向必须有明确 owner、切片目标、写入范围、验收检查和退出条件；没有切片记录的并行工作不能合并。
 
 多人协作规则：
@@ -36,7 +36,7 @@
 - **E13-005-S3，已完成，2026-06-04，owner Pauli**：Prompt Protection Gateway endpoint 覆盖。原因：embeddings 已完成，但 Prompt Protection 最终验收需要覆盖 remaining native/provider paths，并保持 billing/log/audit 的 sanitized prompt_protection signals。范围：`apps/gateway/**`、Gateway fixtures；不改 Admin UI/Control Plane。验收：至少一个 remaining endpoint/provider path 的 protection ordering、block response、log metadata sanitizer 和 regression fixture 固定；未覆盖路径列入剩余缺口。结果：Anthropic `/v1/messages` stream/non-stream shared preflight 已在 routing/request_started/provider-key/upstream side effect 前执行，reject metadata 保持 secret-safe，并更新 runtime ordering fixture。剩余缺口：Gemini native passthrough、audit UI 展示仍未覆盖。
 - **E13-005-S4，已完成，2026-06-04，owner Pauli**：Prompt Protection Gemini native Gateway 覆盖。原因：S3 已覆盖 Anthropic，但 final E13 Gateway path 仍缺 Gemini native passthrough，必须证明 provider-native endpoint 同样在 request/provider side effect 前拒绝。范围：`apps/gateway/**`、`tests/fixtures/gateway/prompt_protection_runtime_contract.json`；不改 Admin UI/Control Plane，不碰 rate-limit smoke fixture。验收：Gemini native passthrough 至少一个 stream/non-stream 相关路径有 preflight、block response、secret-safe metadata 和 runtime ordering fixture；targeted Gateway tests 通过。结果：Gemini native `generateContent`/`streamGenerateContent` 现在在 routing/request_started/provider-key/upstream side effect 前执行 prompt protection，reject logging 只保留 hash 与 sanitized `contents` scope metadata。剩余缺口：仍缺完整 HTTP/repository mock 级别断言来证明 provider_attempt 未创建。
 - **E13-005-S6，进行中，owner Pauli**：Prompt Protection reject no-side-effect 回归覆盖。原因：S3/S4 已用 source ordering 和 unit tests 覆盖 endpoint preflight，但最终 Gateway 验收还需要 HTTP/repository 层证明 reject 不会创建 provider_attempt、不会打开 provider key、不会调用 upstream。范围：`apps/gateway/**`、Gateway prompt-protection fixtures；不改 Admin UI/Control Plane。验收：至少一个 chat/responses/native endpoint 的 prompt-protection reject 通过 repository/mock 断言 request error log secret-safe 且 provider_attempt count 为 0；targeted Gateway tests 通过。
-- **E13-005-S5，进行中，owner Godel**：Prompt Protection Admin UI/audit 展示缺口。原因：Gateway 已产生 sanitized prompt_protection signals，但最终验收还需要 Admin UI 可读地展示 request/audit log 中的 protection summary，并避免显示 raw prompt/secret。范围：`web/admin-ui/**`；不改后端/Gateway。验收：UI 对 prompt_protection action/reason/hit summary 有可识别呈现；原始 prompt、Authorization、Cookie、secret-like pattern 不渲染；相关 UI tests 和 bundle check 覆盖。
+- **E13-005-S5，已完成，2026-06-04，owner Godel**：Prompt Protection Admin UI/audit 展示缺口。原因：Gateway 已产生 sanitized prompt_protection signals，但最终验收还需要 Admin UI 可读地展示 request/audit log 中的 protection summary，并避免显示 raw prompt/secret。范围：`web/admin-ui/**`；不改后端/Gateway。验收：UI 对 prompt_protection action/reason/hit summary 有可识别呈现；原始 prompt、Authorization、Cookie、secret-like pattern 不渲染；相关 UI tests 和 bundle check 覆盖。结果：Admin UI Request/Audit detail 已渲染 secret-safe prompt_protection summary，并从通用 JSON 摘要中剥离原始 prompt_protection 节点；旧日志无相关 metadata 时保持兼容。剩余缺口：未来后端若新增 safe prompt-protection 字段，需要显式加入 UI 白名单。
 
 > 使用方式：开发组可以直接把本文件拆到 Jira/GitHub Issues。每个任务的完成必须满足 `TEST_AND_ACCEPTANCE.md` 中 Definition of Done。
 
