@@ -5,6 +5,7 @@ param(
   [string]$ComposeFile = "deploy/docker-compose/docker-compose.yml",
   [string]$DatabaseUrl = "",
   [string]$EvidenceReportPath = "",
+  [string]$CleanupEvidenceReportPath = "",
   [int]$TimeoutSeconds = 12,
   [int]$DbPollSeconds = 12,
   [switch]$Live,
@@ -15,6 +16,8 @@ param(
   [switch]$SelfTestExitSemantics,
   [switch]$SelfTestEvidenceReportContract,
   [switch]$SelfTestEvidenceReportPathSafety,
+  [switch]$SelfTestEvidenceReportLifecycle,
+  [switch]$CleanupEvidenceReportDryRun,
   [switch]$SimulateLivePreflightBlocker,
   [switch]$SimulateEvidenceMismatch
 )
@@ -47,12 +50,14 @@ if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if ($env:DATABASE_URL) { $DatabaseUrl = $env:DATABASE_URL }
 if ((-not $DatabaseUrl) -and $env:POSTGRES_URL) { $DatabaseUrl = $env:POSTGRES_URL }
 if ($env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH) { $EvidenceReportPath = $env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH }
+if ($env:PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_PATH) { $CleanupEvidenceReportPath = $env:PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_PATH }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) { $Live = $true }
 if (Test-TruthyEnv $env:E13_PROMPT_PROTECTION_POSTGRES_PROOF_LIVE) { $Live = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_CONTRACT_ONLY) { $ContractOnly = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_PREFLIGHT_ONLY) { $PreflightOnly = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_COMPOSE_PS) { $SkipComposePs = $true }
 if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_MOCK_PROVIDER_HEALTH) { $SkipMockProviderHealth = $true }
+if (Test-TruthyEnv $env:PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_DRY_RUN) { $CleanupEvidenceReportDryRun = $true }
 if ($ContractOnly) { $Live = $false }
 
 Add-Type -AssemblyName System.Net.Http
@@ -280,6 +285,19 @@ function Assert-EvidenceReportPathRejected {
   }
 }
 
+function Assert-EvidenceReportLifecycleRefusalSafe {
+  param([Parameter(Mandatory = $true)][string]$Message)
+
+  if ($Message.Length -gt 320) {
+    throw "evidence report lifecycle refusal was not bounded"
+  }
+  foreach ($forbidden in @("secret-token", "outside-secret", "source-secret", "git-secret", "dev_test_key", "postgres://", "postgresql://", "sk-")) {
+    if ($Message.Contains($forbidden)) {
+      throw "evidence report lifecycle refusal leaked a secret-like segment"
+    }
+  }
+}
+
 function Invoke-EvidenceReportPathSafetySelfTest {
   $safeTmp = Resolve-SafeEvidenceReportPath -Path ".tmp\prompt-protection-postgres-proof\path-safety-report.json"
   if (-not (Test-IsEvidenceReportPathAllowed -ResolvedPath $safeTmp)) {
@@ -297,6 +315,116 @@ function Invoke-EvidenceReportPathSafetySelfTest {
   Assert-EvidenceReportPathRejected -Path ".tmp\prompt-protection-postgres-proof\path-safety-report.txt" -ExpectedReason "JSON file extension"
 
   Write-SafeHost "Prompt protection Postgres proof evidence report path safety self-test passed."
+}
+
+function Invoke-EvidenceReportLifecycleSelfTest {
+  $previousLive = $script:Live
+  $previousEvidenceReportPath = $script:EvidenceReportPath
+  $previousBlockers = $script:Blockers
+  $previousFailures = $script:Failures
+  $previousCaseReportByName = $script:CaseReportByName
+
+  $selfTestRoot = Join-RepoPath @(".tmp", "prompt-protection-postgres-proof", "lifecycle-self-test")
+  $allowedRoot = Join-RepoPath @(".tmp", "prompt-protection-postgres-proof")
+  if (-not (Test-IsPathWithinOrEqual -Path $selfTestRoot -Root $allowedRoot)) {
+    throw "evidence report lifecycle self-test root was not safe"
+  }
+
+  $proofRelativePath = ".tmp\prompt-protection-postgres-proof\lifecycle-self-test\proof-owned-report.json"
+  $otherRelativePath = ".tmp\prompt-protection-postgres-proof\lifecycle-self-test\other-worker-source-secret-token-report.json"
+  $proofPath = Resolve-SafeEvidenceReportPath -Path $proofRelativePath
+  $otherPath = Resolve-SafeEvidenceReportPath -Path $otherRelativePath
+
+  try {
+    $script:Blockers = @("[BLOCKED] simulated lifecycle blocker")
+    $script:Failures = @()
+    $script:CaseReportByName = @{}
+
+    if (-not (Test-Path -LiteralPath $selfTestRoot)) {
+      New-Item -ItemType Directory -Path $selfTestRoot -Force | Out-Null
+    }
+
+    $proofReport = New-EvidenceReport -Status "blocked" -ExitCode 2
+    Assert-EvidenceReportContract -Report $proofReport -ExpectedStatus "blocked" -ExpectedExitCode 2
+    $proofJson = $proofReport | ConvertTo-Json -Depth 32
+    Set-Content -LiteralPath $proofPath -Encoding UTF8 -Value $proofJson
+
+    if (-not (Test-IsProofOwnedEvidenceReportArtifact -ResolvedPath $proofPath)) {
+      throw "proof-owned evidence report artifact was not recognized"
+    }
+
+    Assert-EvidenceReportOverwriteAllowed -ResolvedPath $proofPath
+
+    $script:Live = $true
+    $script:EvidenceReportPath = $proofRelativePath
+    if (-not (Write-EvidenceReportIfRequested -Status "blocked" -ExitCode 2)) {
+      throw "proof-owned evidence report overwrite was refused"
+    }
+
+    if (-not (Invoke-EvidenceReportCleanup -Path $proofRelativePath -DryRun)) {
+      throw "proof-owned evidence report cleanup dry-run was refused"
+    }
+    if (-not (Test-Path -LiteralPath $proofPath -PathType Leaf)) {
+      throw "cleanup dry-run removed the evidence report artifact"
+    }
+    if (-not (Invoke-EvidenceReportCleanup -Path $proofRelativePath)) {
+      throw "proof-owned evidence report cleanup was refused"
+    }
+    if (Test-Path -LiteralPath $proofPath) {
+      throw "proof-owned evidence report cleanup did not remove the artifact"
+    }
+
+    Set-Content -LiteralPath $otherPath -Encoding UTF8 -Value '{"schema_version":"other_worker_report.v1","note":"source-secret-token"}'
+    try {
+      Assert-EvidenceReportOverwriteAllowed -ResolvedPath $otherPath
+      throw "non-proof existing JSON artifact was allowed for overwrite"
+    } catch {
+      Assert-EvidenceReportLifecycleRefusalSafe -Message ([string]$_.Exception.Message)
+      if (-not ([string]$_.Exception.Message).Contains("proof-owned generated JSON artifact")) {
+        throw "non-proof overwrite refusal reason mismatch"
+      }
+    }
+
+    $script:EvidenceReportPath = $otherRelativePath
+    if (Write-EvidenceReportIfRequested -Status "blocked" -ExitCode 2) {
+      throw "non-proof existing JSON artifact was overwritten"
+    }
+    if (-not (Test-Path -LiteralPath $otherPath -PathType Leaf)) {
+      throw "non-proof existing JSON artifact was removed during overwrite refusal"
+    }
+
+    if (Invoke-EvidenceReportCleanup -Path $otherRelativePath -DryRun) {
+      throw "non-proof existing JSON artifact was allowed for cleanup"
+    }
+    if (-not (Test-Path -LiteralPath $otherPath -PathType Leaf)) {
+      throw "non-proof existing JSON artifact was removed during cleanup refusal"
+    }
+
+    Assert-EvidenceReportPathRejected -Path "..\outside-secret-token-report.json" -ExpectedReason "outside repository"
+    Assert-EvidenceReportPathRejected -Path ".git\git-secret-token-report.json" -ExpectedReason ".git paths are not allowed"
+    Assert-EvidenceReportPathRejected -Path "scripts\source-secret-token-report.json" -ExpectedReason "allowed report artifact directories"
+    Assert-EvidenceReportPathRejected -Path ".tmp\prompt-protection-postgres-proof\lifecycle-self-test\non-json-report.txt" -ExpectedReason "JSON file extension"
+
+    Write-SafeHost "Prompt protection Postgres proof evidence report cleanup/overwrite lifecycle self-test passed."
+  } finally {
+    $script:Live = $previousLive
+    $script:EvidenceReportPath = $previousEvidenceReportPath
+    $script:Blockers = $previousBlockers
+    $script:Failures = $previousFailures
+    $script:CaseReportByName = $previousCaseReportByName
+
+    foreach ($path in @($proofPath, $otherPath)) {
+      if ((Test-IsPathWithinOrEqual -Path $path -Root $selfTestRoot) -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+        Remove-Item -LiteralPath $path -Force
+      }
+    }
+    if (Test-Path -LiteralPath $selfTestRoot) {
+      $remaining = @(Get-ChildItem -LiteralPath $selfTestRoot -Force)
+      if ($remaining.Count -eq 0) {
+        Remove-Item -LiteralPath $selfTestRoot -Force
+      }
+    }
+  }
 }
 
 function Invoke-SimulatedLivePreflightBlocker {
@@ -772,6 +900,88 @@ function Resolve-SafeEvidenceReportPath {
   return $resolvedPath
 }
 
+function Test-IsProofOwnedEvidenceReportArtifact {
+  param([Parameter(Mandatory = $true)][string]$ResolvedPath)
+
+  if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Leaf)) {
+    return $false
+  }
+
+  try {
+    $item = Get-Item -LiteralPath $ResolvedPath -ErrorAction Stop
+    if ($item.PSIsContainer) {
+      return $false
+    }
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      return $false
+    }
+    if ($item.Length -gt 262144) {
+      return $false
+    }
+
+    $json = Get-Content -LiteralPath $ResolvedPath -Raw -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($json) -or $json.Length -gt 262144) {
+      return $false
+    }
+
+    $parsed = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    return ([string]$parsed.schema_version -eq "prompt_protection_postgres_proof_evidence_report.v1")
+  } catch {
+    return $false
+  }
+}
+
+function Assert-EvidenceReportOverwriteAllowed {
+  param([Parameter(Mandatory = $true)][string]$ResolvedPath)
+
+  if (-not (Test-Path -LiteralPath $ResolvedPath)) {
+    return
+  }
+
+  if (-not (Test-IsProofOwnedEvidenceReportArtifact -ResolvedPath $ResolvedPath)) {
+    throw "existing target is not a proof-owned generated JSON artifact"
+  }
+}
+
+function Invoke-EvidenceReportCleanup {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [switch]$DryRun
+  )
+
+  $resolvedReportPath = ""
+  try {
+    $resolvedReportPath = Resolve-SafeEvidenceReportPath -Path $Path
+  } catch {
+    Write-SafeHost ("[REFUSED] prompt protection evidence report cleanup path - {0}" -f (ConvertTo-ReportSafeText $_.Exception.Message))
+    return $false
+  }
+
+  if (-not (Test-Path -LiteralPath $resolvedReportPath)) {
+    Write-SafeHost "[OK] prompt protection evidence report cleanup target absent."
+    return $true
+  }
+
+  if (-not (Test-IsProofOwnedEvidenceReportArtifact -ResolvedPath $resolvedReportPath)) {
+    Write-SafeHost "[REFUSED] prompt protection evidence report cleanup - existing file is not a proof-owned generated JSON artifact"
+    return $false
+  }
+
+  if ($DryRun) {
+    Write-SafeHost "[OK] prompt protection evidence report cleanup dry-run would remove proof-owned generated JSON artifact."
+    return $true
+  }
+
+  try {
+    Remove-Item -LiteralPath $resolvedReportPath -Force -ErrorAction Stop
+    Write-SafeHost "[OK] prompt protection evidence report cleanup removed proof-owned generated JSON artifact."
+    return $true
+  } catch {
+    Write-SafeHost "[REFUSED] prompt protection evidence report cleanup - safe artifact could not be removed"
+    return $false
+  }
+}
+
 function New-EndpointEvidenceReport {
   param(
     [Parameter(Mandatory = $true)]$Case,
@@ -1020,6 +1230,13 @@ function Write-EvidenceReportIfRequested {
   }
 
   try {
+    Assert-EvidenceReportOverwriteAllowed -ResolvedPath $resolvedReportPath
+  } catch {
+    Write-SafeHost ("[REFUSED] prompt protection evidence report overwrite - {0}" -f (ConvertTo-ReportSafeText $_.Exception.Message))
+    return $false
+  }
+
+  try {
     $report = New-EvidenceReport -Status $Status -ExitCode $ExitCode
     $requirePassedEndpoints = [string]$Status -eq "passed"
     Assert-EvidenceReportContract -Report $report -ExpectedStatus $Status -ExpectedExitCode $ExitCode -RequirePassedEndpoints:$requirePassedEndpoints
@@ -1122,7 +1339,14 @@ function Assert-RunbookContract {
       "-EvidenceReportPath",
       "-SelfTestEvidenceReportContract",
       "-SelfTestEvidenceReportPathSafety",
+      "-SelfTestEvidenceReportLifecycle",
+      "-CleanupEvidenceReportPath",
+      "-CleanupEvidenceReportDryRun",
       "allowed report artifact directories",
+      "proof-owned generated JSON artifact",
+      "cleanup/overwrite lifecycle",
+      "overwrite refused",
+      "cleanup dry-run",
       ".git paths are not allowed",
       "report_status",
       "report_exit_code"
@@ -1154,10 +1378,17 @@ function Assert-ScriptContract {
       "prompt_protection_postgres_proof_evidence_envelope.v1",
       "prompt_protection_postgres_proof_evidence_report.v1",
       "EvidenceReportPath",
+      "CleanupEvidenceReportPath",
+      "CleanupEvidenceReportDryRun",
       "SelfTestEvidenceReportContract",
       "SelfTestEvidenceReportPathSafety",
+      "SelfTestEvidenceReportLifecycle",
       "Resolve-SafeEvidenceReportPath",
       "Test-IsEvidenceReportPathAllowed",
+      "Test-IsProofOwnedEvidenceReportArtifact",
+      "Assert-EvidenceReportOverwriteAllowed",
+      "Invoke-EvidenceReportCleanup",
+      "Invoke-EvidenceReportLifecycleSelfTest",
       "Write-EvidenceReportIfRequested",
       "Assert-EvidenceReportContract",
       "request_log_hash_only_fields",
@@ -1528,6 +1759,18 @@ if ($SelfTestEvidenceReportContract) {
 if ($SelfTestEvidenceReportPathSafety) {
   Invoke-EvidenceReportPathSafetySelfTest
   exit 0
+}
+
+if ($SelfTestEvidenceReportLifecycle) {
+  Invoke-EvidenceReportLifecycleSelfTest
+  exit 0
+}
+
+if (-not [string]::IsNullOrWhiteSpace($CleanupEvidenceReportPath)) {
+  if (Invoke-EvidenceReportCleanup -Path $CleanupEvidenceReportPath -DryRun:$CleanupEvidenceReportDryRun) {
+    exit 0
+  }
+  exit 1
 }
 
 Invoke-ContractChecks

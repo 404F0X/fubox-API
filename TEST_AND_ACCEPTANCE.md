@@ -406,7 +406,7 @@ audit live evidence, Admin UI E2E, or billing-ledger runtime writer gaps.
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
 This section is the acceptance entry for TODO lanes `E13-005-S10` through
-`E13-005-S16`. The detailed live proof is documented in
+`E13-005-S17`. The detailed live proof is documented in
 `docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
 
 The proof covers prompt-protection reject no-side-effect evidence for:
@@ -458,6 +458,15 @@ Repo-outside paths, `.git` paths, source/script/docs paths, and unrelated worker
 locations are refused before write, and refusal output must not echo supplied
 path segments or secret-like values.
 
+Report cleanup and overwrite are also constrained. The default contract-only
+gate must not write or clean up report artifacts. Existing files are overwritten
+only when they are proof-owned generated JSON artifacts with schema
+`prompt_protection_postgres_proof_evidence_report.v1`; non-proof JSON,
+non-JSON, source, `.git`, repo-outside, and unrelated worker artifacts are
+refused before overwrite or cleanup. `-CleanupEvidenceReportPath` is explicit
+opt-in, and `-CleanupEvidenceReportDryRun` verifies the target without deleting
+it.
+
 Default script contract/preflight command:
 
 ```powershell
@@ -498,6 +507,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protec
 
 This self-test validates safe report paths and unsafe path refusal without
 connecting to live services or writing a live report.
+
+Evidence report cleanup/overwrite lifecycle self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportLifecycle
+```
+
+This self-test validates proof-owned overwrite, cleanup dry-run, cleanup remove,
+and refusal for non-proof JSON/unsafe targets without connecting to live
+services or writing a live report.
 
 Live opt-in commands:
 

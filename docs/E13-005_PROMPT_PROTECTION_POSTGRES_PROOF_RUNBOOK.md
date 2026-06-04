@@ -169,6 +169,20 @@ Evidence report path-safety self-test:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportPathSafety
 ```
 
+Evidence report cleanup/overwrite lifecycle self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportLifecycle
+```
+
+Evidence report cleanup dry-run and cleanup commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -CleanupEvidenceReportPath .tmp\prompt-protection-postgres-proof\report.json -CleanupEvidenceReportDryRun
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -CleanupEvidenceReportPath .tmp\prompt-protection-postgres-proof\report.json
+```
+
 The default contract-only command does not write a live evidence report. A
 report is written only when live proof is explicitly requested and
 `-EvidenceReportPath` or `PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH` is set.
@@ -180,6 +194,20 @@ paths or other worker-owned locations are refused before any file write. Refusal
 output is bounded and does not echo the supplied path, so secret-like path
 segments are not leaked.
 Policy marker: .git paths are not allowed.
+
+Cleanup is also explicit. The default contract-only command does not clean up
+or write report artifacts. `-CleanupEvidenceReportPath` or
+`PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_PATH` is required for cleanup,
+and `-CleanupEvidenceReportDryRun` or
+`PROMPT_PROTECTION_POSTGRES_PROOF_CLEANUP_REPORT_DRY_RUN=1` checks the target
+without deleting it. The cleanup/overwrite lifecycle is bounded: a new safe
+report path may be written, and an existing file may be overwritten only when it
+is a proof-owned generated JSON artifact with schema
+`prompt_protection_postgres_proof_evidence_report.v1`. Existing source files,
+`.git` files, repo-outside paths, non-JSON files, non-proof JSON, and unrelated
+worker artifacts are refused before delete or overwrite. The overwrite refused
+and cleanup refusal messages are bounded and do not echo user-supplied paths or
+secret-like path segments. A cleanup dry-run never removes the artifact.
 
 The report schema is `prompt_protection_postgres_proof_evidence_report.v1`.
 The root `report_status` maps to the JSON `status` field and is one of
