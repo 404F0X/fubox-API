@@ -102,6 +102,8 @@ const CONTROL_PLANE_BILLING_LEDGER_WRITER_RUNTIME_ENV_PROVIDER_SCHEMA: &str =
     "control_plane_billing_ledger_writer_runtime_env_provider_preflight.v1";
 const CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA: &str =
     "control_plane_billing_ledger_writer_handoff_performance.v1";
+const CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA: &str =
+    "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4252,6 +4254,83 @@ fn ledger_adjustment_billing_ledger_writer_runtime_env_provider_preflight(
     })
 }
 
+fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA,
+        "script": "scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1",
+        "source": "control_plane_runtime_env_provider_preflight_contract",
+        "target": "billing_ledger_runtime_writer_readiness_smoke",
+        "default_live_db_check": false,
+        "explicit_opt_in_required": true,
+        "production_writer_replaced": false,
+        "production_source_of_truth_switch_allowed": false,
+        "billing_ledger_writer_commit_allowed": false,
+        "dual_commit_allowed": false,
+        "readiness_states": ["unavailable", "ready", "blocked"],
+        "default_readiness": "unavailable",
+        "opt_in_inputs": {
+            "script_flag": "-Live",
+            "mode_env_var": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE_ENV_VAR,
+            "live_database_url_env_var": CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR,
+            "runtime_writer_feature_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_AVAILABLE",
+            "runtime_writer_feature_marker": CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_FEATURE_MARKER
+        },
+        "readiness_classification": {
+            "unavailable": {
+                "when": "default_no_live_opt_in",
+                "live_database_url_checked": false,
+                "runtime_writer_feature_checked": false,
+                "duration_ms_output": "numeric",
+                "row_count_summary": "unavailable_marker",
+                "transaction_summary": "unavailable_marker"
+            },
+            "ready": {
+                "when": "live_opt_in_and_ready_mode_and_live_database_url_present_and_runtime_writer_feature_available",
+                "live_database_url_checked": true,
+                "runtime_writer_feature_checked": true,
+                "duration_ms_output": "numeric",
+                "row_count_summary": "unavailable_marker_without_db_io",
+                "transaction_summary": "unavailable_marker_without_db_io"
+            },
+            "blocked": {
+                "when": "live_opt_in_missing_required_prerequisite_or_invalid_mode",
+                "blockers": [
+                    "cutover_mode_not_ready",
+                    "live_database_url_missing",
+                    "runtime_writer_feature_unavailable",
+                    "invalid_cutover_mode_guard"
+                ],
+                "duration_ms_output": "numeric",
+                "row_count_summary": "unavailable_marker",
+                "transaction_summary": "unavailable_marker"
+            }
+        },
+        "summary_contract": {
+            "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA,
+            "readiness": "unavailable_ready_or_blocked",
+            "duration_ms": "bounded_non_negative_number",
+            "duration_source": "script_stopwatch",
+            "mode": "disabled_shadow_ready_or_invalid_disabled_guard",
+            "live_database_url": "presence_marker_only",
+            "runtime_writer_feature": "boolean_marker_only",
+            "handoff_performance_summary": "passthrough_or_unavailable_marker",
+            "row_count_summary": "unavailable_marker_without_db_io",
+            "transaction_summary": "unavailable_marker_without_db_io"
+        },
+        "safe_output_contract": {
+            "env_value_output": "omitted",
+            "database_url_output": "omitted",
+            "operation_key_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
 fn ledger_adjustment_billing_ledger_writer_handoff_performance_summary(
     validated_plan: &Value,
     mode: LedgerAdjustmentBillingLedgerWriterCutoverMode,
@@ -4598,6 +4677,7 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_contract() -> Value
             "raw_database_url_echoed": false,
             "credential_material_echoed": false
         },
+        "readiness_smoke_wrapper_contract": ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract(),
         "handoff_performance_guard_contract": {
             "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA,
             "summary_field": "handoff_performance_summary",
@@ -13207,6 +13287,46 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA)
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["default_live_db_check"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["explicit_opt_in_required"],
+            json!(true)
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["default_readiness"],
+            json!("unavailable")
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["readiness_states"],
+            json!(["unavailable", "ready", "blocked"])
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["opt_in_inputs"]["script_flag"],
+            json!("-Live")
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["opt_in_inputs"]["live_database_url_env_var"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR)
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["readiness_classification"]["ready"]["row_count_summary"],
+            json!("unavailable_marker_without_db_io")
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["summary_contract"]["duration_ms"],
+            json!("bounded_non_negative_number")
+        );
+        assert_eq!(
+            contract["readiness_smoke_wrapper_contract"]["safe_output_contract"]["raw_database_url_echoed"],
+            json!(false)
+        );
+        assert_eq!(
             contract["handoff_performance_guard_contract"]["schema_version"],
             json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_HANDOFF_PERFORMANCE_SCHEMA)
         );
@@ -14565,6 +14685,111 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_billing_runtime_readiness_smoke_wrapper_contract_is_opt_in_db_free_and_secret_safe()
+     {
+        let contract = ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract();
+        let serialized =
+            serde_json::to_string(&contract).expect("readiness smoke contract should serialize");
+
+        assert_eq!(
+            contract["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA)
+        );
+        assert_eq!(
+            contract["script"],
+            json!("scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1")
+        );
+        assert_eq!(contract["default_live_db_check"], json!(false));
+        assert_eq!(contract["explicit_opt_in_required"], json!(true));
+        assert_eq!(contract["production_writer_replaced"], json!(false));
+        assert_eq!(
+            contract["production_source_of_truth_switch_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["billing_ledger_writer_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(contract["dual_commit_allowed"], json!(false));
+        assert_eq!(contract["default_readiness"], json!("unavailable"));
+        assert_eq!(
+            contract["readiness_states"],
+            json!(["unavailable", "ready", "blocked"])
+        );
+        assert_eq!(contract["opt_in_inputs"]["script_flag"], json!("-Live"));
+        assert_eq!(
+            contract["opt_in_inputs"]["live_database_url_env_var"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_LIVE_DATABASE_URL_ENV_VAR)
+        );
+        assert_eq!(
+            contract["opt_in_inputs"]["runtime_writer_feature_env_var"],
+            json!("AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_AVAILABLE")
+        );
+        assert_eq!(
+            contract["readiness_classification"]["unavailable"]["live_database_url_checked"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["readiness_classification"]["ready"]["live_database_url_checked"],
+            json!(true)
+        );
+        assert_eq!(
+            contract["readiness_classification"]["ready"]["transaction_summary"],
+            json!("unavailable_marker_without_db_io")
+        );
+        assert_eq!(
+            contract["readiness_classification"]["blocked"]["blockers"],
+            json!([
+                "cutover_mode_not_ready",
+                "live_database_url_missing",
+                "runtime_writer_feature_unavailable",
+                "invalid_cutover_mode_guard"
+            ])
+        );
+        assert_eq!(
+            contract["summary_contract"]["readiness"],
+            json!("unavailable_ready_or_blocked")
+        );
+        assert_eq!(
+            contract["summary_contract"]["duration_ms"],
+            json!("bounded_non_negative_number")
+        );
+        assert_eq!(
+            contract["summary_contract"]["row_count_summary"],
+            json!("unavailable_marker_without_db_io")
+        );
+        assert_eq!(
+            contract["safe_output_contract"]["database_url_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            contract["safe_output_contract"]["raw_database_url_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["safe_output_contract"]["credential_material_echoed"],
+            json!(false)
+        );
+
+        for forbidden in [
+            "postgres://",
+            "db.example.internal",
+            "sk-live",
+            "Authorization",
+            "Bearer",
+            "idempotency_key",
+            "operation_key=",
+            "raw ledger payload",
+            "raw executor failure detail",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "readiness smoke contract must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn ledger_adjustment_billing_runtime_mapping_summaries_match_response_contract() {
         let request_id = Uuid::from_u128(90);
         let related_entry =
@@ -15642,6 +15867,46 @@ mod tests {
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["runtime_env_provider_preflight_contract"]
                 ["dual_commit_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_WRITER_READINESS_SMOKE_SCHEMA)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["script"],
+            json!("scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["default_live_db_check"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["readiness_states"],
+            json!(["unavailable", "ready", "blocked"])
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["opt_in_inputs"]["script_flag"],
+            json!("-Live")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["readiness_classification"]["ready"]["row_count_summary"],
+            json!("unavailable_marker_without_db_io")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["summary_contract"]["duration_ms"],
+            json!("bounded_non_negative_number")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["safe_output_contract"]["raw_database_url_echoed"],
             json!(false)
         );
         assert_eq!(

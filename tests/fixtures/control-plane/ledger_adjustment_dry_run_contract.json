@@ -673,6 +673,80 @@
       "raw_database_url_echoed": false,
       "credential_material_echoed": false
     },
+    "readiness_smoke_wrapper_contract": {
+      "schema_version": "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1",
+      "script": "scripts/verify_control_plane_billing_ledger_runtime_writer_readiness.ps1",
+      "source": "control_plane_runtime_env_provider_preflight_contract",
+      "target": "billing_ledger_runtime_writer_readiness_smoke",
+      "default_live_db_check": false,
+      "explicit_opt_in_required": true,
+      "production_writer_replaced": false,
+      "production_source_of_truth_switch_allowed": false,
+      "billing_ledger_writer_commit_allowed": false,
+      "dual_commit_allowed": false,
+      "readiness_states": ["unavailable", "ready", "blocked"],
+      "default_readiness": "unavailable",
+      "opt_in_inputs": {
+        "script_flag": "-Live",
+        "mode_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+        "live_database_url_env_var": "BILLING_LEDGER_LIVE_DATABASE_URL",
+        "runtime_writer_feature_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_WRITER_AVAILABLE",
+        "runtime_writer_feature_marker": "billing_ledger_runtime_writer"
+      },
+      "readiness_classification": {
+        "unavailable": {
+          "when": "default_no_live_opt_in",
+          "live_database_url_checked": false,
+          "runtime_writer_feature_checked": false,
+          "duration_ms_output": "numeric",
+          "row_count_summary": "unavailable_marker",
+          "transaction_summary": "unavailable_marker"
+        },
+        "ready": {
+          "when": "live_opt_in_and_ready_mode_and_live_database_url_present_and_runtime_writer_feature_available",
+          "live_database_url_checked": true,
+          "runtime_writer_feature_checked": true,
+          "duration_ms_output": "numeric",
+          "row_count_summary": "unavailable_marker_without_db_io",
+          "transaction_summary": "unavailable_marker_without_db_io"
+        },
+        "blocked": {
+          "when": "live_opt_in_missing_required_prerequisite_or_invalid_mode",
+          "blockers": [
+            "cutover_mode_not_ready",
+            "live_database_url_missing",
+            "runtime_writer_feature_unavailable",
+            "invalid_cutover_mode_guard"
+          ],
+          "duration_ms_output": "numeric",
+          "row_count_summary": "unavailable_marker",
+          "transaction_summary": "unavailable_marker"
+        }
+      },
+      "summary_contract": {
+        "schema_version": "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1",
+        "readiness": "unavailable_ready_or_blocked",
+        "duration_ms": "bounded_non_negative_number",
+        "duration_source": "script_stopwatch",
+        "mode": "disabled_shadow_ready_or_invalid_disabled_guard",
+        "live_database_url": "presence_marker_only",
+        "runtime_writer_feature": "boolean_marker_only",
+        "handoff_performance_summary": "passthrough_or_unavailable_marker",
+        "row_count_summary": "unavailable_marker_without_db_io",
+        "transaction_summary": "unavailable_marker_without_db_io"
+      },
+      "safe_output_contract": {
+        "env_value_output": "omitted",
+        "database_url_output": "omitted",
+        "operation_key_output": "omitted",
+        "dedupe_material_echoed": false,
+        "raw_env_value_echoed": false,
+        "raw_database_url_echoed": false,
+        "raw_metadata_echoed": false,
+        "credential_material_echoed": false,
+        "raw_executor_error_detail_echoed": false
+      }
+    },
     "handoff_performance_guard_contract": {
       "schema_version": "control_plane_billing_ledger_writer_handoff_performance.v1",
       "summary_field": "handoff_performance_summary",
