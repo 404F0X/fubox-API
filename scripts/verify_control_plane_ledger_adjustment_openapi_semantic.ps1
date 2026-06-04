@@ -235,6 +235,7 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-generated-client-missing-output"),
     (Join-Path $TempRoot "self-test-generated-client-stale-marker"),
     (Join-Path $TempRoot "self-test-cache-probe"),
+    (Join-Path $TempRoot "self-test-package-download-opt-in"),
     (Join-Path $TempRoot "self-test-real-execution-pass"),
     (Join-Path $TempRoot "self-test-real-execution-failure"),
     (Join-Path $TempRoot "self-test-real-execution-blocker"),
@@ -459,6 +460,71 @@ function Get-NpmPackageCacheStatus {
   return "offline_repo_cache_missing"
 }
 
+function Get-OpenApiNpmPackageList {
+  return @("@redocly/cli", "@openapitools/openapi-generator-cli", "openapi-typescript")
+}
+
+function Get-BoundedDirectorySizeBytes {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if (-not (Test-Path $Path)) {
+    return 0
+  }
+
+  $total = [int64]0
+  $count = 0
+  try {
+    foreach ($file in Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue) {
+      $total += [int64]$file.Length
+      $count += 1
+      if ($count -ge 10000 -or $total -ge 1099511627776) {
+        return $total
+      }
+    }
+  } catch {
+    return 0
+  }
+  return $total
+}
+
+function Get-PackageProvenance {
+  param(
+    [AllowNull()][string]$PackageCacheStatus = "",
+    [bool]$PackageDownloadAllowed = [bool]$AllowPackageDownload
+  )
+
+  if ($PackageDownloadAllowed) {
+    return "download_opt_in"
+  }
+
+  switch ([string]$PackageCacheStatus) {
+    "offline_repo_cache_present" { return "preseeded_repo_cache" }
+    "offline_repo_cache_missing" { return "offline_repo_cache_missing" }
+    "download_allowed" { return "download_opt_in" }
+    "simulated" { return "simulated" }
+    "not_applicable" { return "not_applicable" }
+    default { return "unknown" }
+  }
+}
+
+function Get-PackageVersionMarker {
+  param(
+    [AllowNull()][string]$PackageCacheStatus = "",
+    [AllowNull()][string]$ToolVersion = ""
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace($ToolVersion) -and -not @("unavailable", "unknown", "not_requested").Contains([string]$ToolVersion)) {
+    return Redact-SafeText $ToolVersion
+  }
+
+  switch ([string]$PackageCacheStatus) {
+    "offline_repo_cache_present" { return "cache_entry_present" }
+    "download_allowed" { return "download_opt_in_unresolved" }
+    "simulated" { return "simulated" }
+    default { return "unavailable" }
+  }
+}
+
 function Get-OpenApiCommandMatrix {
   $cachePolicy = if ($AllowPackageDownload) { "download_allowed" } else { "offline_first_repo_cache" }
   return @(
@@ -472,7 +538,7 @@ function Get-OpenApiCommandMatrix {
       cache_policy = $cachePolicy
       expected_exit_classification = "0 pass; 1 schema_failure; 2 tool_or_cache_blocker"
       evidence_kind = "semantic_validator"
-      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail")
+      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail")
       safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Redocly"
     },
     [ordered]@{
@@ -485,7 +551,7 @@ function Get-OpenApiCommandMatrix {
       cache_policy = $cachePolicy
       expected_exit_classification = "0 pass; 1 schema_failure; 2 tool_or_cache_blocker"
       evidence_kind = "semantic_validator"
-      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail")
+      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail")
       safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiGeneratorValidate"
     },
     [ordered]@{
@@ -498,7 +564,7 @@ function Get-OpenApiCommandMatrix {
       cache_policy = $cachePolicy
       expected_exit_classification = "0 pass_with_readiness; 1 generated_client_mismatch; 2 tool_or_cache_blocker"
       evidence_kind = "client_generation"
-      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
+      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
       safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -OpenApiTypescript"
     },
     [ordered]@{
@@ -511,7 +577,7 @@ function Get-OpenApiCommandMatrix {
       cache_policy = $cachePolicy
       expected_exit_classification = "0 pass_with_readiness; 1 generated_client_mismatch; 2 tool_or_cache_blocker"
       evidence_kind = "client_generation"
-      evidence_fields = @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
+      evidence_fields = @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail", "readiness_marker")
       safe_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -TypescriptFetch"
     }
   )
@@ -551,7 +617,7 @@ function Assert-OpenApiCommandMatrixContract {
     if (-not ([string]$entry.expected_exit_classification).Contains("2 tool_or_cache_blocker")) {
       Add-Failure "[FAIL] command matrix contract - '$($entry.name)' does not document blocker exit classification"
     }
-    foreach ($requiredField in @("tool_path", "tool_version", "package_cache_status", "package_download_allowed", "preflight_status", "duration_ms", "command", "output_tail")) {
+    foreach ($requiredField in @("tool_path", "tool_version", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "duration_ms", "command", "output_tail")) {
       if (-not @($entry.evidence_fields).Contains($requiredField)) {
         Add-Failure "[FAIL] command matrix contract - '$($entry.name)' missing evidence field '$requiredField'"
       }
@@ -628,26 +694,30 @@ function Invoke-LightweightToolVersionProbe {
 function Invoke-NpmCachePackageProbe {
   param([Parameter(Mandatory = $true)][string]$Package)
 
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
   $npm = Get-Command npm -ErrorAction SilentlyContinue
   if ($null -eq $npm) {
+    $timer.Stop()
     return [pscustomobject]@{
       Status = "blocked"
       Classification = "blocker"
       ExitCode = 2
-      DurationMs = 0
+      DurationMs = [int64]$timer.Elapsed.TotalMilliseconds
       Output = @("npm not found")
     }
   }
 
   if (-not (Test-Path $NpmCache)) {
+    $timer.Stop()
     return [pscustomobject]@{
       Status = "offline_repo_cache_missing"
       Classification = "blocker"
       ExitCode = 2
-      DurationMs = 0
+      DurationMs = [int64]$timer.Elapsed.TotalMilliseconds
       Output = @("offline npm cache missing")
     }
   }
+  $timer.Stop()
 
   $args = @("cache", "ls", $Package, "--cache", $NpmCache, "--offline")
   $result = Invoke-Process -FileName $npm.Source -Arguments $args -Label "npm cache probe $Package" -ExternalTool
@@ -756,7 +826,9 @@ function Add-OpenApiCacheProbeEvidence {
     $preflightStatus = Get-ToolProbePreflightStatus -ToolProbes $toolProbes -Names $requiredTools
     $toolPath = Get-ToolProbePathSummary -ToolProbes $toolProbes -Names $requiredTools
     $toolOutput = @(Get-ToolProbeOutput -ToolProbes $toolProbes -Names $requiredTools)
-    if ($Simulated) {
+    if ($AllowPackageDownload) {
+      $cacheProbe = [pscustomobject]@{ Status = "download_allowed"; Classification = "pass"; ExitCode = 0; DurationMs = 1; Output = @("package download explicitly allowed; cache probe did not download packages") }
+    } elseif ($Simulated) {
       $cacheProbe = if ([string]$entry.package -eq "@openapitools/openapi-generator-cli") {
         [pscustomobject]@{ Status = "offline_repo_cache_missing"; Classification = "blocker"; ExitCode = 2; DurationMs = 2; Output = @("simulated package cache missing") }
       } else {
@@ -790,6 +862,8 @@ function Add-OpenApiCacheProbeEvidence {
       -PreflightStatus $preflightStatus `
       -PackageCacheStatus ([string]$cacheProbe.Status) `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -PackageVersion (Get-PackageVersionMarker -PackageCacheStatus ([string]$cacheProbe.Status) -ToolVersion "") `
+      -PackageProbeDurationMs ([int64]$cacheProbe.DurationMs) `
       -DurationMs ([int64]($cacheProbe.DurationMs + ($requiredTools | ForEach-Object { if ($toolProbes.ContainsKey($_)) { $toolProbes[$_].DurationMs } else { 0 } } | Measure-Object -Sum).Sum)) `
       -ExecutionMode "cache_probe" `
       -RealCommandExecuted $false `
@@ -816,6 +890,12 @@ function Add-EvidenceRecord {
     [ValidateSet("passed", "blocked", "simulated", "not_run")][string]$PreflightStatus = "not_run",
     [AllowNull()][string]$PackageCacheStatus = "",
     [bool]$PackageDownloadAllowed = [bool]$AllowPackageDownload,
+    [AllowNull()][string]$PackageList = "",
+    [AllowNull()][string]$PackageVersion = "",
+    [AllowNull()][string]$PackageProvenance = "",
+    [AllowNull()][string]$PackageCachePath = "",
+    [int64]$PackageCacheBytes = -1,
+    [int64]$PackageProbeDurationMs = 0,
     [int64]$DurationMs = 0,
     [ValidateSet("real_tool_execution", "cache_probe", "command_matrix", "simulated", "not_run")][string]$ExecutionMode = "not_run",
     [bool]$RealCommandExecuted = $false,
@@ -829,6 +909,24 @@ function Add-EvidenceRecord {
   if ([string]::IsNullOrWhiteSpace($PackageCacheStatus)) {
     $PackageCacheStatus = Get-NpmPackageCacheStatus
   }
+  if ([string]::IsNullOrWhiteSpace($PackageList)) {
+    $PackageList = (Get-OpenApiNpmPackageList) -join ","
+  }
+  if ([string]::IsNullOrWhiteSpace($PackageVersion)) {
+    $PackageVersion = Get-PackageVersionMarker -PackageCacheStatus $PackageCacheStatus -ToolVersion $ToolVersion
+  }
+  if ([string]::IsNullOrWhiteSpace($PackageProvenance)) {
+    $PackageProvenance = Get-PackageProvenance -PackageCacheStatus $PackageCacheStatus -PackageDownloadAllowed ([bool]$PackageDownloadAllowed)
+  }
+  if ([string]::IsNullOrWhiteSpace($PackageCachePath)) {
+    $PackageCachePath = Format-BoundedPath $NpmCache
+  }
+  if ($PackageCacheBytes -lt 0) {
+    $PackageCacheBytes = Get-BoundedDirectorySizeBytes -Path $NpmCache
+  }
+  if ($PackageProbeDurationMs -lt 0) {
+    $PackageProbeDurationMs = 0
+  }
   if ($DurationMs -lt 0) {
     $DurationMs = 0
   }
@@ -841,8 +939,14 @@ function Add-EvidenceRecord {
     tool_path = Redact-SafeText $ToolPath
     tool_version = Redact-SafeText $ToolVersion
     package = Redact-SafeText $Package
+    package_list = Redact-SafeText $PackageList
+    package_version = Redact-SafeText $PackageVersion
+    package_provenance = Redact-SafeText $PackageProvenance
+    package_cache_path = Redact-SafeText $PackageCachePath
     package_cache_status = Redact-SafeText $PackageCacheStatus
+    package_cache_bytes = [int64]$PackageCacheBytes
     package_download_allowed = [bool]$PackageDownloadAllowed
+    package_probe_duration_ms = [int64]$PackageProbeDurationMs
     preflight_status = $PreflightStatus
     execution_mode = $ExecutionMode
     real_command_executed = [bool]$RealCommandExecuted
@@ -1040,7 +1144,7 @@ function Assert-EvidenceReportContract {
 
   foreach ($record in $records) {
     foreach ($field in @($record.PSObject.Properties.Name)) {
-      if (-not @("kind", "label", "provenance_mode", "tool", "tool_path", "tool_version", "package", "package_cache_status", "package_download_allowed", "preflight_status", "execution_mode", "real_command_executed", "readiness_marker_status", "closure_eligible", "checked_schema", "classification", "exit_code", "duration_ms", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
+      if (-not @("kind", "label", "provenance_mode", "tool", "tool_path", "tool_version", "package", "package_list", "package_version", "package_provenance", "package_cache_path", "package_cache_status", "package_cache_bytes", "package_download_allowed", "package_probe_duration_ms", "preflight_status", "execution_mode", "real_command_executed", "readiness_marker_status", "closure_eligible", "checked_schema", "classification", "exit_code", "duration_ms", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected evidence field '$field'"
       }
     }
@@ -1077,8 +1181,48 @@ function Assert-EvidenceReportContract {
     if (-not @("download_allowed", "offline_repo_cache_present", "offline_repo_cache_missing", "simulated", "not_applicable").Contains([string]$record.package_cache_status)) {
       Add-Failure "[FAIL] evidence report contract - invalid package_cache_status '$($record.package_cache_status)'"
     }
+    if ([string]::IsNullOrWhiteSpace([string]$record.package_list)) {
+      Add-Failure "[FAIL] evidence report contract - missing package_list"
+    } else {
+      foreach ($packageName in Get-OpenApiNpmPackageList) {
+        if (-not ([string]$record.package_list).Contains($packageName)) {
+          Add-Failure "[FAIL] evidence report contract - package_list missing '$packageName'"
+        }
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$record.package_version)) {
+      Add-Failure "[FAIL] evidence report contract - missing package_version"
+    }
+    if (-not @("preseeded_repo_cache", "offline_repo_cache_missing", "download_opt_in", "simulated", "not_applicable", "unknown").Contains([string]$record.package_provenance)) {
+      Add-Failure "[FAIL] evidence report contract - invalid package_provenance '$($record.package_provenance)'"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$record.package_cache_path)) {
+      Add-Failure "[FAIL] evidence report contract - missing package_cache_path"
+    }
+    if ([string]$record.package_cache_path -match "\.\.|\.git|scripts\\|apps\\|crates\\|web\\") {
+      Add-Failure "[FAIL] evidence report contract - unsafe package_cache_path '$($record.package_cache_path)'"
+    }
+    try {
+      $cacheBytes = [int64]$record.package_cache_bytes
+      if ($cacheBytes -lt 0 -or $cacheBytes -gt 1099511627776) {
+        Add-Failure "[FAIL] evidence report contract - package_cache_bytes is unbounded"
+      }
+    } catch {
+      Add-Failure "[FAIL] evidence report contract - package_cache_bytes is not numeric"
+    }
     if ($null -eq $record.package_download_allowed) {
       Add-Failure "[FAIL] evidence report contract - missing package_download_allowed"
+    }
+    if ([bool]$record.package_download_allowed -and [string]$record.package_provenance -ne "download_opt_in") {
+      Add-Failure "[FAIL] evidence report contract - package download opt-in missing provenance marker"
+    }
+    try {
+      $probeDurationMs = [int64]$record.package_probe_duration_ms
+      if ($probeDurationMs -lt 0 -or $probeDurationMs -gt 86400000) {
+        Add-Failure "[FAIL] evidence report contract - package_probe_duration_ms is unbounded"
+      }
+    } catch {
+      Add-Failure "[FAIL] evidence report contract - package_probe_duration_ms is not numeric"
     }
     try {
       $durationMs = [int64]$record.duration_ms
@@ -1329,6 +1473,8 @@ function Invoke-NpmTool {
       -PreflightStatus "blocked" `
       -PackageCacheStatus $packageCacheStatus `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -PackageVersion (Get-PackageVersionMarker -PackageCacheStatus $packageCacheStatus -ToolVersion "unavailable") `
+      -PackageProbeDurationMs 0 `
       -DurationMs 0 `
       -ExecutionMode "real_tool_execution" `
       -RealCommandExecuted $false `
@@ -1373,6 +1519,8 @@ function Invoke-NpmTool {
           -PreflightStatus "passed" `
           -PackageCacheStatus $packageCacheStatus `
           -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+          -PackageVersion (Get-PackageVersionMarker -PackageCacheStatus $packageCacheStatus -ToolVersion "unavailable") `
+          -PackageProbeDurationMs $versionResult.DurationMs `
           -DurationMs $versionResult.DurationMs `
           -ExecutionMode "real_tool_execution" `
           -RealCommandExecuted $false `
@@ -1418,6 +1566,8 @@ function Invoke-NpmTool {
       -PreflightStatus "passed" `
       -PackageCacheStatus $packageCacheStatus `
       -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -PackageVersion (Get-PackageVersionMarker -PackageCacheStatus $packageCacheStatus -ToolVersion $toolVersion) `
+      -PackageProbeDurationMs $result.DurationMs `
       -DurationMs $result.DurationMs `
       -ExecutionMode "real_tool_execution" `
       -RealCommandExecuted $true `
@@ -2396,6 +2546,13 @@ function Invoke-SelfTest {
     -Name "simulated cache/tool availability probe" `
     -Arguments @("-SimulateCacheProbe") `
     -ChildTempRoot (Join-Path $TempRoot "self-test-cache-probe") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("pass", "blocker") `
+    -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated package download opt-in evidence" `
+    -Arguments @("-SimulateCacheProbe", "-AllowPackageDownload") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-package-download-opt-in") `
     -ExpectedExitCode 2 `
     -ExpectedEvidenceClassifications @("pass", "blocker") `
     -ExpectedProvenanceMode "simulated"

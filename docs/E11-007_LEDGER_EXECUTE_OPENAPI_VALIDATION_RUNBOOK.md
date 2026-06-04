@@ -138,6 +138,9 @@ Expected result:
   writes bounded evidence covering available/missing tools, offline cache
   present/missing, download-disabled state, per-command blocker classification,
   and duration fields without running validators/generators.
+- Child case `simulated package download opt-in evidence` returns exit `2` and
+  writes bounded package-provenance evidence with `package_download_allowed=true`
+  without downloading packages or running validators/generators.
 - Child case `simulated real-tool execution evidence pass` returns exit `0` and
   writes execution-shaped evidence with real-command fields but simulated
   provenance, so it cannot close the real gap.
@@ -193,6 +196,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateCacheProbe
 
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateCacheProbe -AllowPackageDownload
+
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidencePass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateRealExecutionEvidenceFailure
@@ -218,12 +223,14 @@ evidence commands return `0`, `1`, and `2`. The simulated real execution
 evidence commands return `0`, `1`, and `2`. The tool-preflight blocker command
 returns `2`. They prove wrapper failure-path classification, generated-client
 readiness gating, command matrix coverage, cache/tool availability evidence,
-real-execution evidence shape, bounded evidence lifecycle, path/output
-hardening, preflight/performance evidence shape, and redaction only. They do not
-run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
-inspection against real generated output, or any live Postgres checks. Do not
-use simulated passes, cache-probe blockers, simulated execution evidence, or
-the matrix dry-run to close the real semantic/client-generation gap.
+package download opt-in provenance, real-execution evidence shape, bounded
+evidence lifecycle, path/output hardening, preflight/performance evidence
+shape, and redaction only. They do not run Redocly, OpenAPI Generator,
+`openapi-typescript`, generated-client inspection against real generated output,
+download packages, or any live Postgres checks. Do not use simulated passes,
+cache-probe blockers, simulated execution evidence, simulated download opt-in
+evidence, or the matrix dry-run to close the real semantic/client-generation
+gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -298,9 +305,16 @@ Each evidence record contains:
   filename marker rather than a full user path
 - `tool_version`
 - `package`
+- `package_list`: comma-separated required package list
+- `package_version`: bounded package/tool version or cache-entry marker
+- `package_provenance`: `preseeded_repo_cache`, `offline_repo_cache_missing`,
+  `download_opt_in`, `simulated`, `not_applicable`, or `unknown`
+- `package_cache_path`: bounded repo-relative npm cache path
 - `package_cache_status`: `download_allowed`, `offline_repo_cache_present`,
   `offline_repo_cache_missing`, `simulated`, or `not_applicable`
+- `package_cache_bytes`: bounded cache-size summary
 - `package_download_allowed`
+- `package_probe_duration_ms`: bounded cache/download availability duration
 - `preflight_status`: `passed`, `blocked`, `simulated`, or `not_run`
 - `execution_mode`: `real_tool_execution`, `cache_probe`, `command_matrix`,
   `simulated`, or `not_run`
@@ -323,9 +337,11 @@ credentials, package tokens, API keys, raw operation keys, raw metadata, payload
 or body data, or raw executor details. The self-test validates the report field
 allowlist, checked schema, repo commit marker, generated-at timestamp, fixture
 fingerprint, command summary, tool path, version/cache preflight status,
-execution mode, real-command marker, generated-client readiness marker status,
-closure eligibility, duration bounds, output-tail bounds, classification
-presence, provenance marker, and secret-safe redaction.
+package list, package version/provenance marker, cache path safety, cache size
+summary, package probe duration, execution mode, real-command marker,
+generated-client readiness marker status, closure eligibility, duration bounds,
+output-tail bounds, classification presence, provenance marker, and secret-safe
+redaction.
 
 Interpret report outcomes as follows:
 
@@ -348,9 +364,39 @@ Real-tool preflight/performance evidence:
 - Package/cache state is explicit. Offline mode records whether the repository
   npm cache is present or missing; `-AllowPackageDownload` records
   `download_allowed`.
+- Package provisioning/download provenance is explicit. Evidence records include
+  `package_list`, `package_version`, `package_provenance`,
+  `package_cache_path`, `package_cache_bytes`, `package_download_allowed`, and
+  `package_probe_duration_ms`.
 - Version probes and requested validator/generator commands record bounded
   `duration_ms`. The self-test locks that duration is numeric and bounded, but
   it does not run real npm tools.
+
+Package cache provisioning/download evidence:
+
+- The default wrapper path never downloads packages and never runs real npm
+  validators/generators.
+- The required package list is fixed to `@redocly/cli`,
+  `@openapitools/openapi-generator-cli`, and `openapi-typescript`.
+- The npm cache must stay under repository `.tool-cache` or `.tmp`; repo-external
+  paths, source paths, and `.git` paths are refused before use.
+- Preseeded cache evidence uses `package_provenance=preseeded_repo_cache`,
+  `package_cache_status=offline_repo_cache_present`, a bounded
+  `package_cache_bytes` summary, and a bounded `package_probe_duration_ms`.
+- Missing offline cache evidence uses
+  `package_provenance=offline_repo_cache_missing`,
+  `package_cache_status=offline_repo_cache_missing`, and `classification=blocker`.
+- `-AllowPackageDownload` or
+  `CONTROL_PLANE_LEDGER_OPENAPI_ALLOW_PACKAGE_DOWNLOAD=1` is the only allowed
+  download opt-in. Cache probes with this flag record
+  `package_provenance=download_opt_in` and `package_download_allowed=true`, but
+  still do not download packages or run validators/generators.
+- Real package download can occur only when `-AllowPackageDownload` is combined
+  with a real validator or generator flag such as `-Redocly`,
+  `-OpenApiGeneratorValidate`, `-OpenApiTypescript`, or `-TypescriptFetch`.
+- npm output tails are bounded and redacted. They must not include package
+  tokens, registry credentials, Authorization/Cookie values, bearer tokens, API
+  keys, raw operation keys, raw metadata, payload, or body data.
 
 Real-tool execution evidence:
 
@@ -446,8 +492,14 @@ accepted:
 
 - `tool_path`
 - `tool_version`
+- `package_list`
+- `package_version`
+- `package_provenance`
+- `package_cache_path`
 - `package_cache_status`
+- `package_cache_bytes`
 - `package_download_allowed`
+- `package_probe_duration_ms`
 - `preflight_status`
 - `duration_ms`
 - `command`
@@ -489,10 +541,17 @@ Expected evidence fields per command:
 - `tool_path`: safe bounded path summary for `node`, `npm`, and `java` where
   required
 - `tool_version`: bounded version marker
+- `package_list`: fixed required npm package list
+- `package_version`: bounded cache-entry or tool-version marker
+- `package_provenance`: `preseeded_repo_cache`, `offline_repo_cache_missing`,
+  or `download_opt_in`
+- `package_cache_path`: bounded path under repository `.tool-cache` or `.tmp`
 - `package_cache_status`: `offline_repo_cache_present`,
   `offline_repo_cache_missing`, or `download_allowed`
+- `package_cache_bytes`: bounded cache-size summary
 - `package_download_allowed`: normally `false`; `true` only when
   `-AllowPackageDownload` is explicitly supplied
+- `package_probe_duration_ms`: bounded npm cache probe duration
 - `preflight_status`: `passed` or `blocked`
 - `classification`: `pass` or `blocker`
 - `duration_ms`: bounded probe duration
@@ -506,6 +565,19 @@ gap.
 The probe output and evidence report must remain secret-safe. It must not print
 Authorization/Cookie values, bearer tokens, package credentials, API keys, raw
 operation keys, raw metadata, payload, or body data.
+
+To record explicit download opt-in policy without downloading packages or
+running heavy tools:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -CacheProbe -AllowPackageDownload
+```
+
+This command records `package_download_allowed=true`,
+`package_provenance=download_opt_in`, cache path safety, package list, cache
+size, and probe duration. It may still exit `2` if required local tools are
+missing. It is provisioning/download policy evidence only; it does not close the
+real semantic/client-generation pass gap.
 
 ## Semantic Validator Commands
 
@@ -851,6 +923,9 @@ Record all of the following when closing the semantic/client-generation gap:
   `generated_at_utc`.
 - OpenAPI fixture `sha256`, `size_bytes`, and `last_write_utc`.
 - Whether the npm cache was online, preseeded, or internal-mirror backed.
+- Package cache provisioning/download evidence: required package list,
+  package version/provenance marker, bounded cache path, `package_cache_bytes`,
+  `package_download_allowed`, and `package_probe_duration_ms`.
 - Tool preflight status, safe tool path summary, package/cache status, and
   bounded `duration_ms` for each opt-in evidence record.
 - Real execution evidence fields for each opt-in command:
