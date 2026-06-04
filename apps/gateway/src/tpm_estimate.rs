@@ -333,6 +333,104 @@ mod tests {
     }
 
     #[test]
+    fn tpm_estimate_mapper_fixture_defines_runtime_trusted_signal_wiring_checklist() {
+        let fixture = fixture();
+        let guard = &fixture["runtime_source_guard"];
+        let endpoints = guard["endpoints"]
+            .as_array()
+            .expect("runtime source guard endpoints should be an array");
+        let checklist = fixture["trusted_signal_runtime_wiring_checklist"]
+            .as_array()
+            .expect("trusted signal runtime wiring checklist should be an array");
+        let current_signal = guard["current_runtime_signal"]
+            .as_str()
+            .expect("runtime source guard should define current signal");
+
+        assert_eq!(checklist.len(), endpoints.len());
+
+        for endpoint in endpoints.iter().filter_map(serde_json::Value::as_str) {
+            let entry = checklist
+                .iter()
+                .find(|entry| entry["endpoint"].as_str() == Some(endpoint))
+                .unwrap_or_else(|| panic!("missing trusted signal checklist endpoint: {endpoint}"));
+            let allowed_sources = entry["allowed_trusted_sources"]
+                .as_array()
+                .expect("allowed trusted sources should be an array");
+            let forbidden_sources = entry["forbidden_sources"]
+                .as_array()
+                .expect("forbidden sources should be an array");
+            let exit_condition = entry["future_wiring_exit_condition"]
+                .as_str()
+                .expect("future wiring exit condition should be a string")
+                .to_ascii_lowercase();
+
+            assert_eq!(
+                entry["current_runtime_signal"].as_str(),
+                Some(current_signal)
+            );
+            assert_eq!(
+                entry["current_missing_tokenizer_status"].as_bool(),
+                Some(true)
+            );
+            assert_eq!(entry["raw_material_accepted"].as_bool(), Some(false));
+            assert_eq!(entry["raw_material_emitted"].as_bool(), Some(false));
+            assert_eq!(
+                entry["provider_side_effect_required"].as_bool(),
+                Some(false)
+            );
+            assert!(!allowed_sources.is_empty());
+            for source in allowed_sources.iter().filter_map(serde_json::Value::as_str) {
+                let source = source.to_ascii_lowercase();
+                assert!(source.contains("trusted numeric"));
+                assert!(!source.contains(" raw "));
+                assert!(!source.contains("provider key"));
+            }
+            assert!(exit_condition.contains("trusted numeric"));
+            assert!(exit_condition.contains("before reservation"));
+            assert!(exit_condition.contains("without provider side effects"));
+
+            for required_forbidden in [
+                ".len()",
+                ".chars()",
+                ".bytes()",
+                "split_whitespace",
+                ".tokenize(",
+                "tokenize_raw",
+                "token_count",
+                "header_material",
+            ] {
+                assert!(
+                    forbidden_sources
+                        .iter()
+                        .any(|source| source.as_str() == Some(required_forbidden)),
+                    "{endpoint} checklist should forbid {required_forbidden}"
+                );
+            }
+        }
+
+        let checklist_text = serde_json::to_string(checklist)
+            .expect("trusted signal checklist should serialize")
+            .to_ascii_lowercase();
+        for forbidden in [
+            "sk-live",
+            "authorization",
+            "bearer",
+            "provider_key",
+            "provider key",
+            "api_key",
+            "encrypted_secret",
+            "payload",
+            "request_body",
+            "current_window_state",
+        ] {
+            assert!(
+                !checklist_text.contains(forbidden),
+                "trusted signal checklist leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn tpm_estimate_mapper_maps_endpoint_max_output_signals() {
         let cases = [
             (

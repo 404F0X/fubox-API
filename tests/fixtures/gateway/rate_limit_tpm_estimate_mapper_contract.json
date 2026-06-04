@@ -37,6 +37,128 @@
       "gemini_native"
     ]
   },
+  "trusted_signal_runtime_wiring_checklist": [
+    {
+      "endpoint": "openai_chat",
+      "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+      "current_missing_tokenizer_status": true,
+      "allowed_trusted_sources": [
+        "trusted numeric tokenizer prompt token count for the parsed OpenAI chat request",
+        "trusted numeric read-model prompt token count keyed by tenant/model/request hash"
+      ],
+      "future_wiring_exit_condition": "replace missing-tokenizer fallback only when a trusted numeric prompt token source is available before reservation and without provider side effects",
+      "forbidden_sources": [
+        ".len()",
+        ".chars()",
+        ".bytes()",
+        "split_whitespace",
+        ".tokenize(",
+        "tokenize_raw",
+        "token_count",
+        "message_text",
+        "header_material"
+      ],
+      "raw_material_accepted": false,
+      "raw_material_emitted": false,
+      "provider_side_effect_required": false
+    },
+    {
+      "endpoint": "openai_responses",
+      "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+      "current_missing_tokenizer_status": true,
+      "allowed_trusted_sources": [
+        "trusted numeric tokenizer prompt token count for the parsed OpenAI responses request",
+        "trusted numeric read-model prompt token count keyed by tenant/model/request hash"
+      ],
+      "future_wiring_exit_condition": "replace missing-tokenizer fallback only when a trusted numeric prompt token source is available before reservation and without provider side effects",
+      "forbidden_sources": [
+        ".len()",
+        ".chars()",
+        ".bytes()",
+        "split_whitespace",
+        ".tokenize(",
+        "tokenize_raw",
+        "token_count",
+        "response_input_text",
+        "header_material"
+      ],
+      "raw_material_accepted": false,
+      "raw_material_emitted": false,
+      "provider_side_effect_required": false
+    },
+    {
+      "endpoint": "openai_embeddings",
+      "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+      "current_missing_tokenizer_status": true,
+      "allowed_trusted_sources": [
+        "trusted numeric tokenizer input token count for the parsed OpenAI embeddings request",
+        "trusted numeric read-model input token count keyed by tenant/model/request hash"
+      ],
+      "future_wiring_exit_condition": "replace missing-tokenizer fallback only when a trusted numeric input token source is available before reservation and without provider side effects",
+      "forbidden_sources": [
+        ".len()",
+        ".chars()",
+        ".bytes()",
+        "split_whitespace",
+        ".tokenize(",
+        "tokenize_raw",
+        "token_count",
+        "embedding_text",
+        "header_material"
+      ],
+      "raw_material_accepted": false,
+      "raw_material_emitted": false,
+      "provider_side_effect_required": false
+    },
+    {
+      "endpoint": "anthropic_messages",
+      "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+      "current_missing_tokenizer_status": true,
+      "allowed_trusted_sources": [
+        "trusted numeric tokenizer prompt token count for the parsed Anthropic messages request",
+        "trusted numeric read-model prompt token count keyed by tenant/model/request hash"
+      ],
+      "future_wiring_exit_condition": "replace missing-tokenizer fallback only when a trusted numeric prompt token source is available before reservation and without provider side effects",
+      "forbidden_sources": [
+        ".len()",
+        ".chars()",
+        ".bytes()",
+        "split_whitespace",
+        ".tokenize(",
+        "tokenize_raw",
+        "token_count",
+        "message_text",
+        "header_material"
+      ],
+      "raw_material_accepted": false,
+      "raw_material_emitted": false,
+      "provider_side_effect_required": false
+    },
+    {
+      "endpoint": "gemini_native",
+      "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+      "current_missing_tokenizer_status": true,
+      "allowed_trusted_sources": [
+        "trusted numeric tokenizer prompt token count for the parsed Gemini native request",
+        "trusted numeric read-model prompt token count keyed by tenant/model/request hash"
+      ],
+      "future_wiring_exit_condition": "replace missing-tokenizer fallback only when a trusted numeric prompt token source is available before reservation and without provider side effects",
+      "forbidden_sources": [
+        ".len()",
+        ".chars()",
+        ".bytes()",
+        "split_whitespace",
+        ".tokenize(",
+        "tokenize_raw",
+        "token_count",
+        "gemini_part_text",
+        "header_material"
+      ],
+      "raw_material_accepted": false,
+      "raw_material_emitted": false,
+      "provider_side_effect_required": false
+    }
+  ],
   "endpoint_mappings": [
     {
       "endpoint": "openai_chat",
