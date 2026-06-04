@@ -96,7 +96,7 @@ use tpm_estimate::{
     GatewayTrustedNumericSourceProviderOutput, GatewayTrustedNumericSourceType,
     GatewayTrustedNumericTokenKind, gateway_tpm_estimate_for_request,
     gateway_tpm_estimate_for_request_body, gateway_tpm_signals_from_trusted_numeric_source,
-    gateway_trusted_numeric_source_env_config_read,
+    gateway_trusted_numeric_source_backend_handoff, gateway_trusted_numeric_source_env_config_read,
     gateway_trusted_numeric_source_implementation_slot,
     gateway_trusted_numeric_source_provider_availability,
     gateway_trusted_numeric_source_provider_boundary,
@@ -5776,11 +5776,19 @@ fn gateway_tpm_estimate_for_runtime_request(
         GatewayTrustedNumericSourceType::Tokenizer => tokenizer_available,
         GatewayTrustedNumericSourceType::ReadModel => read_model_available,
     };
-    let slot = gateway_trusted_numeric_source_implementation_slot(
+    let backend_handoff = gateway_trusted_numeric_source_backend_handoff(
         source_type,
+        token_kind,
         env_config.runtime_config.adapter_invocation_allowed,
         provider_available,
         true,
+        0,
+    );
+    let slot = gateway_trusted_numeric_source_implementation_slot(
+        source_type,
+        env_config.runtime_config.adapter_invocation_allowed,
+        backend_handoff.backend_available,
+        backend_handoff.backend_attached,
     );
     let provider = EnvTrustedNumericSourceProvider {
         tokenizer_prompt_tokens: tokenizer_tokens,
@@ -5802,6 +5810,7 @@ fn gateway_tpm_estimate_for_runtime_request(
     gateway_tpm_estimate_for_request(endpoint, request_body, signals)
         .with_trusted_source_provider(provider_evidence.safe_summary())
         .with_trusted_source_implementation_slot(slot.safe_summary())
+        .with_trusted_source_backend_handoff(backend_handoff.safe_summary())
 }
 
 fn env_trusted_numeric_token_value(name: &str) -> Option<i128> {
@@ -13993,9 +14002,18 @@ mod tests {
             .trusted_source_implementation_slot
             .as_ref()
             .expect("trusted runtime should carry implementation slot evidence");
+        let trusted_handoff = trusted_summary
+            .trusted_source_backend_handoff
+            .as_ref()
+            .expect("trusted runtime should carry backend handoff evidence");
         assert_eq!(trusted_slot.status, "ready");
         assert_eq!(trusted_slot.source_type, "tokenizer");
         assert!(trusted_slot.provider_invocation_allowed);
+        assert_eq!(trusted_handoff.status, "ready");
+        assert_eq!(trusted_handoff.backend_kind, "tokenizer_backend");
+        assert_eq!(trusted_handoff.source_type, "tokenizer");
+        assert_eq!(trusted_handoff.token_kind, "prompt_tokens");
+        assert!(trusted_handoff.provider_invocation_allowed);
         assert_eq!(trusted_provider.status, "available");
         assert_eq!(trusted_provider.source_type, "tokenizer");
         assert_eq!(trusted_provider.token_kind, "prompt_tokens");
@@ -14025,9 +14043,22 @@ mod tests {
             .trusted_source_implementation_slot
             .as_ref()
             .expect("read-model runtime should carry implementation slot evidence");
+        let read_model_handoff = read_model_summary
+            .trusted_source_backend_handoff
+            .as_ref()
+            .expect("read-model runtime should carry backend handoff evidence");
         assert_eq!(read_model_slot.status, "ready");
         assert_eq!(read_model_slot.source_type, "read_model");
         assert!(read_model_slot.provider_invocation_allowed);
+        assert_eq!(read_model_handoff.status, "ready");
+        assert_eq!(read_model_handoff.backend_kind, "read_model_backend");
+        assert_eq!(read_model_handoff.source_type, "read_model");
+        assert_eq!(read_model_handoff.token_kind, "input_tokens");
+        assert!(read_model_handoff.provider_invocation_allowed);
+        assert_eq!(
+            read_model_handoff.estimate_duration_marker,
+            "gateway_tpm_trusted_numeric_source_estimate_duration_ms"
+        );
         assert_eq!(read_model_provider.status, "available");
         assert_eq!(read_model_provider.source_type, "read_model");
         assert_eq!(read_model_provider.token_kind, "input_tokens");
@@ -14053,6 +14084,11 @@ mod tests {
             .trusted_source_provider
             .as_ref()
             .expect("invalid runtime should carry safe provider fallback evidence");
+        let invalid_handoff = invalid_summary
+            .trusted_source_backend_handoff
+            .as_ref()
+            .expect("invalid runtime should carry backend handoff evidence");
+        assert_eq!(invalid_handoff.status, "ready");
         assert_eq!(invalid_provider.status, "error");
         assert_eq!(invalid_provider.error_reason, Some("negative_tokens"));
         assert!(invalid_provider.provider_invoked);
@@ -14126,6 +14162,10 @@ mod tests {
             "tpm_estimate.trusted_source_provider.token_count_marker",
             "tpm_estimate.trusted_source_implementation_slot.status",
             "tpm_estimate.trusted_source_implementation_slot.provider_invocation_allowed",
+            "tpm_estimate.trusted_source_backend_handoff.status",
+            "tpm_estimate.trusted_source_backend_handoff.backend_kind",
+            "tpm_estimate.trusted_source_backend_handoff.estimate_duration_marker",
+            "tpm_estimate.trusted_source_backend_handoff.estimate_duration_ms",
             "rate_limit_reservation.required_capacity.tokens_per_minute",
             "rate_limit_reservation.acquire.dimensions.tpm.required",
             "rate_limit_reservation.db_required_capacity.tokens_per_minute",
@@ -14291,6 +14331,17 @@ mod tests {
                 )
                 .safe_summary(),
             )
+            .with_trusted_source_backend_handoff(
+                gateway_trusted_numeric_source_backend_handoff(
+                    GatewayTrustedNumericSourceType::Tokenizer,
+                    GatewayTrustedNumericTokenKind::PromptTokens,
+                    true,
+                    true,
+                    true,
+                    0,
+                )
+                .safe_summary(),
+            )
             .safe_summary()
         }
 
@@ -14321,9 +14372,18 @@ mod tests {
                 .trusted_source_implementation_slot
                 .as_ref()
                 .expect("streaming runtime estimate should carry implementation slot summary");
+            let handoff = summary
+                .trusted_source_backend_handoff
+                .as_ref()
+                .expect("streaming runtime estimate should carry backend handoff summary");
             assert_eq!(slot.status, "ready");
             assert_eq!(slot.source_type, "tokenizer");
             assert!(slot.provider_invocation_allowed);
+            assert_eq!(handoff.status, "ready");
+            assert_eq!(handoff.backend_kind, "tokenizer_backend");
+            assert_eq!(handoff.source_type, "tokenizer");
+            assert_eq!(handoff.token_kind, "prompt_tokens");
+            assert!(handoff.provider_invocation_allowed);
             assert_eq!(provider.status, "available");
             assert_eq!(provider.source_type, "tokenizer");
             assert_eq!(provider.token_kind, "prompt_tokens");

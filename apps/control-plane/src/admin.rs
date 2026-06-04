@@ -122,6 +122,8 @@ const CONTROL_PLANE_BILLING_LEDGER_PRODUCTION_CUTOVER_ACCEPTANCE_GATE_SCHEMA: &s
     "control_plane_billing_ledger_production_cutover_acceptance_gate.v1";
 const CONTROL_PLANE_BILLING_LEDGER_RUNTIME_EVIDENCE_TRUST_GATE_SCHEMA: &str =
     "control_plane_billing_ledger_runtime_evidence_trust_gate.v1";
+const CONTROL_PLANE_BILLING_LEDGER_SINGLE_WRITER_CUTOVER_PROOF_GATE_SCHEMA: &str =
+    "control_plane_billing_ledger_single_writer_cutover_proof_gate.v1";
 
 pub(crate) fn router() -> Router<Arc<ControlPlaneState>> {
     Router::new()
@@ -4344,6 +4346,7 @@ fn ledger_adjustment_billing_ledger_writer_readiness_smoke_wrapper_contract() ->
         "shadow_commit_handoff_contract": ledger_adjustment_billing_ledger_shadow_commit_handoff_contract(),
         "production_cutover_acceptance_gate_contract": ledger_adjustment_billing_ledger_production_cutover_acceptance_gate_contract(),
         "runtime_evidence_trust_gate_contract": ledger_adjustment_billing_ledger_runtime_evidence_trust_gate_contract(),
+        "single_writer_cutover_proof_gate_contract": ledger_adjustment_billing_ledger_single_writer_cutover_proof_gate_contract(),
         "safe_output_contract": {
             "env_value_output": "omitted",
             "database_url_output": "omitted",
@@ -4520,6 +4523,55 @@ fn ledger_adjustment_billing_ledger_runtime_evidence_trust_gate_contract() -> Va
             "source_level_pass_is_insufficient": true,
             "rollback_only_live_probe_is_insufficient": true
         },
+        "safe_output_contract": {
+            "database_url_output": "omitted",
+            "env_value_output": "omitted",
+            "operation_key_output": "omitted",
+            "dedupe_material_echoed": false,
+            "raw_env_value_echoed": false,
+            "raw_database_url_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }
+    })
+}
+
+fn ledger_adjustment_billing_ledger_single_writer_cutover_proof_gate_contract() -> Value {
+    json!({
+        "schema_version": CONTROL_PLANE_BILLING_LEDGER_SINGLE_WRITER_CUTOVER_PROOF_GATE_SCHEMA,
+        "source": "production_cutover_runtime_evidence_trust",
+        "target": "single_active_writer_cutover_proof",
+        "default_proof_accepted": false,
+        "explicit_flag": "-SingleWriterCutoverProof",
+        "explicit_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_SINGLE_WRITER_PROOF",
+        "active_writer_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_ACTIVE_WRITER",
+        "expected_active_writer": "billing_ledger_runtime_writer",
+        "local_writer_disabled_env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_LOCAL_WRITER_DISABLED_FOR_CUTOVER",
+        "requires_runtime_evidence_classification": "container_runtime_current",
+        "requires_rollback_observed": true,
+        "can_substitute_production_cutover": false,
+        "proof_scope": "marker_only_no_source_of_truth_switch",
+        "no_double_write_contract": {
+            "dual_commit_allowed": false,
+            "local_and_billing_ledger_commit_same_request_allowed": false,
+            "active_writer_count_required": 1,
+            "commit_observed_before_cutover_failure": true,
+            "dual_commit_observed_failure": true
+        },
+        "blocker_codes": [
+            "single_writer_proof_missing",
+            "active_writer_marker_missing",
+            "local_writer_disable_marker_missing",
+            "runtime_evidence_not_container_current",
+            "rollback_proof_missing"
+        ],
+        "fail_codes": [
+            "active_writer_marker_not_billing_ledger_runtime_writer",
+            "dual_commit_or_commit_observed",
+            "row_count_mismatch",
+            "unsafe_output_detected"
+        ],
         "safe_output_contract": {
             "database_url_output": "omitted",
             "env_value_output": "omitted",
@@ -16057,6 +16109,30 @@ mod tests {
             contract["runtime_evidence_trust_gate_contract"]["production_cutover_acceptance_requirement"]
                 ["container_runtime_current_required"],
             json!(true)
+        );
+        assert_eq!(
+            contract["single_writer_cutover_proof_gate_contract"]["schema_version"],
+            json!(CONTROL_PLANE_BILLING_LEDGER_SINGLE_WRITER_CUTOVER_PROOF_GATE_SCHEMA)
+        );
+        assert_eq!(
+            contract["single_writer_cutover_proof_gate_contract"]["default_proof_accepted"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["single_writer_cutover_proof_gate_contract"]["expected_active_writer"],
+            json!("billing_ledger_runtime_writer")
+        );
+        assert_eq!(
+            contract["single_writer_cutover_proof_gate_contract"]["no_double_write_contract"]["active_writer_count_required"],
+            json!(1)
+        );
+        assert_eq!(
+            contract["single_writer_cutover_proof_gate_contract"]["can_substitute_production_cutover"],
+            json!(false)
+        );
+        assert_eq!(
+            contract["single_writer_cutover_proof_gate_contract"]["safe_output_contract"]["raw_env_value_echoed"],
+            json!(false)
         );
         assert_eq!(
             contract["live_probe_executor_boundary_contract"]["safe_output_contract"]["raw_database_url_echoed"],

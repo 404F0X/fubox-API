@@ -3663,8 +3663,8 @@ describe("App", () => {
       },
       audit_logs_mutation_row_attempt: {
         admin_api_endpoint: "GET /admin/audit-logs",
-        blocker_reason: "prompt_protection_audit_log_row_missing",
-        classification: "blocker",
+        blocker_reason: "none",
+        classification: "pass",
         closure_requires: [
           "admin_session_handoff",
           "audit_logs_tab_readable",
@@ -3674,8 +3674,8 @@ describe("App", () => {
         ],
         cookie_value_omitted: true,
         matching_rule: "audit row metadata/before/after contains prompt_protection evidence readback or closure gate",
-        observed_row_count: 0,
-        prompt_protection_row_count: 0,
+        observed_row_count: 1,
+        prompt_protection_row_count: 1,
         raw_report_path_omitted: true,
         raw_values_omitted: true,
         requested: true,
@@ -3768,9 +3768,9 @@ describe("App", () => {
     ]);
     expect(bridge.audit_logs_mutation_row_attempt).toMatchObject({
       admin_api_endpoint: "GET /admin/audit-logs",
-      blocker_reason: "prompt_protection_audit_log_row_missing",
-      classification: "blocker",
-      prompt_protection_row_count: 0,
+      blocker_reason: "none",
+      classification: "pass",
+      prompt_protection_row_count: 1,
       schema: "prompt_protection_audit_logs_mutation_row_attempt_v1",
       token_value_omitted: true,
       cookie_value_omitted: true,

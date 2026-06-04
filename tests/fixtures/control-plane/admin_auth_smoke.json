@@ -140,6 +140,20 @@
     "does_not_trigger_build": true,
     "non_blocking_marker": "runtime_image_stale_or_unverified",
     "probe": "control_plane_image_timestamp",
+    "runtime_current_handoff": {
+      "marker": "runtime_current_handoff",
+      "mode": "control_plane_no_build_recreate",
+      "command_contains": [
+        "docker compose",
+        "--no-build",
+        "--no-deps",
+        "--force-recreate",
+        "control-plane"
+      ],
+      "build_allowed": false,
+      "blocked_when_source_newer_than_image": true,
+      "source_newer_blocker": "runtime_image_requires_rebuild_but_build_forbidden"
+    },
     "stale_or_unverified_reasons": [
       "source_newer_than_runtime_image",
       "control_plane_container_unavailable",
@@ -150,7 +164,8 @@
     "secret_safe_output": {
       "token_echoed": false,
       "cookie_echoed": false,
-      "dsn_echoed": false
+      "dsn_echoed": false,
+      "raw_env_echoed": false
     }
   },
   "optional_role_denials": [

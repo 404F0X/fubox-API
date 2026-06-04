@@ -27,6 +27,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_provider_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_IMPLEMENTATION_SLOT_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_implementation_slot_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_HANDOFF_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_backend_handoff_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA: &str =
@@ -637,6 +639,38 @@ impl GatewayTrustedNumericSourceImplementationSlotStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendHandoffStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceBackendHandoffStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendKind {
+    Tokenizer,
+    ReadModel,
+}
+
+impl GatewayTrustedNumericSourceBackendKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tokenizer => "tokenizer_backend",
+            Self::ReadModel => "read_model_backend",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GatewayTrustedNumericSourceReadiness {
     pub(crate) status: GatewayTrustedNumericSourceReadinessStatus,
     pub(crate) tokenizer_status: GatewayTrustedNumericSourceProviderReadinessStatus,
@@ -990,6 +1024,67 @@ pub(crate) struct GatewayTrustedNumericSourceImplementationSlotSummary {
     pub(crate) estimate_duration_marker: &'static str,
     pub(crate) source_marker: &'static str,
     pub(crate) token_count_marker: &'static str,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceBackendHandoff {
+    pub(crate) status: GatewayTrustedNumericSourceBackendHandoffStatus,
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) config_enabled: bool,
+    pub(crate) backend_available: bool,
+    pub(crate) backend_attached: bool,
+    pub(crate) provider_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) estimate_duration_ms: u64,
+    pub(crate) material_in_output: bool,
+    pub(crate) provider_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceBackendHandoff {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceBackendHandoffSummary {
+        GatewayTrustedNumericSourceBackendHandoffSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_HANDOFF_SCHEMA,
+            status: self.status.as_str(),
+            backend_kind: self.backend_kind.as_str(),
+            source_type: self.source_type.as_str(),
+            token_kind: self.token_kind.as_str(),
+            config_enabled: self.config_enabled,
+            backend_available: self.backend_available,
+            backend_attached: self.backend_attached,
+            provider_invocation_allowed: self.provider_invocation_allowed,
+            fallback_required: self.fallback_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            estimate_duration_ms: self.estimate_duration_ms,
+            material_in_output: self.material_in_output,
+            provider_side_effect_required: self.provider_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceBackendHandoffSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) token_kind: &'static str,
+    pub(crate) config_enabled: bool,
+    pub(crate) backend_available: bool,
+    pub(crate) backend_attached: bool,
+    pub(crate) provider_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) estimate_duration_ms: u64,
     pub(crate) material_in_output: bool,
     pub(crate) provider_side_effect_required: bool,
 }
@@ -2132,6 +2227,47 @@ pub(crate) fn gateway_trusted_numeric_source_implementation_slot(
     }
 }
 
+pub(crate) fn gateway_trusted_numeric_source_backend_handoff(
+    source_type: GatewayTrustedNumericSourceType,
+    token_kind: GatewayTrustedNumericTokenKind,
+    config_enabled: bool,
+    backend_available: bool,
+    backend_attached: bool,
+    estimate_duration_ms: u64,
+) -> GatewayTrustedNumericSourceBackendHandoff {
+    let status = if !config_enabled {
+        GatewayTrustedNumericSourceBackendHandoffStatus::Disabled
+    } else if backend_available && backend_attached {
+        GatewayTrustedNumericSourceBackendHandoffStatus::Ready
+    } else {
+        GatewayTrustedNumericSourceBackendHandoffStatus::Blocked
+    };
+    let ready = status == GatewayTrustedNumericSourceBackendHandoffStatus::Ready;
+    let backend_kind = match source_type {
+        GatewayTrustedNumericSourceType::Tokenizer => {
+            GatewayTrustedNumericSourceBackendKind::Tokenizer
+        }
+        GatewayTrustedNumericSourceType::ReadModel => {
+            GatewayTrustedNumericSourceBackendKind::ReadModel
+        }
+    };
+
+    GatewayTrustedNumericSourceBackendHandoff {
+        status,
+        backend_kind,
+        source_type,
+        token_kind,
+        config_enabled,
+        backend_available,
+        backend_attached,
+        provider_invocation_allowed: ready,
+        fallback_required: !ready,
+        estimate_duration_ms,
+        material_in_output: false,
+        provider_side_effect_required: false,
+    }
+}
+
 pub(crate) fn gateway_trusted_numeric_source_provider_availability(
     evidence: &GatewayTrustedNumericSourceProviderEvidence,
 ) -> GatewayTrustedNumericSourceAvailability {
@@ -3006,6 +3142,8 @@ pub(crate) struct GatewayTpmEstimatePlan {
     pub(crate) trusted_source_provider: Option<GatewayTrustedNumericSourceProviderSummary>,
     pub(crate) trusted_source_implementation_slot:
         Option<GatewayTrustedNumericSourceImplementationSlotSummary>,
+    pub(crate) trusted_source_backend_handoff:
+        Option<GatewayTrustedNumericSourceBackendHandoffSummary>,
 }
 
 impl GatewayTpmEstimatePlan {
@@ -3026,6 +3164,7 @@ impl GatewayTpmEstimatePlan {
             clamped_to_i64_max: self.estimate.clamped_to_i64_max,
             trusted_source_provider: self.trusted_source_provider.clone(),
             trusted_source_implementation_slot: self.trusted_source_implementation_slot.clone(),
+            trusted_source_backend_handoff: self.trusted_source_backend_handoff.clone(),
         }
     }
 
@@ -3042,6 +3181,14 @@ impl GatewayTpmEstimatePlan {
         slot: GatewayTrustedNumericSourceImplementationSlotSummary,
     ) -> Self {
         self.trusted_source_implementation_slot = Some(slot);
+        self
+    }
+
+    pub(crate) fn with_trusted_source_backend_handoff(
+        mut self,
+        handoff: GatewayTrustedNumericSourceBackendHandoffSummary,
+    ) -> Self {
+        self.trusted_source_backend_handoff = Some(handoff);
         self
     }
 }
@@ -3064,6 +3211,8 @@ pub(crate) struct GatewayTpmEstimateSummary {
     pub(crate) trusted_source_provider: Option<GatewayTrustedNumericSourceProviderSummary>,
     pub(crate) trusted_source_implementation_slot:
         Option<GatewayTrustedNumericSourceImplementationSlotSummary>,
+    pub(crate) trusted_source_backend_handoff:
+        Option<GatewayTrustedNumericSourceBackendHandoffSummary>,
 }
 
 pub(crate) fn gateway_tpm_estimate_for_request(
@@ -3087,6 +3236,7 @@ pub(crate) fn gateway_tpm_estimate_for_request(
         estimate,
         trusted_source_provider: None,
         trusted_source_implementation_slot: None,
+        trusted_source_backend_handoff: None,
     }
 }
 
@@ -6188,6 +6338,137 @@ mod tests {
             assert!(
                 !serialized.contains(&forbidden.to_ascii_lowercase()),
                 "implementation slot summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_backend_handoff_is_secret_safe() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["backend_handoff_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_HANDOFF_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_backend_handoff")
+        );
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("backend handoff states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing backend handoff state: {name}"))
+        }
+
+        fn assert_handoff(
+            summary: &GatewayTrustedNumericSourceBackendHandoffSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_HANDOFF_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.backend_kind,
+                expected["backend_kind"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.source_type,
+                expected["source_type"].as_str().unwrap()
+            );
+            assert_eq!(summary.token_kind, expected["token_kind"].as_str().unwrap());
+            assert_eq!(
+                summary.provider_invocation_allowed,
+                expected["provider_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert!(!summary.material_in_output);
+            assert!(!summary.provider_side_effect_required);
+        }
+
+        let disabled = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            false,
+            false,
+            false,
+            0,
+        );
+        let blocked = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::ReadModel,
+            GatewayTrustedNumericTokenKind::InputTokens,
+            true,
+            false,
+            true,
+            3,
+        );
+        let ready = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::ReadModel,
+            GatewayTrustedNumericTokenKind::InputTokens,
+            true,
+            true,
+            true,
+            5,
+        );
+
+        assert_handoff(
+            &disabled.safe_summary(),
+            state(contract, "tokenizer_disabled_default"),
+        );
+        assert_handoff(
+            &blocked.safe_summary(),
+            state(contract, "read_model_backend_unavailable"),
+        );
+        assert_handoff(
+            &ready.safe_summary(),
+            state(contract, "read_model_backend_ready"),
+        );
+        assert_eq!(ready.safe_summary().estimate_duration_ms, 5);
+
+        let serialized = serde_json::to_string(&json!({
+            "trusted_source_backend_handoff": [
+                disabled.safe_summary(),
+                blocked.safe_summary(),
+                ready.safe_summary()
+            ]
+        }))
+        .expect("backend handoff summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "backend handoff summary leaked forbidden marker: {forbidden}"
             );
         }
     }

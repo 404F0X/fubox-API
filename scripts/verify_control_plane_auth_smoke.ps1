@@ -337,6 +337,44 @@ function Parse-DockerTimestampUtc {
   }
 }
 
+function Get-RuntimeCurrentHandoffCommand {
+  $composeArg = if ($ComposeFile -eq "deploy/docker-compose/docker-compose.yml") {
+    "deploy/docker-compose/docker-compose.yml"
+  } else {
+    "[compose-file]"
+  }
+  return "docker compose -f $composeArg up -d --no-build --no-deps --force-recreate control-plane"
+}
+
+function Write-RuntimeCurrentHandoff {
+  param(
+    [Parameter(Mandatory = $true)][bool]$StaleOrUnverified,
+    [Parameter(Mandatory = $true)][string]$Reason
+  )
+
+  $status = "ready"
+  $blocker = "none"
+  if ($StaleOrUnverified) {
+    $status = "blocked"
+    if ($Reason -eq "source_newer_than_runtime_image") {
+      $blocker = "runtime_image_requires_rebuild_but_build_forbidden"
+    } elseif ($Reason -eq "control_plane_container_unavailable") {
+      $blocker = "control_plane_container_unavailable_for_no_build_handoff"
+    } elseif ($Reason -eq "docker_unavailable") {
+      $blocker = "docker_unavailable_for_no_build_handoff"
+    } else {
+      $blocker = "runtime_current_unverified_for_no_build_handoff"
+    }
+  }
+
+  Write-SafeHost "runtime_current_handoff=control_plane_no_build_recreate"
+  Write-SafeHost "runtime_current_handoff_status=$status"
+  Write-SafeHost "runtime_current_handoff_blocker=$blocker"
+  Write-SafeHost "runtime_current_handoff_command=$(Get-RuntimeCurrentHandoffCommand)"
+  Write-SafeHost "runtime_current_handoff_build_allowed=false"
+  Write-SafeHost "runtime_current_handoff_secret_material_echoed=false"
+}
+
 function Write-ControlPlaneRuntimeSourceProbe {
   param([Parameter(Mandatory = $true)][string[]]$SourcePaths)
 
@@ -398,6 +436,7 @@ function Write-ControlPlaneRuntimeSourceProbe {
   Write-SafeHost "runtime_image_stale_or_unverified=$(if ($staleOrUnverified) { 'true' } else { 'false' })"
   Write-SafeHost "runtime_image_stale_reason=$reason"
   Write-SafeHost "runtime_secret_material_echoed=false"
+  Write-RuntimeCurrentHandoff -StaleOrUnverified $staleOrUnverified -Reason $reason
 }
 
 function Invoke-ComposePsql {
@@ -816,12 +855,33 @@ function Assert-FixtureEndpointIntent {
   if ($Fixture.runtime_source_mismatch_diagnostic.probe -ne "control_plane_image_timestamp") {
     throw "fixture runtime source mismatch probe drifted"
   }
+  $handoff = $Fixture.runtime_source_mismatch_diagnostic.runtime_current_handoff
+  if ($handoff.marker -ne "runtime_current_handoff") {
+    throw "fixture runtime current handoff marker drifted"
+  }
+  if ($handoff.mode -ne "control_plane_no_build_recreate") {
+    throw "fixture runtime current handoff mode drifted"
+  }
+  foreach ($needle in @("docker compose", "--no-build", "--no-deps", "--force-recreate", "control-plane")) {
+    if (@($handoff.command_contains) -notcontains $needle) {
+      throw "fixture runtime current handoff command marker '$needle' is absent"
+    }
+  }
+  if ($handoff.build_allowed -ne $false) {
+    throw "fixture runtime current handoff must keep build disabled"
+  }
+  if ($handoff.blocked_when_source_newer_than_image -ne $true) {
+    throw "fixture runtime current handoff must block source-newer-than-image"
+  }
+  if ($handoff.source_newer_blocker -ne "runtime_image_requires_rebuild_but_build_forbidden") {
+    throw "fixture runtime current handoff source-newer blocker drifted"
+  }
   foreach ($reason in @("source_newer_than_runtime_image", "control_plane_container_unavailable", "control_plane_image_inspect_unavailable", "docker_unavailable", "source_timestamp_unavailable")) {
     if (@($Fixture.runtime_source_mismatch_diagnostic.stale_or_unverified_reasons) -notcontains $reason) {
       throw "fixture runtime source mismatch reason '$reason' is absent"
     }
   }
-  foreach ($name in @("token_echoed", "cookie_echoed", "dsn_echoed")) {
+  foreach ($name in @("token_echoed", "cookie_echoed", "dsn_echoed", "raw_env_echoed")) {
     if ($Fixture.runtime_source_mismatch_diagnostic.secret_safe_output.$name -ne $false) {
       throw "fixture runtime source mismatch secret-safe output '$name' must be false"
     }

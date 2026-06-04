@@ -249,6 +249,44 @@ function Parse-DockerTimestampUtc {
   }
 }
 
+function Get-RuntimeCurrentHandoffCommand {
+  $composeArg = if ($ComposeFile -eq "deploy/docker-compose/docker-compose.yml") {
+    "deploy/docker-compose/docker-compose.yml"
+  } else {
+    "[compose-file]"
+  }
+  return "docker compose -f $composeArg up -d --no-build --no-deps --force-recreate control-plane"
+}
+
+function Write-RuntimeCurrentHandoff {
+  param(
+    [Parameter(Mandatory = $true)][bool]$StaleOrUnverified,
+    [Parameter(Mandatory = $true)][string]$Reason
+  )
+
+  $status = "ready"
+  $blocker = "none"
+  if ($StaleOrUnverified) {
+    $status = "blocked"
+    if ($Reason -eq "source_newer_than_runtime_image") {
+      $blocker = "runtime_image_requires_rebuild_but_build_forbidden"
+    } elseif ($Reason -eq "control_plane_container_unavailable") {
+      $blocker = "control_plane_container_unavailable_for_no_build_handoff"
+    } elseif ($Reason -eq "docker_unavailable") {
+      $blocker = "docker_unavailable_for_no_build_handoff"
+    } else {
+      $blocker = "runtime_current_unverified_for_no_build_handoff"
+    }
+  }
+
+  Write-SafeHost "runtime_current_handoff=control_plane_no_build_recreate"
+  Write-SafeHost "runtime_current_handoff_status=$status"
+  Write-SafeHost "runtime_current_handoff_blocker=$blocker"
+  Write-SafeHost "runtime_current_handoff_command=$(Get-RuntimeCurrentHandoffCommand)"
+  Write-SafeHost "runtime_current_handoff_build_allowed=false"
+  Write-SafeHost "runtime_current_handoff_secret_material_echoed=false"
+}
+
 function Write-ControlPlaneRuntimeSourceProbe {
   param([Parameter(Mandatory = $true)][string[]]$SourcePaths)
 
@@ -315,6 +353,15 @@ function Write-ControlPlaneRuntimeSourceProbe {
   Write-SafeHost "runtime_image_stale_or_unverified=$(if ($staleOrUnverified) { 'true' } else { 'false' })"
   Write-SafeHost "runtime_image_stale_reason=$reason"
   Write-SafeHost "runtime_secret_material_echoed=false"
+  Write-RuntimeCurrentHandoff -StaleOrUnverified $staleOrUnverified -Reason $reason
+
+  return [pscustomobject]@{
+    StaleOrUnverified = $staleOrUnverified
+    Reason = $reason
+    SourceNewestUtc = $sourceNewestText
+    ContainerCreatedUtc = $containerCreatedText
+    ImageCreatedUtc = $imageCreatedText
+  }
 }
 
 function Resolve-BoundedEvidenceArtifactPath {
@@ -1497,6 +1544,14 @@ function Set-BrowserEvidenceFromRunnerResult {
     $Artifact.selector_snapshot.missing_selector_keys = @($missingSelectorKeys)
     $Artifact.selector_snapshot.missing_selector_count = @($missingSelectorKeys).Count
   }
+
+  if ($Artifact.PSObject.Properties.Name -contains "browser_runner") {
+    $failedAction = "none"
+    if ($RunnerResult.PSObject.Properties.Name -contains "failed_action" -and [string]$RunnerResult.failed_action -match '^[A-Za-z0-9_]+$') {
+      $failedAction = [string]$RunnerResult.failed_action
+    }
+    $Artifact.browser_runner.failed_action = $failedAction
+  }
 }
 
 function Test-BrowserEvidenceDurationValue {
@@ -1512,9 +1567,15 @@ function Test-BrowserEvidenceDurationValue {
 }
 
 function Get-BrowserRunnerErrorClass {
-  param([AllowNull()][string]$ErrorMessage)
+  param(
+    [AllowNull()][string]$ErrorMessage,
+    [AllowNull()][string]$FailedAction = ""
+  )
 
   $safe = Redact-SecretLikeString ([string]$ErrorMessage)
+  if ([string]$FailedAction -eq "idempotent_replay") {
+    return "browser_idempotent_replay_failed"
+  }
   if ([string]::IsNullOrWhiteSpace($safe)) {
     return "browser_live_runner_failed"
   }
@@ -2239,6 +2300,7 @@ const { chromium } = require("@playwright/test");
 let liveBrowser = null;
 let liveMissingSelectorKeys = [];
 let liveActions = [];
+let liveCurrentAction = "startup";
 let liveDurations = {
   browser_launch_duration_ms: "unavailable",
   context_setup_duration_ms: "unavailable",
@@ -2257,6 +2319,7 @@ const runnerDeadline = setTimeout(() => {
     actions: liveActions,
     durations: liveDurations,
     error: "browser_live_runner_timeout",
+    failed_action: liveCurrentAction,
     missing_selector_keys: liveMissingSelectorKeys,
     outcome: "failed",
   }));
@@ -2403,6 +2466,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
 
   await runDryRun("0.15000000", "browser live smoke apply");
 
+  liveCurrentAction = "execute_apply";
   start = now();
   await page.locator(dataTestId(selectors.executeButton)).click();
   await textIncludes(page, selectors.executeOutcome, "execute_outcome=applied", 20000);
@@ -2413,15 +2477,20 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
   durations.ledger_refresh_duration_ms = durations.execute_apply_duration_ms;
   actions.push({ name: "execute_apply", status: "applied", outcome: "applied", duration_ms: durations.execute_apply_duration_ms });
 
+  liveCurrentAction = "idempotent_replay";
   start = now();
-  await page.locator(dataTestId(selectors.executeButton)).click();
-  await textIncludes(page, selectors.executeOutcome, "execute_outcome=idempotent", 20000);
-  await textIncludes(page, selectors.ledgerRefreshStatus, "ledger_entries_refresh_after_execute=success", 20000);
-  durations.idempotent_replay_duration_ms = elapsed(start);
+  try {
+    await page.locator(dataTestId(selectors.executeButton)).click();
+    await textIncludes(page, selectors.executeOutcome, "execute_outcome=idempotent", 20000);
+    await textIncludes(page, selectors.ledgerRefreshStatus, "ledger_entries_refresh_after_execute=success", 20000);
+  } finally {
+    durations.idempotent_replay_duration_ms = elapsed(start);
+  }
   actions.push({ name: "idempotent_replay", status: "idempotent", outcome: "idempotent", duration_ms: durations.idempotent_replay_duration_ms });
 
   actions.push({ name: "ledger_refresh", status: "success", outcome: "success", duration_ms: durations.ledger_refresh_duration_ms });
 
+  liveCurrentAction = "refund_refusal";
   await fillRefund("0.11000000", "browser live smoke refusal");
   start = now();
   await page.locator(dataTestId(selectors.dryRunButton)).click();
@@ -2439,6 +2508,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
   durations.refund_refusal_duration_ms = elapsed(start);
   actions.push({ name: "refund_refusal", status: "blocked", outcome: "blocked", duration_ms: durations.refund_refusal_duration_ms });
 
+  liveCurrentAction = "complete";
   await browser.close();
   liveBrowser = null;
   clearTimeout(runnerDeadline);
@@ -2456,6 +2526,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
     actions: liveActions,
     durations: liveDurations,
     error: String(error && error.message ? error.message : error).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]"),
+    failed_action: liveCurrentAction,
     missing_selector_keys: liveMissingSelectorKeys,
     outcome: "failed",
   }));
@@ -2521,7 +2592,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
         $artifact.outcome = "passed"
         $artifact.blockers = @()
       } else {
-        $runnerErrorClass = Get-BrowserRunnerErrorClass ([string]$runnerResult.error)
+        $runnerErrorClass = Get-BrowserRunnerErrorClass -ErrorMessage ([string]$runnerResult.error) -FailedAction ([string]$runnerResult.failed_action)
         $artifact.outcome = "failed"
         $artifact.blockers = @($runnerErrorClass)
       }
@@ -2556,6 +2627,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
     Write-SafeHost "browser_live_mutation_attempt_artifact_outcome=$($artifact.outcome)"
     Write-SafeHost "browser_live_mutation_attempt_blockers=$(if ($artifact.blockers.Count -gt 0) { $artifact.blockers -join '+' } else { 'none' })"
     Write-SafeHost "browser_live_mutation_attempt_error_class=$(if ($artifact.blockers.Count -gt 0 -and [string]$runnerStatus -eq 'failed') { $artifact.blockers -join '+' } else { 'none' })"
+    Write-SafeHost "browser_live_mutation_attempt_failed_action=$(if ($artifact.PSObject.Properties.Name -contains 'browser_runner') { $artifact.browser_runner.failed_action } else { 'none' })"
     Write-SafeHost "browser_live_mutation_attempt_missing_selector_keys=$(if ($artifact.PSObject.Properties.Name -contains 'selector_snapshot' -and $artifact.selector_snapshot.missing_selector_count -gt 0) { $artifact.selector_snapshot.missing_selector_keys -join '+' } else { 'none' })"
     Write-SafeHost "browser_live_mutation_attempt_session_handoff_present=$(Format-BoolMarker $sessionHandoffPresent)"
     Write-SafeHost "browser_live_mutation_attempt_session_material_echoed=false"
@@ -2799,6 +2871,9 @@ function New-BrowserEvidenceArtifact {
       missing_selector_keys = @()
       missing_selector_count = 0
     }
+    browser_runner = [PSCustomObject]@{
+      failed_action = "none"
+    }
     duration_field_names = [PSCustomObject]@{
       service_readiness_duration_ms = [string](Get-JsonProperty $durationFields "serviceReadinessDurationMs" "UI browser evidence duration fields")
       browser_launch_duration_ms = [string](Get-JsonProperty $durationFields "browserLaunchDurationMs" "UI browser evidence duration fields")
@@ -2863,6 +2938,12 @@ function Assert-BrowserEvidenceArtifactShape {
       if ([string]$key -notmatch '^[A-Za-z0-9_]+$') {
         throw "browser selector snapshot key must be a safe selector contract key"
       }
+    }
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "browser_runner") {
+    $runner = Get-JsonProperty $Artifact "browser_runner" "browser evidence runner"
+    if ([string](Get-JsonProperty $runner "failed_action" "browser evidence runner") -notmatch '^[A-Za-z0-9_]+$') {
+      throw "browser runner failed_action must be a safe action key"
     }
   }
 
@@ -3603,7 +3684,7 @@ try {
   Check "control-plane source contains transactional execute boundary" {
     Assert-AdminSourceMarkers
   }
-  Write-ControlPlaneRuntimeSourceProbe -SourcePaths @($adminSourcePath, $dryRunContractPath, $PSCommandPath)
+  $runtimeSourceProbe = Write-ControlPlaneRuntimeSourceProbe -SourcePaths @($adminSourcePath, $dryRunContractPath, $PSCommandPath)
 
   if ($AdminSessionHandoff) {
     Check-Blocking "control-plane admin session handoff" {
@@ -3618,6 +3699,11 @@ try {
     Exit-WithFailuresOrBlockers
     Write-SafeHost "Control Plane ledger adjustment execute smoke contract-only checks passed; live DB was not required."
     exit 0
+  }
+
+  if (Test-BrowserLiveMutationAttemptOptIn -and [bool]$runtimeSourceProbe.StaleOrUnverified) {
+    Add-Blocker "browser live mutation runtime-current gate - runtime_image_stale_or_unverified reason=$($runtimeSourceProbe.Reason)"
+    Exit-WithFailuresOrBlockers
   }
 
   Check-Blocking "live Docker compose control-plane/postgres availability" {

@@ -8,6 +8,8 @@ param(
   [switch]$AcceptProductionCutover,
   [switch]$LiveCommitProof,
   [switch]$AcknowledgeRollbackPlan,
+  [switch]$SingleWriterCutoverProof,
+  [AllowNull()][string]$ActiveWriterMarker,
   [AllowNull()][string]$RuntimeContainerCommitMarker,
   [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
@@ -43,6 +45,7 @@ $liveProbeReadbackGateContract = $readinessContract.live_probe_measurement_readb
 $shadowCommitHandoffContract = $readinessContract.shadow_commit_handoff_contract
 $productionCutoverAcceptanceGateContract = $readinessContract.production_cutover_acceptance_gate_contract
 $runtimeEvidenceTrustGateContract = $readinessContract.runtime_evidence_trust_gate_contract
+$singleWriterCutoverProofGateContract = $readinessContract.single_writer_cutover_proof_gate_contract
 $providerContract = $contract.runtime_env_provider_preflight_contract
 $performanceContract = $contract.handoff_performance_guard_contract
 
@@ -61,6 +64,9 @@ $productionCutoverAcceptanceEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PRODUCTION
 $liveCommitProofEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_COMMIT_PROOF_AVAILABLE"
 $rollbackPlanAcknowledgedEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_PLAN_ACKNOWLEDGED"
 $runtimeContainerCommitEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_CONTAINER_COMMIT"
+$singleWriterProofEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_SINGLE_WRITER_PROOF"
+$activeWriterEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_ACTIVE_WRITER"
+$localWriterDisabledEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_LOCAL_WRITER_DISABLED_FOR_CUTOVER"
 $runtimeSchemaEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_SCHEMA_AVAILABLE"
 $runtimeToolEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_TOOL_AVAILABLE"
 
@@ -182,6 +188,18 @@ function Assert-Contract {
     if ($requiredTrustClassification -notin $trustClassifications) {
       throw "runtime evidence trust gate missing classification: $requiredTrustClassification"
     }
+  }
+  if ([string]$singleWriterCutoverProofGateContract.schema_version -ne "control_plane_billing_ledger_single_writer_cutover_proof_gate.v1") {
+    throw "single writer cutover proof gate schema mismatch"
+  }
+  if ([bool]$singleWriterCutoverProofGateContract.default_proof_accepted) {
+    throw "single writer proof must default to rejected"
+  }
+  if ([string]$singleWriterCutoverProofGateContract.expected_active_writer -ne "billing_ledger_runtime_writer") {
+    throw "single writer proof expected active writer mismatch"
+  }
+  if ([bool]$singleWriterCutoverProofGateContract.no_double_write_contract.dual_commit_allowed) {
+    throw "single writer proof must not allow dual commit"
   }
   if ([string]$performanceContract.summary_field -ne "handoff_performance_summary") {
     throw "handoff performance summary contract missing"
@@ -1791,6 +1809,103 @@ function New-RuntimeEvidenceTrustGate {
   }
 }
 
+function New-SingleWriterCutoverProofGate {
+  param(
+    [Parameter(Mandatory = $true)][bool]$ProofRequested,
+    [AllowNull()][string]$ActiveWriter,
+    [Parameter(Mandatory = $true)][bool]$LocalWriterDisabled,
+    [Parameter(Mandatory = $true)]$RuntimeEvidenceTrustGate,
+    [Parameter(Mandatory = $true)]$RollbackGate
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if (-not $ProofRequested) {
+    [void]$blockers.Add("single_writer_proof_missing")
+  }
+
+  $expectedActiveWriter = [string]$singleWriterCutoverProofGateContract.expected_active_writer
+  $activeWriterPresent = -not [string]::IsNullOrWhiteSpace($ActiveWriter)
+  $activeWriterMatches = $activeWriterPresent -and ([string]$ActiveWriter).Trim().ToLowerInvariant() -eq $expectedActiveWriter
+  if (-not $activeWriterPresent) {
+    [void]$blockers.Add("active_writer_marker_missing")
+  } elseif (-not $activeWriterMatches) {
+    [void]$failures.Add("active_writer_marker_not_billing_ledger_runtime_writer")
+  }
+  if (-not $LocalWriterDisabled) {
+    [void]$blockers.Add("local_writer_disable_marker_missing")
+  }
+  if ([string]$RuntimeEvidenceTrustGate.classification -ne "container_runtime_current") {
+    [void]$blockers.Add("runtime_evidence_not_container_current")
+  }
+
+  $proof = $RollbackGate.rollback_no_commit_proof
+  if ($null -eq $proof -or $proof.rollback_observed -ne $true) {
+    [void]$blockers.Add("rollback_proof_missing")
+  }
+  if ($null -ne $proof -and ($proof.commit_observed -eq $true -or $proof.dual_commit_observed -eq $true)) {
+    [void]$failures.Add("dual_commit_or_commit_observed")
+  }
+  if ([string]$RollbackGate.classification -eq "fail") {
+    foreach ($failure in @($RollbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($blockers.Count -eq 0) {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = [string]$singleWriterCutoverProofGateContract.schema_version
+    requested = $ProofRequested
+    classification = $classification
+    expected_active_writer = $expectedActiveWriter
+    active_writer = [ordered]@{
+      marker_env_var = $activeWriterEnvVar
+      present = $activeWriterPresent
+      matches_expected = $activeWriterMatches
+      output = "presence_and_match_only"
+      raw_env_value_echoed = $false
+    }
+    local_writer = [ordered]@{
+      disable_marker_env_var = $localWriterDisabledEnvVar
+      disabled_for_cutover = $LocalWriterDisabled
+      output = "boolean_only"
+      raw_env_value_echoed = $false
+    }
+    no_double_write = [ordered]@{
+      dual_commit_allowed = $false
+      local_and_billing_ledger_commit_same_request_allowed = $false
+      dual_commit_observed = if ($null -eq $proof) { $false } else { [bool]$proof.dual_commit_observed }
+      commit_observed_before_cutover = if ($null -eq $proof) { $false } else { [bool]$proof.commit_observed }
+    }
+    rollback_proof = [ordered]@{
+      rollback_observed = if ($null -eq $proof) { $false } else { [bool]$proof.rollback_observed }
+      local_writer_fallback = "control_plane_local_sql_writer"
+      fallback_after_billing_commit_allowed = $false
+    }
+    runtime_evidence_classification = [string]$RuntimeEvidenceTrustGate.classification
+    proof_scope = "marker_only_no_source_of_truth_switch"
+    can_substitute_production_cutover = $false
+    blockers = @($blockers | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
 function New-ProductionCutoverAcceptanceGate {
   param(
     [Parameter(Mandatory = $true)][bool]$Accepted,
@@ -1799,6 +1914,7 @@ function New-ProductionCutoverAcceptanceGate {
     [Parameter(Mandatory = $true)]$ShadowHandoff,
     [Parameter(Mandatory = $true)]$RollbackGate,
     [Parameter(Mandatory = $true)]$RuntimeEvidenceTrustGate,
+    [Parameter(Mandatory = $true)]$SingleWriterProofGate,
     [Parameter(Mandatory = $true)][string]$Mode
   )
 
@@ -1823,6 +1939,13 @@ function New-ProductionCutoverAcceptanceGate {
     [void]$blockers.Add("container_runtime_stale")
   } elseif ([string]$RuntimeEvidenceTrustGate.classification -ne "container_runtime_current") {
     [void]$blockers.Add("runtime_evidence_not_container_current")
+  }
+  if ([string]$SingleWriterProofGate.classification -eq "fail") {
+    foreach ($failure in @($SingleWriterProofGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  } elseif ([string]$SingleWriterProofGate.classification -ne "pass") {
+    [void]$blockers.Add("single_writer_proof_not_passed")
   }
   $proof = $RollbackGate.rollback_no_commit_proof
   if ($null -eq $proof -or $proof.rollback_observed -ne $true) {
@@ -1861,6 +1984,7 @@ function New-ProductionCutoverAcceptanceGate {
       shadow_commit_handoff_passed = ([string]$ShadowHandoff.classification -eq "pass")
       rollback_plan_acknowledged = $RollbackPlanAcknowledged
       runtime_evidence_classification = [string]$RuntimeEvidenceTrustGate.classification
+      single_writer_proof_classification = [string]$SingleWriterProofGate.classification
       source_of_truth_switch_performed = $false
       source_of_truth_switch_performed_by_this_script = $false
       source_of_truth_switch_execution = "separate_explicit_cutover_step_required"
@@ -2078,6 +2202,9 @@ $productionCutoverAccepted = [bool]$AcceptProductionCutover -or (Test-TruthyEnv 
 $liveCommitProofAvailable = [bool]$LiveCommitProof -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($liveCommitProofEnvVar)))
 $rollbackPlanAcknowledged = [bool]$AcknowledgeRollbackPlan -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($rollbackPlanAcknowledgedEnvVar)))
 $runtimeCommitMarkerValue = if ([string]::IsNullOrWhiteSpace($RuntimeContainerCommitMarker)) { [Environment]::GetEnvironmentVariable($runtimeContainerCommitEnvVar) } else { $RuntimeContainerCommitMarker }
+$singleWriterProofRequested = [bool]$SingleWriterCutoverProof -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($singleWriterProofEnvVar)))
+$activeWriterMarkerValue = if ([string]::IsNullOrWhiteSpace($ActiveWriterMarker)) { [Environment]::GetEnvironmentVariable($activeWriterEnvVar) } else { $ActiveWriterMarker }
+$localWriterDisabledForCutover = Test-TruthyEnv ([Environment]::GetEnvironmentVariable($localWriterDisabledEnvVar))
 $artifactWriteRequested = [bool]$WriteProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactWriteEnvVar)))
 $artifactReadRequested = [bool]$ReadProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactReadEnvVar)))
 $artifactPathValue = if ([string]::IsNullOrWhiteSpace($ArtifactPath)) { [Environment]::GetEnvironmentVariable($artifactPathEnvVar) } else { $ArtifactPath }
@@ -2140,7 +2267,8 @@ $liveDbRollbackOnlyExecutorGate = New-LiveDbRollbackOnlyExecutorGate -ExecutionR
 $realLiveDbRollbackAttempt = New-RealLiveDbRollbackAttempt -AttemptRequested $realLiveAttemptRequested -ToolReadiness $localToolReadiness -RollbackGate $liveDbRollbackOnlyExecutorGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -RuntimeToolAvailable $runtimeToolAvailable
 $shadowCommitHandoffSummary = New-ShadowCommitHandoff -Requested $shadowCommitHandoffRequested -LiveAttempt $realLiveDbRollbackAttempt -RollbackGate $liveDbRollbackOnlyExecutorGate -Mode ([string]$mode.Mode)
 $runtimeEvidenceTrustGate = New-RuntimeEvidenceTrustGate -RollbackGate $liveDbRollbackOnlyExecutorGate -CurrentCommit (Get-CurrentCommitMarker) -RuntimeCommitMarker $runtimeCommitMarkerValue
-$productionCutoverAcceptanceGate = New-ProductionCutoverAcceptanceGate -Accepted $productionCutoverAccepted -LiveCommitProofAvailable $liveCommitProofAvailable -RollbackPlanAcknowledged $rollbackPlanAcknowledged -ShadowHandoff $shadowCommitHandoffSummary -RollbackGate $liveDbRollbackOnlyExecutorGate -RuntimeEvidenceTrustGate $runtimeEvidenceTrustGate -Mode ([string]$mode.Mode)
+$singleWriterCutoverProofGate = New-SingleWriterCutoverProofGate -ProofRequested $singleWriterProofRequested -ActiveWriter $activeWriterMarkerValue -LocalWriterDisabled $localWriterDisabledForCutover -RuntimeEvidenceTrustGate $runtimeEvidenceTrustGate -RollbackGate $liveDbRollbackOnlyExecutorGate
+$productionCutoverAcceptanceGate = New-ProductionCutoverAcceptanceGate -Accepted $productionCutoverAccepted -LiveCommitProofAvailable $liveCommitProofAvailable -RollbackPlanAcknowledged $rollbackPlanAcknowledged -ShadowHandoff $shadowCommitHandoffSummary -RollbackGate $liveDbRollbackOnlyExecutorGate -RuntimeEvidenceTrustGate $runtimeEvidenceTrustGate -SingleWriterProofGate $singleWriterCutoverProofGate -Mode ([string]$mode.Mode)
 $productionWriterCutoverPreflight = New-ProductionWriterCutoverPreflight -LiveAttempt $realLiveDbRollbackAttempt -RollbackGate $liveDbRollbackOnlyExecutorGate -Mode ([string]$mode.Mode) -AcceptanceGate $productionCutoverAcceptanceGate
 
 $summary = [ordered]@{
@@ -2270,6 +2398,7 @@ $summary = [ordered]@{
   real_live_db_rollback_attempt = $realLiveDbRollbackAttempt
   shadow_commit_handoff = $shadowCommitHandoffSummary
   runtime_evidence_trust_gate = $runtimeEvidenceTrustGate
+  single_writer_cutover_proof_gate = $singleWriterCutoverProofGate
   production_cutover_acceptance_gate = $productionCutoverAcceptanceGate
   production_writer_cutover_preflight = $productionWriterCutoverPreflight
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))

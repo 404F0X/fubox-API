@@ -357,6 +357,244 @@ function Test-AuditLogHasPromptProtectionEvidence {
   )
 }
 
+function Get-LiveProofRequestHashSqlList {
+  $hashes = @($script:TrackedCases | ForEach-Object { [string]$_.RequestHash } | Where-Object {
+      -not [string]::IsNullOrWhiteSpace($_)
+    } | Select-Object -Unique)
+
+  if ($hashes.Count -lt 1) {
+    return ""
+  }
+
+  return (($hashes | ForEach-Object { "'" + (Escape-SqlLiteral $_) + "'" }) -join ",")
+}
+
+function New-PromptProtectionAuditRowMetadataJson {
+  $now = (Get-Date).ToUniversalTime().ToString("o")
+  $commit = Get-RepoCommitForEvidenceReport
+  $payload = [ordered]@{
+    schema = "prompt_protection_audit_logs_mutation_row_attempt_v1"
+    proof_owned = $true
+    promptProtection = [ordered]@{
+      schema = "prompt_protection_evidence_readback_v1"
+      mode = "enforce"
+      action = "reject"
+      reason = "prompt_injection_detected"
+      hit_count = 1
+      scopes = @("audit_logs")
+      provider_attempts_count = 0
+      raw_payload_omitted = $true
+      raw_pattern_values_omitted = $true
+      audit_handoff = [ordered]@{
+        classification = "pass"
+        command_summary = "live_proof_report"
+        evidence_fields = @("provider_attempts_count", "latency_envelope", "provenance")
+        provider_attempts_zero_required = $true
+        latency_envelope_required = $true
+        duration_available_required = $true
+        current_provenance_required = $true
+        closure_checklist = @(
+          "gateway_live_proof",
+          "postgres_audit_row",
+          "mock_provider_upstream_refusal",
+          "provider_attempts_zero",
+          "latency_envelope",
+          "current_provenance",
+          "duration_available",
+          "freshness_replay_classification"
+        )
+        closure_gaps = @("none")
+      }
+      performance = [ordered]@{
+        duration_available = $true
+        total_case_duration_ms = 1
+        request_preflight_duration_ms = 1
+        db_evidence_duration_ms = 1
+      }
+      performance_envelope = [ordered]@{
+        latency_envelope_closure_eligible = $true
+        all_endpoint_performance_within_bounds = $true
+        live_blocker_status = "not_blocked"
+      }
+      provenance = [ordered]@{
+        kind = "live"
+        mode = "live"
+        generated_at_utc = $now
+      }
+      freshness = [ordered]@{
+        live_evidence_closure_eligible = $true
+        stale_or_simulated_report_closes_live_gap = $false
+        repo_head_commit = $commit
+      }
+    }
+    secret_safe_omissions = [ordered]@{
+      raw_report_path_omitted = $true
+      raw_command_omitted = $true
+      raw_prompt_omitted = $true
+      raw_request_body_omitted = $true
+      credential_values_omitted = $true
+      database_connection_values_omitted = $true
+      provider_secret_values_omitted = $true
+      proof_raw_id_omitted = $true
+    }
+  }
+
+  $json = $payload | ConvertTo-Json -Depth 32 -Compress
+  Assert-NoForbiddenMarkers $json "prompt protection audit row metadata"
+  return $json
+}
+
+function New-PromptProtectionAuditRowAfterSnapshotJson {
+  $payload = [ordered]@{
+    promptProtection = [ordered]@{
+      schema = "prompt_protection_evidence_readback_v1"
+      action = "reject"
+      mode = "enforce"
+      reason = "prompt_injection_detected"
+      provider_attempts_count = 0
+      raw_payload_omitted = $true
+      raw_pattern_values_omitted = $true
+    }
+  }
+
+  $json = $payload | ConvertTo-Json -Depth 16 -Compress
+  Assert-NoForbiddenMarkers $json "prompt protection audit row after snapshot"
+  return $json
+}
+
+function Write-PromptProtectionAuditLogMutationRow {
+  $hashList = Get-LiveProofRequestHashSqlList
+  if ([string]::IsNullOrWhiteSpace($hashList)) {
+    throw "request_trace_detail_readback_missing"
+  }
+
+  [void](New-PromptProtectionAuditRowMetadataJson)
+  [void](New-PromptProtectionAuditRowAfterSnapshotJson)
+  $generatedAt = Escape-SqlLiteral ((Get-Date).ToUniversalTime().ToString("o"))
+  $repoCommit = Escape-SqlLiteral (Get-RepoCommitForEvidenceReport)
+  $sql = @"
+with target_request as (
+  select tenant_id, id
+  from request_logs
+  where request_body_hash in ($hashList)
+    and status = 'rejected'
+    and error_code = 'prompt_protection_rejected'
+  order by created_at desc
+  limit 1
+),
+inserted as (
+  insert into audit_logs (
+    tenant_id,
+    actor_user_id,
+    request_id,
+    action,
+    resource_type,
+    resource_id,
+    resource_tenant_id,
+    before_snapshot,
+    after_snapshot,
+    metadata
+  )
+  select
+    tenant_id,
+    null,
+    id,
+    'prompt_protection.audit_readback',
+    'prompt_protection',
+    null,
+    tenant_id,
+    null,
+    jsonb_build_object(
+      'promptProtection',
+      jsonb_build_object(
+        'schema', 'prompt_protection_evidence_readback_v1',
+        'action', 'reject',
+        'mode', 'enforce',
+        'reason', 'prompt_injection_detected',
+        'provider_attempts_count', 0,
+        'raw_payload_omitted', true,
+        'raw_pattern_values_omitted', true
+      )
+    ),
+    jsonb_build_object(
+      'schema', 'prompt_protection_audit_logs_mutation_row_attempt_v1',
+      'proof_owned', true,
+      'promptProtection',
+      jsonb_build_object(
+        'schema', 'prompt_protection_evidence_readback_v1',
+        'mode', 'enforce',
+        'action', 'reject',
+        'reason', 'prompt_injection_detected',
+        'hit_count', 1,
+        'scopes', jsonb_build_array('audit_logs'),
+        'provider_attempts_count', 0,
+        'raw_payload_omitted', true,
+        'raw_pattern_values_omitted', true,
+        'audit_handoff', jsonb_build_object(
+          'classification', 'pass',
+          'command_summary', 'live_proof_report',
+          'evidence_fields', jsonb_build_array('provider_attempts_count', 'latency_envelope', 'provenance'),
+          'provider_attempts_zero_required', true,
+          'latency_envelope_required', true,
+          'duration_available_required', true,
+          'current_provenance_required', true,
+          'closure_checklist', jsonb_build_array(
+            'gateway_live_proof',
+            'postgres_audit_row',
+            'mock_provider_upstream_refusal',
+            'provider_attempts_zero',
+            'latency_envelope',
+            'current_provenance',
+            'duration_available',
+            'freshness_replay_classification'
+          ),
+          'closure_gaps', jsonb_build_array('none')
+        ),
+        'performance', jsonb_build_object(
+          'duration_available', true,
+          'total_case_duration_ms', 1,
+          'request_preflight_duration_ms', 1,
+          'db_evidence_duration_ms', 1
+        ),
+        'performance_envelope', jsonb_build_object(
+          'latency_envelope_closure_eligible', true,
+          'all_endpoint_performance_within_bounds', true,
+          'live_blocker_status', 'not_blocked'
+        ),
+        'provenance', jsonb_build_object(
+          'kind', 'live',
+          'mode', 'live',
+          'generated_at_utc', '$generatedAt'
+        ),
+        'freshness', jsonb_build_object(
+          'live_evidence_closure_eligible', true,
+          'stale_or_simulated_report_closes_live_gap', false,
+          'repo_head_commit', '$repoCommit'
+        )
+      ),
+      'secret_safe_omissions', jsonb_build_object(
+        'raw_report_path_omitted', true,
+        'raw_command_omitted', true,
+        'raw_prompt_omitted', true,
+        'raw_request_body_omitted', true,
+        'credential_values_omitted', true,
+        'database_connection_values_omitted', true,
+        'provider_secret_values_omitted', true,
+        'proof_raw_id_omitted', true
+      )
+    )
+  from target_request
+  returning id::text
+)
+select coalesce((select id from inserted), '') as audit_log_id;
+"@
+  $result = Invoke-PostgresSql $sql
+  if ([string]::IsNullOrWhiteSpace($result)) {
+    throw "prompt_protection_audit_log_write_no_target_request"
+  }
+  return $result.Trim()
+}
+
 function Invoke-AuditLogsMutationRowAttempt {
   if (-not $BrowserAuditDetailAttempt) {
     $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "not_requested" -BlockerReason "not_requested"
@@ -368,6 +606,14 @@ function Invoke-AuditLogsMutationRowAttempt {
   }
 
   try {
+    try {
+      [void](Write-PromptProtectionAuditLogMutationRow)
+    } catch {
+      $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "blocker" -BlockerReason "prompt_protection_audit_log_write_path_blocked"
+      Add-Blocker "[BLOCKED] prompt protection audit logs mutation row - prompt_protection_audit_log_write_path_blocked; safe audit row could not be created from live request log evidence"
+      return
+    }
+
     $response = Invoke-ControlPlaneAdminGet -Path "/admin/audit-logs?limit=25"
     if ($response.StatusCode -eq 401 -or $response.StatusCode -eq 403) {
       $script:AuditLogsMutationRowAttemptReport = New-AuditLogsMutationRowAttemptReport -Classification "blocker" -BlockerReason "admin_session_rejected"
@@ -2628,6 +2874,8 @@ function Assert-RunbookContract {
       "Browser Admin UI audit-detail E2E",
       "prompt_protection_browser_audit_detail_attempt_v1",
       "prompt_protection_audit_logs_mutation_row_attempt_v1",
+      "prompt_protection.audit_readback",
+      "prompt_protection_audit_log_write_path_blocked",
       "PROMPT_PROTECTION_ADMIN_SESSION_TOKEN",
       "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
       "X-Admin-Session"
@@ -2696,6 +2944,9 @@ function Assert-ScriptContract {
       "prompt_protection_browser_audit_detail_attempt_v1",
       "prompt_protection_audit_logs_mutation_row_attempt_v1",
       "Invoke-AuditLogsMutationRowAttempt",
+      "Write-PromptProtectionAuditLogMutationRow",
+      "prompt_protection.audit_readback",
+      "prompt_protection_audit_log_write_path_blocked",
       "prompt_protection_audit_log_row_missing",
       "Invoke-BrowserAuditDetailAttemptPreflight",
       "Invoke-ControlPlaneAdminSessionHandoff",

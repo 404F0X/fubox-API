@@ -1337,6 +1337,15 @@
       "tpm_estimate.trusted_source_implementation_slot.source_type",
       "tpm_estimate.trusted_source_implementation_slot.provider_invocation_allowed",
       "tpm_estimate.trusted_source_implementation_slot.fallback_required",
+      "tpm_estimate.trusted_source_backend_handoff.status",
+      "tpm_estimate.trusted_source_backend_handoff.backend_kind",
+      "tpm_estimate.trusted_source_backend_handoff.source_type",
+      "tpm_estimate.trusted_source_backend_handoff.token_kind",
+      "tpm_estimate.trusted_source_backend_handoff.provider_invocation_allowed",
+      "tpm_estimate.trusted_source_backend_handoff.estimate_duration_marker",
+      "tpm_estimate.trusted_source_backend_handoff.source_marker",
+      "tpm_estimate.trusted_source_backend_handoff.token_count_marker",
+      "tpm_estimate.trusted_source_backend_handoff.estimate_duration_ms",
       "rate_limit_reservation.required_capacity.tokens_per_minute",
       "rate_limit_reservation.acquire.dimensions.tpm.required",
       "rate_limit_reservation.db_required_capacity.tokens_per_minute"
@@ -1395,6 +1404,58 @@
         "trusted_source_implementation_slot.token_count_marker",
         "trusted_source_implementation_slot.material_in_output",
         "trusted_source_implementation_slot.provider_side_effect_required"
+      ]
+    },
+    "backend_handoff_contract": {
+      "schema": "gateway_tpm_trusted_numeric_source_backend_handoff_v1",
+      "helper": "gateway_trusted_numeric_source_backend_handoff",
+      "states": [
+        {
+          "name": "tokenizer_disabled_default",
+          "status": "disabled",
+          "backend_kind": "tokenizer_backend",
+          "source_type": "tokenizer",
+          "token_kind": "prompt_tokens",
+          "provider_invocation_allowed": false,
+          "fallback_required": true
+        },
+        {
+          "name": "read_model_backend_unavailable",
+          "status": "blocked",
+          "backend_kind": "read_model_backend",
+          "source_type": "read_model",
+          "token_kind": "input_tokens",
+          "provider_invocation_allowed": false,
+          "fallback_required": true
+        },
+        {
+          "name": "read_model_backend_ready",
+          "status": "ready",
+          "backend_kind": "read_model_backend",
+          "source_type": "read_model",
+          "token_kind": "input_tokens",
+          "provider_invocation_allowed": true,
+          "fallback_required": false
+        }
+      ],
+      "safe_summary_fields": [
+        "trusted_source_backend_handoff.schema",
+        "trusted_source_backend_handoff.status",
+        "trusted_source_backend_handoff.backend_kind",
+        "trusted_source_backend_handoff.source_type",
+        "trusted_source_backend_handoff.token_kind",
+        "trusted_source_backend_handoff.config_enabled",
+        "trusted_source_backend_handoff.backend_available",
+        "trusted_source_backend_handoff.backend_attached",
+        "trusted_source_backend_handoff.provider_invocation_allowed",
+        "trusted_source_backend_handoff.fallback_required",
+        "trusted_source_backend_handoff.availability_marker",
+        "trusted_source_backend_handoff.estimate_duration_marker",
+        "trusted_source_backend_handoff.source_marker",
+        "trusted_source_backend_handoff.token_count_marker",
+        "trusted_source_backend_handoff.estimate_duration_ms",
+        "trusted_source_backend_handoff.material_in_output",
+        "trusted_source_backend_handoff.provider_side_effect_required"
       ]
     },
     "forbidden_output_markers": [
@@ -1472,7 +1533,14 @@
       "tpm_estimate.trusted_source_implementation_slot.provider_available",
       "tpm_estimate.trusted_source_implementation_slot.provider_attached",
       "tpm_estimate.trusted_source_implementation_slot.provider_invocation_allowed",
-      "tpm_estimate.trusted_source_implementation_slot.fallback_required"
+      "tpm_estimate.trusted_source_implementation_slot.fallback_required",
+      "tpm_estimate.trusted_source_backend_handoff.status",
+      "tpm_estimate.trusted_source_backend_handoff.backend_kind",
+      "tpm_estimate.trusted_source_backend_handoff.source_type",
+      "tpm_estimate.trusted_source_backend_handoff.token_kind",
+      "tpm_estimate.trusted_source_backend_handoff.provider_invocation_allowed",
+      "tpm_estimate.trusted_source_backend_handoff.estimate_duration_marker",
+      "tpm_estimate.trusted_source_backend_handoff.estimate_duration_ms"
     ],
     "forbidden_output_markers": [
       "sk-live",

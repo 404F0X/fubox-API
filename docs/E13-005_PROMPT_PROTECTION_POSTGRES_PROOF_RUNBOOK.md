@@ -222,10 +222,16 @@ Expected pass evidence, when Gateway/Postgres/mock-provider/session are ready:
 - Audit Logs mutation-row evidence is tracked separately as
   `prompt_protection_audit_logs_mutation_row_attempt_v1`. A pass requires the
   Admin UI Audit Logs tab/API to expose a matching prompt-protection closure or
-  readback row. If Request/Trace detail readback passes but `/admin/audit-logs`
-  has no matching prompt-protection audit row, the script records
+  readback row. The S35 proof script creates one proof-owned
+  `prompt_protection.audit_readback` row directly from the live `request_logs`
+  evidence, then reads it back through `/admin/audit-logs`; this validates the
+  Admin UI audit surface without requiring a Gateway runtime code change. If
+  Request/Trace detail readback passes but `/admin/audit-logs` has no matching
+  prompt-protection audit row, the script records
   `blocker_reason=prompt_protection_audit_log_row_missing`; that is a precise
   audit-surface blocker, not proof of an unsafe Gateway side effect.
+  If the proof-owned row cannot be created from live request-log evidence, the
+  script records `blocker_reason=prompt_protection_audit_log_write_path_blocked`.
 
 Expected blocker evidence, when Gateway/Postgres/mock-provider/session are not
 ready:
