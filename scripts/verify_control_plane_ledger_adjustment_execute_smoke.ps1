@@ -832,11 +832,13 @@ function Assert-UiSmokeHandoffFreshness {
   foreach ($needle in @(
       "ledgerAdjustmentExecuteBrowserPreflightContract",
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
+      "ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
       "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
+      "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract",
       "browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract"
@@ -852,10 +854,13 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerExecuteSmokeSerializableHandoffArtifact",
       "browserPreflight",
       "browserActionPlan",
+      "browserDomActionRunner",
       "browserEvidenceArtifact",
       "browserRunnerReadiness",
       "browserLiveRunbook",
       "billing_execute_browser_live_e2e_evidence.v1",
+      "dom_action_runner_dry_run_only",
+      "selector_availability_summary",
       "runner_readiness_only",
       "artifact_roundtrip_fresh",
       "live_mutation_opt_in_missing",
@@ -985,6 +990,49 @@ function Assert-BrowserActionPlanContract {
   }
 }
 
+function Assert-BrowserDomActionRunnerContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-BrowserActionPlanContract $Handoff
+  $runner = Get-JsonProperty $Handoff "browserDomActionRunner" "UI handoff"
+  Assert-Equal (Get-JsonProperty $runner "defaultMode" "UI browser DOM action runner") "dom_action_runner_dry_run_only" "UI browser DOM action runner default mode"
+  Assert-True ((Get-JsonProperty $runner "defaultClicksAdminUiActions" "UI browser DOM action runner") -eq $false) "UI browser DOM action runner must not click by default"
+  Assert-True ((Get-JsonProperty $runner "defaultSubmitsLiveMutation" "UI browser DOM action runner") -eq $false) "UI browser DOM action runner must not mutate by default"
+  Assert-Equal (Get-JsonProperty $runner "toolingBlocker" "UI browser DOM action runner") "browser_tooling_unavailable" "UI browser DOM action runner tooling blocker"
+
+  $selectorAvailability = Get-JsonProperty $runner "selectorAvailability" "UI browser DOM action runner"
+  Assert-Equal (Get-JsonProperty $selectorAvailability "source" "UI browser DOM action runner selector availability") "ledgerAdjustmentExecuteLiveSmokeContract.selectors" "UI browser DOM action runner selector source"
+  Assert-Equal (Get-JsonProperty $selectorAvailability "summaryMarker" "UI browser DOM action runner selector availability") "selector_availability_summary" "UI browser DOM action runner selector summary marker"
+  Assert-Equal (Get-JsonProperty $selectorAvailability "missingMarker" "UI browser DOM action runner selector availability") "selector_unavailable" "UI browser DOM action runner missing selector marker"
+
+  $artifactEmission = Get-JsonProperty $runner "artifactEmission" "UI browser DOM action runner"
+  Assert-Equal (Get-JsonProperty $artifactEmission "artifactName" "UI browser DOM action runner artifact emission") "billing_execute_browser_live_e2e_evidence.v1" "UI browser DOM action runner artifact name"
+  Assert-Equal (Get-JsonProperty $artifactEmission "outputMarker" "UI browser DOM action runner artifact emission") "browser_runner_evidence_json" "UI browser DOM action runner artifact output marker"
+  Assert-Equal (Get-JsonProperty $artifactEmission "writeOptInFlag" "UI browser DOM action runner artifact emission") "-BrowserEvidenceArtifactWriteOptIn" "UI browser DOM action runner artifact write flag"
+  Assert-True ((Get-JsonProperty $artifactEmission "writeDisabledByDefault" "UI browser DOM action runner artifact emission") -eq $true) "UI browser DOM action runner artifact write must be disabled by default"
+
+  $secretSafeOmission = Get-JsonProperty $runner "secretSafeOmission" "UI browser DOM action runner"
+  foreach ($name in @("echoRequestMaterial", "echoSessionMaterial", "echoUrlCredentials")) {
+    Assert-True ((Get-JsonProperty $secretSafeOmission $name "UI browser DOM action runner secret-safe omission") -eq $false) "UI browser DOM action runner must omit $name"
+  }
+
+  $steps = @(Get-JsonProperty (Get-JsonProperty $Handoff "browserActionPlan" "UI handoff") "steps" "UI browser action plan")
+  $stepOrder = Get-JsonStringArray (Get-JsonProperty $runner "stepOrder" "UI browser DOM action runner") "UI browser DOM action runner step order"
+  Assert-Equal $stepOrder.Count $steps.Count "UI browser DOM action runner step order count"
+  $plannedTimeouts = Get-JsonProperty $runner "plannedTimeoutMs" "UI browser DOM action runner"
+  $durationMapping = Get-JsonProperty $runner "durationFieldMapping" "UI browser DOM action runner"
+  foreach ($step in $steps) {
+    $name = [string](Get-JsonProperty $step "name" "UI browser action step")
+    Assert-True ($stepOrder -contains $name) "UI browser DOM action runner step order missing $name"
+    $timeout = [int](Get-JsonProperty $plannedTimeouts $name "UI browser DOM action runner planned timeout")
+    Assert-True ($timeout -gt 0 -and $timeout -le 30000) "UI browser DOM action runner timeout for $name must be bounded"
+    $durationField = [string](Get-JsonProperty $durationMapping $name "UI browser DOM action runner duration mapping")
+    if ($durationField -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser DOM action runner duration field '$durationField' must be machine readable"
+    }
+  }
+}
+
 function Write-BrowserActionPlanDryRun {
   param([Parameter(Mandatory = $true)]$Handoff)
 
@@ -1014,6 +1062,69 @@ function Write-BrowserActionPlanDryRun {
   $steps = @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")
   foreach ($step in $steps) {
     Write-SafeHost "browser_action_step=$([string](Get-JsonProperty $step "name" "UI browser action step"));selector=$([string](Get-JsonProperty $step "selector" "UI browser action step"));expected_state=$([string](Get-JsonProperty $step "expectedState" "UI browser action step"));submits_live_mutation=$(Format-BoolMarker ([bool](Get-JsonProperty $step "submitsLiveMutation" "UI browser action step")))"
+  }
+}
+
+function Write-BrowserDomActionRunnerDryRun {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus
+  )
+
+  Assert-BrowserDomActionRunnerContract $Handoff
+  $runner = Get-JsonProperty $Handoff "browserDomActionRunner" "UI handoff"
+  $actionPlan = Get-JsonProperty $Handoff "browserActionPlan" "UI handoff"
+  $selectors = Get-JsonProperty $Handoff "selectors" "UI handoff"
+  $selectorAvailability = Get-JsonProperty $runner "selectorAvailability" "UI browser DOM action runner"
+  $plannedTimeouts = Get-JsonProperty $runner "plannedTimeoutMs" "UI browser DOM action runner"
+  $durationMapping = Get-JsonProperty $runner "durationFieldMapping" "UI browser DOM action runner"
+  $artifactEmission = Get-JsonProperty $runner "artifactEmission" "UI browser DOM action runner"
+  $secretSafeOmission = Get-JsonProperty $runner "secretSafeOmission" "UI browser DOM action runner"
+  $steps = @(Get-JsonProperty $actionPlan "steps" "UI browser action plan")
+  $missingSelectors = @()
+  $selectorKeys = @()
+  foreach ($step in $steps) {
+    $selectorKey = [string](Get-JsonProperty $step "selector" "UI browser DOM action step")
+    $selectorKeys += $selectorKey
+    try {
+      [void](Get-JsonProperty $selectors $selectorKey "UI browser DOM action selector")
+    } catch {
+      $missingSelectors += $selectorKey
+    }
+  }
+
+  $summary = "ready"
+  if ($missingSelectors.Count -gt 0) {
+    $summary = "$([string](Get-JsonProperty $selectorAvailability "missingMarker" "UI browser DOM action selector availability")):$($missingSelectors -join '+')"
+  }
+  $toolingBlocker = "none"
+  if ($ToolingStatus -ne "available") {
+    $toolingBlocker = [string](Get-JsonProperty $runner "toolingBlocker" "UI browser DOM action runner")
+  }
+
+  Write-SafeHost "Browser ledger execute DOM action runner dry-run boundary:"
+  Write-SafeHost "browser_dom_action_runner_mode=$([string](Get-JsonProperty $runner "defaultMode" "UI browser DOM action runner"))"
+  Write-SafeHost "browser_dom_action_runner_clicks_enabled=false"
+  Write-SafeHost "browser_dom_action_runner_live_mutation_enabled=false"
+  Write-SafeHost "browser_dom_action_runner_tooling=$ToolingStatus"
+  Write-SafeHost "browser_dom_action_runner_tooling_blocker=$toolingBlocker"
+  Write-SafeHost "$([string](Get-JsonProperty $selectorAvailability "summaryMarker" "UI browser DOM action selector availability"))=$summary"
+  Write-SafeHost "browser_dom_action_runner_selector_count=$($selectorKeys.Count)"
+  Write-SafeHost "browser_dom_action_runner_secret_url_credentials_echoed=$(Format-BoolMarker ([bool](Get-JsonProperty $secretSafeOmission "echoUrlCredentials" "UI browser DOM action runner secret-safe omission")))"
+  Write-SafeHost "browser_dom_action_runner_secret_session_echoed=$(Format-BoolMarker ([bool](Get-JsonProperty $secretSafeOmission "echoSessionMaterial" "UI browser DOM action runner secret-safe omission")))"
+  Write-SafeHost "browser_dom_action_runner_request_material_echoed=$(Format-BoolMarker ([bool](Get-JsonProperty $secretSafeOmission "echoRequestMaterial" "UI browser DOM action runner secret-safe omission")))"
+  Write-SafeHost "browser_dom_action_runner_artifact=$([string](Get-JsonProperty $artifactEmission "artifactName" "UI browser DOM action runner artifact emission"))"
+  Write-SafeHost "browser_dom_action_runner_artifact_output=$([string](Get-JsonProperty $artifactEmission "outputMarker" "UI browser DOM action runner artifact emission"))"
+  Write-SafeHost "browser_dom_action_runner_artifact_write_disabled_default=$(Format-BoolMarker ([bool](Get-JsonProperty $artifactEmission "writeDisabledByDefault" "UI browser DOM action runner artifact emission")))"
+
+  $index = 0
+  foreach ($step in $steps) {
+    $name = [string](Get-JsonProperty $step "name" "UI browser DOM action step")
+    $selectorKey = [string](Get-JsonProperty $step "selector" "UI browser DOM action step")
+    $timeout = [int](Get-JsonProperty $plannedTimeouts $name "UI browser DOM action planned timeout")
+    $durationField = [string](Get-JsonProperty $durationMapping $name "UI browser DOM action duration mapping")
+    Write-SafeHost "browser_dom_action_runner_step=$index;name=$name;selector=$selectorKey;planned_timeout_ms=$timeout;duration_field=$durationField;click_planned=false;mutation_planned=false"
+    $index += 1
   }
 }
 
@@ -1996,6 +2107,10 @@ try {
 
   Check "Admin UI ledger execute browser action plan dry-run contract" {
     Write-BrowserActionPlanDryRun (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  Check "Admin UI ledger execute browser DOM action runner dry-run boundary" {
+    Write-BrowserDomActionRunnerDryRun -Handoff (Read-JsonFile $uiSmokeHandoffPath) -ToolingStatus (Get-BrowserToolingStatus)
   }
 
   Check "control-plane source contains transactional execute boundary" {

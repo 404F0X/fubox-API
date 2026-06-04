@@ -272,8 +272,53 @@ export const ledgerAdjustmentExecuteBrowserRunnerReadinessContract = {
   statusSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserDomActionRunnerContract = {
+  artifactEmission: {
+    artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    outputMarker: "browser_runner_evidence_json",
+    writeDisabledByDefault: true,
+    writeOptInFlag: "-BrowserEvidenceArtifactWriteOptIn",
+  },
+  defaultClicksAdminUiActions: false,
+  defaultMode: "dom_action_runner_dry_run_only",
+  defaultSubmitsLiveMutation: false,
+  durationFieldMapping: {
+    dry_run_plan: "dry_run_plan_duration_ms",
+    execute_apply: "execute_apply_duration_ms",
+    idempotent_replay: "idempotent_replay_duration_ms",
+    ledger_refresh: "ledger_refresh_duration_ms",
+    refund_refusal: "refund_refusal_duration_ms",
+  },
+  plannedTimeoutMs: {
+    dry_run_plan: 5000,
+    execute_apply: 5000,
+    idempotent_replay: 5000,
+    ledger_refresh: 5000,
+    refund_refusal: 5000,
+  },
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
+  selectorAvailability: {
+    missingMarker: "selector_unavailable",
+    source: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
+    summaryMarker: "selector_availability_summary",
+  },
+  stepOrder: [
+    "dry_run_plan",
+    "execute_apply",
+    "idempotent_replay",
+    "refund_refusal",
+    "ledger_refresh",
+  ],
+  toolingBlocker: "browser_tooling_unavailable",
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
+  browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
   browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
