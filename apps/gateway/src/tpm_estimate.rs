@@ -21,6 +21,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_SCHEMA: &st
     "gateway_tpm_trusted_numeric_source_runtime_evidence_projection_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_EVIDENCE_ARTIFACT_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_evidence_artifact_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_production_wiring_guard_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV: &str =
@@ -333,6 +335,30 @@ impl<'a> GatewayTrustedNumericSourceEnvConfigInput<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProductionWiringInput<'a> {
+    pub(crate) env_config: &'a GatewayTrustedNumericSourceEnvConfigRead,
+    pub(crate) test_harness_enabled: bool,
+    pub(crate) artifact_write_opt_in: bool,
+    pub(crate) artifact_path_allowed: bool,
+}
+
+impl<'a> GatewayTrustedNumericSourceProductionWiringInput<'a> {
+    pub(crate) const fn new(
+        env_config: &'a GatewayTrustedNumericSourceEnvConfigRead,
+        test_harness_enabled: bool,
+        artifact_write_opt_in: bool,
+        artifact_path_allowed: bool,
+    ) -> Self {
+        Self {
+            env_config,
+            test_harness_enabled,
+            artifact_write_opt_in,
+            artifact_path_allowed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceReadinessStatus {
     Unavailable,
     Available,
@@ -447,6 +473,44 @@ impl GatewayTrustedNumericSourceEnvConfigValueStatus {
             Self::Disabled => "disabled",
             Self::Enabled => "enabled",
             Self::Invalid => "invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProductionWiringStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceProductionWiringStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProductionWiringBlocker {
+    EnvConfigDisabled,
+    EnvConfigBlocked,
+    TestHarnessMissing,
+    ArtifactOptInMissing,
+    ArtifactPathOutOfScope,
+}
+
+impl GatewayTrustedNumericSourceProductionWiringBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::EnvConfigDisabled => "env_config_disabled",
+            Self::EnvConfigBlocked => "env_config_blocked",
+            Self::TestHarnessMissing => "test_harness_missing",
+            Self::ArtifactOptInMissing => "artifact_opt_in_missing",
+            Self::ArtifactPathOutOfScope => "artifact_path_out_of_scope",
         }
     }
 }
@@ -705,6 +769,72 @@ pub(crate) struct GatewayTrustedNumericSourceEnvConfigSummary {
     pub(crate) estimate_duration_marker: &'static str,
     pub(crate) source_marker: &'static str,
     pub(crate) token_count_marker: &'static str,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProductionWiringGuard {
+    pub(crate) status: GatewayTrustedNumericSourceProductionWiringStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceProductionWiringBlocker>,
+    pub(crate) env_config_status: GatewayTrustedNumericSourceEnvConfigStatus,
+    pub(crate) test_harness_enabled: bool,
+    pub(crate) artifact_write_opt_in: bool,
+    pub(crate) artifact_path_allowed: bool,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) artifact_write_allowed: bool,
+    pub(crate) artifact_readback_required: bool,
+    pub(crate) reservation_acquire_evidence_required: bool,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceProductionWiringGuard {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceProductionWiringSummary {
+        GatewayTrustedNumericSourceProductionWiringSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceProductionWiringBlocker::as_str),
+            env_config_status: self.env_config_status.as_str(),
+            test_harness_enabled: self.test_harness_enabled,
+            artifact_write_opt_in: self.artifact_write_opt_in,
+            artifact_path_allowed: self.artifact_path_allowed,
+            adapter_invocation_allowed: self.adapter_invocation_allowed,
+            artifact_write_allowed: self.artifact_write_allowed,
+            artifact_readback_required: self.artifact_readback_required,
+            reservation_acquire_evidence_required: self.reservation_acquire_evidence_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            live_gap_closure_marker: "gateway_tpm_trusted_numeric_source_live_gap_closure_ready",
+            raw_value_omitted: true,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceProductionWiringSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) env_config_status: &'static str,
+    pub(crate) test_harness_enabled: bool,
+    pub(crate) artifact_write_opt_in: bool,
+    pub(crate) artifact_path_allowed: bool,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) artifact_write_allowed: bool,
+    pub(crate) artifact_readback_required: bool,
+    pub(crate) reservation_acquire_evidence_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) live_gap_closure_marker: &'static str,
+    pub(crate) raw_value_omitted: bool,
     pub(crate) material_in_output: bool,
 }
 
@@ -1498,6 +1628,54 @@ pub(crate) fn gateway_trusted_numeric_source_env_config_read(
         raw_value_omitted: true,
         invalid_value_refused,
         runtime_config,
+        material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_production_wiring_guard(
+    input: GatewayTrustedNumericSourceProductionWiringInput<'_>,
+) -> GatewayTrustedNumericSourceProductionWiringGuard {
+    let (status, blocker) = match input.env_config.status {
+        GatewayTrustedNumericSourceEnvConfigStatus::Disabled
+        | GatewayTrustedNumericSourceEnvConfigStatus::Refused => (
+            GatewayTrustedNumericSourceProductionWiringStatus::Disabled,
+            Some(GatewayTrustedNumericSourceProductionWiringBlocker::EnvConfigDisabled),
+        ),
+        GatewayTrustedNumericSourceEnvConfigStatus::Blocked => (
+            GatewayTrustedNumericSourceProductionWiringStatus::Blocked,
+            Some(GatewayTrustedNumericSourceProductionWiringBlocker::EnvConfigBlocked),
+        ),
+        GatewayTrustedNumericSourceEnvConfigStatus::Ready if !input.test_harness_enabled => (
+            GatewayTrustedNumericSourceProductionWiringStatus::Blocked,
+            Some(GatewayTrustedNumericSourceProductionWiringBlocker::TestHarnessMissing),
+        ),
+        GatewayTrustedNumericSourceEnvConfigStatus::Ready if !input.artifact_write_opt_in => (
+            GatewayTrustedNumericSourceProductionWiringStatus::Blocked,
+            Some(GatewayTrustedNumericSourceProductionWiringBlocker::ArtifactOptInMissing),
+        ),
+        GatewayTrustedNumericSourceEnvConfigStatus::Ready if !input.artifact_path_allowed => (
+            GatewayTrustedNumericSourceProductionWiringStatus::Blocked,
+            Some(GatewayTrustedNumericSourceProductionWiringBlocker::ArtifactPathOutOfScope),
+        ),
+        GatewayTrustedNumericSourceEnvConfigStatus::Ready => (
+            GatewayTrustedNumericSourceProductionWiringStatus::Ready,
+            None,
+        ),
+    };
+    let ready = status == GatewayTrustedNumericSourceProductionWiringStatus::Ready;
+
+    GatewayTrustedNumericSourceProductionWiringGuard {
+        status,
+        blocker,
+        env_config_status: input.env_config.status,
+        test_harness_enabled: input.test_harness_enabled,
+        artifact_write_opt_in: input.artifact_write_opt_in,
+        artifact_path_allowed: input.artifact_path_allowed,
+        adapter_invocation_allowed: ready
+            && input.env_config.runtime_config.adapter_invocation_allowed,
+        artifact_write_allowed: ready,
+        artifact_readback_required: ready,
+        reservation_acquire_evidence_required: ready,
         material_in_output: false,
     }
 }
@@ -4963,6 +5141,214 @@ mod tests {
         let _ = fs::remove_file(simulated_path);
         let _ = fs::remove_file(missing_duration_path);
         let _ = fs::remove_file(missing_source_path);
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_production_wiring_guard_contract()
+    {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_production_wiring_guard_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA)
+        );
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+
+        let fields = contract["safe_summary_fields"]
+            .as_array()
+            .expect("production wiring safe summary fields should be an array");
+        for field in [
+            "trusted_source_production_wiring.status",
+            "trusted_source_production_wiring.blocker",
+            "trusted_source_production_wiring.adapter_invocation_allowed",
+            "trusted_source_production_wiring.artifact_write_allowed",
+            "trusted_source_production_wiring.artifact_readback_required",
+            "trusted_source_production_wiring.reservation_acquire_evidence_required",
+            "trusted_source_production_wiring.availability_marker",
+            "trusted_source_production_wiring.estimate_duration_marker",
+            "trusted_source_production_wiring.source_marker",
+            "trusted_source_production_wiring.token_count_marker",
+            "trusted_source_production_wiring.live_gap_closure_marker",
+            "trusted_source_production_wiring.raw_value_omitted",
+            "trusted_source_production_wiring.material_in_output",
+        ] {
+            assert!(
+                fields.iter().any(|entry| entry.as_str() == Some(field)),
+                "production wiring summary should include {field}"
+            );
+        }
+
+        for required_state in [
+            "default_request_path_disabled",
+            "ready_env_without_test_harness_blocks",
+            "ready_env_without_artifact_opt_in_blocks",
+            "ready_env_out_of_scope_artifact_blocks",
+            "test_harness_opt_in_ready",
+        ] {
+            assert!(
+                contract["states"]
+                    .as_array()
+                    .expect("production wiring states should be an array")
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "production wiring contract missing state: {required_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_production_wiring_guard_controls_artifact_opt_in()
+    {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("production wiring states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing production wiring state: {name}"))
+        }
+
+        fn assert_wiring_summary(
+            summary: &GatewayTrustedNumericSourceProductionWiringSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.blocker,
+                expected["blocker"].as_str().map(|blocker| match blocker {
+                    "env_config_disabled" => "env_config_disabled",
+                    "test_harness_missing" => "test_harness_missing",
+                    "artifact_opt_in_missing" => "artifact_opt_in_missing",
+                    "artifact_path_out_of_scope" => "artifact_path_out_of_scope",
+                    other => panic!("unexpected production wiring blocker: {other}"),
+                })
+            );
+            assert_eq!(
+                summary.env_config_status,
+                expected["env_config_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.test_harness_enabled,
+                expected["test_harness_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_write_opt_in,
+                expected["artifact_write_opt_in"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_path_allowed,
+                expected["artifact_path_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.adapter_invocation_allowed,
+                expected["adapter_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_write_allowed,
+                expected["artifact_write_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_readback_required,
+                expected["artifact_readback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_evidence_required,
+                expected["reservation_acquire_evidence_required"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert_eq!(
+                summary.live_gap_closure_marker,
+                "gateway_tpm_trusted_numeric_source_live_gap_closure_ready"
+            );
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_production_wiring_guard_contract"];
+        let disabled_env = gateway_trusted_numeric_source_env_config_read(
+            GatewayTrustedNumericSourceEnvConfigInput::missing_by_default(),
+        );
+        let ready_env = gateway_trusted_numeric_source_env_config_read(
+            GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, true, false),
+        );
+
+        let cases = [
+            (
+                "default_request_path_disabled",
+                GatewayTrustedNumericSourceProductionWiringInput::new(
+                    &disabled_env,
+                    false,
+                    false,
+                    false,
+                ),
+            ),
+            (
+                "ready_env_without_test_harness_blocks",
+                GatewayTrustedNumericSourceProductionWiringInput::new(
+                    &ready_env, false, true, true,
+                ),
+            ),
+            (
+                "ready_env_without_artifact_opt_in_blocks",
+                GatewayTrustedNumericSourceProductionWiringInput::new(
+                    &ready_env, true, false, true,
+                ),
+            ),
+            (
+                "ready_env_out_of_scope_artifact_blocks",
+                GatewayTrustedNumericSourceProductionWiringInput::new(
+                    &ready_env, true, true, false,
+                ),
+            ),
+            (
+                "test_harness_opt_in_ready",
+                GatewayTrustedNumericSourceProductionWiringInput::new(&ready_env, true, true, true),
+            ),
+        ];
+        let mut summaries = Vec::new();
+        for (name, input) in cases {
+            let guard = gateway_trusted_numeric_source_production_wiring_guard(input);
+            assert_wiring_summary(&guard.safe_summary(), state(contract, name));
+            summaries.push(guard.safe_summary());
+        }
+
+        let serialized = serde_json::to_string(&json!({ "production_wiring": summaries }))
+            .expect("production wiring summaries should serialize")
+            .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric production wiring summary leaked forbidden marker: {forbidden}"
+            );
+        }
     }
 
     fn ready_runtime_evidence_projection_for_artifact_test()

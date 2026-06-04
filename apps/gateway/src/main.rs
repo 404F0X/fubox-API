@@ -14794,6 +14794,156 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_trusted_source_production_wiring_guard_does_not_change_runtime_ordering()
+     {
+        let main_source = include_str!("main.rs");
+        let tpm_estimate_source = include_str!("tpm_estimate.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let guard = &fixture["trusted_numeric_source_production_wiring_guard_contract"];
+
+        assert_eq!(
+            guard["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_production_wiring_guard_v1")
+        );
+        assert_eq!(guard["default_status"].as_str(), Some("disabled"));
+        for required_marker in [
+            "GatewayTrustedNumericSourceProductionWiringInput",
+            "GatewayTrustedNumericSourceProductionWiringGuard",
+            "gateway_trusted_numeric_source_production_wiring_guard(",
+            "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_WIRING_SCHEMA",
+        ] {
+            assert!(
+                tpm_estimate_source.contains(required_marker),
+                "production wiring guard helper should exist for opt-in runtime wiring: {required_marker}"
+            );
+        }
+
+        for field in [
+            "trusted_source_production_wiring.adapter_invocation_allowed",
+            "trusted_source_production_wiring.artifact_write_allowed",
+            "trusted_source_production_wiring.artifact_readback_required",
+            "trusted_source_production_wiring.reservation_acquire_evidence_required",
+            "trusted_source_production_wiring.estimate_duration_marker",
+            "trusted_source_production_wiring.source_marker",
+            "trusted_source_production_wiring.token_count_marker",
+            "trusted_source_production_wiring.live_gap_closure_marker",
+            "trusted_source_production_wiring.raw_value_omitted",
+            "trusted_source_production_wiring.material_in_output",
+        ] {
+            assert!(
+                guard["safe_summary_fields"]
+                    .as_array()
+                    .expect("production wiring safe summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "production wiring summary should include {field}"
+            );
+        }
+
+        for marker in [
+            "prompt-protection allow",
+            "trusted numeric env/config read boundary",
+            "trusted numeric production wiring guard",
+            "trusted numeric runtime adapter boundary",
+            "trusted numeric runtime evidence artifact write/read",
+            "TPM estimate",
+            "rate-limit reservation acquire",
+            "provider side effect",
+        ] {
+            assert!(
+                guard["ordering_contract"]
+                    .as_array()
+                    .expect("production wiring ordering contract should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(marker)),
+                "production wiring ordering contract should include {marker}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(
+                section,
+                estimate_marker,
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+            for helper in [
+                "GatewayTrustedNumericSourceProductionWiringInput",
+                "gateway_trusted_numeric_source_production_wiring_guard(",
+                "gateway_trusted_numeric_source_runtime_evidence_artifact_write(",
+                "gateway_trusted_numeric_source_runtime_evidence_artifact_read(",
+                "gateway_trusted_numeric_source_runtime_adapter_boundary(",
+                "GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED",
+                "GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED",
+                "fs::write",
+                "fs::read_to_string",
+                ".tmp/gateway_tpm",
+            ] {
+                assert!(
+                    !estimate_section.contains(helper),
+                    "{section_name} runtime must not wire trusted numeric production artifact path by default: {helper}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_trusted_source_runtime_adapter_boundary_does_not_change_runtime_ordering()
      {
         let main_source = include_str!("main.rs");
