@@ -1164,11 +1164,12 @@ describe("api client", () => {
     });
   });
 
-  it("wraps future ledger adjustment execute responses as explicit future execute results", async () => {
-    const { requestLedgerAdjustmentExecuteContract } = await loadClient();
-    const futureExecuteResponse = {
+  it("wraps ledger adjustment execute responses as explicit same-origin execute posts", async () => {
+    const { executeLedgerAdjustment } = await loadClient();
+    const executeResponse = {
       audit_log_write: true,
-      executed: true,
+      audit_log_id: "audit-1",
+      dedupe_material_echoed: false,
       ledger_entry: {
         amount: "0.25000000",
         currency: "USD",
@@ -1182,14 +1183,21 @@ describe("api client", () => {
       },
       ledger_write: true,
       mode: "execute",
+      outcome: "applied",
       request_log_write: true,
+      transaction_contract: {
+        dedupe_material_echoed: false,
+        unbounded_scan_allowed: false,
+        write_performed: true,
+        writer: "control_plane_transactional_admin_ledger_adjustment_writer",
+      },
       upstream_call: false,
     };
-    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse(futureExecuteResponse));
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse(executeResponse));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      requestLedgerAdjustmentExecuteContract({
+      executeLedgerAdjustment({
         amount: "0.25000000",
         currency: "USD",
         operation: "refund",
@@ -1197,7 +1205,18 @@ describe("api client", () => {
       }),
     ).resolves.toEqual({
       kind: "future_execute",
-      response: futureExecuteResponse,
+      response: executeResponse,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(init).toMatchObject({ credentials: "include", method: "POST" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      amount: "0.25000000",
+      currency: "USD",
+      mode: "execute",
+      operation: "refund",
+      related_ledger_entry_id: "ledger-entry-1",
     });
   });
 

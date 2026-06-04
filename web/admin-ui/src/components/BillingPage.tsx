@@ -10,12 +10,14 @@ import {
   type LedgerAdjustmentDryRunRequest,
   type LedgerAdjustmentDryRunResponse,
   type LedgerAdjustmentExecuteResult,
+  type LedgerAdjustmentFutureExecuteResponse,
   type LedgerEntryListFilters,
   type PriceVersion,
   type PriceVersionListFilters,
   type PriceVersionStatus,
   createPriceVersion,
   dryRunLedgerAdjustment,
+  executeLedgerAdjustment,
   getBillingReconciliationReport,
   listLedgerEntries,
   listPriceVersions,
@@ -81,6 +83,11 @@ type LedgerAdjustmentDryRunState = {
 type LedgerAdjustmentExecuteState = {
   request: LedgerAdjustmentDryRunRequest;
   result: LedgerAdjustmentExecuteResult;
+};
+
+type LedgerAdjustmentExecuteErrorState = {
+  kind: "blocked" | "failed";
+  message: string;
 };
 
 type ReconciliationFilterState = {
@@ -486,6 +493,9 @@ function LedgerOverviewSection() {
   const [executeCheckError, setExecuteCheckError] = useState<string | null>(null);
   const [executeCheckLoading, setExecuteCheckLoading] = useState(false);
   const [executeCheckResult, setExecuteCheckResult] = useState<LedgerAdjustmentExecuteState | null>(null);
+  const [executeError, setExecuteError] = useState<LedgerAdjustmentExecuteErrorState | null>(null);
+  const [executeLoading, setExecuteLoading] = useState(false);
+  const [executeResult, setExecuteResult] = useState<LedgerAdjustmentExecuteState | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<LedgerFilterState>(defaultLedgerFilters);
@@ -516,6 +526,10 @@ function LedgerOverviewSection() {
 
   function updateDryRunForm(field: keyof LedgerAdjustmentDryRunForm, value: string) {
     setDryRunForm((current) => ({ ...current, [field]: value }));
+    setExecuteCheckError(null);
+    setExecuteCheckResult(null);
+    setExecuteError(null);
+    setExecuteResult(null);
   }
 
   async function handleDryRun(event: FormEvent<HTMLFormElement>) {
@@ -524,6 +538,8 @@ function LedgerOverviewSection() {
     setDryRunPlan(null);
     setExecuteCheckError(null);
     setExecuteCheckResult(null);
+    setExecuteError(null);
+    setExecuteResult(null);
     setDryRunLoading(true);
 
     try {
@@ -556,6 +572,32 @@ function LedgerOverviewSection() {
       setExecuteCheckError(errorMessage(requestError));
     } finally {
       setExecuteCheckLoading(false);
+    }
+  }
+
+  async function handleExecuteLedgerAdjustment() {
+    setExecuteError(null);
+
+    if (!dryRunPlan || !isLedgerAdjustmentDryRunFresh(dryRunPlan.request, dryRunForm)) {
+      setExecuteResult(null);
+      setExecuteError({
+        kind: "blocked",
+        message: "Run a fresh dry-run before executing ledger adjustment.",
+      });
+      return;
+    }
+
+    setExecuteLoading(true);
+
+    try {
+      const result = await executeLedgerAdjustment(dryRunPlan.request);
+      setExecuteResult({ request: dryRunPlan.request, result });
+      await loadEntries(filters);
+    } catch (requestError) {
+      setExecuteResult(null);
+      setExecuteError(executeErrorState(requestError));
+    } finally {
+      setExecuteLoading(false);
     }
   }
 
@@ -656,12 +698,17 @@ function LedgerOverviewSection() {
 
       <LedgerAdjustmentExecuteAffordance
         checking={executeCheckLoading}
-        executeFresh={isLedgerAdjustmentDryRunFresh(executeCheckResult?.request, dryRunForm)}
-        executeResult={executeCheckResult?.result ?? null}
+        contractFresh={isLedgerAdjustmentDryRunFresh(executeCheckResult?.request, dryRunForm)}
+        contractResult={executeCheckResult?.result ?? null}
         error={executeCheckError}
+        executeError={executeError}
+        executeFresh={isLedgerAdjustmentDryRunFresh(executeResult?.request, dryRunForm)}
+        executeResult={executeResult?.result ?? null}
+        executing={executeLoading}
         hasDryRun={Boolean(dryRunPlan)}
         dryRunFresh={isLedgerAdjustmentDryRunFresh(dryRunPlan?.request, dryRunForm)}
         onCheckExecuteContract={() => void handleExecuteContractCheck()}
+        onExecute={() => void handleExecuteLedgerAdjustment()}
       />
 
       {dryRunPlan ? (
@@ -801,29 +848,45 @@ function LedgerOverviewSection() {
 
 function LedgerAdjustmentExecuteAffordance({
   checking,
+  contractFresh,
+  contractResult,
   dryRunFresh,
   error,
+  executeError,
   executeFresh,
   executeResult,
+  executing,
   hasDryRun,
   onCheckExecuteContract,
+  onExecute,
 }: {
   checking: boolean;
+  contractFresh: boolean;
+  contractResult: LedgerAdjustmentExecuteResult | null;
   dryRunFresh: boolean;
   error: string | null;
+  executeError: LedgerAdjustmentExecuteErrorState | null;
   executeFresh: boolean;
   executeResult: LedgerAdjustmentExecuteResult | null;
+  executing: boolean;
   hasDryRun: boolean;
   onCheckExecuteContract: () => void;
+  onExecute: () => void;
 }) {
   const statusText = executeResult
     ? executeReadinessStatus(executeResult, executeFresh)
+    : executeError
+    ? executeError.message
+    : contractResult
+    ? executeReadinessStatus(contractResult, contractFresh)
     : !hasDryRun
     ? "Run a dry-run before execute can be considered."
     : dryRunFresh
-      ? "Fresh dry-run result is available; execute contract mode is validation-only in this build."
+      ? "Fresh dry-run result is available; execute contract preflight and ledger execute are both explicit actions."
       : "Form changed after dry-run. Run dry-run again before execute can be considered.";
-  const flags = executeResult ? executeFlags(executeResult) : null;
+  const flags = executeResult ? executeFlags(executeResult) : contractResult ? executeFlags(contractResult) : null;
+  const activeResult = executeResult ?? contractResult;
+  const activeFresh = executeResult ? executeFresh : contractFresh;
 
   return (
     <section className="admin-panel" aria-label="Ledger adjustment execute readiness">
@@ -832,15 +895,26 @@ function LedgerAdjustmentExecuteAffordance({
           <h2>Execute Readiness</h2>
           <p>{statusText}</p>
         </div>
-        <StateChip status={executeStatus(executeResult, { dryRunFresh, executeFresh, hasDryRun })} />
+        <StateChip
+          status={executeStatus(activeResult, {
+            dryRunFresh,
+            errorKind: executeError?.kind,
+            executeFresh: activeFresh,
+            executing,
+            hasDryRun,
+          })}
+        />
       </div>
       <div className="manual-test-flags" aria-label="Execute contract flags">
         <span>execute_contract_mode=true</span>
-        <span>execute_endpoint=false</span>
+        <span>execute_endpoint=true</span>
         <span>fresh_dry_run={String(dryRunFresh)}</span>
-        <span>contract_check_fresh={String(executeFresh)}</span>
-        <span>contract_check_network_call={String(Boolean(executeResult))}</span>
-        <span>execute_write_network_call=false</span>
+        <span>contract_check_fresh={String(contractFresh)}</span>
+        <span>contract_check_network_call={String(Boolean(contractResult))}</span>
+        <span>execute_write_network_call={String(Boolean(executeResult || executeError))}</span>
+        {executeResult && executeResult.kind === "future_execute" ? (
+          <span>execute_outcome={safeFieldValue(executeOutcome(executeResult.response))}</span>
+        ) : null}
         {flags ? (
           <>
             <span>future_writer_required={String(flags.futureWriterRequired)}</span>
@@ -848,8 +922,8 @@ function LedgerAdjustmentExecuteAffordance({
             <span>audit_log_write={String(flags.auditLogWrite)}</span>
             <span>request_log_write={String(flags.requestLogWrite)}</span>
             <span>upstream_call={String(flags.upstreamCall)}</span>
-            <span>server_generated_write_token={String(flags.serverGeneratedWriteToken)}</span>
-            <span>write_token_echoed={String(flags.writeTokenEchoed)}</span>
+            <span>server_generated_write_marker={String(flags.serverGeneratedWriteMarker)}</span>
+            <span>write_marker_echoed={String(flags.writeMarkerEchoed)}</span>
           </>
         ) : null}
       </div>
@@ -862,12 +936,14 @@ function LedgerAdjustmentExecuteAffordance({
         >
           {checking ? "Checking execute contract" : "Check execute contract"}
         </button>
-        <button className="secondary-button" type="button" disabled>
-          Execute ledger adjustment
+        <button className="primary-button primary-button--inline" type="button" disabled={!dryRunFresh || executing} onClick={onExecute}>
+          {executing ? "Executing" : "Execute ledger adjustment"}
         </button>
-        <p className="muted-copy">Dry-run is the only active ledger adjustment action in this UI build.</p>
+        <p className="muted-copy">Execution uses the fresh dry-run payload and returns only safe ledger/audit summaries.</p>
       </div>
+      {contractResult ? <LedgerAdjustmentExecuteContractResult result={contractResult} fresh={contractFresh} /> : null}
       {executeResult ? <LedgerAdjustmentExecuteContractResult result={executeResult} fresh={executeFresh} /> : null}
+      {executeError ? <p className="form-status form-status--error">{executeError.message}</p> : null}
       {error ? <p className="form-status form-status--error">{error}</p> : null}
     </section>
   );
@@ -884,9 +960,10 @@ function LedgerAdjustmentExecuteContractResult({
   const snapshotPolicy = executeAuditSnapshotPolicy(result);
   const contract = result.kind === "future_execute" ? undefined : result.response.execute_contract;
   const reasons = executeBlockedReasons(result, fresh);
+  const isExecuteResult = result.kind === "future_execute";
 
   return (
-    <section aria-label="Ledger adjustment execute contract result">
+    <section aria-label={isExecuteResult ? "Ledger adjustment execute result" : "Ledger adjustment execute contract result"}>
       {reasons.length > 0 ? (
         <div className="issue-list" aria-label="Execute blocked reasons">
           {reasons.map((reason) => (
@@ -906,13 +983,107 @@ function LedgerAdjustmentExecuteContractResult({
           ["Audit write", String(flags.auditLogWrite)],
           ["Request log write", String(flags.requestLogWrite)],
           ["Upstream call", String(flags.upstreamCall)],
-          ["Server generated write token", String(flags.serverGeneratedWriteToken)],
-          ["Write token echoed", String(flags.writeTokenEchoed)],
+          ["Server generated write marker", String(flags.serverGeneratedWriteMarker)],
+          ["Write marker echoed", String(flags.writeMarkerEchoed)],
           ["Audit snapshot", snapshotPolicy],
         ]}
       />
       {contract ? <LedgerAdjustmentExecuteV2Summary contract={contract} /> : null}
+      {result.kind === "future_execute" ? <LedgerAdjustmentExecutedSummary response={result.response} /> : null}
     </section>
+  );
+}
+
+function LedgerAdjustmentExecutedSummary({ response }: { response: LedgerAdjustmentFutureExecuteResponse }) {
+  const entry = response.ledger_entry;
+  const transaction = response.transaction_contract;
+  const refund = response.refund_remaining_summary;
+
+  return (
+    <div className="detail-grid detail-grid--compact" aria-label="Ledger adjustment executed summary">
+      <article>
+        <h3>Execute Summary</h3>
+        <Fields
+          items={[
+            ["Outcome", executeOutcome(response)],
+            ["Mode", response.mode],
+            ["Ledger write", String(response.ledger_write)],
+            ["Audit write", String(response.audit_log_write)],
+            ["Request log write", String(response.request_log_write)],
+            ["Upstream call", String(response.upstream_call)],
+            ["Audit log", shortId(response.audit_log_id)],
+            ["Shared transaction", String(response.business_and_success_audit_share_transaction ?? "-")],
+            ["Success audit after ledger", String(response.success_audit_only_after_ledger_write ?? "-")],
+            ["Audit rollback", String(response.audit_insert_failure_rolls_back_ledger_write ?? "-")],
+            ["Refusal audit", String(response.refusal_does_not_build_success_audit ?? "-")],
+            ["Material echoed", String(response.dedupe_material_echoed ?? false)],
+            ["Public output", safeFieldValue(response.dedupe_public_output)],
+          ]}
+        />
+      </article>
+
+      <article>
+        <h3>Executed Ledger Entry</h3>
+        {entry ? (
+          <Fields
+            items={[
+              ["Entry", shortId(entry.id)],
+              ["Tenant", shortId(entry.tenant_id)],
+              ["Project", shortId(entry.project_id)],
+              ["Wallet", shortId(entry.wallet_id)],
+              ["Request", shortId(entry.request_id)],
+              ["Related entry", shortId(entry.related_ledger_entry_id)],
+              ["Type", formatStatus(entry.entry_type)],
+              ["Amount", `${safeFieldValue(entry.amount)} ${safeFieldValue(entry.currency)}`],
+              ["Status", safeFieldValue(entry.status)],
+              ["Omitted material", entry.omitted_material ? `${entry.omitted_material.length} categories` : "-"],
+            ]}
+          />
+        ) : (
+          <p className="muted-copy">No safe ledger entry summary returned.</p>
+        )}
+      </article>
+
+      <article>
+        <h3>Transaction Summary</h3>
+        <Fields
+          items={[
+            ["Writer", safeFieldValue(transaction?.writer)],
+            ["Write performed", String(transaction?.write_performed ?? response.ledger_write)],
+            ["Isolation", safeFieldValue(transaction?.isolation)],
+            ["Begin before locks", String(transaction?.begin_before_locking ?? "-")],
+            ["Commit after ledger/audit", String(transaction?.commit_only_after_ledger_and_success_audit ?? "-")],
+            ["Rollback on ledger failure", String(transaction?.rollback_on_ledger_write_failure ?? "-")],
+            ["Rollback on audit failure", String(transaction?.rollback_on_audit_insert_failure ?? "-")],
+            ["Refund recompute rollback", String(transaction?.rollback_on_refund_remaining_change ?? "-")],
+            ["Lock steps", String(transaction?.bounded_lock_order?.length ?? 0)],
+            ["Bounds", String(transaction?.bounded_by?.length ?? 0)],
+            ["Material echoed", String(transaction?.dedupe_material_echoed ?? response.dedupe_material_echoed ?? false)],
+            ["Unbounded scan", String(transaction?.unbounded_scan_allowed ?? "-")],
+          ]}
+        />
+      </article>
+
+      {refund ? (
+        <article>
+          <h3>Refund Remaining</h3>
+          <Fields
+            items={[
+              ["Remaining", `${refund.remaining_refundable_amount} ${refund.currency}`],
+              ["Requested", `${refund.requested_refund_amount} ${refund.currency}`],
+              ["Source debit", `${refund.source_debit_amount} ${refund.currency}`],
+              ["Confirmed credits", `${refund.confirmed_credit_amount} ${refund.currency}`],
+              ["Confirmed credit count", String(refund.confirmed_credit_count)],
+              ["Tenant bounded", String(refund.tenant_bounded)],
+              ["Source bounded", String(refund.source_entry_bounded)],
+              ["Currency bounded", String(refund.currency_bounded)],
+              ["Confirmed only", String(refund.confirmed_only)],
+              ["Credit entry types", refund.credit_entry_types.join(", ")],
+            ]}
+          />
+        </article>
+      ) : null}
+    </div>
   );
 }
 
@@ -988,7 +1159,7 @@ function LedgerAdjustmentExecuteV2Summary({
             ["Request log mutation", String(requestLog?.request_log_mutation_allowed ?? "-")],
             ["Request material echoed", String(requestLog?.request_material_echoed ?? safeOutput?.request_material_echoed ?? false)],
             ["Credential material echoed", String(safeOutput?.credential_material_echoed ?? false)],
-            ["Output token echoed", String(safeOutput?.dedupe_material_echoed ?? contract.dedupe_material_echoed ?? false)],
+            ["Output marker echoed", String(safeOutput?.dedupe_material_echoed ?? contract.dedupe_material_echoed ?? false)],
             ["Constraints checked", String(contract.dry_run_constraints_enforced_before_refusal?.length ?? 0)],
           ]}
         />
@@ -1002,9 +1173,9 @@ type LedgerAdjustmentExecuteDisplayFlags = {
   futureWriterRequired: boolean;
   ledgerWrite: boolean;
   requestLogWrite: boolean;
-  serverGeneratedWriteToken: boolean;
+  serverGeneratedWriteMarker: boolean;
   upstreamCall: boolean;
-  writeTokenEchoed: boolean;
+  writeMarkerEchoed: boolean;
 };
 
 function executeReadinessStatus(result: LedgerAdjustmentExecuteResult, fresh: boolean): string {
@@ -1017,7 +1188,21 @@ function executeReadinessStatus(result: LedgerAdjustmentExecuteResult, fresh: bo
   }
 
   if (result.kind === "future_execute") {
-    return "Backend returned a future execute response. Review write and audit flags before treating it as final.";
+    const outcome = executeOutcome(result.response);
+
+    if (outcome === "applied") {
+      return "Ledger adjustment applied: ledger and audit writes were confirmed.";
+    }
+
+    if (outcome === "idempotent") {
+      return "Idempotent replay: existing ledger entry returned without new ledger or audit writes.";
+    }
+
+    if (outcome === "blocked") {
+      return "Ledger adjustment execute was blocked before applying writes.";
+    }
+
+    return "Ledger adjustment execute failed or returned an unrecognized outcome.";
   }
 
   return "Execute contract validated without ledger, request log, audit, or upstream writes.";
@@ -1025,8 +1210,22 @@ function executeReadinessStatus(result: LedgerAdjustmentExecuteResult, fresh: bo
 
 function executeStatus(
   result: LedgerAdjustmentExecuteResult | null,
-  state: { dryRunFresh: boolean; executeFresh: boolean; hasDryRun: boolean },
+  state: {
+    dryRunFresh: boolean;
+    errorKind?: "blocked" | "failed";
+    executeFresh: boolean;
+    executing?: boolean;
+    hasDryRun: boolean;
+  },
 ): string {
+  if (state.executing) {
+    return "pending";
+  }
+
+  if (state.errorKind) {
+    return state.errorKind;
+  }
+
   if (!state.hasDryRun) {
     return "dry_run_required";
   }
@@ -1048,7 +1247,17 @@ function executeStatus(
   }
 
   if (result.kind === "future_execute") {
-    return result.response.executed ? "success" : "failed";
+    const outcome = executeOutcome(result.response);
+
+    if (outcome === "applied" || outcome === "idempotent" || (outcome === "unknown" && result.response.executed)) {
+      return outcome === "unknown" ? "applied" : outcome;
+    }
+
+    if (outcome === "blocked") {
+      return "blocked";
+    }
+
+    return "failed";
   }
 
   return "execute_preflight";
@@ -1078,8 +1287,16 @@ function executeBlockedReasons(result: LedgerAdjustmentExecuteResult, fresh: boo
     return reasons;
   }
 
-  if (result.kind === "future_execute" && !result.response.executed) {
-    return ["future_execute_not_confirmed"];
+  if (result.kind === "future_execute") {
+    const outcome = executeOutcome(result.response);
+
+    if (outcome === "blocked") {
+      return ["execute_blocked"];
+    }
+
+    if (outcome !== "applied" && outcome !== "idempotent" && !result.response.executed) {
+      return ["execute_failed"];
+    }
   }
 
   return [];
@@ -1091,7 +1308,7 @@ function executeResultLabel(result: LedgerAdjustmentExecuteResult): string {
   }
 
   if (result.kind === "future_execute") {
-    return "future execute response";
+    return executeOutcome(result.response);
   }
 
   return "execute contract";
@@ -1104,9 +1321,9 @@ function executeFlags(result: LedgerAdjustmentExecuteResult): LedgerAdjustmentEx
       futureWriterRequired: false,
       ledgerWrite: result.response.ledger_write,
       requestLogWrite: result.response.request_log_write,
-      serverGeneratedWriteToken: false,
+      serverGeneratedWriteMarker: false,
       upstreamCall: result.response.upstream_call,
-      writeTokenEchoed: false,
+      writeMarkerEchoed: Boolean(result.response.dedupe_material_echoed),
     };
   }
 
@@ -1115,9 +1332,9 @@ function executeFlags(result: LedgerAdjustmentExecuteResult): LedgerAdjustmentEx
     futureWriterRequired: Boolean(result.response.execute_contract.future_writer_required),
     ledgerWrite: result.response.execute_contract.ledger_write,
     requestLogWrite: result.response.execute_contract.request_log_write,
-    serverGeneratedWriteToken: Boolean(result.response.execute_contract.server_generated_dedupe_material),
+    serverGeneratedWriteMarker: Boolean(result.response.execute_contract.server_generated_dedupe_material),
     upstreamCall: result.response.execute_contract.upstream_call,
-    writeTokenEchoed: Boolean(result.response.execute_contract.dedupe_material_echoed),
+    writeMarkerEchoed: Boolean(result.response.execute_contract.dedupe_material_echoed),
   };
 }
 
@@ -1129,7 +1346,36 @@ function executeAuditSnapshotPolicy(result: LedgerAdjustmentExecuteResult): stri
   return result.response.execute_contract.audit_snapshot_policy ?? "-";
 }
 
-function writeTokenPolicy(policy: string): string {
+function executeOutcome(response: LedgerAdjustmentFutureExecuteResponse): string {
+  if (response.outcome) {
+    return safeFieldValue(response.outcome);
+  }
+
+  return response.executed ? "applied" : "unknown";
+}
+
+function executeErrorState(error: unknown): LedgerAdjustmentExecuteErrorState {
+  const status = apiStatusCode(error);
+  const kind = status && status >= 400 && status < 500 ? "blocked" : "failed";
+  const safeMessage = errorMessage(error);
+  const fallback = kind === "blocked" ? "Ledger adjustment execute was blocked." : "Ledger adjustment execute failed.";
+
+  return {
+    kind,
+    message: safeMessage === "Request failed." ? fallback : `${fallback} ${safeMessage}`,
+  };
+}
+
+function apiStatusCode(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("status" in error)) {
+    return undefined;
+  }
+
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+function writeMarkerPolicy(policy: string): string {
   if (policy === "server_generated_on_execute") {
     return "server generated on execute";
   }
@@ -1199,7 +1445,7 @@ function LedgerAdjustmentDryRunResult({
             ["Wallet", shortId(plannedEntry.wallet_id)],
             ["Request", shortId(plannedEntry.request_id)],
             ["Related entry", shortId(plannedEntry.related_ledger_entry_id)],
-            ["Write token policy", writeTokenPolicy(plannedEntry.dedupe_policy)],
+            ["Write marker policy", writeMarkerPolicy(plannedEntry.dedupe_policy)],
             ["Metadata policy", plannedEntry.metadata_policy],
           ]}
         />

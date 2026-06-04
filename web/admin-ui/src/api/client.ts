@@ -814,7 +814,7 @@ export type LedgerEntryListFilters = {
 };
 
 export type LedgerAdjustmentOperation = "adjust" | "refund";
-export type LedgerAdjustmentRequestMode = "dry_run" | "execute_contract";
+export type LedgerAdjustmentRequestMode = "dry_run" | "execute_contract" | "execute";
 
 export type LedgerAdjustmentDryRunRequest = {
   amount: string;
@@ -976,14 +976,47 @@ export type LedgerAdjustmentExecuteContractResponse = {
   validated_plan: LedgerAdjustmentDryRunResponse;
 };
 
+export type LedgerAdjustmentExecuteOutcome = "applied" | "idempotent" | "blocked" | "failed" | string;
+
+export type LedgerAdjustmentExecutedEntrySummary = LedgerAdjustmentRelatedEntrySummary & {
+  omitted_material?: string[];
+  tenant_id?: string | null;
+};
+
+export type LedgerAdjustmentExecuteTransactionContract = {
+  begin_before_locking?: boolean;
+  bounded_by?: string[];
+  bounded_lock_order?: string[];
+  commit_only_after_ledger_and_success_audit?: boolean;
+  dedupe_material_echoed?: boolean;
+  isolation?: string;
+  rollback_on_audit_insert_failure?: boolean;
+  rollback_on_ledger_write_failure?: boolean;
+  rollback_on_refund_remaining_change?: boolean;
+  unbounded_scan_allowed?: boolean;
+  write_performed?: boolean;
+  writer?: string;
+};
+
 export type LedgerAdjustmentFutureExecuteResponse = {
   audit_log_write: boolean;
+  audit_insert_failure_rolls_back_ledger_write?: boolean;
+  audit_log_id?: string | null;
+  business_and_success_audit_share_transaction?: boolean;
+  dedupe_material_echoed?: boolean;
+  dedupe_public_output?: string;
   executed?: boolean;
-  ledger_entry?: LedgerAdjustmentRelatedEntrySummary;
+  ledger_entry?: LedgerAdjustmentExecutedEntrySummary;
   ledger_write: boolean;
   mode: "execute";
+  outcome?: LedgerAdjustmentExecuteOutcome;
+  refusal_does_not_build_success_audit?: boolean;
+  refund_remaining_summary?: LedgerRefundRemainingSummary | null;
   request_log_write: boolean;
+  success_audit_only_after_ledger_write?: boolean;
+  transaction_contract?: LedgerAdjustmentExecuteTransactionContract;
   upstream_call: boolean;
+  validated_plan?: JsonValue;
 };
 
 export type LedgerAdjustmentExecuteResponse =
@@ -1744,6 +1777,20 @@ export async function requestLedgerAdjustmentExecuteContract(
 
     throw error;
   }
+}
+
+export async function executeLedgerAdjustment(
+  request: LedgerAdjustmentDryRunRequest,
+  options: Omit<JsonRequestOptions, "body" | "method"> = {},
+): Promise<LedgerAdjustmentExecuteResult> {
+  const executeRequest = { ...request, mode: "execute" } satisfies LedgerAdjustmentDryRunRequest;
+  const response = await apiJson<LedgerAdjustmentExecuteResponse>("/admin/ledger/adjustments/dry-run", {
+    ...options,
+    body: executeRequest,
+    method: "POST",
+  });
+
+  return ledgerAdjustmentExecuteResultFromResponse(response);
 }
 
 export function getBillingReconciliationReport(
