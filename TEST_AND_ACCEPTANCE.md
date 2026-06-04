@@ -406,7 +406,7 @@ audit live evidence, Admin UI E2E, or billing-ledger runtime writer gaps.
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
 This section is the acceptance entry for TODO lanes `E13-005-S10` through
-`E13-005-S15`. The detailed live proof is documented in
+`E13-005-S16`. The detailed live proof is documented in
 `docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
 
 The proof covers prompt-protection reject no-side-effect evidence for:
@@ -452,6 +452,12 @@ provider_attempts/not-called fields, prompt-protection safe reason/scope,
 secret-safe omission markers, bounded blocker/failure arrays, and exit `0/1/2`
 status.
 
+Report paths must resolve under `.tmp/**` or
+`artifacts/prompt-protection-postgres-proof/**` with a `.json` file extension.
+Repo-outside paths, `.git` paths, source/script/docs paths, and unrelated worker
+locations are refused before write, and refusal output must not echo supplied
+path segments or secret-like values.
+
 Default script contract/preflight command:
 
 ```powershell
@@ -483,6 +489,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protec
 This self-test does not connect to live services or write a live report. It
 validates simulated pass, evidence mismatch, and external blocker reports for
 the four endpoint catalog entries and verifies the report JSON is secret-safe.
+
+Evidence report path-safety self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportPathSafety
+```
+
+This self-test validates safe report paths and unsafe path refusal without
+connecting to live services or writing a live report.
 
 Live opt-in commands:
 

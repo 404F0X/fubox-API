@@ -163,9 +163,23 @@ Evidence report contract self-test:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportContract
 ```
 
+Evidence report path-safety self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestEvidenceReportPathSafety
+```
+
 The default contract-only command does not write a live evidence report. A
 report is written only when live proof is explicitly requested and
 `-EvidenceReportPath` or `PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH` is set.
+Report paths must resolve inside `.tmp/**` or
+`artifacts/prompt-protection-postgres-proof/**` and must use a `.json` file
+extension. These are the only allowed report artifact directories. Paths outside
+the repository are refused, `.git` paths are not allowed, and source/script/docs
+paths or other worker-owned locations are refused before any file write. Refusal
+output is bounded and does not echo the supplied path, so secret-like path
+segments are not leaked.
+Policy marker: .git paths are not allowed.
 
 The report schema is `prompt_protection_postgres_proof_evidence_report.v1`.
 The root `report_status` maps to the JSON `status` field and is one of

@@ -14,6 +14,7 @@ param(
   [switch]$SkipMockProviderHealth,
   [switch]$SelfTestExitSemantics,
   [switch]$SelfTestEvidenceReportContract,
+  [switch]$SelfTestEvidenceReportPathSafety,
   [switch]$SimulateLivePreflightBlocker,
   [switch]$SimulateEvidenceMismatch
 )
@@ -255,6 +256,47 @@ function Invoke-EvidenceReportContractSelfTest {
   }
 
   Write-SafeHost "Prompt protection Postgres proof evidence report contract self-test passed."
+}
+
+function Assert-EvidenceReportPathRejected {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$ExpectedReason
+  )
+
+  try {
+    [void](Resolve-SafeEvidenceReportPath -Path $Path)
+    throw "unsafe evidence report path was accepted"
+  } catch {
+    $message = [string]$_.Exception.Message
+    if (-not $message.Contains($ExpectedReason)) {
+      throw "unsafe evidence report path refusal reason mismatch"
+    }
+    foreach ($forbidden in @("secret-token", "outside-secret", "source-secret", "git-secret")) {
+      if ($message.Contains($forbidden)) {
+        throw "unsafe evidence report path refusal leaked a secret-like path segment"
+      }
+    }
+  }
+}
+
+function Invoke-EvidenceReportPathSafetySelfTest {
+  $safeTmp = Resolve-SafeEvidenceReportPath -Path ".tmp\prompt-protection-postgres-proof\path-safety-report.json"
+  if (-not (Test-IsEvidenceReportPathAllowed -ResolvedPath $safeTmp)) {
+    throw "safe .tmp evidence report path was not allowed"
+  }
+
+  $safeArtifact = Resolve-SafeEvidenceReportPath -Path "artifacts\prompt-protection-postgres-proof\path-safety-report.json"
+  if (-not (Test-IsEvidenceReportPathAllowed -ResolvedPath $safeArtifact)) {
+    throw "safe artifact evidence report path was not allowed"
+  }
+
+  Assert-EvidenceReportPathRejected -Path "..\outside-secret-token-report.json" -ExpectedReason "outside repository"
+  Assert-EvidenceReportPathRejected -Path ".git\git-secret-token-report.json" -ExpectedReason ".git paths are not allowed"
+  Assert-EvidenceReportPathRejected -Path "scripts\source-secret-token-report.json" -ExpectedReason "allowed report artifact directories"
+  Assert-EvidenceReportPathRejected -Path ".tmp\prompt-protection-postgres-proof\path-safety-report.txt" -ExpectedReason "JSON file extension"
+
+  Write-SafeHost "Prompt protection Postgres proof evidence report path safety self-test passed."
 }
 
 function Invoke-SimulatedLivePreflightBlocker {
@@ -640,6 +682,96 @@ function ConvertTo-ReportSafeText {
   return $safe
 }
 
+function Get-RepoRootFullPath {
+  return [System.IO.Path]::GetFullPath([string]$repoRoot)
+}
+
+function Join-RepoPath {
+  param([Parameter(Mandatory = $true)][string[]]$Parts)
+
+  $path = Get-RepoRootFullPath
+  foreach ($part in $Parts) {
+    $path = [System.IO.Path]::Combine($path, $part)
+  }
+  return [System.IO.Path]::GetFullPath($path)
+}
+
+function Test-IsPathWithinOrEqual {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Root
+  )
+
+  $trimChars = [char[]]@("\", "/")
+  $normalizedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd($trimChars)
+  $normalizedRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd($trimChars)
+  if ([string]::Equals($normalizedPath, $normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $true
+  }
+
+  $rootWithSeparator = $normalizedRoot + [System.IO.Path]::DirectorySeparatorChar
+  return $normalizedPath.StartsWith($rootWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-EvidenceReportAllowedRoots {
+  return @(
+    (Join-RepoPath @(".tmp")),
+    (Join-RepoPath @("artifacts", "prompt-protection-postgres-proof"))
+  )
+}
+
+function Test-IsEvidenceReportPathAllowed {
+  param([Parameter(Mandatory = $true)][string]$ResolvedPath)
+
+  foreach ($allowedRoot in @(Get-EvidenceReportAllowedRoots)) {
+    if (Test-IsPathWithinOrEqual -Path $ResolvedPath -Root $allowedRoot) {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Resolve-SafeEvidenceReportPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    throw "evidence report path refused: path is required"
+  }
+  if ($Path.Length -gt 260) {
+    throw "evidence report path refused: path is too long"
+  }
+
+  $repoRootPath = Get-RepoRootFullPath
+  try {
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+      $resolvedPath = [System.IO.Path]::GetFullPath($Path)
+    } else {
+      $resolvedPath = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($repoRootPath, $Path))
+    }
+  } catch {
+    throw "evidence report path refused: path could not be normalized"
+  }
+
+  if (-not (Test-IsPathWithinOrEqual -Path $resolvedPath -Root $repoRootPath)) {
+    throw "evidence report path refused: outside repository"
+  }
+
+  $gitRoot = Join-RepoPath @(".git")
+  if (Test-IsPathWithinOrEqual -Path $resolvedPath -Root $gitRoot) {
+    throw "evidence report path refused: .git paths are not allowed"
+  }
+
+  if ([string]::Compare([System.IO.Path]::GetExtension($resolvedPath), ".json", $true) -ne 0) {
+    throw "evidence report path refused: JSON file extension is required"
+  }
+
+  if (-not (Test-IsEvidenceReportPathAllowed -ResolvedPath $resolvedPath)) {
+    throw "evidence report path refused: use allowed report artifact directories"
+  }
+
+  return $resolvedPath
+}
+
 function New-EndpointEvidenceReport {
   param(
     [Parameter(Mandatory = $true)]$Case,
@@ -879,6 +1011,14 @@ function Write-EvidenceReportIfRequested {
     return $true
   }
 
+  $resolvedReportPath = ""
+  try {
+    $resolvedReportPath = Resolve-SafeEvidenceReportPath -Path $EvidenceReportPath
+  } catch {
+    Write-SafeHost ("[REFUSED] prompt protection evidence report path - {0}" -f (ConvertTo-ReportSafeText $_.Exception.Message))
+    return $false
+  }
+
   try {
     $report = New-EvidenceReport -Status $Status -ExitCode $ExitCode
     $requirePassedEndpoints = [string]$Status -eq "passed"
@@ -886,7 +1026,6 @@ function Write-EvidenceReportIfRequested {
     $json = $report | ConvertTo-Json -Depth 32
     Assert-EvidenceReportSecretSafe -Json $json
 
-    $resolvedReportPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($EvidenceReportPath)
     $parent = Split-Path -Parent $resolvedReportPath
     if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
       New-Item -ItemType Directory -Path $parent -Force | Out-Null
@@ -895,7 +1034,7 @@ function Write-EvidenceReportIfRequested {
     Write-SafeHost "Prompt protection Postgres proof evidence report written."
     return $true
   } catch {
-    Write-SafeHost ("[WARN] prompt protection evidence report write failed - {0}" -f (ConvertTo-ReportSafeText $_.Exception.Message))
+    Write-SafeHost "[WARN] prompt protection evidence report write failed - safe report path could not be written"
     return $false
   }
 }
@@ -982,6 +1121,9 @@ function Assert-RunbookContract {
       "prompt_protection_postgres_proof_evidence_report.v1",
       "-EvidenceReportPath",
       "-SelfTestEvidenceReportContract",
+      "-SelfTestEvidenceReportPathSafety",
+      "allowed report artifact directories",
+      ".git paths are not allowed",
       "report_status",
       "report_exit_code"
     )) {
@@ -1013,6 +1155,9 @@ function Assert-ScriptContract {
       "prompt_protection_postgres_proof_evidence_report.v1",
       "EvidenceReportPath",
       "SelfTestEvidenceReportContract",
+      "SelfTestEvidenceReportPathSafety",
+      "Resolve-SafeEvidenceReportPath",
+      "Test-IsEvidenceReportPathAllowed",
       "Write-EvidenceReportIfRequested",
       "Assert-EvidenceReportContract",
       "request_log_hash_only_fields",
@@ -1377,6 +1522,11 @@ if ($SelfTestExitSemantics) {
 
 if ($SelfTestEvidenceReportContract) {
   Invoke-EvidenceReportContractSelfTest
+  exit 0
+}
+
+if ($SelfTestEvidenceReportPathSafety) {
+  Invoke-EvidenceReportPathSafetySelfTest
   exit 0
 }
 
