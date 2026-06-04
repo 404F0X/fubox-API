@@ -80,6 +80,7 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER=1`
 
 Optional path/env overrides:
 
@@ -120,6 +121,9 @@ Expected result:
   and writes a bounded evidence report with classification `failure`.
 - Child case `simulated semantic validator evidence blocker` returns exit `2`
   and writes a bounded evidence report with classification `blocker`.
+- Child case `simulated real-tool preflight blocker evidence` returns exit `2`
+  and writes a bounded evidence report with a blocked tool preflight, explicit
+  package/cache state, and bounded duration fields.
 - Child cases `temp root repo escape rejected`, `source temp root rejected`,
   `git temp root rejected`, and `npm cache repo escape rejected` return exit
   `1`, proving custom paths cannot write or clean outside the allowed temp/tool
@@ -154,17 +158,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceFailure
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceBlocker
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateToolPreflightBlocker
 ```
 
 The first three direct simulated commands are expected to return `2`, `1`, and
 `1` respectively after the lightweight gate passes. The sensitive-output command
 returns `0`; the sensitive-command failure returns `1`. The generated-client
 inspection commands return `0` and `1`. The semantic evidence commands return
-`0`, `1`, and `2`. They prove wrapper failure-path classification, bounded
-evidence lifecycle, path/output hardening, and redaction only. They do not run
-Redocly, OpenAPI Generator, `openapi-typescript`, generated-client inspection
-against real generated output, or any live Postgres checks. Do not use simulated
-passes to close the real semantic/client-generation gap.
+`0`, `1`, and `2`. The tool-preflight blocker command returns `2`. They prove
+wrapper failure-path classification, bounded evidence lifecycle, path/output
+hardening, preflight/performance evidence shape, and redaction only. They do
+not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
+inspection against real generated output, or any live Postgres checks. Do not
+use simulated passes to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -235,11 +242,19 @@ Each evidence record contains:
 - `provenance_mode`: `real` for external validators/client generators or
   `simulated` for self-test fixtures
 - `tool`
+- `tool_path`: bounded executable path summary, for example an outside-repo
+  filename marker rather than a full user path
 - `tool_version`
 - `package`
+- `package_cache_status`: `download_allowed`, `offline_repo_cache_present`,
+  `offline_repo_cache_missing`, `simulated`, or `not_applicable`
+- `package_download_allowed`
+- `preflight_status`: `passed`, `blocked`, `simulated`, or `not_run`
 - `checked_schema`
 - `classification`: `pass`, `failure`, or `blocker`
 - `exit_code`
+- `duration_ms`: bounded command duration for the version probe, validator, or
+  generator command represented by the record
 - `command`: redacted bounded command summary
 - `output_tail`: up to eight redacted bounded lines
 - `failure_reason`
@@ -249,8 +264,9 @@ The report must not include raw Authorization/Cookie values, bearer tokens,
 credentials, package tokens, API keys, raw operation keys, raw metadata, payload
 or body data, or raw executor details. The self-test validates the report field
 allowlist, checked schema, repo commit marker, generated-at timestamp, fixture
-fingerprint, command summary, output-tail bounds, classification presence,
-provenance marker, and secret-safe redaction.
+fingerprint, command summary, tool path, version/cache preflight status,
+duration bounds, output-tail bounds, classification presence, provenance marker,
+and secret-safe redaction.
 
 Interpret report outcomes as follows:
 
@@ -261,6 +277,21 @@ Interpret report outcomes as follows:
 - `blocker`: local tools, Java, npm package cache, network, or package-download
   availability prevented requested opt-in tooling from running. This is exit
   `2`.
+
+Real-tool preflight/performance evidence:
+
+- Real opt-in checks validate local `node` and `npm`; OpenAPI Generator paths
+  also validate `java`.
+- Missing local tools produce a `blocker` evidence record with
+  `preflight_status=blocked`, `classification=blocker`, and exit `2`.
+- Available local tools are recorded with safe bounded `tool_path` values. Paths
+  outside the repository are represented by filename-only outside-repo markers.
+- Package/cache state is explicit. Offline mode records whether the repository
+  npm cache is present or missing; `-AllowPackageDownload` records
+  `download_allowed`.
+- Version probes and requested validator/generator commands record bounded
+  `duration_ms`. The self-test locks that duration is numeric and bounded, but
+  it does not run real npm tools.
 
 Do not close the semantic validator gap from a report with outcome `blocker`.
 Do not close it from a simulated or mixed-provenance report; simulated evidence
@@ -620,6 +651,8 @@ Record all of the following when closing the semantic/client-generation gap:
   `generated_at_utc`.
 - OpenAPI fixture `sha256`, `size_bytes`, and `last_write_utc`.
 - Whether the npm cache was online, preseeded, or internal-mirror backed.
+- Tool preflight status, safe tool path summary, package/cache status, and
+  bounded `duration_ms` for each opt-in evidence record.
 - Generated client target, for example `openapi-typescript` or
   `typescript-fetch`.
 - Confirmation that ledger execute/executor summary fields listed above were

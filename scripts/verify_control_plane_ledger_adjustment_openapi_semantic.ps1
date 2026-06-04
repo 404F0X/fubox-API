@@ -20,7 +20,8 @@ param(
   [switch]$SimulateGeneratedClientMissingRequired,
   [switch]$SimulateSemanticEvidencePass,
   [switch]$SimulateSemanticEvidenceFailure,
-  [switch]$SimulateSemanticEvidenceBlocker
+  [switch]$SimulateSemanticEvidenceBlocker,
+  [switch]$SimulateToolPreflightBlocker
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +58,7 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_M
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_PASS) { $SimulateSemanticEvidencePass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE) { $SimulateSemanticEvidenceFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER) { $SimulateSemanticEvidenceBlocker = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_TOOL_PREFLIGHT_BLOCKER) { $SimulateToolPreflightBlocker = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -208,6 +210,7 @@ function Get-WrapperOwnedArtifactPaths {
     (Join-Path $TempRoot "self-test-semantic-evidence-pass"),
     (Join-Path $TempRoot "self-test-semantic-evidence-failure"),
     (Join-Path $TempRoot "self-test-semantic-evidence-blocker"),
+    (Join-Path $TempRoot "self-test-tool-preflight-blocker"),
     (Join-Path $TempRoot "self-test-cleanup-marker.txt"),
     (Join-Path $TempRoot "self-test-wrapper-owned-cleanup-marker.txt")
   )
@@ -345,6 +348,7 @@ function Get-WrapperCommandSummary {
   if ($SimulateSemanticEvidencePass) { [void]$simulatedModes.Add("semantic_evidence_pass") }
   if ($SimulateSemanticEvidenceFailure) { [void]$simulatedModes.Add("semantic_evidence_failure") }
   if ($SimulateSemanticEvidenceBlocker) { [void]$simulatedModes.Add("semantic_evidence_blocker") }
+  if ($SimulateToolPreflightBlocker) { [void]$simulatedModes.Add("tool_preflight_blocker") }
 
   return [ordered]@{
     script = "scripts/verify_control_plane_ledger_adjustment_openapi_semantic.ps1"
@@ -357,6 +361,62 @@ function Get-WrapperCommandSummary {
     clean_requested = [bool]$Clean
     self_test = [bool]$SelfTest
   }
+}
+
+function Get-SafeToolPath {
+  param([AllowNull()][object]$Command)
+
+  if ($null -eq $Command) {
+    return "unavailable"
+  }
+
+  $source = [string]$Command.Source
+  if ([string]::IsNullOrWhiteSpace($source)) {
+    $source = [string]$Command.Name
+  }
+
+  if ([string]::IsNullOrWhiteSpace($source)) {
+    return "unavailable"
+  }
+
+  try {
+    if ([System.IO.Path]::IsPathRooted($source)) {
+      return Format-BoundedPath $source
+    }
+  } catch {
+    return Redact-SafeText $source
+  }
+
+  return Redact-SafeText $source
+}
+
+function Get-ToolPreflightSummary {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Names
+  )
+
+  $parts = New-Object System.Collections.Generic.List[string]
+  foreach ($name in $Names) {
+    $command = Get-Command $name -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+      [void]$parts.Add("$name=unavailable")
+    } else {
+      [void]$parts.Add("$name=$(Get-SafeToolPath $command)")
+    }
+  }
+  return ($parts.ToArray() -join ";")
+}
+
+function Get-NpmPackageCacheStatus {
+  if ($AllowPackageDownload) {
+    return "download_allowed"
+  }
+
+  if (Test-Path $NpmCache) {
+    return "offline_repo_cache_present"
+  }
+
+  return "offline_repo_cache_missing"
 }
 
 function Add-EvidenceRecord {
@@ -372,19 +432,39 @@ function Add-EvidenceRecord {
     [AllowEmptyString()][AllowEmptyCollection()][string[]]$Output = @(),
     [AllowNull()][string]$FailureReason = "",
     [AllowNull()][string]$BlockerReason = "",
-    [ValidateSet("real", "simulated")][string]$ProvenanceMode = "real"
+    [ValidateSet("real", "simulated")][string]$ProvenanceMode = "real",
+    [AllowNull()][string]$ToolPath = "",
+    [ValidateSet("passed", "blocked", "simulated", "not_run")][string]$PreflightStatus = "not_run",
+    [AllowNull()][string]$PackageCacheStatus = "",
+    [bool]$PackageDownloadAllowed = [bool]$AllowPackageDownload,
+    [int64]$DurationMs = 0
   )
+
+  if ([string]::IsNullOrWhiteSpace($ToolPath)) {
+    $ToolPath = "unavailable"
+  }
+  if ([string]::IsNullOrWhiteSpace($PackageCacheStatus)) {
+    $PackageCacheStatus = Get-NpmPackageCacheStatus
+  }
+  if ($DurationMs -lt 0) {
+    $DurationMs = 0
+  }
 
   $record = [ordered]@{
     kind = Redact-SafeText $Kind
     label = Redact-SafeText $Label
     provenance_mode = $ProvenanceMode
     tool = Redact-SafeText $Tool
+    tool_path = Redact-SafeText $ToolPath
     tool_version = Redact-SafeText $ToolVersion
     package = Redact-SafeText $Package
+    package_cache_status = Redact-SafeText $PackageCacheStatus
+    package_download_allowed = [bool]$PackageDownloadAllowed
+    preflight_status = $PreflightStatus
     checked_schema = Get-RepoRelativePath $OpenApiPath
     classification = $Classification
     exit_code = $ExitCode
+    duration_ms = [int64]$DurationMs
     command = Redact-SafeText $Command
     output_tail = @(Get-BoundedSafeLines -Lines $Output)
     failure_reason = Redact-SafeText $FailureReason
@@ -555,7 +635,7 @@ function Assert-EvidenceReportContract {
 
   foreach ($record in $records) {
     foreach ($field in @($record.PSObject.Properties.Name)) {
-      if (-not @("kind", "label", "provenance_mode", "tool", "tool_version", "package", "checked_schema", "classification", "exit_code", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
+      if (-not @("kind", "label", "provenance_mode", "tool", "tool_path", "tool_version", "package", "package_cache_status", "package_download_allowed", "preflight_status", "checked_schema", "classification", "exit_code", "duration_ms", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
         Add-Failure "[FAIL] evidence report contract - unexpected evidence field '$field'"
       }
     }
@@ -567,6 +647,26 @@ function Assert-EvidenceReportContract {
     }
     if ([string]::IsNullOrWhiteSpace([string]$record.tool_version)) {
       Add-Failure "[FAIL] evidence report contract - missing tool_version"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$record.tool_path)) {
+      Add-Failure "[FAIL] evidence report contract - missing tool_path"
+    }
+    if (-not @("passed", "blocked", "simulated", "not_run").Contains([string]$record.preflight_status)) {
+      Add-Failure "[FAIL] evidence report contract - invalid preflight_status '$($record.preflight_status)'"
+    }
+    if (-not @("download_allowed", "offline_repo_cache_present", "offline_repo_cache_missing", "simulated", "not_applicable").Contains([string]$record.package_cache_status)) {
+      Add-Failure "[FAIL] evidence report contract - invalid package_cache_status '$($record.package_cache_status)'"
+    }
+    if ($null -eq $record.package_download_allowed) {
+      Add-Failure "[FAIL] evidence report contract - missing package_download_allowed"
+    }
+    try {
+      $durationMs = [int64]$record.duration_ms
+      if ($durationMs -lt 0 -or $durationMs -gt 86400000) {
+        Add-Failure "[FAIL] evidence report contract - duration_ms is unbounded"
+      }
+    } catch {
+      Add-Failure "[FAIL] evidence report contract - duration_ms is not numeric"
     }
     if ([string]$record.checked_schema -ne (Get-RepoRelativePath $OpenApiPath)) {
       Add-Failure "[FAIL] evidence report contract - record checked_schema drifted"
@@ -699,14 +799,17 @@ function Invoke-Process {
 
   $global:LASTEXITCODE = 0
   $oldErrorActionPreference = $ErrorActionPreference
+  $timer = [System.Diagnostics.Stopwatch]::StartNew()
   try {
     $ErrorActionPreference = "Continue"
     $output = @(& $FileName @Arguments 2>&1 | ForEach-Object { [string]$_ })
   } finally {
+    $timer.Stop()
     $ErrorActionPreference = $oldErrorActionPreference
   }
   $exitCode = if ($null -eq $global:LASTEXITCODE) { 0 } else { [int]$global:LASTEXITCODE }
   $commandLine = Format-CommandLine -FileName $FileName -Arguments $Arguments
+  $durationMs = [int64]$timer.Elapsed.TotalMilliseconds
 
   if ($exitCode -eq 0) {
     Write-SafeHost "[OK] $Label"
@@ -715,7 +818,7 @@ function Invoke-Process {
         Write-SafeHost $line
       }
     }
-    return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = "pass" }
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = "pass"; DurationMs = $durationMs }
   }
 
   $joined = Redact-SafeText ($output -join "`n")
@@ -726,7 +829,7 @@ function Invoke-Process {
     Add-Failure "[FAIL] $Label - exit $exitCode while running: $commandLine`n$joined"
     $classification = "failure"
   }
-  return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = $classification }
+  return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = $classification; DurationMs = $durationMs }
 }
 
 function Invoke-ContractGate {
@@ -776,6 +879,13 @@ function Invoke-NpmTool {
     [switch]$RequireJava
   )
 
+  $requiredTools = @("node", "npm")
+  if ($RequireJava) {
+    $requiredTools += "java"
+  }
+  $toolPathSummary = Get-ToolPreflightSummary -Names $requiredTools
+  $packageCacheStatus = Get-NpmPackageCacheStatus
+
   try {
     Assert-ToolAvailable -Name "node" -Reason "Node is required for npm OpenAPI tools"
     Assert-ToolAvailable -Name "npm" -Reason "npm is required for npm OpenAPI tools"
@@ -794,7 +904,12 @@ function Invoke-NpmTool {
       -ExitCode 2 `
       -Command "$ToolName not run" `
       -Output @($_.Exception.Message) `
-      -BlockerReason "required local tool unavailable"
+      -BlockerReason "required local tool unavailable" `
+      -ToolPath $toolPathSummary `
+      -PreflightStatus "blocked" `
+      -PackageCacheStatus $packageCacheStatus `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -DurationMs 0
     return
   }
 
@@ -829,7 +944,12 @@ function Invoke-NpmTool {
           -Command $versionResult.Command `
           -Output $versionResult.Output `
           -FailureReason $versionFailureReason `
-          -BlockerReason $versionBlockerReason
+          -BlockerReason $versionBlockerReason `
+          -ToolPath $toolPathSummary `
+          -PreflightStatus "passed" `
+          -PackageCacheStatus $packageCacheStatus `
+          -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+          -DurationMs $versionResult.DurationMs
         return $versionResult
       }
 
@@ -865,7 +985,12 @@ function Invoke-NpmTool {
       -Command $result.Command `
       -Output $result.Output `
       -FailureReason $failureReason `
-      -BlockerReason $blockerReason
+      -BlockerReason $blockerReason `
+      -ToolPath $toolPathSummary `
+      -PreflightStatus "passed" `
+      -PackageCacheStatus $packageCacheStatus `
+      -PackageDownloadAllowed ([bool]$AllowPackageDownload) `
+      -DurationMs $result.DurationMs
     return $result
   } finally {
     $env:npm_config_cache = $oldCache
@@ -1380,7 +1505,40 @@ function Add-SimulatedSemanticEvidence {
     -Output $sensitiveTail `
     -FailureReason $failureReason `
     -BlockerReason $blockerReason `
-    -ProvenanceMode "simulated"
+    -ProvenanceMode "simulated" `
+    -ToolPath "simulated-tool" `
+    -PreflightStatus "simulated" `
+    -PackageCacheStatus "simulated" `
+    -PackageDownloadAllowed $false `
+    -DurationMs 12
+}
+
+function Add-SimulatedToolPreflightBlockerEvidence {
+  $safeTail = @(
+    "node=unavailable",
+    "npm=unavailable",
+    "offline package cache unavailable",
+    "Authorization: Bearer selftest-token-123456789",
+    "package_token=selftest-package-token"
+  )
+
+  Add-EvidenceRecord `
+    -Kind "semantic_validator" `
+    -Label "simulated real-tool opt-in preflight blocker" `
+    -Tool "redocly" `
+    -ToolVersion "unavailable" `
+    -Package "@redocly/cli" `
+    -Classification "blocker" `
+    -ExitCode 2 `
+    -Command "redocly lint examples/openapi_admin_skeleton.yaml --package_token=selftest-package-token" `
+    -Output $safeTail `
+    -BlockerReason "required local tool unavailable" `
+    -ProvenanceMode "simulated" `
+    -ToolPath "node=unavailable;npm=unavailable" `
+    -PreflightStatus "blocked" `
+    -PackageCacheStatus "offline_repo_cache_missing" `
+    -PackageDownloadAllowed $false `
+    -DurationMs 0
 }
 
 function Invoke-Redocly {
@@ -1588,6 +1746,13 @@ function Invoke-SelfTest {
     -ExpectedExitCode 2 `
     -ExpectedEvidenceClassifications @("blocker") `
     -ExpectedProvenanceMode "simulated"
+  Invoke-SelfTestChild `
+    -Name "simulated real-tool preflight blocker evidence" `
+    -Arguments @("-SimulateToolPreflightBlocker") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-tool-preflight-blocker") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("blocker") `
+    -ExpectedProvenanceMode "simulated"
   Invoke-SelfTestChild -Name "temp root repo escape rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "..\ledger-openapi-outside") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "source temp root rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "scripts\ledger-openapi-semantic") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "git temp root rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot ".git\ledger-openapi-semantic") -ExpectedExitCode 1
@@ -1712,6 +1877,11 @@ if ($SimulateSemanticEvidenceFailure) {
 if ($SimulateSemanticEvidenceBlocker) {
   Add-SimulatedSemanticEvidence -Classification "blocker" -ExitCode 2
   Add-Blocker "[BLOCKED] simulated semantic validator evidence blocker - package cache unavailable"
+  Exit-WithResult
+}
+if ($SimulateToolPreflightBlocker) {
+  Add-SimulatedToolPreflightBlockerEvidence
+  Add-Blocker "[BLOCKED] simulated real-tool preflight blocker - required local tool unavailable"
   Exit-WithResult
 }
 
