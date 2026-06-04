@@ -3951,6 +3951,109 @@ fn ledger_adjustment_billing_ledger_writer_adapter_refusal_boundary(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerAdjustmentBillingLedgerWriterCutoverMode {
+    Disabled,
+    Shadow,
+    Ready,
+}
+
+impl LedgerAdjustmentBillingLedgerWriterCutoverMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Shadow => "shadow",
+            Self::Ready => "ready",
+        }
+    }
+
+    fn source_of_truth(self, preflight_failed: bool) -> &'static str {
+        if self == Self::Ready && !preflight_failed {
+            "billing_ledger_writer_after_explicit_cutover"
+        } else {
+            "control_plane_local_sql_writer"
+        }
+    }
+
+    fn shadow_invocation_enabled(self) -> bool {
+        matches!(self, Self::Shadow | Self::Ready)
+    }
+}
+
+fn ledger_adjustment_billing_ledger_writer_cutover_mode_parser_guard(
+    raw_mode: Option<&str>,
+) -> (LedgerAdjustmentBillingLedgerWriterCutoverMode, Value) {
+    let normalized = raw_mode.map(|mode| mode.trim().to_ascii_lowercase());
+    let (mode, input_state, invalid_value_refused) = match normalized.as_deref() {
+        None => (
+            LedgerAdjustmentBillingLedgerWriterCutoverMode::Disabled,
+            "missing_defaulted",
+            false,
+        ),
+        Some("") => (
+            LedgerAdjustmentBillingLedgerWriterCutoverMode::Disabled,
+            "blank_defaulted",
+            false,
+        ),
+        Some("disabled") => (
+            LedgerAdjustmentBillingLedgerWriterCutoverMode::Disabled,
+            "valid_normalized",
+            false,
+        ),
+        Some("shadow") => (
+            LedgerAdjustmentBillingLedgerWriterCutoverMode::Shadow,
+            "valid_normalized",
+            false,
+        ),
+        Some("ready") => (
+            LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready,
+            "valid_normalized",
+            false,
+        ),
+        Some(_) => (
+            LedgerAdjustmentBillingLedgerWriterCutoverMode::Disabled,
+            "invalid_disabled_guard",
+            true,
+        ),
+    };
+
+    let source_of_truth = mode.source_of_truth(invalid_value_refused);
+    let billing_ledger_writer_commit_allowed_after_guard =
+        mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && !invalid_value_refused;
+
+    (
+        mode,
+        json!({
+            "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_PREFLIGHT_SCHEMA,
+            "parser": "billing_ledger_writer_cutover_mode_parser.v1",
+            "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
+            "default_mode": "disabled",
+            "normalization_policy": "trim_ascii_whitespace_then_ascii_lowercase",
+            "missing_value_policy": "default_disabled",
+            "blank_value_policy": "default_disabled",
+            "invalid_value_policy": "disabled_guard_refusal",
+            "input_state": input_state,
+            "effective_mode": mode.as_str(),
+            "source_of_truth": source_of_truth,
+            "invalid_value_refused": invalid_value_refused,
+            "invalid_value_enters_ready": false,
+            "production_writer_replaced": false,
+            "billing_ledger_writer_commit_allowed_after_guard": billing_ledger_writer_commit_allowed_after_guard,
+            "billing_ledger_writer_commit_allowed_in_this_contract": false,
+            "env_value_output": "omitted",
+            "invalid_value_output": "omitted",
+            "raw_env_value_echoed": false,
+            "secret_value_echoed": false,
+            "operation_key_output": "omitted",
+            "operation_key_bind_only": true,
+            "dedupe_material_echoed": false,
+            "raw_metadata_echoed": false,
+            "credential_material_echoed": false,
+            "raw_executor_error_detail_echoed": false
+        }),
+    )
+}
+
 fn ledger_adjustment_billing_ledger_writer_shadow_invocation_contract() -> Value {
     json!({
         "schema_version": CONTROL_PLANE_BILLING_LEDGER_WRITER_SHADOW_INVOCATION_SCHEMA,
@@ -4142,7 +4245,27 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight_contract() -> Value
             "feature_flag": "billing_ledger_writer_cutover",
             "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
             "allowed_values": ["disabled", "shadow", "ready"],
+            "default_mode": "disabled",
+            "normalization_policy": "trim_ascii_whitespace_then_ascii_lowercase",
+            "missing_value_policy": "default_disabled",
+            "blank_value_policy": "default_disabled",
+            "invalid_value_policy": "disabled_guard_refusal",
+            "invalid_value_enters_ready": false,
             "env_value_output": "omitted",
+            "raw_env_value_echoed": false,
+            "secret_value_echoed": false
+        },
+        "mode_parser_contract": {
+            "parser": "billing_ledger_writer_cutover_mode_parser.v1",
+            "default_mode": "disabled",
+            "normalization_policy": "trim_ascii_whitespace_then_ascii_lowercase",
+            "accepted_normalized_values": ["disabled", "shadow", "ready"],
+            "missing_value_policy": "default_disabled",
+            "blank_value_policy": "default_disabled",
+            "invalid_value_policy": "disabled_guard_refusal",
+            "invalid_value_enters_ready": false,
+            "env_value_output": "omitted",
+            "invalid_value_output": "omitted",
             "raw_env_value_echoed": false,
             "secret_value_echoed": false
         },
@@ -4203,17 +4326,26 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight(
     cutover_state: &'static str,
     failure_kind: Option<&'static str>,
 ) -> Value {
-    let state = match cutover_state {
-        "shadow" | "ready" => cutover_state,
-        _ => "disabled",
-    };
+    ledger_adjustment_billing_ledger_writer_cutover_preflight_from_config(
+        validated_plan,
+        Some(cutover_state),
+        failure_kind,
+    )
+}
+
+fn ledger_adjustment_billing_ledger_writer_cutover_preflight_from_config(
+    validated_plan: &Value,
+    raw_cutover_mode: Option<&str>,
+    failure_kind: Option<&'static str>,
+) -> Value {
+    let (mode, mode_parser_guard) =
+        ledger_adjustment_billing_ledger_writer_cutover_mode_parser_guard(raw_cutover_mode);
+    let state = mode.as_str();
     let preflight_failed = failure_kind.is_some();
-    let source_of_truth = match (state, preflight_failed) {
-        ("ready", false) => "billing_ledger_writer_after_explicit_cutover",
-        _ => "control_plane_local_sql_writer",
-    };
-    let billing_ledger_writer_commit_allowed_after_cutover = state == "ready" && !preflight_failed;
-    let shadow_invocation_enabled = state == "shadow" || state == "ready";
+    let source_of_truth = mode.source_of_truth(preflight_failed);
+    let billing_ledger_writer_commit_allowed_after_cutover =
+        mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && !preflight_failed;
+    let shadow_invocation_enabled = mode.shadow_invocation_enabled();
     let target_operation = ledger_adjustment_billing_runtime_operation_mapping(validated_plan);
     let writer_request = target_operation
         .get("writer_request")
@@ -4247,10 +4379,17 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight(
             "env_var": "AI_CONTROL_PLANE_BILLING_LEDGER_WRITER_CUTOVER_MODE",
             "allowed_values": ["disabled", "shadow", "ready"],
             "effective_value": state,
+            "default_mode": "disabled",
+            "normalization_policy": "trim_ascii_whitespace_then_ascii_lowercase",
+            "missing_value_policy": "default_disabled",
+            "blank_value_policy": "default_disabled",
+            "invalid_value_policy": "disabled_guard_refusal",
+            "invalid_value_enters_ready": false,
             "env_value_output": "omitted",
             "raw_env_value_echoed": false,
             "secret_value_echoed": false
         },
+        "mode_parser_guard": mode_parser_guard,
         "adapter_input": {
             "source_operation": ledger_adjustment_validated_plan_operation(validated_plan),
             "source_entry_type": ledger_adjustment_validated_plan_entry_type(validated_plan),
@@ -4278,7 +4417,7 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight(
             "shadow": state == "shadow",
             "ready": state == "ready",
             "shadow_invocation_enabled": shadow_invocation_enabled,
-            "cutover_allowed": state == "ready" && failure_kind.is_none(),
+            "cutover_allowed": mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && failure_kind.is_none(),
             "billing_ledger_writer_commit_allowed_after_cutover": billing_ledger_writer_commit_allowed_after_cutover && failure_kind.is_none(),
             "billing_ledger_writer_commit_allowed_in_this_contract": false,
             "local_writer_remains_source_of_truth": local_writer_remains_source_of_truth
@@ -4287,14 +4426,14 @@ fn ledger_adjustment_billing_ledger_writer_cutover_preflight(
             "dual_commit_allowed": false,
             "local_and_billing_ledger_commit_same_request_allowed": false,
             "active_writer_before_explicit_cutover": "control_plane_local_sql_writer",
-            "active_writer_after_ready_cutover": if state == "ready" && failure_kind.is_none() {
+            "active_writer_after_ready_cutover": if mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && failure_kind.is_none() {
                 "billing_ledger_runtime_writer"
             } else {
                 "control_plane_local_sql_writer"
             },
             "local_sql_writer_commit_allowed_before_cutover": true,
-            "local_sql_writer_commit_allowed_after_ready_cutover": !(state == "ready" && failure_kind.is_none()),
-            "billing_ledger_writer_commit_allowed_after_ready_cutover": state == "ready" && failure_kind.is_none(),
+            "local_sql_writer_commit_allowed_after_ready_cutover": !(mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && failure_kind.is_none()),
+            "billing_ledger_writer_commit_allowed_after_ready_cutover": mode == LedgerAdjustmentBillingLedgerWriterCutoverMode::Ready && failure_kind.is_none(),
             "rollback_to_local_before_billing_commit_allowed": true,
             "fallback_after_billing_commit_allowed": false
         },
@@ -12842,6 +12981,201 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_billing_runtime_cutover_mode_parser_guard_defaults_normalizes_and_refuses_invalid_secret_safe()
+     {
+        let parser_contract = ledger_adjustment_billing_ledger_writer_cutover_preflight_contract();
+        assert_eq!(
+            parser_contract["mode_parser_contract"]["normalization_policy"],
+            json!("trim_ascii_whitespace_then_ascii_lowercase")
+        );
+        assert_eq!(
+            parser_contract["mode_parser_contract"]["missing_value_policy"],
+            json!("default_disabled")
+        );
+        assert_eq!(
+            parser_contract["mode_parser_contract"]["blank_value_policy"],
+            json!("default_disabled")
+        );
+        assert_eq!(
+            parser_contract["mode_parser_contract"]["invalid_value_policy"],
+            json!("disabled_guard_refusal")
+        );
+        assert_eq!(
+            parser_contract["mode_parser_contract"]["invalid_value_enters_ready"],
+            json!(false)
+        );
+
+        for (label, raw_mode, expected_mode, expected_input_state) in [
+            ("missing", None, "disabled", "missing_defaulted"),
+            ("blank", Some("  \t "), "disabled", "blank_defaulted"),
+            ("disabled", Some("disabled"), "disabled", "valid_normalized"),
+            (
+                "shadow normalized",
+                Some("  SHADOW  "),
+                "shadow",
+                "valid_normalized",
+            ),
+            (
+                "ready normalized",
+                Some("\nReady\t"),
+                "ready",
+                "valid_normalized",
+            ),
+        ] {
+            let (mode, guard) =
+                ledger_adjustment_billing_ledger_writer_cutover_mode_parser_guard(raw_mode);
+            let serialized = serde_json::to_string(&guard).expect("guard should serialize");
+
+            assert_eq!(mode.as_str(), expected_mode, "{label} mode");
+            assert_eq!(
+                guard["effective_mode"],
+                json!(expected_mode),
+                "{label} guard mode"
+            );
+            assert_eq!(
+                guard["input_state"],
+                json!(expected_input_state),
+                "{label} input state"
+            );
+            assert_eq!(
+                guard["env_value_output"],
+                json!("omitted"),
+                "{label} env output"
+            );
+            assert_eq!(
+                guard["raw_env_value_echoed"],
+                json!(false),
+                "{label} raw env"
+            );
+            assert_eq!(
+                guard["production_writer_replaced"],
+                json!(false),
+                "{label} production replacement"
+            );
+            assert_eq!(
+                guard["billing_ledger_writer_commit_allowed_in_this_contract"],
+                json!(false),
+                "{label} db-free commit"
+            );
+            assert_eq!(
+                guard["operation_key_output"],
+                json!("omitted"),
+                "{label} operation key"
+            );
+            assert!(!serialized.contains("idempotency_key"));
+            assert!(!serialized.contains("raw ledger payload"));
+        }
+
+        let invalid_raw = " READY postgres://db.example.internal sk-live-never-return ";
+        let (mode, guard) =
+            ledger_adjustment_billing_ledger_writer_cutover_mode_parser_guard(Some(invalid_raw));
+        let serialized = serde_json::to_string(&guard).expect("invalid guard should serialize");
+
+        assert_eq!(mode.as_str(), "disabled");
+        assert_eq!(guard["input_state"], json!("invalid_disabled_guard"));
+        assert_eq!(guard["effective_mode"], json!("disabled"));
+        assert_eq!(
+            guard["source_of_truth"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(guard["invalid_value_refused"], json!(true));
+        assert_eq!(guard["invalid_value_enters_ready"], json!(false));
+        assert_eq!(
+            guard["billing_ledger_writer_commit_allowed_after_guard"],
+            json!(false)
+        );
+        assert_eq!(
+            guard["billing_ledger_writer_commit_allowed_in_this_contract"],
+            json!(false)
+        );
+        assert_eq!(guard["invalid_value_output"], json!("omitted"));
+        assert_eq!(guard["raw_env_value_echoed"], json!(false));
+        assert_eq!(guard["secret_value_echoed"], json!(false));
+        for forbidden in [
+            "READY postgres",
+            "postgres://",
+            "db.example.internal",
+            "sk-live",
+            "idempotency_key",
+            "raw ledger payload",
+            "raw executor failure detail",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "invalid guard must not contain {forbidden}"
+            );
+        }
+
+        let invalid_plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "-0.10000000",
+            "USD",
+            Some(Uuid::from_u128(20)),
+            Some(Uuid::from_u128(40)),
+            Some(Uuid::from_u128(90)),
+            None,
+            None,
+            false,
+        );
+        let invalid_preflight =
+            ledger_adjustment_billing_ledger_writer_cutover_preflight_from_config(
+                &invalid_plan,
+                Some(invalid_raw),
+                None,
+            );
+        let serialized =
+            serde_json::to_string(&invalid_preflight).expect("invalid preflight should serialize");
+
+        assert_eq!(invalid_preflight["state"], json!("disabled"));
+        assert_eq!(
+            invalid_preflight["mode_parser_guard"]["input_state"],
+            json!("invalid_disabled_guard")
+        );
+        assert_eq!(
+            invalid_preflight["mode_parser_guard"]["invalid_value_enters_ready"],
+            json!(false)
+        );
+        assert_eq!(
+            invalid_preflight["source_of_truth"],
+            json!("control_plane_local_sql_writer")
+        );
+        assert_eq!(
+            invalid_preflight["cutover"]["cutover_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            invalid_preflight["cutover"]["billing_ledger_writer_commit_allowed_after_cutover"],
+            json!(false)
+        );
+        assert_eq!(
+            invalid_preflight["no_double_write"]["billing_ledger_writer_commit_allowed_after_ready_cutover"],
+            json!(false)
+        );
+        assert_eq!(
+            invalid_preflight["configuration_summary"]["env_value_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            invalid_preflight["configuration_summary"]["raw_env_value_echoed"],
+            json!(false)
+        );
+        for forbidden in [
+            "READY postgres",
+            "postgres://",
+            "db.example.internal",
+            "sk-live",
+            "idempotency_key",
+            "raw ledger payload",
+            "raw executor failure detail",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "invalid preflight must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn ledger_adjustment_billing_runtime_mapping_summaries_match_response_contract() {
         let request_id = Uuid::from_u128(90);
         let related_entry =
@@ -13755,8 +14089,40 @@ mod tests {
             json!("omitted")
         );
         assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["default_mode"],
+            json!("disabled")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["normalization_policy"],
+            json!("trim_ascii_whitespace_then_ascii_lowercase")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["invalid_value_policy"],
+            json!("disabled_guard_refusal")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["invalid_value_enters_ready"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["configuration_summary"]["raw_env_value_echoed"],
             json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["mode_parser_contract"]["parser"],
+            json!("billing_ledger_writer_cutover_mode_parser.v1")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["mode_parser_contract"]["accepted_normalized_values"],
+            json!(["disabled", "shadow", "ready"])
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["mode_parser_contract"]["blank_value_policy"],
+            json!("default_disabled")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["mode_parser_contract"]["invalid_value_output"],
+            json!("omitted")
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["supported_states"][0]["source_of_truth"],
