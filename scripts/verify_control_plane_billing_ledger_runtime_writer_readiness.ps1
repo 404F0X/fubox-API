@@ -1,7 +1,9 @@
 param(
   [switch]$Live,
   [switch]$LiveExecutionProbe,
+  [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
+  [switch]$SimulateStaleProbeArtifact,
   [switch]$RuntimeWriterAvailable,
   [int]$BlockedExitCode = 2
 )
@@ -165,6 +167,18 @@ function Assert-Contract {
       throw "live probe evidence artifact missing classification: $requiredArtifactClassification"
     }
   }
+  $artifactFreshnessFields = @($liveProbeArtifactContract.freshness_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredFreshnessField in @("generated_at_utc", "current_commit", "freshness_marker", "stale_artifact")) {
+    if ($requiredFreshnessField -notin $artifactFreshnessFields) {
+      throw "live probe evidence artifact missing freshness field: $requiredFreshnessField"
+    }
+  }
+  $artifactProvenanceFields = @($liveProbeArtifactContract.provenance_fields | ForEach-Object { [string]$_ })
+  foreach ($requiredProvenanceField in @("probe_requested", "measurement_source", "executor_boundary_schema", "readiness_schema")) {
+    if ($requiredProvenanceField -notin $artifactProvenanceFields) {
+      throw "live probe evidence artifact missing provenance field: $requiredProvenanceField"
+    }
+  }
   $artifactRowFields = @($liveProbeArtifactContract.row_count_evidence_fields | ForEach-Object { [string]$_ })
   foreach ($requiredRowField in @("statement_kind", "expected_rows", "actual_rows", "rows_match", "mismatch_classification")) {
     if ($requiredRowField -notin $artifactRowFields) {
@@ -172,7 +186,7 @@ function Assert-Contract {
     }
   }
   $artifactTimingFields = @($liveProbeArtifactContract.transaction_timing_duration_fields | ForEach-Object { [string]$_ })
-  foreach ($requiredDurationField in @("begin_transaction_duration_ms", "row_count_enforcement_duration_ms", "rollback_transaction_duration_ms")) {
+  foreach ($requiredDurationField in @("begin_transaction_duration_ms", "insert_probe_ledger_entry_duration_ms", "mark_probe_idempotency_duration_ms", "row_count_capture_duration_ms", "rollback_transaction_duration_ms")) {
     if ($requiredDurationField -notin $artifactTimingFields) {
       throw "live probe evidence artifact missing timing duration field: $requiredDurationField"
     }
@@ -303,11 +317,25 @@ function New-EvidenceItem {
   }
 }
 
+function Get-CurrentCommitMarker {
+  try {
+    $commit = git -C $repoRoot rev-parse --short HEAD 2>$null
+    if ([string]::IsNullOrWhiteSpace($commit)) {
+      return "unavailable"
+    }
+    return [string]$commit.Trim()
+  } catch {
+    return "unavailable"
+  }
+}
+
 function New-LiveProbeEvidenceArtifact {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
     [Parameter(Mandatory = $true)][bool]$ProbeRequested,
+    [Parameter(Mandatory = $true)][bool]$MeasurementsAvailable,
     [Parameter(Mandatory = $true)][bool]$RowCountMismatch,
+    [Parameter(Mandatory = $true)][bool]$StaleArtifact,
     [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Blockers
   )
 
@@ -319,23 +347,39 @@ function New-LiveProbeEvidenceArtifact {
   if (-not $ProbeRequested) {
     [void]$artifactBlockers.Add("probe_not_requested")
   }
-  if ($ProbeRequested -and $Readiness -eq "ready" -and -not $RowCountMismatch) {
-    [void]$artifactBlockers.Add("live_probe_measurements_unavailable")
+  if ($StaleArtifact) {
+    [void]$artifactBlockers.Add("stale_artifact")
+  }
+  if ($ProbeRequested -and $Readiness -eq "ready" -and -not $MeasurementsAvailable -and -not $RowCountMismatch) {
+    [void]$artifactBlockers.Add("missing_row_count_measurement")
+    [void]$artifactBlockers.Add("missing_timing_measurement")
+    [void]$artifactBlockers.Add("missing_rollback_proof")
   }
 
   $classification = "blocker"
   if ($RowCountMismatch) {
     $classification = "fail"
+  } elseif ($ProbeRequested -and $Readiness -eq "ready" -and $MeasurementsAvailable -and -not $StaleArtifact) {
+    $classification = "pass"
   }
 
   $rowCountEvidence = @(
-    $dryRunEvidenceContract.row_count_expectations | ForEach-Object {
+    $liveProbeExecutorBoundaryContract.row_count_expectations | ForEach-Object {
       $statementKind = [string]$_.statement_kind
       $expectedRows = [string]$_.expected_rows
       $actualRows = $null
       $rowsMatch = $null
-      $mismatchClassification = [string]$_.mismatch_classification
-      if ($RowCountMismatch -and $statementKind -eq "insert_ledger_entry") {
+      $mismatchClassification = "blocker"
+      if ($MeasurementsAvailable) {
+        if ($expectedRows -eq "zero_or_one") {
+          $actualRows = 0
+        } else {
+          $actualRows = 1
+        }
+        $rowsMatch = $true
+        $mismatchClassification = "pass"
+      }
+      if ($RowCountMismatch -and $statementKind -eq "insert_probe_ledger_entry") {
         $actualRows = 0
         $rowsMatch = $false
         $mismatchClassification = "fail"
@@ -346,16 +390,32 @@ function New-LiveProbeEvidenceArtifact {
         actual_rows = $actualRows
         rows_match = $rowsMatch
         mismatch_classification = $mismatchClassification
-        measurement_source = if ($RowCountMismatch) { "contract_simulated_no_db_io" } else { "pending_live_probe_executor" }
+        rows_affected_source = if ($MeasurementsAvailable -or $RowCountMismatch) { "contract_simulated_no_db_io" } else { "pending_live_probe_executor" }
       }
     }
   )
 
+  $durationSource = if ($MeasurementsAvailable) { "contract_simulated_no_db_io" } else { "pending_live_probe_executor" }
+  $durationValue = if ($MeasurementsAvailable) { 1 } else { $null }
+  $generatedAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
+  $freshnessMarker = if ($StaleArtifact) { "stale" } else { "current" }
+
   return [ordered]@{
     schema_version = [string]$liveProbeArtifactContract.schema_version
     artifact_mode = [string]$liveProbeArtifactContract.artifact_mode
+    generated_at_utc = $generatedAtUtc
+    current_commit = (Get-CurrentCommitMarker)
+    freshness_marker = $freshnessMarker
+    stale_artifact = $StaleArtifact
+    probe_requested = $ProbeRequested
     classification = $classification
     supported_classifications = @($liveProbeArtifactContract.classification_values | ForEach-Object { [string]$_ })
+    provenance = [ordered]@{
+      measurement_source = $durationSource
+      executor_boundary_schema = [string]$liveProbeExecutorBoundaryContract.schema_version
+      readiness_schema = [string]$readinessContract.schema_version
+      probe_requested = $ProbeRequested
+    }
     db_write_performed = $false
     production_writer_replaced = $false
     production_source_of_truth_switch_allowed = $false
@@ -370,23 +430,24 @@ function New-LiveProbeEvidenceArtifact {
     }
     row_count_evidence = $rowCountEvidence
     transaction_timing_durations = [ordered]@{
-      begin_transaction_duration_ms = $null
-      lock_idempotency_scope_duration_ms = $null
-      lock_wallet_scope_duration_ms = $null
-      lock_budget_scope_duration_ms = $null
-      execute_bounded_commands_duration_ms = $null
-      row_count_enforcement_duration_ms = $null
-      rollback_transaction_duration_ms = $null
-      measurement_source = "pending_live_probe_executor"
+      begin_transaction_duration_ms = $durationValue
+      lock_idempotency_scope_duration_ms = $durationValue
+      lock_wallet_scope_duration_ms = $durationValue
+      lock_budget_scope_duration_ms = $durationValue
+      insert_probe_ledger_entry_duration_ms = $durationValue
+      mark_probe_idempotency_duration_ms = $durationValue
+      row_count_capture_duration_ms = $durationValue
+      rollback_transaction_duration_ms = $durationValue
+      measurement_source = $durationSource
     }
     rollback_no_commit_proof = [ordered]@{
-      rollback_observed = $false
+      rollback_observed = $MeasurementsAvailable
       commit_observed = $false
       probe_commits_billing_ledger = $false
       production_writer_replaced = $false
       dual_commit_observed = $false
       local_writer_fallback = "control_plane_local_sql_writer"
-      proof_source = "pending_live_probe_executor"
+      proof_source = $durationSource
     }
     classification_rules = [ordered]@{
       blocker = @($liveProbeArtifactContract.classification_rules.blocker | ForEach-Object { [string]$_ })
@@ -780,7 +841,7 @@ $summary = [ordered]@{
   }
   live_execution_handoff = (New-LiveExecutionHandoff -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
   live_probe_executor_boundary = (New-LiveProbeExecutorBoundary -ProbeRequested ([bool]$LiveExecutionProbe) -Blockers @($blockers))
-  live_probe_evidence_artifact = (New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -Blockers @($blockers))
+  live_probe_evidence_artifact = (New-LiveProbeEvidenceArtifact -Readiness $readiness -ProbeRequested ([bool]$LiveExecutionProbe) -MeasurementsAvailable ([bool]$SimulateProbeMeasurements) -RowCountMismatch ([bool]$SimulateProbeRowCountMismatch) -StaleArtifact ([bool]$SimulateStaleProbeArtifact) -Blockers @($blockers))
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version

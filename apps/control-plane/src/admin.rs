@@ -4442,13 +4442,29 @@ fn ledger_adjustment_billing_ledger_live_probe_evidence_artifact_contract() -> V
         "production_writer_replaced": false,
         "production_source_of_truth_switch_allowed": false,
         "dual_commit_allowed": false,
+        "freshness_fields": [
+            "generated_at_utc",
+            "current_commit",
+            "freshness_marker",
+            "stale_artifact"
+        ],
+        "provenance_fields": [
+            "probe_requested",
+            "measurement_source",
+            "executor_boundary_schema",
+            "readiness_schema"
+        ],
         "classification_values": ["blocker", "pass", "fail"],
         "classification_rules": {
             "blocker": [
                 "probe_not_requested",
                 "live_database_url_missing",
                 "runtime_writer_feature_unavailable",
-                "invalid_cutover_mode_guard"
+                "invalid_cutover_mode_guard",
+                "missing_row_count_measurement",
+                "missing_timing_measurement",
+                "missing_rollback_proof",
+                "stale_artifact"
             ],
             "pass": [
                 "all_required_row_counts_match",
@@ -4458,8 +4474,6 @@ fn ledger_adjustment_billing_ledger_live_probe_evidence_artifact_contract() -> V
             ],
             "fail": [
                 "row_count_mismatch",
-                "missing_timing_duration",
-                "rollback_proof_missing",
                 "unsafe_output_detected"
             ]
         },
@@ -4475,8 +4489,9 @@ fn ledger_adjustment_billing_ledger_live_probe_evidence_artifact_contract() -> V
             "lock_idempotency_scope_duration_ms",
             "lock_wallet_scope_duration_ms",
             "lock_budget_scope_duration_ms",
-            "execute_bounded_commands_duration_ms",
-            "row_count_enforcement_duration_ms",
+            "insert_probe_ledger_entry_duration_ms",
+            "mark_probe_idempotency_duration_ms",
+            "row_count_capture_duration_ms",
             "rollback_transaction_duration_ms"
         ],
         "rollback_no_commit_proof_fields": [
@@ -15357,6 +15372,24 @@ mod tests {
             json!(["blocker", "pass", "fail"])
         );
         assert_eq!(
+            contract["live_probe_evidence_artifact_contract"]["freshness_fields"],
+            json!([
+                "generated_at_utc",
+                "current_commit",
+                "freshness_marker",
+                "stale_artifact"
+            ])
+        );
+        assert_eq!(
+            contract["live_probe_evidence_artifact_contract"]["provenance_fields"],
+            json!([
+                "probe_requested",
+                "measurement_source",
+                "executor_boundary_schema",
+                "readiness_schema"
+            ])
+        );
+        assert_eq!(
             contract["live_probe_evidence_artifact_contract"]["row_count_evidence_fields"],
             json!([
                 "statement_kind",
@@ -15373,8 +15406,9 @@ mod tests {
                 "lock_idempotency_scope_duration_ms",
                 "lock_wallet_scope_duration_ms",
                 "lock_budget_scope_duration_ms",
-                "execute_bounded_commands_duration_ms",
-                "row_count_enforcement_duration_ms",
+                "insert_probe_ledger_entry_duration_ms",
+                "mark_probe_idempotency_duration_ms",
+                "row_count_capture_duration_ms",
                 "rollback_transaction_duration_ms"
             ])
         );
@@ -15392,6 +15426,10 @@ mod tests {
         assert_eq!(
             contract["live_probe_evidence_artifact_contract"]["classification_rules"]["fail"][0],
             json!("row_count_mismatch")
+        );
+        assert_eq!(
+            contract["live_probe_evidence_artifact_contract"]["classification_rules"]["blocker"][7],
+            json!("stale_artifact")
         );
         assert_eq!(
             contract["live_probe_evidence_artifact_contract"]["safe_output_contract"]["raw_executor_error_detail_echoed"],
@@ -16733,6 +16771,16 @@ mod tests {
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
                 ["live_probe_evidence_artifact_contract"]["classification_values"],
             json!(["blocker", "pass", "fail"])
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_evidence_artifact_contract"]["freshness_fields"][0],
+            json!("generated_at_utc")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_evidence_artifact_contract"]["provenance_fields"][1],
+            json!("measurement_source")
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
