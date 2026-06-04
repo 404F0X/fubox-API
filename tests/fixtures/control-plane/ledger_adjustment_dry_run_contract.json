@@ -66,6 +66,55 @@
       "raw_metadata_echoed": false,
       "credential_material_echoed": false
     },
+    "ledger_executor_refusal_summary_contract": {
+      "schema_version": "billing_ledger_postgres_executor_summary.v1",
+      "response_field": "ledger_executor_summary",
+      "supported_outcomes": ["refused_preflight", "refused_rollback"],
+      "operation_key_output": "omitted",
+      "error_detail_output": "omitted",
+      "raw_executor_error_detail_echoed": false,
+      "dedupe_material_echoed": false,
+      "raw_metadata_echoed": false,
+      "credential_material_echoed": false,
+      "preflight_refusal": {
+        "committed": false,
+        "rolled_back": false,
+        "refused_statement_count": 0,
+        "row_count_mismatch": false
+      },
+      "rollback_refusal": {
+        "committed": false,
+        "rolled_back": true,
+        "refused_statement_count": "one_or_more",
+        "row_count_mismatch": "boolean_only"
+      }
+    },
+    "preflight_refusal_summary": {
+      "schema_version": "billing_ledger_postgres_executor_summary.v1",
+      "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
+      "operation": "execute_contract",
+      "outcome": "refused_preflight",
+      "operation_key_output": "omitted",
+      "committed": false,
+      "rolled_back": false,
+      "statement_count": 0,
+      "executed_statement_count": 0,
+      "refused_statement_count": 0,
+      "total_rows_affected": 0,
+      "final_statement_order": null,
+      "final_statement_kind": null,
+      "error_detail_output": "omitted",
+      "row_count_mismatch": false,
+      "dedupe_material_echoed": false,
+      "raw_executor_error_detail_echoed": false,
+      "omitted_material": [
+        "operation key",
+        "dedupe material",
+        "raw metadata",
+        "credential material",
+        "raw executor error detail"
+      ]
+    },
     "transaction_contract": {
       "future_isolation": "read_committed_or_stronger",
       "begin_before_locking": true,
@@ -94,7 +143,22 @@
         "remaining_refundable_amount",
         "dedupe_replay_state"
       ],
-      "unbounded_scan_allowed": false
+      "unbounded_scan_allowed": false,
+      "rollback_executor_summary_contract": {
+        "schema_version": "billing_ledger_postgres_executor_summary.v1",
+        "response_field": "ledger_executor_summary",
+        "outcome": "refused_rollback",
+        "committed": false,
+        "rolled_back": true,
+        "refused_statement_count": "one_or_more",
+        "row_count_mismatch": "boolean_only",
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted",
+        "raw_executor_error_detail_echoed": false,
+        "dedupe_material_echoed": false,
+        "raw_metadata_echoed": false,
+        "credential_material_echoed": false
+      }
     },
     "dedupe_contract": {
       "server_generated_dedupe_material": true,
@@ -161,7 +225,22 @@
         "remaining_refundable_amount",
         "dedupe_replay_state"
       ],
-      "unbounded_scan_allowed": false
+      "unbounded_scan_allowed": false,
+      "rollback_executor_summary_contract": {
+        "schema_version": "billing_ledger_postgres_executor_summary.v1",
+        "response_field": "ledger_executor_summary",
+        "outcome": "refused_rollback",
+        "committed": false,
+        "rolled_back": true,
+        "refused_statement_count": "one_or_more",
+        "row_count_mismatch": "boolean_only",
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted",
+        "raw_executor_error_detail_echoed": false,
+        "dedupe_material_echoed": false,
+        "raw_metadata_echoed": false,
+        "credential_material_echoed": false
+      }
     },
     "safe_output_contract": {
       "dedupe_material_echoed": false,
@@ -358,6 +437,55 @@
               "raw_metadata_echoed": false,
               "credential_material_echoed": false
             },
+            "ledger_executor_refusal_summary_contract": {
+              "schema_version": "billing_ledger_postgres_executor_summary.v1",
+              "response_field": "ledger_executor_summary",
+              "supported_outcomes": ["refused_preflight", "refused_rollback"],
+              "operation_key_output": "omitted",
+              "error_detail_output": "omitted",
+              "raw_executor_error_detail_echoed": false,
+              "dedupe_material_echoed": false,
+              "raw_metadata_echoed": false,
+              "credential_material_echoed": false,
+              "preflight_refusal": {
+                "committed": false,
+                "rolled_back": false,
+                "refused_statement_count": 0,
+                "row_count_mismatch": false
+              },
+              "rollback_refusal": {
+                "committed": false,
+                "rolled_back": true,
+                "refused_statement_count": "one_or_more",
+                "row_count_mismatch": "boolean_only"
+              }
+            },
+            "preflight_refusal_summary": {
+              "schema_version": "billing_ledger_postgres_executor_summary.v1",
+              "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
+              "operation": "execute_contract",
+              "outcome": "refused_preflight",
+              "operation_key_output": "omitted",
+              "committed": false,
+              "rolled_back": false,
+              "statement_count": 0,
+              "executed_statement_count": 0,
+              "refused_statement_count": 0,
+              "total_rows_affected": 0,
+              "final_statement_order": null,
+              "final_statement_kind": null,
+              "error_detail_output": "omitted",
+              "row_count_mismatch": false,
+              "dedupe_material_echoed": false,
+              "raw_executor_error_detail_echoed": false,
+              "omitted_material": [
+                "operation key",
+                "dedupe material",
+                "raw metadata",
+                "credential material",
+                "raw executor error detail"
+              ]
+            },
             "transaction_contract": {
               "future_isolation": "read_committed_or_stronger",
               "begin_before_locking": true,
@@ -386,7 +514,22 @@
                 "remaining_refundable_amount",
                 "dedupe_replay_state"
               ],
-              "unbounded_scan_allowed": false
+              "unbounded_scan_allowed": false,
+              "rollback_executor_summary_contract": {
+                "schema_version": "billing_ledger_postgres_executor_summary.v1",
+                "response_field": "ledger_executor_summary",
+                "outcome": "refused_rollback",
+                "committed": false,
+                "rolled_back": true,
+                "refused_statement_count": "one_or_more",
+                "row_count_mismatch": "boolean_only",
+                "operation_key_output": "omitted",
+                "error_detail_output": "omitted",
+                "raw_executor_error_detail_echoed": false,
+                "dedupe_material_echoed": false,
+                "raw_metadata_echoed": false,
+                "credential_material_echoed": false
+              }
             },
             "dedupe_contract": {
               "server_generated_dedupe_material": true,
@@ -423,6 +566,32 @@
               "request_material_echoed": false,
               "credential_material_echoed": false
             }
+          },
+          "ledger_executor_summary": {
+            "schema_version": "billing_ledger_postgres_executor_summary.v1",
+            "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
+            "operation": "refund",
+            "outcome": "refused_preflight",
+            "operation_key_output": "omitted",
+            "committed": false,
+            "rolled_back": false,
+            "statement_count": 0,
+            "executed_statement_count": 0,
+            "refused_statement_count": 0,
+            "total_rows_affected": 0,
+            "final_statement_order": null,
+            "final_statement_kind": null,
+            "error_detail_output": "omitted",
+            "row_count_mismatch": false,
+            "dedupe_material_echoed": false,
+            "raw_executor_error_detail_echoed": false,
+            "omitted_material": [
+              "operation key",
+              "dedupe material",
+              "raw metadata",
+              "credential material",
+              "raw executor error detail"
+            ]
           }
         }
       }
@@ -511,7 +680,22 @@
               "server_generated_dedupe_material"
             ],
             "dedupe_material_echoed": false,
-            "unbounded_scan_allowed": false
+            "unbounded_scan_allowed": false,
+            "rollback_executor_summary_contract": {
+              "schema_version": "billing_ledger_postgres_executor_summary.v1",
+              "response_field": "ledger_executor_summary",
+              "outcome": "refused_rollback",
+              "committed": false,
+              "rolled_back": true,
+              "refused_statement_count": "one_or_more",
+              "row_count_mismatch": "boolean_only",
+              "operation_key_output": "omitted",
+              "error_detail_output": "omitted",
+              "raw_executor_error_detail_echoed": false,
+              "dedupe_material_echoed": false,
+              "raw_metadata_echoed": false,
+              "credential_material_echoed": false
+            }
           },
           "ledger_entry": {
             "id": "00000000-0000-0000-0000-000000000092",
@@ -619,7 +803,22 @@
             "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
             "write_performed": false,
             "dedupe_material_echoed": false,
-            "unbounded_scan_allowed": false
+            "unbounded_scan_allowed": false,
+            "rollback_executor_summary_contract": {
+              "schema_version": "billing_ledger_postgres_executor_summary.v1",
+              "response_field": "ledger_executor_summary",
+              "outcome": "refused_rollback",
+              "committed": false,
+              "rolled_back": true,
+              "refused_statement_count": "one_or_more",
+              "row_count_mismatch": "boolean_only",
+              "operation_key_output": "omitted",
+              "error_detail_output": "omitted",
+              "raw_executor_error_detail_echoed": false,
+              "dedupe_material_echoed": false,
+              "raw_metadata_echoed": false,
+              "credential_material_echoed": false
+            }
           },
           "ledger_entry": {
             "id": "00000000-0000-0000-0000-000000000092",

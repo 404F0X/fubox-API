@@ -2535,6 +2535,11 @@ fn ledger_adjustment_execute_contract_response(plan: Value) -> Response {
 }
 
 fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
+    let operation = plan
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
     json!({
         "error": {
             "code": "future_writer_required",
@@ -2543,7 +2548,14 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
         "data": {
             "mode": "execute_contract",
             "validated_plan": plan,
-            "execute_contract": ledger_adjustment_execute_contract()
+            "execute_contract": ledger_adjustment_execute_contract(),
+            "ledger_executor_summary": ledger_adjustment_executor_refusal_summary(
+                operation.as_str(),
+                "refused_preflight",
+                false,
+                0,
+                false,
+            )
         }
     })
 }
@@ -2574,6 +2586,14 @@ fn ledger_adjustment_execute_contract() -> Value {
         "dedupe_material_echoed": false,
         "audit_snapshot_policy": "bounded public ids and amounts only",
         "ledger_executor_summary_contract": ledger_adjustment_executor_summary_contract(),
+        "ledger_executor_refusal_summary_contract": ledger_adjustment_executor_refusal_summary_contract(),
+        "preflight_refusal_summary": ledger_adjustment_executor_refusal_summary(
+            "execute_contract",
+            "refused_preflight",
+            false,
+            0,
+            false,
+        ),
         "transaction_contract": {
             "future_isolation": "read_committed_or_stronger",
             "begin_before_locking": true,
@@ -2602,7 +2622,8 @@ fn ledger_adjustment_execute_contract() -> Value {
                 "remaining_refundable_amount",
                 "dedupe_replay_state"
             ],
-            "unbounded_scan_allowed": false
+            "unbounded_scan_allowed": false,
+            "rollback_executor_summary_contract": ledger_adjustment_executor_rollback_summary_contract()
         },
         "dedupe_contract": {
             "server_generated_dedupe_material": true,
@@ -3373,6 +3394,53 @@ fn ledger_adjustment_executor_summary_contract() -> Value {
     })
 }
 
+fn ledger_adjustment_executor_refusal_summary_contract() -> Value {
+    json!({
+        "schema_version": BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA,
+        "response_field": "ledger_executor_summary",
+        "supported_outcomes": [
+            "refused_preflight",
+            "refused_rollback"
+        ],
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted",
+        "raw_executor_error_detail_echoed": false,
+        "dedupe_material_echoed": false,
+        "raw_metadata_echoed": false,
+        "credential_material_echoed": false,
+        "preflight_refusal": {
+            "committed": false,
+            "rolled_back": false,
+            "refused_statement_count": 0,
+            "row_count_mismatch": false
+        },
+        "rollback_refusal": {
+            "committed": false,
+            "rolled_back": true,
+            "refused_statement_count": "one_or_more",
+            "row_count_mismatch": "boolean_only"
+        }
+    })
+}
+
+fn ledger_adjustment_executor_rollback_summary_contract() -> Value {
+    json!({
+        "schema_version": BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA,
+        "response_field": "ledger_executor_summary",
+        "outcome": "refused_rollback",
+        "committed": false,
+        "rolled_back": true,
+        "refused_statement_count": "one_or_more",
+        "row_count_mismatch": "boolean_only",
+        "operation_key_output": "omitted",
+        "error_detail_output": "omitted",
+        "raw_executor_error_detail_echoed": false,
+        "dedupe_material_echoed": false,
+        "raw_metadata_echoed": false,
+        "credential_material_echoed": false
+    })
+}
+
 fn ledger_adjustment_executor_summary_for_entry_type(
     entry_type: &str,
     outcome: &'static str,
@@ -3408,6 +3476,48 @@ fn ledger_adjustment_executor_summary_for_entry_type(
     })
 }
 
+fn ledger_adjustment_executor_refusal_summary(
+    operation: &str,
+    outcome: &'static str,
+    rolled_back: bool,
+    refused_statement_count: usize,
+    row_count_mismatch: bool,
+) -> Value {
+    let final_statement_order = (refused_statement_count > 0).then_some(1);
+    let final_statement_kind = (refused_statement_count > 0).then_some(if row_count_mismatch {
+        "row_count_enforcement"
+    } else {
+        "statement_refusal"
+    });
+
+    json!({
+        "schema_version": BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA,
+        "executor": "control_plane_transactional_admin_ledger_adjustment_writer",
+        "operation": operation,
+        "outcome": outcome,
+        "operation_key_output": "omitted",
+        "committed": false,
+        "rolled_back": rolled_back,
+        "statement_count": refused_statement_count,
+        "executed_statement_count": 0,
+        "refused_statement_count": refused_statement_count,
+        "total_rows_affected": 0,
+        "final_statement_order": final_statement_order,
+        "final_statement_kind": final_statement_kind,
+        "error_detail_output": "omitted",
+        "row_count_mismatch": row_count_mismatch,
+        "dedupe_material_echoed": false,
+        "raw_executor_error_detail_echoed": false,
+        "omitted_material": [
+            "operation key",
+            "dedupe material",
+            "raw metadata",
+            "credential material",
+            "raw executor error detail"
+        ]
+    })
+}
+
 fn ledger_adjustment_execute_transaction_contract(write_performed: bool) -> Value {
     json!({
         "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
@@ -3435,7 +3545,8 @@ fn ledger_adjustment_execute_transaction_contract(write_performed: bool) -> Valu
             "server_generated_dedupe_material"
         ],
         "dedupe_material_echoed": false,
-        "unbounded_scan_allowed": false
+        "unbounded_scan_allowed": false,
+        "rollback_executor_summary_contract": ledger_adjustment_executor_rollback_summary_contract()
     })
 }
 
@@ -10060,6 +10171,64 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            body["data"]["execute_contract"]["ledger_executor_refusal_summary_contract"]["schema_version"],
+            json!(BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["ledger_executor_refusal_summary_contract"]["preflight_refusal"]
+                ["committed"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["ledger_executor_refusal_summary_contract"]["rollback_refusal"]
+                ["rolled_back"],
+            json!(true)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["preflight_refusal_summary"]["outcome"],
+            json!("refused_preflight")
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["preflight_refusal_summary"]["committed"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["preflight_refusal_summary"]["rolled_back"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["preflight_refusal_summary"]["refused_statement_count"],
+            json!(0)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["preflight_refusal_summary"]["row_count_mismatch"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["preflight_refusal_summary"]["error_detail_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            body["data"]["ledger_executor_summary"]["schema_version"],
+            json!(BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA)
+        );
+        assert_eq!(
+            body["data"]["ledger_executor_summary"]["operation"],
+            json!("refund")
+        );
+        assert_eq!(
+            body["data"]["ledger_executor_summary"]["outcome"],
+            json!("refused_preflight")
+        );
+        assert_eq!(
+            body["data"]["ledger_executor_summary"]["operation_key_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            body["data"]["ledger_executor_summary"]["error_detail_output"],
+            json!("omitted")
+        );
+        assert_eq!(
             body["data"]["execute_contract"]["contract_version"],
             json!("ledger_adjustment_execute_preflight_contract.v2")
         );
@@ -10109,6 +10278,66 @@ mod tests {
             assert!(
                 !serialized.contains(forbidden),
                 "ledger adjustment execute contract response must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_execute_refusal_and_rollback_summaries_are_secret_safe() {
+        let rollback_summary =
+            ledger_adjustment_executor_refusal_summary("refund", "refused_rollback", true, 1, true);
+        let rollback_contract = ledger_adjustment_executor_rollback_summary_contract();
+        let serialized = serde_json::to_string(&json!([&rollback_summary, &rollback_contract]))
+            .expect("summary should serialize");
+
+        assert_eq!(
+            rollback_summary["schema_version"],
+            json!(BILLING_LEDGER_EXECUTOR_SUMMARY_SCHEMA)
+        );
+        assert_eq!(rollback_summary["outcome"], json!("refused_rollback"));
+        assert_eq!(rollback_summary["operation_key_output"], json!("omitted"));
+        assert_eq!(rollback_summary["committed"], json!(false));
+        assert_eq!(rollback_summary["rolled_back"], json!(true));
+        assert_eq!(rollback_summary["statement_count"], json!(1));
+        assert_eq!(rollback_summary["executed_statement_count"], json!(0));
+        assert_eq!(rollback_summary["refused_statement_count"], json!(1));
+        assert_eq!(rollback_summary["total_rows_affected"], json!(0));
+        assert_eq!(
+            rollback_summary["final_statement_kind"],
+            json!("row_count_enforcement")
+        );
+        assert_eq!(rollback_summary["error_detail_output"], json!("omitted"));
+        assert_eq!(rollback_summary["row_count_mismatch"], json!(true));
+        assert_eq!(
+            rollback_summary["raw_executor_error_detail_echoed"],
+            json!(false)
+        );
+        assert_eq!(rollback_contract["committed"], json!(false));
+        assert_eq!(rollback_contract["rolled_back"], json!(true));
+        assert_eq!(
+            rollback_contract["refused_statement_count"],
+            json!("one_or_more")
+        );
+        assert_eq!(
+            rollback_contract["row_count_mismatch"],
+            json!("boolean_only")
+        );
+        assert_eq!(rollback_contract["error_detail_output"], json!("omitted"));
+
+        for forbidden in [
+            "ledger-idempotency-never-return",
+            "dedupe_key",
+            "idempotency_key",
+            "raw ledger payload",
+            "Authorization",
+            "Bearer",
+            "sk-live",
+            "db.example.internal",
+            "constraint violation detail",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "ledger adjustment refusal summary must not contain {forbidden}"
             );
         }
     }
@@ -10473,6 +10702,29 @@ mod tests {
             json!("omitted")
         );
         assert_eq!(
+            fixture["execute_contract"]["ledger_executor_refusal_summary_contract"]["preflight_refusal"]
+                ["committed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["ledger_executor_refusal_summary_contract"]["rollback_refusal"]
+                ["rolled_back"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["preflight_refusal_summary"]["outcome"],
+            json!("refused_preflight")
+        );
+        assert_eq!(
+            fixture["execute_contract"]["preflight_refusal_summary"]["error_detail_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            fixture["execute_contract"]["transaction_contract"]["rollback_executor_summary_contract"]
+                ["row_count_mismatch"],
+            json!("boolean_only")
+        );
+        assert_eq!(
             fixture["execute_contract"]["request_log_contract"]["request_log_mutation_allowed"],
             json!(false)
         );
@@ -10507,6 +10759,14 @@ mod tests {
             json!("omitted")
         );
         assert_eq!(
+            fixture["execute"]["transaction_contract"]["rollback_executor_summary_contract"]["rolled_back"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["transaction_contract"]["rollback_executor_summary_contract"]["error_detail_output"],
+            json!("omitted")
+        );
+        assert_eq!(
             fixture["execute"]["idempotent_replay_does_not_write_ledger_or_audit"],
             json!(true)
         );
@@ -10527,6 +10787,36 @@ mod tests {
             fixture["examples"]["execute_contract_refusal"]["response"]["data"]["execute_contract"]
                 ["request_log_write"],
             json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["execute_contract"]
+                ["ledger_executor_refusal_summary_contract"]["rollback_refusal"]["refused_statement_count"],
+            json!("one_or_more")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["execute_contract"]
+                ["preflight_refusal_summary"]["row_count_mismatch"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["ledger_executor_summary"]
+                ["outcome"],
+            json!("refused_preflight")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["ledger_executor_summary"]
+                ["committed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["ledger_executor_summary"]
+                ["rolled_back"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["ledger_executor_summary"]
+                ["error_detail_output"],
+            json!("omitted")
         );
         assert_eq!(
             fixture["examples"]["execute_success"]["response"]["status"],
