@@ -14,6 +14,7 @@ type PromptProtectionSummaryData = {
   detectedAction: string;
   durationAvailability: string;
   effectiveAction: string;
+  freshnessReplay: string;
   generatedAt: string;
   hitCount: string;
   hitKinds: string;
@@ -163,6 +164,10 @@ export function PromptProtectionSummary({
           <dd>{summary.proofClosure}</dd>
         </div>
         <div>
+          <dt>Freshness/replay</dt>
+          <dd>{summary.freshnessReplay}</dd>
+        </div>
+        <div>
           <dt>Stale/simulated marker</dt>
           <dd>{summary.staleSimulatedMarker}</dd>
         </div>
@@ -215,6 +220,7 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
     detectedAction: enumField(record.detected_action),
     durationAvailability: durationAvailabilityField(record),
     effectiveAction: enumField(record.effective_action),
+    freshnessReplay: freshnessReplayField(record),
     generatedAt: generatedAtField(record),
     hitCount: numberField(record.hit_count),
     hitKinds: countMapField(record.hit_kinds),
@@ -556,6 +562,49 @@ function staleSimulatedMarkerField(record: Record<string, JsonValue>): string {
 
   if (marker === true) {
     return "[redacted]";
+  }
+
+  return "-";
+}
+
+function freshnessReplayField(record: Record<string, JsonValue>): string {
+  const handoff = auditHandoffRecord(record);
+
+  if (handoff) {
+    const handoffClassification = enumField(
+      handoff.freshness_replay_classification ?? handoff.replay_classification,
+    );
+
+    if (handoffClassification !== "-") {
+      return handoffClassification;
+    }
+  }
+
+  if (!isJsonRecord(record.freshness)) {
+    return "-";
+  }
+
+  const explicit = enumField(
+    record.freshness.freshness_replay_classification ??
+      record.freshness.replay_classification ??
+      record.freshness.classification,
+  );
+
+  if (explicit !== "-") {
+    return explicit;
+  }
+
+  if (record.freshness.live_evidence_closure_eligible === true) {
+    return "current_live_proof";
+  }
+
+  if (record.freshness.stale_or_simulated_report_closes_live_gap === false) {
+    const provenance = isJsonRecord(record.provenance) ? record.provenance : null;
+    const kind = provenance ? enumField(provenance.kind) : "-";
+
+    if (kind === "simulated") {
+      return "simulated_replay_refused";
+    }
   }
 
   return "-";

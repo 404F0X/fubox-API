@@ -137,7 +137,14 @@ function stubAdminFetch(
     ledgerAdjustmentExecuteStatuses?: Array<"applied" | "idempotent" | "blocked" | "failed">;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
     payloadStored?: boolean;
-    promptProtectionProofVariant?: "failedRefused" | "liveEligible" | "simulatedRefused";
+    promptProtectionProofVariant?:
+      | "duplicateRunRefused"
+      | "failedRefused"
+      | "liveEligible"
+      | "simulatedReplayRefused"
+      | "simulatedRefused"
+      | "staleCommitRefused"
+      | "staleGeneratedAtRefused";
     promptProtectionSignals?: boolean;
   } = {},
 ) {
@@ -215,6 +222,7 @@ function stubAdminFetch(
       current_provenance_required: true,
       duration_available_required: true,
       evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      freshness_replay_classification: "simulated_replay_refused",
       latency_envelope_required: true,
       provider_attempts_zero_required: true,
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-handoff-command-hidden")}`,
@@ -270,6 +278,7 @@ function stubAdminFetch(
       },
     },
     freshness: {
+      freshness_replay_classification: "simulated_replay_refused",
       generated_at_utc: "2026-06-04T13:30:00.000Z",
       live_evidence_closure_eligible: false,
       proof_run_id_hash: "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
@@ -309,6 +318,7 @@ function stubAdminFetch(
       current_provenance_required: true,
       duration_available_required: true,
       evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      freshness_replay_classification: "current_live_proof",
       latency_envelope_required: true,
       provider_attempts_zero_required: true,
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-live-handoff-command-hidden")}`,
@@ -316,6 +326,7 @@ function stubAdminFetch(
       secret_dsn: "postgres://prompt-live-handoff-dsn-hidden",
     },
     freshness: {
+      freshness_replay_classification: "current_live_proof",
       generated_at_utc: "2026-06-04T14:05:00.000Z",
       live_evidence_closure_eligible: true,
       proof_run_id_hash: "deadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0de",
@@ -370,6 +381,7 @@ function stubAdminFetch(
       current_provenance_required: true,
       duration_available_required: true,
       evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      freshness_replay_classification: "freshness_or_replay_refused",
       latency_envelope_required: true,
       provider_attempts_zero_required: true,
       raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-fail-handoff-command-hidden")}`,
@@ -377,6 +389,7 @@ function stubAdminFetch(
       secret_dsn: "postgres://prompt-fail-handoff-dsn-hidden",
     },
     freshness: {
+      freshness_replay_classification: "freshness_or_replay_refused",
       generated_at_utc: "2026-06-04T14:15:00.000Z",
       live_evidence_closure_eligible: false,
       proof_run_id_hash: "facefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeed",
@@ -407,12 +420,130 @@ function stubAdminFetch(
       },
     },
   };
+  const staleGeneratedAtPromptProtectionSignal = {
+    ...liveEligiblePromptProtectionSignal,
+    audit_readiness: {
+      ...liveEligiblePromptProtectionSignal.audit_readiness,
+      classification: "blocked",
+      freshness_replay_classification: "stale_generated_at_refused",
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-stale-generated-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-stale-generated-report-hidden.json",
+      secret_dsn: "postgres://prompt-stale-generated-dsn-hidden",
+    },
+    freshness: {
+      ...liveEligiblePromptProtectionSignal.freshness,
+      freshness_replay_classification: "stale_generated_at_refused",
+      generated_at_utc: "2026-06-03T14:05:00.000Z",
+      live_evidence_closure_eligible: false,
+      proof_run_id_hash: "badc0ffee0ddf00dbadc0ffee0ddf00dbadc0ffee0ddf00dbadc0ffee0ddf00d",
+      raw_report_path: "C:\\secret\\prompt-stale-generated-proof-hidden.json",
+    },
+    generated_at_utc: "2026-06-03T14:05:00.000Z",
+    provenance: {
+      ...liveEligiblePromptProtectionSignal.provenance,
+      generated_at_utc: "2026-06-03T14:05:00.000Z",
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-stale-generated-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-stale-generated-provider-hidden"),
+        report_path: "C:\\secret\\prompt-stale-generated-proof-hidden.json",
+      },
+    },
+  };
+  const staleCommitPromptProtectionSignal = {
+    ...liveEligiblePromptProtectionSignal,
+    audit_readiness: {
+      ...liveEligiblePromptProtectionSignal.audit_readiness,
+      classification: "fail",
+      freshness_replay_classification: "stale_repo_commit_refused",
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-stale-commit-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-stale-commit-report-hidden.json",
+      secret_dsn: "postgres://prompt-stale-commit-dsn-hidden",
+    },
+    freshness: {
+      ...liveEligiblePromptProtectionSignal.freshness,
+      freshness_replay_classification: "stale_repo_commit_refused",
+      live_evidence_closure_eligible: false,
+      proof_run_id_hash: "c001c0dec001c0dec001c0dec001c0dec001c0dec001c0dec001c0dec001c0de",
+      raw_report_path: "C:\\secret\\prompt-stale-commit-proof-hidden.json",
+      repo_head_commit: "0000000000000000000000000000000000000000",
+    },
+    provenance: {
+      ...liveEligiblePromptProtectionSignal.provenance,
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-stale-commit-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-stale-commit-provider-hidden"),
+        report_path: "C:\\secret\\prompt-stale-commit-proof-hidden.json",
+      },
+      repo: {
+        head_commit: "0000000000000000000000000000000000000000",
+      },
+    },
+  };
+  const duplicateRunPromptProtectionSignal = {
+    ...liveEligiblePromptProtectionSignal,
+    audit_readiness: {
+      ...liveEligiblePromptProtectionSignal.audit_readiness,
+      classification: "fail",
+      freshness_replay_classification: "duplicate_proof_run_refused",
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-duplicate-run-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-duplicate-run-report-hidden.json",
+      secret_dsn: "postgres://prompt-duplicate-run-dsn-hidden",
+    },
+    freshness: {
+      ...liveEligiblePromptProtectionSignal.freshness,
+      freshness_replay_classification: "duplicate_proof_run_refused",
+      live_evidence_closure_eligible: false,
+      proof_run_id_hash: "d00df00dd00df00dd00df00dd00df00dd00df00dd00df00dd00df00dd00df00d",
+      raw_report_path: "C:\\secret\\prompt-duplicate-run-proof-hidden.json",
+    },
+    provenance: {
+      ...liveEligiblePromptProtectionSignal.provenance,
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-duplicate-run-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-duplicate-run-provider-hidden"),
+        report_path: "C:\\secret\\prompt-duplicate-run-proof-hidden.json",
+      },
+    },
+  };
+  const simulatedReplayPromptProtectionSignal = {
+    ...promptProtectionSignal,
+    audit_readiness: {
+      ...promptProtectionSignal.audit_readiness,
+      classification: "blocked",
+      freshness_replay_classification: "simulated_replay_refused",
+      raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-simulated-replay-command-hidden")}`,
+      raw_report_path: "C:\\secret\\prompt-simulated-replay-report-hidden.json",
+      secret_dsn: "postgres://prompt-simulated-replay-dsn-hidden",
+    },
+    freshness: {
+      ...promptProtectionSignal.freshness,
+      freshness_replay_classification: "simulated_replay_refused",
+      proof_run_id_hash: "51015eed51015eed51015eed51015eed51015eed51015eed51015eed51015eed",
+      raw_report_path: "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
+    },
+    provenance: {
+      ...promptProtectionSignal.provenance,
+      redacted_command_summary: {
+        database_connection: "postgres://prompt-simulated-replay-artifact-dsn-hidden",
+        provider_secret: skPlaceholder("prompt-simulated-replay-provider-hidden"),
+        report_path: "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
+      },
+    },
+  };
   const effectivePromptProtectionSignal =
     options.promptProtectionProofVariant === "liveEligible"
       ? liveEligiblePromptProtectionSignal
       : options.promptProtectionProofVariant === "failedRefused"
         ? failedPromptProtectionSignal
-        : promptProtectionSignal;
+        : options.promptProtectionProofVariant === "staleGeneratedAtRefused"
+          ? staleGeneratedAtPromptProtectionSignal
+          : options.promptProtectionProofVariant === "staleCommitRefused"
+            ? staleCommitPromptProtectionSignal
+            : options.promptProtectionProofVariant === "duplicateRunRefused"
+              ? duplicateRunPromptProtectionSignal
+              : options.promptProtectionProofVariant === "simulatedReplayRefused"
+                ? simulatedReplayPromptProtectionSignal
+                : promptProtectionSignal;
   const requestDetail = {
     ledger: requestLedgerSummary,
     provider_attempts: [
@@ -2621,6 +2752,7 @@ describe("App", () => {
     expect(within(promptProtectionPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("simulated_replay_refused")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("raw payload, raw pattern values")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
@@ -2825,6 +2957,7 @@ describe("App", () => {
     expect(within(auditPromptPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("not eligible")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("simulated_replay_refused")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
     expect(document.body.textContent).toContain("manual_disabled");
     expect(document.body.textContent).toContain("client-ip-hash");
@@ -2899,6 +3032,7 @@ describe("App", () => {
     expect(within(panel as HTMLElement).getByText("2026-06-04T14:05:00Z")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("1234567890ab")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("live / live")).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText("current_live_proof")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("current live proof")).toBeInTheDocument();
 
     expect(document.body.textContent).not.toContain("C:\\secret\\prompt-live-proof-report-hidden.json");
@@ -2935,6 +3069,7 @@ describe("App", () => {
     expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
+    expect(within(panel as HTMLElement).getByText("freshness_or_replay_refused")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("live / live")).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText("1234567890ab")).toBeInTheDocument();
@@ -2948,6 +3083,82 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("facefeedfacefeed");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
   });
+
+  it.each([
+    {
+      classification: "stale_generated_at_refused",
+      forbiddenDsn: "postgres://prompt-stale-generated-dsn-hidden",
+      forbiddenHashPrefix: "badc0ffee0ddf00d",
+      forbiddenProvider: skPlaceholder("prompt-stale-generated-provider-hidden"),
+      forbiddenReportPath: "C:\\secret\\prompt-stale-generated-proof-hidden.json",
+      forbiddenToken: bearerPlaceholder("prompt-stale-generated-command-hidden"),
+      readiness: "blocked",
+      variant: "staleGeneratedAtRefused" as const,
+    },
+    {
+      classification: "stale_repo_commit_refused",
+      forbiddenDsn: "postgres://prompt-stale-commit-dsn-hidden",
+      forbiddenHashPrefix: "c001c0dec001c0de",
+      forbiddenProvider: skPlaceholder("prompt-stale-commit-provider-hidden"),
+      forbiddenReportPath: "C:\\secret\\prompt-stale-commit-proof-hidden.json",
+      forbiddenToken: bearerPlaceholder("prompt-stale-commit-command-hidden"),
+      readiness: "fail",
+      variant: "staleCommitRefused" as const,
+    },
+    {
+      classification: "duplicate_proof_run_refused",
+      forbiddenDsn: "postgres://prompt-duplicate-run-dsn-hidden",
+      forbiddenHashPrefix: "d00df00dd00df00d",
+      forbiddenProvider: skPlaceholder("prompt-duplicate-run-provider-hidden"),
+      forbiddenReportPath: "C:\\secret\\prompt-duplicate-run-proof-hidden.json",
+      forbiddenToken: bearerPlaceholder("prompt-duplicate-run-command-hidden"),
+      readiness: "fail",
+      variant: "duplicateRunRefused" as const,
+    },
+    {
+      classification: "simulated_replay_refused",
+      forbiddenDsn: "postgres://prompt-simulated-replay-dsn-hidden",
+      forbiddenHashPrefix: "51015eed51015eed",
+      forbiddenProvider: skPlaceholder("prompt-simulated-replay-provider-hidden"),
+      forbiddenReportPath: "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
+      forbiddenToken: bearerPlaceholder("prompt-simulated-replay-command-hidden"),
+      readiness: "blocked",
+      variant: "simulatedReplayRefused" as const,
+    },
+  ])(
+    "renders prompt protection proof replay refusal for $classification without raw artifact material",
+    async ({ classification, forbiddenDsn, forbiddenHashPrefix, forbiddenProvider, forbiddenReportPath, forbiddenToken, readiness, variant }) => {
+      stubAdminFetch({ promptProtectionProofVariant: variant });
+
+      const user = await renderSignedInApp();
+
+      await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
+      await user.click(await screen.findByRole("button", { name: "View audit log audit-1" }));
+
+      const auditPromptPanel = await screen.findByRole("heading", { level: 2, name: "Prompt Protection" });
+      const panel = auditPromptPanel.closest("article");
+      expect(panel).not.toBeNull();
+
+      if (readiness === "blocked") {
+        expect(within(panel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(1);
+      } else {
+        expect(within(panel as HTMLElement).getByText(readiness)).toBeInTheDocument();
+      }
+      expect(within(panel as HTMLElement).getByText(classification)).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getByText("0")).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
+      expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
+
+      expect(document.body.textContent).not.toContain(forbiddenReportPath);
+      expect(document.body.textContent).not.toContain(forbiddenToken);
+      expect(document.body.textContent).not.toContain(forbiddenDsn);
+      expect(document.body.textContent).not.toContain(forbiddenProvider);
+      expect(document.body.textContent).not.toContain(forbiddenHashPrefix);
+      expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    },
+  );
 
   it("runs routing dry-run and renders selected candidates without secret material", async () => {
     const fetchMock = stubAdminFetch();
