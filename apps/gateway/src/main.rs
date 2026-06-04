@@ -15080,6 +15080,168 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_trusted_source_request_path_handoff_does_not_change_default_ordering()
+     {
+        let main_source = include_str!("main.rs");
+        let tpm_estimate_source = include_str!("tpm_estimate.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let handoff = &fixture["trusted_numeric_source_request_path_opt_in_handoff_contract"];
+
+        assert_eq!(
+            handoff["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_request_path_handoff_v1")
+        );
+        assert_eq!(handoff["default_status"].as_str(), Some("disabled"));
+        for required_marker in [
+            "GatewayTrustedNumericSourceRequestPathHandoffInput",
+            "GatewayTrustedNumericSourceRequestPathHandoff",
+            "gateway_trusted_numeric_source_request_path_handoff(",
+            "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA",
+        ] {
+            assert!(
+                tpm_estimate_source.contains(required_marker),
+                "request-path opt-in handoff helper should exist: {required_marker}"
+            );
+        }
+        for field in [
+            "trusted_source_request_path_handoff.production_wiring.status",
+            "trusted_source_request_path_handoff.provider.status",
+            "trusted_source_request_path_handoff.tpm_estimate.required_tokens_i64",
+            "trusted_source_request_path_handoff.runtime_evidence.reservation_acquire_ready",
+            "trusted_source_request_path_handoff.artifact_write.status",
+            "trusted_source_request_path_handoff.artifact_read.status",
+            "trusted_source_request_path_handoff.provider_invoked",
+            "trusted_source_request_path_handoff.artifact_written",
+            "trusted_source_request_path_handoff.artifact_readback_valid",
+            "trusted_source_request_path_handoff.estimate_duration_marker",
+            "trusted_source_request_path_handoff.source_marker",
+            "trusted_source_request_path_handoff.token_count_marker",
+            "trusted_source_request_path_handoff.raw_value_omitted",
+            "trusted_source_request_path_handoff.material_in_output",
+        ] {
+            assert!(
+                handoff["safe_summary_fields"]
+                    .as_array()
+                    .expect("handoff safe summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "request-path handoff summary should include {field}"
+            );
+        }
+
+        for marker in [
+            "prompt-protection allow",
+            "trusted numeric production wiring guard",
+            "trusted numeric provider boundary",
+            "TPM estimate",
+            "runtime evidence artifact write/read",
+            "rate-limit reservation acquire",
+            "provider side effect",
+        ] {
+            assert!(
+                handoff["ordering_contract"]
+                    .as_array()
+                    .expect("handoff ordering contract should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(marker)),
+                "request-path handoff ordering contract should include {marker}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(
+                section,
+                estimate_marker,
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+            for helper in [
+                "gateway_trusted_numeric_source_request_path_handoff(",
+                "GatewayTrustedNumericSourceRequestPathHandoffInput",
+                "gateway_trusted_numeric_source_provider_boundary(",
+                "gateway_trusted_numeric_source_runtime_evidence_artifact_write(",
+                "gateway_trusted_numeric_source_runtime_evidence_artifact_read(",
+                "trusted_numeric_tokens(",
+            ] {
+                assert!(
+                    !estimate_section.contains(helper),
+                    "{section_name} runtime must not use request-path opt-in handoff by default: {helper}"
+                );
+            }
+            for forbidden in [
+                ".len()",
+                ".chars()",
+                ".bytes()",
+                "split_whitespace",
+                ".tokenize(",
+                "tokenize_raw",
+                "token_count",
+            ] {
+                assert!(
+                    !estimate_section.contains(forbidden),
+                    "{section_name} runtime must not infer trusted TPM tokens from raw request material: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_trusted_source_runtime_adapter_boundary_does_not_change_runtime_ordering()
      {
         let main_source = include_str!("main.rs");

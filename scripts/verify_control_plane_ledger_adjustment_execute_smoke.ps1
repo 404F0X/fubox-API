@@ -8,6 +8,7 @@ param(
   [int]$TimeoutSeconds = 10,
   [int]$BrowserProbeTimeoutMilliseconds = 750,
   [string]$BrowserEvidenceArtifactPath = "artifacts/billing_execute_browser_live_e2e_evidence.json",
+  [switch]$BrowserAdminUiDevServerOptIn,
   [switch]$BrowserEvidenceArtifactWriteOptIn,
   [switch]$BrowserLiveRunnerExecutionOptIn,
   [switch]$BrowserMutationOptIn,
@@ -45,6 +46,7 @@ if ($env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $script:AdminSessionToken = $env:C
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS) { $BrowserProbeTimeoutMilliseconds = [int]$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH) { $BrowserEvidenceArtifactPath = $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER -eq "1") { $BrowserAdminUiDevServerOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE -eq "1") { $BrowserEvidenceArtifactWriteOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER -eq "1") { $BrowserLiveRunnerExecutionOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
@@ -837,6 +839,7 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
       "ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
+      "ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract",
       "ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
@@ -845,6 +848,7 @@ function Assert-UiSmokeHandoffFreshness {
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
+      "browserLiveEnvironmentBootstrapAttempt: ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract",
       "browserLivePassArtifactReadbackGate: ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract",
       "browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
       "browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
@@ -865,6 +869,7 @@ function Assert-UiSmokeHandoffFreshness {
       "browserActionPlan",
       "browserDomActionRunner",
       "browserLiveRunnerExecutionBridge",
+      "browserLiveEnvironmentBootstrapAttempt",
       "browserLivePassArtifactReadbackGate",
       "browserMutationPassArtifactClosure",
       "browserPlaywrightLaunchReadiness",
@@ -876,7 +881,9 @@ function Assert-UiSmokeHandoffFreshness {
       "playwright_launch_readiness_only",
       "mutation_pass_artifact_closure_gate",
       "live_runner_execution_bridge",
+      "live_environment_bootstrap_attempt",
       "live_pass_artifact_readback_gate",
+      "-BrowserAdminUiDevServerOptIn",
       "bridge_allowed",
       "-BrowserLiveRunnerExecutionOptIn",
       "closure_eligible",
@@ -1620,6 +1627,250 @@ function Write-BrowserLivePassArtifactReadbackGate {
   Write-SafeHost "browser_live_pass_readback_request_material_echoed=false"
 }
 
+function Assert-BrowserLiveEnvironmentBootstrapAttemptContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $attempt = Get-JsonProperty $Handoff "browserLiveEnvironmentBootstrapAttempt" "UI handoff"
+  Assert-Equal (Get-JsonProperty $attempt "artifactName" "UI browser live environment bootstrap attempt") "billing_execute_browser_live_e2e_evidence.v1" "UI browser bootstrap artifact name"
+  Assert-Equal (Get-JsonProperty $attempt "defaultMode" "UI browser live environment bootstrap attempt") "live_environment_bootstrap_attempt" "UI browser bootstrap default mode"
+  Assert-True ((Get-JsonProperty $attempt "defaultInstallsBrowser" "UI browser live environment bootstrap attempt") -eq $false) "UI browser bootstrap must not install browser by default"
+  Assert-True ((Get-JsonProperty $attempt "defaultStartsAdminUiDevServer" "UI browser live environment bootstrap attempt") -eq $false) "UI browser bootstrap must not start Admin UI by default"
+  Assert-True ((Get-JsonProperty $attempt "defaultSubmitsLiveMutation" "UI browser live environment bootstrap attempt") -eq $false) "UI browser bootstrap must not mutate by default"
+
+  $devServer = Get-JsonProperty $attempt "devServer" "UI browser live environment bootstrap attempt"
+  Assert-Equal (Get-JsonProperty $devServer "cwd" "UI browser bootstrap dev server") "web/admin-ui" "UI browser bootstrap dev server cwd"
+  Assert-Equal (Get-JsonProperty $devServer "env" "UI browser bootstrap dev server") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER" "UI browser bootstrap dev server env"
+  Assert-Equal (Get-JsonProperty $devServer "flag" "UI browser bootstrap dev server") "-BrowserAdminUiDevServerOptIn" "UI browser bootstrap dev server flag"
+  Assert-Equal (Get-JsonProperty $devServer "requiredValue" "UI browser bootstrap dev server") "1" "UI browser bootstrap dev server value"
+
+  $playwright = Get-JsonProperty $attempt "playwright" "UI browser live environment bootstrap attempt"
+  Assert-Equal (Get-JsonProperty $playwright "browser" "UI browser bootstrap Playwright") "chromium" "UI browser bootstrap Playwright browser"
+  Assert-True ([bool](Get-JsonProperty $playwright "installHintOnly" "UI browser bootstrap Playwright")) "UI browser bootstrap must only hint browser install"
+
+  $required = Get-JsonProperty $attempt "requiredForPassAttempt" "UI browser live environment bootstrap attempt"
+  foreach ($name in @("adminUiReachable", "artifactReadbackFresh", "artifactWriteOptIn", "browserToolingAvailable", "controlPlaneHealthReachable", "liveRunnerOptIn", "mutationOptIn", "sessionMaterialPresent")) {
+    Assert-True ([bool](Get-JsonProperty $required $name "UI browser bootstrap pass requirements")) "UI browser bootstrap pass attempt must require $name"
+  }
+
+  $durationFields = Get-JsonProperty $attempt "durationFields" "UI browser live environment bootstrap attempt"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    [void](Get-JsonProperty $durationFields $name "UI browser bootstrap duration fields")
+  }
+
+  $statusMarkers = Get-JsonProperty $attempt "statusMarkers" "UI browser live environment bootstrap attempt"
+  foreach ($name in @("blocked", "fail", "passAttemptReady", "passReadback")) {
+    $marker = [string](Get-JsonProperty $statusMarkers $name "UI browser bootstrap status markers")
+    if ($marker -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser bootstrap status marker '$name' must be machine readable"
+    }
+  }
+
+  $secretSafeOmission = Get-JsonProperty $attempt "secretSafeOmission" "UI browser live environment bootstrap attempt"
+  foreach ($name in @("echoRequestMaterial", "echoSessionMaterial", "echoUrlCredentials")) {
+    Assert-True ((Get-JsonProperty $secretSafeOmission $name "UI browser bootstrap secret-safe omission") -eq $false) "UI browser bootstrap must omit $name"
+  }
+}
+
+function Test-BrowserAdminUiDevServerOptIn {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $attempt = Get-JsonProperty $Handoff "browserLiveEnvironmentBootstrapAttempt" "UI handoff"
+  $devServer = Get-JsonProperty $attempt "devServer" "UI browser bootstrap dev server"
+  $envName = [string](Get-JsonProperty $devServer "env" "UI browser bootstrap dev server")
+  $requiredValue = [string](Get-JsonProperty $devServer "requiredValue" "UI browser bootstrap dev server")
+  return $BrowserAdminUiDevServerOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Start-BrowserAdminUiDevServerBootstrap {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$InitialProbe
+  )
+
+  $attempt = Get-JsonProperty $Handoff "browserLiveEnvironmentBootstrapAttempt" "UI handoff"
+  $devServer = Get-JsonProperty $attempt "devServer" "UI browser bootstrap dev server"
+  $adminUiProbeUrl = Join-SmokeProbeUrl $AdminUiBaseUrl "/"
+  $devServerOptIn = Test-BrowserAdminUiDevServerOptIn $Handoff
+  $result = [PSCustomObject]@{
+    OptIn = $devServerOptIn
+    Started = $false
+    Process = $null
+    Probe = $InitialProbe
+    DurationMs = 0
+    Classification = if ([bool]$InitialProbe.Reachable) { "already_reachable" } elseif ($devServerOptIn) { "not_started" } else { "opt_in_missing" }
+  }
+
+  if ([bool]$InitialProbe.Reachable -or -not $devServerOptIn) {
+    return $result
+  }
+
+  $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if (-not $npm) {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+  }
+  if (-not $npm) {
+    $result.Classification = "npm_unavailable"
+    return $result
+  }
+
+  $cwd = Join-Path $repoRoot ([string](Get-JsonProperty $devServer "cwd" "UI browser bootstrap dev server"))
+  if (-not (Test-Path $cwd)) {
+    $result.Classification = "admin_ui_cwd_missing"
+    return $result
+  }
+
+  $timer = [Diagnostics.Stopwatch]::StartNew()
+  $process = $null
+  try {
+    $process = Start-Process -FilePath $npm.Source -ArgumentList @("run", "dev", "--", "--host", "127.0.0.1") -WorkingDirectory $cwd -WindowStyle Hidden -PassThru
+    $result.Started = $true
+    $result.Process = $process
+    for ($i = 0; $i -lt 30; $i++) {
+      Start-Sleep -Milliseconds 500
+      $probe = Invoke-ServiceReadinessProbe -Name "admin_ui" -Url $adminUiProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200, 304)
+      if ([bool]$probe.Reachable) {
+        $result.Probe = $probe
+        $result.Classification = "started_reachable"
+        break
+      }
+      $result.Probe = $probe
+      $result.Classification = "started_unreachable"
+      if ($process.HasExited) {
+        $result.Classification = "process_exited"
+        break
+      }
+    }
+  } catch {
+    $result.Classification = "start_failed"
+  } finally {
+    $timer.Stop()
+    $result.DurationMs = [int]$timer.ElapsedMilliseconds
+  }
+
+  return $result
+}
+
+function Stop-BrowserAdminUiDevServerBootstrap {
+  param([AllowNull()]$Bootstrap)
+
+  if ($null -eq $Bootstrap -or -not [bool]$Bootstrap.Started -or $null -eq $Bootstrap.Process) {
+    return
+  }
+  try {
+    $pending = New-Object System.Collections.Generic.List[int]
+    $pending.Add([int]$Bootstrap.Process.Id)
+    for ($i = 0; $i -lt $pending.Count; $i++) {
+      $parentId = $pending[$i]
+      $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$parentId" -ErrorAction SilentlyContinue
+      foreach ($child in @($children)) {
+        $pending.Add([int]$child.ProcessId)
+      }
+    }
+    for ($i = $pending.Count - 1; $i -ge 0; $i--) {
+      Stop-Process -Id $pending[$i] -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $Bootstrap.Process.HasExited) {
+      Stop-Process -Id $Bootstrap.Process.Id -Force -ErrorAction SilentlyContinue
+    }
+  } catch {
+    # best-effort cleanup for opt-in helper process
+  }
+}
+
+function Write-BrowserLiveEnvironmentBootstrapAttempt {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)]$AdminUiDevServerBootstrap,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent,
+    [Parameter(Mandatory = $true)][int]$ServiceReadinessDurationMs
+  )
+
+  Assert-BrowserLiveEnvironmentBootstrapAttemptContract $Handoff
+  $attempt = Get-JsonProperty $Handoff "browserLiveEnvironmentBootstrapAttempt" "UI handoff"
+  $statusMarkers = Get-JsonProperty $attempt "statusMarkers" "UI browser bootstrap status markers"
+  $durationFields = Get-JsonProperty $attempt "durationFields" "UI browser bootstrap duration fields"
+  $playwright = Get-JsonProperty $attempt "playwright" "UI browser bootstrap Playwright"
+  $devServer = Get-JsonProperty $attempt "devServer" "UI browser bootstrap dev server"
+  $writeEnabled = Test-BrowserEvidenceArtifactWriteOptIn $Handoff
+  $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
+  $readbackArtifact = $null
+  $readbackAvailable = $false
+  if ($writeEnabled -and (Test-Path $artifactPath)) {
+    $readbackArtifact = Read-JsonFile $artifactPath
+    $readbackAvailable = $true
+  }
+  $readbackState = Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $readbackArtifact -ReadbackAvailable $readbackAvailable
+  $passAttemptReady = (
+    $ToolingStatus -eq "available" -and
+    [bool]$AdminUiProbe.Reachable -and
+    [bool]$ControlPlaneProbe.Reachable -and
+    $SessionMaterialPresent -and
+    $MutationEnabled -and
+    $BrowserLiveRunnerExecutionOptIn -and
+    $writeEnabled
+  )
+
+  $status = [string](Get-JsonProperty $statusMarkers "blocked" "UI browser bootstrap status markers")
+  if ($readbackState -eq "pass") {
+    $status = [string](Get-JsonProperty $statusMarkers "passReadback" "UI browser bootstrap status markers")
+  } elseif ($readbackState -eq "fail") {
+    $status = [string](Get-JsonProperty $statusMarkers "fail" "UI browser bootstrap status markers")
+  } elseif ($passAttemptReady) {
+    $status = [string](Get-JsonProperty $statusMarkers "passAttemptReady" "UI browser bootstrap status markers")
+  }
+
+  $blockers = @()
+  if ($ToolingStatus -ne "available") { $blockers += "browser_tooling_unavailable" }
+  if (-not [bool]$AdminUiProbe.Reachable) { $blockers += "admin_ui_unreachable" }
+  if (-not [bool]$ControlPlaneProbe.Reachable) { $blockers += "control_plane_health_unreachable" }
+  if (-not $SessionMaterialPresent) { $blockers += "session_material_missing" }
+  if (-not $MutationEnabled) { $blockers += "live_mutation_opt_in_missing" }
+  if (-not $BrowserLiveRunnerExecutionOptIn) { $blockers += "live_runner_opt_in_missing" }
+  if (-not $writeEnabled) { $blockers += "artifact_write_opt_in_missing" }
+  if (-not $readbackAvailable) { $blockers += "artifact_readback_missing" }
+  if ($readbackState -eq "fail") { $blockers += "artifact_closure_failed" }
+  if (-not [bool]$AdminUiDevServerBootstrap.OptIn -and -not [bool]$AdminUiProbe.Reachable) { $blockers += "admin_ui_dev_server_opt_in_missing" }
+  $blockerSummary = if ($blockers.Count -gt 0) { $blockers -join "+" } else { "none" }
+  $liveAttemptCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight -BrowserAdminUiDevServerOptIn -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json"
+
+  Write-SafeHost "Browser ledger execute live environment bootstrap attempt:"
+  Write-SafeHost "browser_live_bootstrap_status=$status"
+  Write-SafeHost "browser_live_bootstrap_blockers=$blockerSummary"
+  Write-SafeHost "browser_live_bootstrap_default_mutation=false"
+  Write-SafeHost "browser_live_bootstrap_default_installs_browser=false"
+  Write-SafeHost "browser_live_bootstrap_default_starts_admin_ui_dev_server=false"
+  Write-SafeHost "browser_live_bootstrap_playwright=$ToolingStatus"
+  Write-SafeHost "browser_live_bootstrap_playwright_browser=$([string](Get-JsonProperty $playwright "browser" "UI browser bootstrap Playwright"))"
+  Write-SafeHost "browser_live_bootstrap_playwright_install_hint=$([string](Get-JsonProperty $playwright "installCommand" "UI browser bootstrap Playwright"))"
+  Write-SafeHost "browser_live_bootstrap_admin_ui_dev_server_opt_in=$(Format-BoolMarker ([bool]$AdminUiDevServerBootstrap.OptIn))"
+  Write-SafeHost "browser_live_bootstrap_admin_ui_dev_server_started=$(Format-BoolMarker ([bool]$AdminUiDevServerBootstrap.Started))"
+  Write-SafeHost "browser_live_bootstrap_admin_ui_dev_server_classification=$($AdminUiDevServerBootstrap.Classification)"
+  Write-SafeHost "browser_live_bootstrap_admin_ui_dev_server_duration_ms=$($AdminUiDevServerBootstrap.DurationMs)"
+  Write-SafeHost "browser_live_bootstrap_admin_ui_dev_server_command=$([string](Get-JsonProperty $devServer "command" "UI browser bootstrap dev server"))"
+  Write-SafeHost "browser_live_bootstrap_admin_ui_reachable=$(Format-BoolMarker ([bool]$AdminUiProbe.Reachable))"
+  Write-SafeHost "browser_live_bootstrap_control_plane_health_reachable=$(Format-BoolMarker ([bool]$ControlPlaneProbe.Reachable))"
+  Write-SafeHost "browser_live_bootstrap_session_material_present=$(Format-BoolMarker $SessionMaterialPresent)"
+  Write-SafeHost "browser_live_bootstrap_session_material_echoed=false"
+  Write-SafeHost "browser_live_bootstrap_mutation_enabled=$(Format-BoolMarker $MutationEnabled)"
+  Write-SafeHost "browser_live_bootstrap_live_runner_opt_in=$(Format-BoolMarker $BrowserLiveRunnerExecutionOptIn)"
+  Write-SafeHost "browser_live_bootstrap_artifact_write_enabled=$(Format-BoolMarker $writeEnabled)"
+  Write-SafeHost "browser_live_bootstrap_artifact_readback_available=$(Format-BoolMarker $readbackAvailable)"
+  Write-SafeHost "browser_live_bootstrap_artifact_readback_state=$readbackState"
+  Write-SafeHost "browser_live_bootstrap_artifact_path_bounded=true"
+  Write-SafeHost "browser_live_bootstrap_artifact_path=$artifactPath"
+  Write-SafeHost "browser_live_bootstrap_live_attempt_command=$liveAttemptCommand"
+  Write-SafeHost "browser_live_bootstrap_url_credentials_echoed=false"
+  Write-SafeHost "browser_live_bootstrap_request_material_echoed=false"
+  Write-SafeHost "$([string](Get-JsonProperty $durationFields "serviceReadinessDurationMs" "UI browser bootstrap duration fields"))=$ServiceReadinessDurationMs"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "pageReadyDurationMs", "selectorSnapshotDurationMs", "submitLatencyMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "refundRefusalDurationMs", "ledgerRefreshDurationMs")) {
+    Write-SafeHost "$([string](Get-JsonProperty $durationFields $name "UI browser bootstrap duration fields"))=unavailable"
+  }
+}
+
 function Test-BrowserMutationOptIn {
   param([Parameter(Mandatory = $true)]$Runbook)
 
@@ -2170,52 +2421,61 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   $controlPlaneProbeUrl = Join-SmokeProbeUrl $ControlPlaneBaseUrl ([string](Get-JsonProperty $healthProbePaths "controlPlane" "UI browser preflight health paths"))
   $adminUiProbe = Invoke-ServiceReadinessProbe -Name "admin_ui" -Url $adminUiProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200, 304)
   $controlPlaneProbe = Invoke-ServiceReadinessProbe -Name "control_plane_health" -Url $controlPlaneProbeUrl -TimeoutMs $BrowserProbeTimeoutMilliseconds -ReachableStatusCodes @(200)
+  $adminUiDevServerBootstrap = Start-BrowserAdminUiDevServerBootstrap -Handoff $Handoff -InitialProbe $adminUiProbe
+  if ([bool]$adminUiDevServerBootstrap.Probe.Reachable) {
+    $adminUiProbe = $adminUiDevServerBootstrap.Probe
+  }
   $serviceTimer.Stop()
-  $serviceBlocker = Get-ServiceBlockerMarker -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
-  $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
-  $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
-  $mutationEnabled = Test-BrowserMutationOptIn $runbook
-  $liveBlockers = @()
-  if ($serviceBlocker -ne "none") {
-    $liveBlockers += @($serviceBlocker.Split("+") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  }
-  if (-not $sessionMaterialPresent) {
-    $liveBlockers += "session_material_missing"
-  }
-  if (-not $mutationEnabled) {
-    $liveBlockers += "live_mutation_opt_in_missing"
-  }
-  $readiness = "ready"
-  if ($serviceBlocker -ne "none") {
-    $readiness = $unavailableMarker
-  }
+  try {
+    $serviceBlocker = Get-ServiceBlockerMarker -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
+    $sessionMaterialPresent = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+    $runbook = Get-JsonProperty $Handoff "browserLiveRunbook" "UI handoff"
+    $mutationEnabled = Test-BrowserMutationOptIn $runbook
+    $liveBlockers = @()
+    if ($serviceBlocker -ne "none") {
+      $liveBlockers += @($serviceBlocker.Split("+") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    if (-not $sessionMaterialPresent) {
+      $liveBlockers += "session_material_missing"
+    }
+    if (-not $mutationEnabled) {
+      $liveBlockers += "live_mutation_opt_in_missing"
+    }
+    $readiness = "ready"
+    if ($serviceBlocker -ne "none") {
+      $readiness = $unavailableMarker
+    }
 
-  Write-SafeHost "Browser ledger execute smoke harness preflight:"
-  Write-SafeHost "$readinessMarker=$readiness"
-  Write-SafeHost "browser_tooling=$toolingStatus"
-  Write-SafeHost "$adminUiReachableMarker=$(Format-BoolMarker ([bool]$adminUiProbe.Reachable))"
-  Write-SafeHost "admin_ui_probe_classification=$($adminUiProbe.Classification)"
-  Write-SafeHost "admin_ui_probe_duration_ms=$($adminUiProbe.DurationMs)"
-  Write-SafeHost "$controlPlaneHealthReachableMarker=$(Format-BoolMarker ([bool]$controlPlaneProbe.Reachable))"
-  Write-SafeHost "control_plane_health_probe_classification=$($controlPlaneProbe.Classification)"
-  Write-SafeHost "control_plane_health_probe_duration_ms=$($controlPlaneProbe.DurationMs)"
-  Write-SafeHost "$serviceBlockerMarker=$serviceBlocker"
-  Write-SafeHost "$serviceProbeTimeoutMarker=$BrowserProbeTimeoutMilliseconds"
-  Write-SafeHost "$serviceReadinessDurationMarker=$([int]$serviceTimer.ElapsedMilliseconds)"
-  Write-SafeHost "$sessionMaterialPresentMarker=$(Format-BoolMarker $sessionMaterialPresent)"
-  Write-SafeHost "$sessionMaterialEchoedMarker=false"
-  Write-SafeHost "admin_ui_url=$adminUiUrl"
-  Write-SafeHost "control_plane_backend_url=$backendUrl"
-  Write-SafeHost "handoff_artifact=fresh"
-  Write-SafeHost "$submitLatencyMarker=$unavailableMarker"
-  Write-SafeHost "$ledgerRefreshMarker=$unavailableMarker"
-  Write-BrowserLiveRunbookGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
-  Write-BrowserEvidenceArtifactDryRun -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
-  Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
-  Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
-  Write-BrowserMutationPassArtifactClosureGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
-  Write-BrowserLiveRunnerExecutionBridgeGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
-  Write-BrowserLivePassArtifactReadbackGate -Handoff $Handoff -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
+    Write-SafeHost "Browser ledger execute smoke harness preflight:"
+    Write-SafeHost "$readinessMarker=$readiness"
+    Write-SafeHost "browser_tooling=$toolingStatus"
+    Write-SafeHost "$adminUiReachableMarker=$(Format-BoolMarker ([bool]$adminUiProbe.Reachable))"
+    Write-SafeHost "admin_ui_probe_classification=$($adminUiProbe.Classification)"
+    Write-SafeHost "admin_ui_probe_duration_ms=$($adminUiProbe.DurationMs)"
+    Write-SafeHost "$controlPlaneHealthReachableMarker=$(Format-BoolMarker ([bool]$controlPlaneProbe.Reachable))"
+    Write-SafeHost "control_plane_health_probe_classification=$($controlPlaneProbe.Classification)"
+    Write-SafeHost "control_plane_health_probe_duration_ms=$($controlPlaneProbe.DurationMs)"
+    Write-SafeHost "$serviceBlockerMarker=$serviceBlocker"
+    Write-SafeHost "$serviceProbeTimeoutMarker=$BrowserProbeTimeoutMilliseconds"
+    Write-SafeHost "$serviceReadinessDurationMarker=$([int]$serviceTimer.ElapsedMilliseconds)"
+    Write-SafeHost "$sessionMaterialPresentMarker=$(Format-BoolMarker $sessionMaterialPresent)"
+    Write-SafeHost "$sessionMaterialEchoedMarker=false"
+    Write-SafeHost "admin_ui_url=$adminUiUrl"
+    Write-SafeHost "control_plane_backend_url=$backendUrl"
+    Write-SafeHost "handoff_artifact=fresh"
+    Write-SafeHost "$submitLatencyMarker=$unavailableMarker"
+    Write-SafeHost "$ledgerRefreshMarker=$unavailableMarker"
+    Write-BrowserLiveRunbookGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe
+    Write-BrowserEvidenceArtifactDryRun -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    Write-BrowserMutationPassArtifactClosureGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    Write-BrowserLiveRunnerExecutionBridgeGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
+    Write-BrowserLivePassArtifactReadbackGate -Handoff $Handoff -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
+    Write-BrowserLiveEnvironmentBootstrapAttempt -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -AdminUiDevServerBootstrap $adminUiDevServerBootstrap -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+  } finally {
+    Stop-BrowserAdminUiDevServerBootstrap $adminUiDevServerBootstrap
+  }
 }
 
 function Assert-AdminSourceMarkers {

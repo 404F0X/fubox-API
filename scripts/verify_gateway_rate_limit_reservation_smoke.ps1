@@ -23,6 +23,7 @@ $script:OriginalProviderKeyStates = @()
 $script:ProviderKeyStateCaptured = $false
 $script:SmokeSuffix = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $script:PerformanceEvidenceReportWritten = $false
+$script:MissingServices = @()
 
 if ($env:GATEWAY_BASE_URL) { $GatewayBaseUrl = $env:GATEWAY_BASE_URL }
 if ($env:GATEWAY_AUTH_TOKEN) { $GatewayAuthToken = $env:GATEWAY_AUTH_TOKEN }
@@ -286,12 +287,16 @@ function Get-SmokeMode {
 }
 
 function New-SecretSafeCommandSummary {
+  $scriptPath = "scripts/verify_gateway_rate_limit_reservation_smoke.ps1"
   return [ordered]@{
-    script = "scripts/verify_gateway_rate_limit_reservation_smoke.ps1"
+    script = $scriptPath
     mode = Get-SmokeMode
     dry_run = [bool]$DryRun
     preflight_only = [bool]$PreflightOnly
     live_requests_enabled = [bool](-not $DryRun -and -not $PreflightOnly)
+    copyable_dry_run_command = "pwsh -File $scriptPath -DryRun"
+    copyable_preflight_command = "pwsh -File $scriptPath -PreflightOnly"
+    copyable_live_command = "pwsh -File $scriptPath"
     gateway_base_url_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayBaseUrl))
     gateway_auth_token_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayAuthToken))
     gateway_profile_ref_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayProfileRef))
@@ -367,6 +372,14 @@ function New-PerformanceEvidenceReport {
         ttft_ms = $null
         unavailable = $unavailable
       }
+      row_count = [ordered]@{
+        request_log_query_limit = 10
+        provider_attempt_query_join = "request_logs_left_join_provider_attempts"
+        max_affected_rows_per_acquire = [int]$script:Fixture.postgres_scope.max_affected_rows_per_acquire
+        observed_request_log_rows = $null
+        observed_provider_attempt_rows = $null
+        unavailable = $unavailable
+      }
       not_applied_or_fallback_rate = [ordered]@{
         expected_not_applied_count_min = $expectedNotAppliedCount
         expected_fallback_count_min = $expectedFallbackCount
@@ -383,8 +396,30 @@ function New-PerformanceEvidenceReport {
         unavailable = $unavailable
       }
     }
+    trusted_numeric_source_handoff = [ordered]@{
+      schema = "gateway_tpm_trusted_numeric_source_request_path_handoff_v1"
+      provider_opt_in_default = $false
+      artifact_write_default = $false
+      artifact_path_scope = ".tmp"
+      request_path_default_provider_invoked = $false
+      closure_requires_live_evidence = $true
+      marker_names = [ordered]@{
+        availability = "gateway_tpm_trusted_numeric_source_available"
+        preflight_duration = "gateway_tpm_trusted_numeric_source_preflight_duration_ms"
+        estimate_duration = "gateway_tpm_trusted_numeric_source_estimate_duration_ms"
+        source = "gateway_tpm_trusted_numeric_source_type"
+        token_count = "gateway_tpm_trusted_numeric_source_token_count"
+      }
+    }
     secret_safe_command_summary = New-SecretSafeCommandSummary
     blockers = @($script:Failures | ForEach-Object { Redact-SecretLikeString ([string]$_) })
+    blocker_evidence = [ordered]@{
+      missing_services = @($script:MissingServices)
+      docker_or_compose_unavailable = [bool](@($script:Failures | Where-Object { ([string]$_).Contains("docker compose ps failed") }).Count -gt 0)
+      gateway_unavailable = [bool](@($script:MissingServices | Where-Object { $_ -eq "gateway" }).Count -gt 0)
+      postgres_unavailable = [bool](@($script:MissingServices | Where-Object { $_ -eq "postgres" }).Count -gt 0)
+      mock_provider_unavailable = [bool](@($script:MissingServices | Where-Object { $_ -eq "mock-provider" }).Count -gt 0)
+    }
     secret_safety = [ordered]@{
       auth_material_in_output = $false
       provider_secret_in_output = $false
@@ -449,6 +484,16 @@ function RateLimitStateJson {
   return '{"rpm":{"used":' + $RpmUsed + '},"tpm":{"used":' + $TpmUsed + '},"concurrency":{"used":' + $ConcurrencyUsed + '}}'
 }
 
+function RateLimitStateSql {
+  param(
+    [Parameter(Mandatory = $true)][int]$RpmUsed,
+    [Parameter(Mandatory = $true)][int]$TpmUsed,
+    [Parameter(Mandatory = $true)][int]$ConcurrencyUsed
+  )
+
+  return "jsonb_build_object('rpm', jsonb_build_object('used', $RpmUsed), 'tpm', jsonb_build_object('used', $TpmUsed), 'concurrency', jsonb_build_object('used', $ConcurrencyUsed))"
+}
+
 function Set-ProviderKeyRateLimitWindow {
   param(
     [Parameter(Mandatory = $true)][object[]]$ProviderKeyIds,
@@ -462,13 +507,13 @@ function Set-ProviderKeyRateLimitWindow {
 
   $tenantId = Escape-SqlLiteral ([string]$script:Fixture.postgres_scope.tenant_id)
   $idsSql = ProviderKeyIdListSql $ProviderKeyIds
-  $state = Escape-SqlLiteral (RateLimitStateJson -RpmUsed $RpmUsed -TpmUsed $TpmUsed -ConcurrencyUsed $ConcurrencyUsed)
+  $stateSql = RateLimitStateSql -RpmUsed $RpmUsed -TpmUsed $TpmUsed -ConcurrencyUsed $ConcurrencyUsed
   $sql = @"
 update provider_keys
    set rpm_limit = $RpmLimit,
        tpm_limit = $TpmLimit,
        concurrency_limit = $ConcurrencyLimit,
-       current_window_state = '$state'::jsonb,
+       current_window_state = $stateSql,
        status = 'enabled',
        cooldown_until = null,
        deleted_at = null,
@@ -746,7 +791,7 @@ function Assert-FixtureContract {
       throw "fixture compose.required_services must include '$service'"
     }
   }
-  if ([int]$Fixture.required_capacity.tokens_per_minute -ne 128) {
+  if ([int]$Fixture.required_capacity.tokens_per_minute -ne 1024) {
     throw "fixture required tpm must match Gateway fallback token capacity"
   }
   foreach ($id in @(
@@ -776,8 +821,10 @@ function Assert-FixtureContract {
       "status",
       "bounded_scope",
       "performance",
+      "trusted_numeric_source_handoff",
       "secret_safe_command_summary",
       "blockers",
+      "blocker_evidence",
       "secret_safety"
     )) {
     if (@($Fixture.performance_evidence_contract.required_top_level_fields | Where-Object { $_ -eq $field }).Count -ne 1) {
@@ -787,6 +834,7 @@ function Assert-FixtureContract {
   foreach ($field in @(
       "concurrency",
       "latency_or_ttft",
+      "row_count",
       "not_applied_or_fallback_rate",
       "reservation_counts"
     )) {
@@ -810,10 +858,15 @@ function Assert-ComposeServicesRunning {
       throw "[BLOCKED] docker compose ps failed with exit code $LASTEXITCODE"
     }
 
+    $missing = @()
     foreach ($service in @($script:Fixture.compose.required_services)) {
       if ($running -notcontains $service) {
-        throw "[BLOCKED] service '$service' is not running; start the local compose stack or use -DryRun"
+        $missing += [string]$service
       }
+    }
+    if ($missing.Count -gt 0) {
+      $script:MissingServices = @($missing)
+      throw "[BLOCKED] missing required services: $($missing -join ', '); run 'pwsh -File scripts/verify_gateway_rate_limit_reservation_smoke.ps1 -DryRun' for contract-only validation or start the compose stack and rerun -PreflightOnly"
     }
   } finally {
     Pop-Location
@@ -832,7 +885,10 @@ function Assert-ScriptStructure {
       "Write-PerformanceEvidenceReport",
       "gateway_rate_limit_reservation_performance_evidence_v1",
       "latency_or_ttft",
+      "row_count",
       "not_applied_or_fallback_rate",
+      "trusted_numeric_source_handoff",
+      "copyable_preflight_command",
       "secret_safe_command_summary"
     )) {
     if (-not $source.Contains($needle)) {
@@ -849,7 +905,7 @@ function Start-ProviderKeyOverLimitContender {
 
   $tenantId = Escape-SqlLiteral ([string]$script:Fixture.postgres_scope.tenant_id)
   $idsSql = ProviderKeyIdListSql $ProviderKeyIds
-  $state = Escape-SqlLiteral (RateLimitStateJson -RpmUsed 0 -TpmUsed 0 -ConcurrencyUsed 1)
+  $stateSql = RateLimitStateSql -RpmUsed 0 -TpmUsed 0 -ConcurrencyUsed 1
   $sql = @"
 begin;
 select id
@@ -860,7 +916,7 @@ select id
  for update;
 select pg_sleep($HoldSeconds);
 update provider_keys
-   set current_window_state = '$state'::jsonb,
+   set current_window_state = $stateSql,
        updated_at = now()
  where tenant_id = '$tenantId'
    and id in ($idsSql);
@@ -982,7 +1038,7 @@ function Check-FallbackReleasesFailedAttempt {
     -Rpm ([int]$case.expected_failed_key_used_after_release.rpm) `
     -Tpm ([int]$case.expected_failed_key_used_after_release.tpm) `
     -Concurrency ([int]$case.expected_failed_key_used_after_release.concurrency)
-  Assert-ProviderKeyCounters -ProviderKeyId $fallbackKeyId -Rpm 1 -Tpm 128 -Concurrency 1
+  Assert-ProviderKeyCounters -ProviderKeyId $fallbackKeyId -Rpm 1 -Tpm ([int]$script:Fixture.required_capacity.tokens_per_minute) -Concurrency 1
   Assert-RateLimitEvidenceSecretSafe -ResponseContent $tracked.Response.Content -Rows $rows -Label "fallback release evidence"
 }
 

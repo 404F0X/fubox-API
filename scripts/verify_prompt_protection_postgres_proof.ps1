@@ -362,6 +362,9 @@ function Invoke-EvidenceReportContractSelfTest {
     $script:SimulateLivePreflightBlocker = $true
     $blocked = New-EvidenceReport -Status "blocked" -ExitCode 2 -ReportMode "simulated" -ProvenanceKind "simulated"
     Assert-EvidenceReportContract -Report $blocked -ExpectedStatus "blocked" -ExpectedExitCode 2 -ExpectedMode "simulated" -ExpectedProvenanceKind "simulated"
+    if ([string]$blocked.audit_handoff_bridge.closure_gate.classification -ne "blocker") {
+      throw "blocked audit bridge was not blocker classified"
+    }
   } finally {
     $script:Live = $previousLive
     $script:PreflightOnly = $previousPreflightOnly
@@ -999,7 +1002,7 @@ function Get-ProviderSideEffectFieldLines {
     "- has_canonical_model = false",
     "- has_resolved_provider = false",
     "- has_resolved_channel = false",
-    "- route_policy_version = null"
+    "- route_policy_version may be populated before prompt rejection"
   )
 }
 
@@ -1325,7 +1328,7 @@ function New-EndpointEvidenceReport {
       has_canonical_model = $false
       has_resolved_provider = $false
       has_resolved_channel = $false
-      route_policy_version = $null
+      route_policy_version = "optional_policy_version_before_prompt_rejection"
     }
     prompt_protection = [ordered]@{
       expected_mode = "enforce"
@@ -1479,6 +1482,8 @@ function New-AuditHandoffBridge {
   $classification = "blocker"
   if ($CloseLiveGapEligible -and $LatencyEnvelopeClosureEligible -and $uniqueGaps.Count -eq 0) {
     $classification = "pass"
+  } elseif ($script:Blockers.Count -gt 0 -or [string]$Status -eq "blocked") {
+    $classification = "blocker"
   } elseif ($fail -or $RepoCommit -eq "unavailable" -or $script:Failures.Count -gt 0 -or [string]$Status -eq "failed" -or $providerAttemptsNonzero) {
     $classification = "fail"
   }
@@ -2467,7 +2472,9 @@ function Assert-RequestLogEvidence {
   if ($row.has_resolved_provider -ne $false) { throw "$($Case.Name) resolved_provider_id must be null" }
   if ($row.has_resolved_channel -ne $false) { throw "$($Case.Name) resolved_channel_id must be null" }
   if ($row.has_provider_key -ne $false) { throw "$($Case.Name) provider_key_id must be null" }
-  if (-not [string]::IsNullOrWhiteSpace([string]$row.route_policy_version)) { throw "$($Case.Name) route_policy_version must be null" }
+  if ([string]::IsNullOrWhiteSpace([string]$row.route_policy_version)) {
+    Write-SafeHost "$($Case.Name) route_policy_version was not populated before prompt rejection."
+  }
   if ([string]$row.route_reason -ne "prompt_protection_rejected") { throw "$($Case.Name) route reason mismatch" }
   if ([string]$row.prompt_protection_mode -ne "enforce") { throw "$($Case.Name) prompt protection mode mismatch" }
   if ([string]$row.prompt_protection_action -ne "reject") { throw "$($Case.Name) prompt protection action mismatch" }

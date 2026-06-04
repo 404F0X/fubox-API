@@ -2520,21 +2520,49 @@ function Get-GeneratedClientInspectionText {
 
     $lines = @($content -split "`r?`n")
     for ($index = 0; $index -lt $lines.Count; $index += 1) {
-      $matched = $false
       foreach ($model in $Models) {
-        if ($lines[$index].Contains($model) -or $lines[$index].Contains("ledger_executor_summary") -or $lines[$index].Contains("ledgerExecutorSummary")) {
-          $matched = $true
+        if (Test-GeneratedClientModelDefinitionLine -Line $lines[$index] -Model $model) {
+          [void]$snippets.Add((Get-GeneratedClientDefinitionSnippet -Lines $lines -StartIndex $index))
           break
         }
-      }
-      if ($matched) {
-        $end = [Math]::Min($lines.Count - 1, $index + 140)
-        [void]$snippets.Add(($lines[$index..$end] -join "`n"))
       }
     }
   }
 
   return ($snippets.ToArray() -join "`n")
+}
+
+function Test-GeneratedClientModelDefinitionLine {
+  param(
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line,
+    [Parameter(Mandatory = $true)][string]$Model
+  )
+
+  $escaped = [regex]::Escape($Model)
+  return $Line -match "^\s*(?:""?$escaped""?\s*:|export\s+(?:interface|type)\s+$escaped\b|class\s+$escaped\b)"
+}
+
+function Get-GeneratedClientDefinitionSnippet {
+  param(
+    [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Lines,
+    [Parameter(Mandatory = $true)][int]$StartIndex
+  )
+
+  $max = [Math]::Min($Lines.Count - 1, $StartIndex + 220)
+  $end = $StartIndex
+  $depth = 0
+  for ($cursor = $StartIndex; $cursor -le $max; $cursor += 1) {
+    $line = $Lines[$cursor]
+    $depth += ([regex]::Matches($line, "\{")).Count
+    $depth -= ([regex]::Matches($line, "\}")).Count
+    $end = $cursor
+    if ($cursor -gt $StartIndex -and $depth -le 0 -and $line -match "^\s*}\s*;?\s*$") {
+      $end = $cursor
+      break
+    }
+  }
+
+  return ($Lines[$StartIndex..$end] -join "`n")
 }
 
 function Get-GeneratedClientModelText {
@@ -2554,24 +2582,11 @@ function Get-GeneratedClientModelText {
 
     $lines = @($content -split "`r?`n")
     for ($index = 0; $index -lt $lines.Count; $index += 1) {
-      if (-not $lines[$index].Contains($Model)) {
+      if (-not (Test-GeneratedClientModelDefinitionLine -Line $lines[$index] -Model $Model)) {
         continue
       }
 
-      $end = [Math]::Min($lines.Count - 1, $index + 220)
-      for ($cursor = $index + 1; $cursor -le $end; $cursor += 1) {
-        foreach ($otherModel in $Models) {
-          if ($otherModel -eq $Model) {
-            continue
-          }
-          $boundary = "^\s*(?:""?" + [regex]::Escape($otherModel) + """?\s*:|export\s+(?:interface|type)\s+" + [regex]::Escape($otherModel) + "\b)"
-          if ($lines[$cursor] -match $boundary) {
-            $end = [Math]::Max($index, $cursor - 1)
-            break
-          }
-        }
-      }
-      [void]$snippets.Add(($lines[$index..$end] -join "`n"))
+      [void]$snippets.Add((Get-GeneratedClientDefinitionSnippet -Lines $lines -StartIndex $index))
     }
   }
 

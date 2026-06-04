@@ -469,10 +469,53 @@ export const ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract 
   },
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract = {
+  artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+  defaultInstallsBrowser: false,
+  defaultMode: "live_environment_bootstrap_attempt",
+  defaultStartsAdminUiDevServer: false,
+  defaultSubmitsLiveMutation: false,
+  devServer: {
+    command: "npm run dev -- --host 127.0.0.1",
+    cwd: "web/admin-ui",
+    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER",
+    flag: "-BrowserAdminUiDevServerOptIn",
+    requiredValue: "1",
+  },
+  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+  playwright: {
+    browser: "chromium",
+    installCommand: "npm --prefix web/admin-ui exec playwright install chromium",
+    installHintOnly: true,
+  },
+  requiredForPassAttempt: {
+    adminUiReachable: true,
+    artifactReadbackFresh: true,
+    artifactWriteOptIn: true,
+    browserToolingAvailable: true,
+    controlPlaneHealthReachable: true,
+    liveRunnerOptIn: true,
+    mutationOptIn: true,
+    sessionMaterialPresent: true,
+  },
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
+  statusMarkers: {
+    blocked: "blocked",
+    fail: "fail",
+    passAttemptReady: "pass_attempt_ready",
+    passReadback: "pass_readback",
+  },
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
   browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
+  browserLiveEnvironmentBootstrapAttempt: ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
   browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract,
   browserLivePassArtifactReadbackGate: ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract,

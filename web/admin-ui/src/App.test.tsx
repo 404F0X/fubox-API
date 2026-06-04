@@ -3488,6 +3488,27 @@ describe("App", () => {
       providerAttempts: "0",
       rawMarker: "prompt-import-gap-hidden",
     },
+    {
+      auditReadiness: "fail",
+      closureEligible: false,
+      closureGaps: ["external_blocker", "provider_attempts_missing", "duration_unavailable"],
+      durationAvailability: "unavailable: duration_unavailable",
+      expectedClassification: "blocker",
+      expectedGaps: [
+        "external_blocker",
+        "provider_attempts_missing",
+        "duration_unavailable",
+        "latency_envelope_missing_or_ineligible",
+        "proof_closure_not_eligible",
+        "freshness_replay_refused",
+      ],
+      freshnessReplay: "stale_repo_commit_refused",
+      latencyEnvelope: "not eligible, out of bounds or unavailable",
+      proofClosure: "not eligible",
+      proofMode: "live / live",
+      providerAttempts: "-",
+      rawMarker: "prompt-import-external-blocker-hidden",
+    },
   ])(
     "gates imported prompt protection audit evidence for $rawMarker as $expectedClassification",
     ({
@@ -4355,6 +4376,47 @@ describe("App", () => {
         blocked: "blocked",
         fail: "fail",
         pass: "pass",
+      },
+    });
+    expect(parsed.browserLiveEnvironmentBootstrapAttempt).toEqual({
+      artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      defaultInstallsBrowser: false,
+      defaultMode: "live_environment_bootstrap_attempt",
+      defaultStartsAdminUiDevServer: false,
+      defaultSubmitsLiveMutation: false,
+      devServer: {
+        command: "npm run dev -- --host 127.0.0.1",
+        cwd: "web/admin-ui",
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER",
+        flag: "-BrowserAdminUiDevServerOptIn",
+        requiredValue: "1",
+      },
+      durationFields: parsed.browserEvidenceArtifact.durationFields,
+      playwright: {
+        browser: "chromium",
+        installCommand: "npm --prefix web/admin-ui exec playwright install chromium",
+        installHintOnly: true,
+      },
+      requiredForPassAttempt: {
+        adminUiReachable: true,
+        artifactReadbackFresh: true,
+        artifactWriteOptIn: true,
+        browserToolingAvailable: true,
+        controlPlaneHealthReachable: true,
+        liveRunnerOptIn: true,
+        mutationOptIn: true,
+        sessionMaterialPresent: true,
+      },
+      secretSafeOmission: {
+        echoRequestMaterial: false,
+        echoSessionMaterial: false,
+        echoUrlCredentials: false,
+      },
+      statusMarkers: {
+        blocked: "blocked",
+        fail: "fail",
+        passAttemptReady: "pass_attempt_ready",
+        passReadback: "pass_readback",
       },
     });
     expect(parsed.browserMutationPassArtifactClosure).toEqual({

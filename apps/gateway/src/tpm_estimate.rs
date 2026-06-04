@@ -27,6 +27,8 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PROVIDER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_provider_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_request_path_handoff_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED_ENV: &str =
     "GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED";
 pub(crate) const GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED_ENV: &str =
@@ -980,6 +982,119 @@ pub(crate) struct GatewayTrustedNumericSourceProductionWiringSummary {
     pub(crate) source_marker: &'static str,
     pub(crate) token_count_marker: &'static str,
     pub(crate) live_gap_closure_marker: &'static str,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceRequestPathHandoffInput<'a> {
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) request_body: &'a Value,
+    pub(crate) env_config: GatewayTrustedNumericSourceEnvConfigInput<'a>,
+    pub(crate) test_harness_enabled: bool,
+    pub(crate) artifact_write_opt_in: bool,
+    pub(crate) artifact_path: &'a Path,
+    pub(crate) current_commit: &'a str,
+    pub(crate) generated_at: &'a str,
+    pub(crate) conservative_fallback_tokens: i64,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+}
+
+impl<'a> GatewayTrustedNumericSourceRequestPathHandoffInput<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn new(
+        endpoint: GatewayTpmEstimateEndpoint,
+        request_body: &'a Value,
+        env_config: GatewayTrustedNumericSourceEnvConfigInput<'a>,
+        test_harness_enabled: bool,
+        artifact_write_opt_in: bool,
+        artifact_path: &'a Path,
+        current_commit: &'a str,
+        generated_at: &'a str,
+        conservative_fallback_tokens: i64,
+        source_type: GatewayTrustedNumericSourceType,
+        token_kind: GatewayTrustedNumericTokenKind,
+    ) -> Self {
+        Self {
+            endpoint,
+            request_body,
+            env_config,
+            test_harness_enabled,
+            artifact_write_opt_in,
+            artifact_path,
+            current_commit,
+            generated_at,
+            conservative_fallback_tokens,
+            source_type,
+            token_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceRequestPathHandoff {
+    pub(crate) schema: &'static str,
+    pub(crate) production_wiring: GatewayTrustedNumericSourceProductionWiringSummary,
+    pub(crate) provider: GatewayTrustedNumericSourceProviderSummary,
+    pub(crate) tpm_estimate: GatewayTpmEstimateSummary,
+    pub(crate) runtime_evidence: GatewayTrustedNumericSourceRuntimeEvidenceSummary,
+    pub(crate) artifact_write: GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary,
+    pub(crate) artifact_read: GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary,
+    pub(crate) provider_invoked: bool,
+    pub(crate) artifact_written: bool,
+    pub(crate) artifact_readback_valid: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceRequestPathHandoff {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceRequestPathHandoffSummary {
+        GatewayTrustedNumericSourceRequestPathHandoffSummary {
+            schema: self.schema,
+            production_wiring: self.production_wiring.clone(),
+            provider: self.provider.clone(),
+            tpm_estimate: self.tpm_estimate.clone(),
+            runtime_evidence: self.runtime_evidence.clone(),
+            artifact_write: self.artifact_write.clone(),
+            artifact_read: self.artifact_read.clone(),
+            provider_invoked: self.provider_invoked,
+            artifact_written: self.artifact_written,
+            artifact_readback_valid: self.artifact_readback_valid,
+            reservation_acquire_ready: self.reservation_acquire_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            raw_value_omitted: self.raw_value_omitted,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceRequestPathHandoffSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) production_wiring: GatewayTrustedNumericSourceProductionWiringSummary,
+    pub(crate) provider: GatewayTrustedNumericSourceProviderSummary,
+    pub(crate) tpm_estimate: GatewayTpmEstimateSummary,
+    pub(crate) runtime_evidence: GatewayTrustedNumericSourceRuntimeEvidenceSummary,
+    pub(crate) artifact_write: GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary,
+    pub(crate) artifact_read: GatewayTrustedNumericSourceRuntimeEvidenceArtifactSummary,
+    pub(crate) provider_invoked: bool,
+    pub(crate) artifact_written: bool,
+    pub(crate) artifact_readback_valid: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
     pub(crate) raw_value_omitted: bool,
     pub(crate) material_in_output: bool,
 }
@@ -2546,6 +2661,127 @@ pub(crate) fn gateway_trusted_numeric_source_runtime_evidence_artifact_read(
             .as_bool()
             .unwrap_or(false),
     )
+}
+
+pub(crate) fn gateway_trusted_numeric_source_request_path_handoff(
+    input: GatewayTrustedNumericSourceRequestPathHandoffInput<'_>,
+    provider: Option<&dyn GatewayTrustedNumericSourceProvider>,
+) -> GatewayTrustedNumericSourceRequestPathHandoff {
+    let env_config = gateway_trusted_numeric_source_env_config_read(input.env_config);
+    let production_wiring = gateway_trusted_numeric_source_production_wiring_guard(
+        GatewayTrustedNumericSourceProductionWiringInput::new(
+            &env_config,
+            input.test_harness_enabled,
+            input.artifact_write_opt_in,
+            runtime_evidence_artifact_path_allowed(input.artifact_path),
+        ),
+    );
+    let preflight =
+        gateway_trusted_numeric_source_config_preflight(env_config.runtime_config.preflight_input);
+    let provider_input = GatewayTrustedNumericSourceProviderInput::new(
+        input.endpoint,
+        input.source_type,
+        input.token_kind,
+    );
+    let provider_evidence = gateway_trusted_numeric_source_provider_boundary(
+        production_wiring.adapter_invocation_allowed,
+        provider_input,
+        provider,
+    );
+    let availability = gateway_trusted_numeric_source_provider_availability(&provider_evidence);
+    let tpm_estimate = gateway_tpm_estimate_for_request(
+        input.endpoint,
+        input.request_body,
+        gateway_tpm_signals_from_trusted_numeric_source(
+            &availability,
+            input.conservative_fallback_tokens,
+        ),
+    );
+    let adapter_status = if production_wiring.adapter_invocation_allowed
+        && availability.status == GatewayTrustedNumericSourceAvailabilityStatus::Available
+    {
+        GatewayTrustedNumericSourceRuntimeAdapterStatus::Ready
+    } else if preflight.status == GatewayTrustedNumericSourceConfigPreflightStatus::Disabled {
+        GatewayTrustedNumericSourceRuntimeAdapterStatus::Disabled
+    } else {
+        GatewayTrustedNumericSourceRuntimeAdapterStatus::Blocked
+    };
+    let adapter = GatewayTrustedNumericSourceRuntimeAdapterEvidence {
+        status: adapter_status,
+        endpoint: input.endpoint,
+        preflight_status: preflight.status,
+        availability,
+        adapter_invoked: provider_evidence.provider_invoked,
+        fallback_required: provider_evidence.fallback_required,
+        conservative_fallback_tokens: input.conservative_fallback_tokens,
+        material_in_output: provider_evidence.material_in_output,
+        provider_side_effect_required: provider_evidence.provider_side_effect_required,
+    };
+    let required = tpm_estimate.estimate.required_tokens_i64();
+    let opt_in = gateway_trusted_numeric_source_opt_in_evidence(
+        GatewayTrustedNumericSourceOptInEvidenceInput::new(
+            &preflight,
+            &adapter.availability,
+            required,
+            required,
+            required,
+            required,
+        ),
+    );
+    let reservation_projection = gateway_trusted_numeric_source_reservation_projection(&opt_in);
+    let runtime_evidence = gateway_trusted_numeric_source_runtime_evidence_projection(
+        &env_config,
+        &adapter,
+        &reservation_projection,
+    );
+    let artifact_write = gateway_trusted_numeric_source_runtime_evidence_artifact_write(
+        production_wiring.artifact_write_allowed,
+        input.artifact_path,
+        input.current_commit,
+        input.generated_at,
+        &runtime_evidence,
+    );
+    let artifact_read = if artifact_write.artifact_written {
+        gateway_trusted_numeric_source_runtime_evidence_artifact_read(
+            input.artifact_path,
+            input.current_commit,
+        )
+    } else {
+        runtime_evidence_artifact_summary(
+            "read",
+            GatewayTrustedNumericSourceRuntimeEvidenceArtifactStatus::Disabled,
+            Some(GatewayTrustedNumericSourceRuntimeEvidenceArtifactBlocker::OptInMissing),
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    };
+
+    GatewayTrustedNumericSourceRequestPathHandoff {
+        schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA,
+        production_wiring: production_wiring.safe_summary(),
+        provider: provider_evidence.safe_summary(),
+        tpm_estimate: tpm_estimate.safe_summary(),
+        runtime_evidence: runtime_evidence.safe_summary(),
+        provider_invoked: provider_evidence.provider_invoked,
+        artifact_written: artifact_write.artifact_written,
+        artifact_readback_valid: artifact_read.artifact_read && artifact_read.blocker.is_none(),
+        reservation_acquire_ready: runtime_evidence.reservation_acquire_ready,
+        live_gap_closure_ready: runtime_evidence.live_gap_closure_ready
+            && artifact_read.artifact_read
+            && artifact_read.blocker.is_none(),
+        artifact_write,
+        artifact_read,
+        raw_value_omitted: true,
+        material_in_output: false,
+    }
 }
 
 fn runtime_evidence_artifact_path_allowed(path: &Path) -> bool {
@@ -5903,6 +6139,297 @@ mod tests {
                 "trusted numeric provider summary leaked forbidden marker: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_request_path_opt_in_handoff() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_request_path_opt_in_handoff_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA)
+        );
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+
+        for field in [
+            "trusted_source_request_path_handoff.schema",
+            "trusted_source_request_path_handoff.production_wiring.status",
+            "trusted_source_request_path_handoff.provider.status",
+            "trusted_source_request_path_handoff.provider.tokens",
+            "trusted_source_request_path_handoff.tpm_estimate.required_tokens_i64",
+            "trusted_source_request_path_handoff.runtime_evidence.reservation_acquire_ready",
+            "trusted_source_request_path_handoff.runtime_evidence.live_gap_closure_ready",
+            "trusted_source_request_path_handoff.artifact_write.status",
+            "trusted_source_request_path_handoff.artifact_read.status",
+            "trusted_source_request_path_handoff.provider_invoked",
+            "trusted_source_request_path_handoff.artifact_written",
+            "trusted_source_request_path_handoff.artifact_readback_valid",
+            "trusted_source_request_path_handoff.availability_marker",
+            "trusted_source_request_path_handoff.preflight_duration_marker",
+            "trusted_source_request_path_handoff.estimate_duration_marker",
+            "trusted_source_request_path_handoff.source_marker",
+            "trusted_source_request_path_handoff.token_count_marker",
+            "trusted_source_request_path_handoff.raw_value_omitted",
+            "trusted_source_request_path_handoff.material_in_output",
+        ] {
+            assert!(
+                contract["safe_summary_fields"]
+                    .as_array()
+                    .expect("request-path handoff fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "request-path handoff summary should include {field}"
+            );
+        }
+
+        for state in [
+            "default_request_path_disabled",
+            "opt_in_provider_available_writes_artifact",
+            "opt_in_provider_missing_blocks_artifact_closure",
+        ] {
+            assert!(
+                contract["states"]
+                    .as_array()
+                    .expect("request-path handoff states should be an array")
+                    .iter()
+                    .any(|entry| entry["name"].as_str() == Some(state)),
+                "request-path handoff contract missing state: {state}"
+            );
+        }
+
+        for marker in [
+            GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+        ] {
+            assert!(
+                contract["smoke_handoff"]["required_performance_markers"]
+                    .as_array()
+                    .expect("request-path handoff markers should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(marker)),
+                "request-path handoff smoke evidence should include marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_request_path_handoff_controls_opt_in_artifact() {
+        use std::cell::Cell;
+
+        struct Provider {
+            calls: Cell<usize>,
+        }
+
+        impl GatewayTrustedNumericSourceProvider for Provider {
+            fn trusted_numeric_tokens(
+                &self,
+                input: GatewayTrustedNumericSourceProviderInput,
+            ) -> GatewayTrustedNumericSourceProviderOutput {
+                self.calls.set(self.calls.get().saturating_add(1));
+                assert_eq!(input.endpoint, GatewayTpmEstimateEndpoint::OpenAiChat);
+                assert_eq!(
+                    input.source_type,
+                    GatewayTrustedNumericSourceType::Tokenizer
+                );
+                assert_eq!(
+                    input.token_kind,
+                    GatewayTrustedNumericTokenKind::PromptTokens
+                );
+                GatewayTrustedNumericSourceProviderOutput::new(Some(321))
+            }
+        }
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("request-path handoff states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing request-path handoff state: {name}"))
+        }
+
+        fn assert_handoff_summary(
+            summary: &GatewayTrustedNumericSourceRequestPathHandoffSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA
+            );
+            assert_eq!(
+                summary.production_wiring.status,
+                expected["production_wiring_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.provider.status,
+                expected["provider_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.provider_invoked,
+                expected["provider_invoked"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_written,
+                expected["artifact_written"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_readback_valid,
+                expected["artifact_readback_valid"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_ready,
+                expected["reservation_acquire_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            if let Some(tokens) = expected["provider_tokens"].as_u64() {
+                assert_eq!(summary.provider.tokens, Some(tokens));
+            }
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_request_path_opt_in_handoff_contract"];
+        let provider = Provider {
+            calls: Cell::new(0),
+        };
+        let request = json!({ "max_completion_tokens": 79 });
+        let disabled_path = Path::new(".tmp/gateway_tpm_request_path_disabled_test.json");
+        let ready_path = Path::new(".tmp/gateway_tpm_request_path_ready_test.json");
+        let missing_path = Path::new(".tmp/gateway_tpm_request_path_missing_test.json");
+        let _ = fs::remove_file(disabled_path);
+        let _ = fs::remove_file(ready_path);
+        let _ = fs::remove_file(missing_path);
+
+        let disabled = gateway_trusted_numeric_source_request_path_handoff(
+            GatewayTrustedNumericSourceRequestPathHandoffInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &request,
+                GatewayTrustedNumericSourceEnvConfigInput::missing_by_default(),
+                false,
+                false,
+                disabled_path,
+                "commit-a",
+                "2026-06-04T00:00:00Z",
+                256,
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+            ),
+            Some(&provider),
+        );
+        assert_handoff_summary(
+            &disabled.safe_summary(),
+            state(contract, "default_request_path_disabled"),
+        );
+        assert_eq!(provider.calls.get(), 0);
+        assert!(!disabled_path.exists());
+
+        let ready = gateway_trusted_numeric_source_request_path_handoff(
+            GatewayTrustedNumericSourceRequestPathHandoffInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &request,
+                GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, true, false),
+                true,
+                true,
+                ready_path,
+                "commit-a",
+                "2026-06-04T00:00:00Z",
+                256,
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+            ),
+            Some(&provider),
+        );
+        assert_handoff_summary(
+            &ready.safe_summary(),
+            state(contract, "opt_in_provider_available_writes_artifact"),
+        );
+        assert_eq!(provider.calls.get(), 1);
+        assert_eq!(
+            ready.tpm_estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(ready.tpm_estimate.required_tokens_i64, 400);
+        assert!(ready_path.exists());
+
+        let missing = gateway_trusted_numeric_source_request_path_handoff(
+            GatewayTrustedNumericSourceRequestPathHandoffInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &request,
+                GatewayTrustedNumericSourceEnvConfigInput::new(Some("true"), None, true, false),
+                true,
+                true,
+                missing_path,
+                "commit-a",
+                "2026-06-04T00:00:00Z",
+                256,
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+            ),
+            None,
+        );
+        assert_handoff_summary(
+            &missing.safe_summary(),
+            state(contract, "opt_in_provider_missing_blocks_artifact_closure"),
+        );
+        assert_eq!(
+            missing.tpm_estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(missing.tpm_estimate.required_tokens_i64, 335);
+        assert!(missing_path.exists());
+
+        let serialized = serde_json::to_string(&json!({
+            "request_path_handoff": [
+                disabled.safe_summary(),
+                ready.safe_summary(),
+                missing.safe_summary()
+            ]
+        }))
+        .expect("request-path handoff summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric request-path handoff leaked forbidden marker: {forbidden}"
+            );
+        }
+
+        let _ = fs::remove_file(disabled_path);
+        let _ = fs::remove_file(ready_path);
+        let _ = fs::remove_file(missing_path);
     }
 
     fn ready_runtime_evidence_projection_for_artifact_test()

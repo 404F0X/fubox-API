@@ -4927,7 +4927,7 @@ components:
           type: boolean
         kind:
           type: string
-          enum: [null, boolean, number, string, array, object]
+          enum: ['null', 'boolean', 'number', 'string', 'array', 'object']
         top_level_item_count:
           type: integer
           minimum: 0

@@ -16,7 +16,7 @@
   },
   "required_capacity": {
     "requests_per_minute": 1,
-    "tokens_per_minute": 128,
+    "tokens_per_minute": 1024,
     "concurrency": 1
   },
   "postgres_scope": {
@@ -37,7 +37,7 @@
       "expected_release_attempted": false,
       "expected_used_after": {
         "rpm": 1,
-        "tpm": 128,
+        "tpm": 1024,
         "concurrency": 1
       }
     },
@@ -81,13 +81,16 @@
       "status",
       "bounded_scope",
       "performance",
+      "trusted_numeric_source_handoff",
       "secret_safe_command_summary",
       "blockers",
+      "blocker_evidence",
       "secret_safety"
     ],
     "required_performance_fields": [
       "concurrency",
       "latency_or_ttft",
+      "row_count",
       "not_applied_or_fallback_rate",
       "reservation_counts"
     ],

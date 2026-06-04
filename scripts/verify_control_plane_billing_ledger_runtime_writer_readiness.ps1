@@ -3,6 +3,7 @@ param(
   [switch]$LiveExecutionProbe,
   [switch]$RunLiveDbExecutorProbe,
   [switch]$ExecuteRollbackOnlyLiveProbe,
+  [switch]$AttemptRealLiveDbProbe,
   [switch]$SimulateProbeMeasurements,
   [switch]$SimulateProbeRowCountMismatch,
   [switch]$SimulateStaleProbeArtifact,
@@ -46,6 +47,7 @@ $artifactReadEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_READ"
 $artifactPathEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_PROBE_ARTIFACT_PATH"
 $liveDbExecutorProbeEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_LIVE_DB_EXECUTOR_PROBE"
 $rollbackOnlyExecutorEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_ROLLBACK_ONLY_EXECUTOR_PROBE"
+$realLiveAttemptEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_REAL_LIVE_DB_PROBE_ATTEMPT"
 $runtimeSchemaEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_SCHEMA_AVAILABLE"
 $runtimeToolEnvVar = "AI_CONTROL_PLANE_BILLING_LEDGER_RUNTIME_TOOL_AVAILABLE"
 
@@ -375,6 +377,28 @@ function Get-CurrentCommitMarker {
     return [string]$commit.Trim()
   } catch {
     return "unavailable"
+  }
+}
+
+function Get-LocalToolReadiness {
+  $psql = Get-Command psql -ErrorAction SilentlyContinue
+  $docker = Get-Command docker -ErrorAction SilentlyContinue
+  $dockerDaemonAvailable = $false
+  if ($null -ne $docker) {
+    try {
+      docker version --format '{{.Server.Version}}' 2>$null | Out-Null
+      $dockerDaemonAvailable = ($LASTEXITCODE -eq 0)
+    } catch {
+      $dockerDaemonAvailable = $false
+    }
+  }
+
+  return [ordered]@{
+    psql_available = ($null -ne $psql)
+    docker_cli_available = ($null -ne $docker)
+    docker_daemon_available = $dockerDaemonAvailable
+    psql_path_output = if ($null -ne $psql) { "available_marker_only" } else { "missing" }
+    docker_path_output = if ($null -ne $docker) { "available_marker_only" } else { "missing" }
   }
 }
 
@@ -1193,6 +1217,145 @@ function New-LiveDbRollbackOnlyExecutorGate {
   }
 }
 
+function New-RealLiveDbRollbackAttempt {
+  param(
+    [Parameter(Mandatory = $true)][bool]$AttemptRequested,
+    [Parameter(Mandatory = $true)]$ToolReadiness,
+    [Parameter(Mandatory = $true)]$RollbackGate,
+    [Parameter(Mandatory = $true)][bool]$LiveDatabaseUrlPresent,
+    [Parameter(Mandatory = $true)][bool]$SchemaAvailable,
+    [Parameter(Mandatory = $true)][bool]$RuntimeToolAvailable
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if (-not $AttemptRequested) {
+    [void]$blockers.Add("real_live_db_probe_attempt_not_requested")
+  }
+  if (-not [bool]$ToolReadiness.psql_available) {
+    [void]$blockers.Add("psql_missing")
+  }
+  if (-not [bool]$ToolReadiness.docker_daemon_available) {
+    [void]$blockers.Add("docker_daemon_unavailable")
+  }
+  if (-not $LiveDatabaseUrlPresent) {
+    [void]$blockers.Add("live_database_url_missing")
+  }
+  if (-not $SchemaAvailable) {
+    [void]$blockers.Add("runtime_schema_unavailable")
+  }
+  if (-not $RuntimeToolAvailable) {
+    [void]$blockers.Add("runtime_tool_unavailable")
+  }
+  if ([string]$RollbackGate.classification -eq "blocker") {
+    foreach ($blocker in @($RollbackGate.blockers)) {
+      [void]$blockers.Add([string]$blocker)
+    }
+  }
+  if ([string]$RollbackGate.classification -eq "fail") {
+    foreach ($failure in @($RollbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($blockers.Count -eq 0 -and [string]$RollbackGate.classification -eq "pass") {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = "control_plane_billing_ledger_real_live_db_rollback_attempt.v1"
+    requested = $AttemptRequested
+    classification = $classification
+    execution_performed = ($classification -eq "pass")
+    executor_mode = "rollback_only_probe"
+    copyable_command = ".\scripts\verify_control_plane_billing_ledger_runtime_writer_readiness.ps1 -Live -LiveExecutionProbe -RunLiveDbExecutorProbe -ExecuteRollbackOnlyLiveProbe -AttemptRealLiveDbProbe -WriteProbeArtifact -ReadProbeArtifact -ArtifactPath .tmp\billing-ledger\live-probe-evidence-artifact.json"
+    local_tool_readiness = $ToolReadiness
+    blocker_reasons = @($blockers | Select-Object -Unique)
+    failure_reasons = @($failures | Select-Object -Unique)
+    row_count_evidence = $RollbackGate.row_count_evidence
+    timing_evidence = $RollbackGate.timing_evidence
+    rollback_no_commit_proof = $RollbackGate.rollback_no_commit_proof
+    safe_output = [ordered]@{
+      raw_sql_output = "omitted"
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      raw_database_url_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
+function New-ProductionWriterCutoverPreflight {
+  param(
+    [Parameter(Mandatory = $true)]$LiveAttempt,
+    [Parameter(Mandatory = $true)]$RollbackGate,
+    [Parameter(Mandatory = $true)][string]$Mode
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if ([string]$Mode -ne "ready") {
+    [void]$blockers.Add("source_of_truth_switch_not_ready")
+  }
+  if ([string]$LiveAttempt.classification -ne "pass") {
+    [void]$blockers.Add("live_rollback_attempt_not_passed")
+  }
+  if ([string]$RollbackGate.classification -eq "fail") {
+    foreach ($failure in @($RollbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+  $proof = $RollbackGate.rollback_no_commit_proof
+  if ($null -eq $proof -or $proof.rollback_observed -ne $true) {
+    [void]$blockers.Add("rollback_path_not_proven")
+  }
+  if ($null -ne $proof -and ($proof.commit_observed -eq $true -or $proof.dual_commit_observed -eq $true)) {
+    [void]$failures.Add("no_dual_commit_contract_failed")
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($blockers.Count -eq 0) {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = "control_plane_billing_ledger_production_writer_cutover_preflight.v1"
+    classification = $classification
+    source_of_truth_switch = [ordered]@{
+      requested = $false
+      allowed_in_this_script = $false
+      required_mode = "ready"
+      current_mode = $Mode
+    }
+    no_dual_commit = [ordered]@{
+      required = $true
+      dual_commit_allowed = $false
+      dual_commit_observed = if ($null -eq $proof) { $false } else { [bool]$proof.dual_commit_observed }
+    }
+    rollback_path = [ordered]@{
+      required = $true
+      rollback_observed = if ($null -eq $proof) { $false } else { [bool]$proof.rollback_observed }
+      local_writer_fallback = "control_plane_local_sql_writer"
+    }
+    row_count_summary = $RollbackGate.row_count_evidence
+    duration_summary = $RollbackGate.timing_evidence
+    blockers = @($blockers | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    safe_output = [ordered]@{
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
 function New-LiveExecutionHandoff {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -1365,6 +1528,7 @@ $runtimeSchemaAvailable = [bool]$RuntimeSchemaAvailable -or (Test-TruthyEnv ([En
 $runtimeToolAvailable = [bool]$RuntimeToolAvailable -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($runtimeToolEnvVar)))
 $liveDbExecutorProbeRequested = [bool]$RunLiveDbExecutorProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($liveDbExecutorProbeEnvVar)))
 $rollbackOnlyExecutorRequested = [bool]$ExecuteRollbackOnlyLiveProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($rollbackOnlyExecutorEnvVar)))
+$realLiveAttemptRequested = [bool]$AttemptRealLiveDbProbe -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($realLiveAttemptEnvVar)))
 $artifactWriteRequested = [bool]$WriteProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactWriteEnvVar)))
 $artifactReadRequested = [bool]$ReadProbeArtifact -or (Test-TruthyEnv ([Environment]::GetEnvironmentVariable($artifactReadEnvVar)))
 $artifactPathValue = if ([string]::IsNullOrWhiteSpace($ArtifactPath)) { [Environment]::GetEnvironmentVariable($artifactPathEnvVar) } else { $ArtifactPath }
@@ -1418,6 +1582,9 @@ $liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifa
 $liveDbExecutorProbeCommandBoundary = New-LiveDbExecutorProbeCommandBoundary -ProbeRequested $liveDbExecutorProbeRequested -LiveOptIn $liveOptIn -Mode ([string]$mode.Mode) -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -FeatureAvailable $featureAvailable -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -ReadbackGate $liveProbeMeasurementReadbackGate
 $liveDbExecutorSqlBridgeReadinessArtifact = New-LiveDbExecutorSqlBridgeReadinessArtifact -CommandBoundary $liveDbExecutorProbeCommandBoundary -ReadbackGate $liveProbeMeasurementReadbackGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable
 $liveDbRollbackOnlyExecutorGate = New-LiveDbRollbackOnlyExecutorGate -ExecutionRequested $rollbackOnlyExecutorRequested -SqlBridge $liveDbExecutorSqlBridgeReadinessArtifact -ReadbackGate $liveProbeMeasurementReadbackGate -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -RawSqlOutputObserved ([bool]$SimulateRawSqlOutput)
+$localToolReadiness = Get-LocalToolReadiness
+$realLiveDbRollbackAttempt = New-RealLiveDbRollbackAttempt -AttemptRequested $realLiveAttemptRequested -ToolReadiness $localToolReadiness -RollbackGate $liveDbRollbackOnlyExecutorGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -RuntimeToolAvailable $runtimeToolAvailable
+$productionWriterCutoverPreflight = New-ProductionWriterCutoverPreflight -LiveAttempt $realLiveDbRollbackAttempt -RollbackGate $liveDbRollbackOnlyExecutorGate -Mode ([string]$mode.Mode)
 
 $summary = [ordered]@{
   schema_version = [string]$readinessContract.schema_version
@@ -1543,6 +1710,8 @@ $summary = [ordered]@{
   live_db_executor_probe_command_boundary = $liveDbExecutorProbeCommandBoundary
   live_db_executor_sql_bridge_readiness_artifact = $liveDbExecutorSqlBridgeReadinessArtifact
   live_db_rollback_only_executor_gate = $liveDbRollbackOnlyExecutorGate
+  real_live_db_rollback_attempt = $realLiveDbRollbackAttempt
+  production_writer_cutover_preflight = $productionWriterCutoverPreflight
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version

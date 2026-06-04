@@ -342,7 +342,8 @@ export function promptProtectionAuditClosureGate(
 
   const normalizedGaps = Array.from(gaps).slice(0, 12);
   const closureEligible = normalizedGaps.length === 0 && readback.auditReadiness === "pass";
-  const classification = closureEligible ? "pass" : fail ? "fail" : "blocker";
+  const hasExternalBlocker = normalizedGaps.includes("external_blocker") || readback.auditReadiness === "blocker";
+  const classification = closureEligible ? "pass" : hasExternalBlocker ? "blocker" : fail ? "fail" : "blocker";
 
   return {
     classification,

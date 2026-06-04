@@ -22,6 +22,7 @@ tests/integration/sdk-smoke/node_modules/
 *.log
 *.pid
 *.tmp
+.tool-cache/
 artifacts/
 tmp/
 temp/

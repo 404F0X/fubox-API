@@ -157,6 +157,47 @@ $env:PROMPT_PROTECTION_POSTGRES_PROOF_REPORT_PATH = ".tmp\prompt-protection-post
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live
 ```
 
+Live proof plus Admin UI/audit handoff attempt:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath .tmp\prompt-protection-postgres-proof\s30-live-attempt-report.json
+```
+
+Expected pass evidence, when Gateway/Postgres/mock-provider/session are ready:
+
+- Script exit `0`.
+- Root report `status=passed`, `exit_code=0`, `provenance.kind=live`,
+  `provenance.mode=live`, and current `generated_at_utc`/commit provenance.
+- Each endpoint has `evidence_status=passed`,
+  `provider_side_effects.provider_attempts_count=0`,
+  `performance.duration_available=true`, and
+  `performance.latency_envelope.within_bounds=true`.
+- `audit_handoff_bridge.closure_gate.classification=pass` and
+  `closure_eligible=true`.
+- `audit_handoff_bridge.admin_ui_readback` is the object to import into the
+  Admin UI prompt-protection audit closure gate. It must preserve
+  `providerAttempts=0`, `latencyEnvelope=eligible`, duration availability,
+  `proofMode=live / live`, and `freshnessReplay=current_live_proof`.
+
+Expected blocker evidence, when Gateway/Postgres/mock-provider/session are not
+ready:
+
+- Script exit `2`.
+- Root report `status=blocked`, `exit_code=2`.
+- `audit_handoff_bridge.closure_gate.classification=blocker` and
+  `closure_eligible=false`.
+- `audit_handoff_bridge.closure_gate.gaps` includes bounded markers such as
+  `external_blocker`, `endpoint_evidence_not_passed`,
+  `provider_attempts_missing`, `duration_unavailable`, and
+  `latency_envelope_missing_or_ineligible`.
+- Console output and report JSON must still omit raw report path, command
+  values, URL values, DSN, token/header/cookie material, provider secrets, raw
+  prompt, and raw request body.
+
+This live attempt is the handoff artifact for Admin UI/audit readiness. If it is
+blocked, use the same command after starting Docker/compose services or setting
+`DATABASE_URL`/`POSTGRES_URL`, Gateway, mock-provider, and virtual-key inputs.
+
 Evidence report contract self-test:
 
 ```powershell
@@ -313,7 +354,8 @@ Each endpoint report records:
 - Provider key/upstream not-called fields:
   `provider_attempts_count=0`, `has_provider_key=false`,
   `has_canonical_model=false`, `has_resolved_provider=false`,
-  `has_resolved_channel=false`, and `route_policy_version=null`.
+  and `has_resolved_channel=false`. `route_policy_version` may be populated
+  when auth/profile routing metadata is resolved before prompt rejection.
 - Prompt-protection `mode=enforce`, `action=reject`, accepted reason values, and
   observed safe reason/scope when DB evidence is available.
 - Secret-safe omission markers for raw payload, raw pattern values, transport
@@ -609,7 +651,8 @@ Expected SQL evidence for every endpoint:
 - `has_resolved_provider = false`.
 - `has_resolved_channel = false`.
 - `has_provider_key = false`.
-- `route_policy_version` is null.
+- `route_policy_version` may be populated before prompt rejection; it is not
+  provider side-effect evidence.
 - `route_reason = prompt_protection_rejected`.
 - `prompt_protection_mode = enforce`.
 - `prompt_protection_action = reject`.
