@@ -155,6 +155,81 @@
       "clamped_to_i64_max": true
     }
   ],
+  "capacity_bridge_behaviors": [
+    {
+      "name": "total_tokens_to_required_capacity",
+      "estimate_source": "TotalTokens",
+      "estimate_required_tokens": 700,
+      "estimate_required_tokens_i64": 700,
+      "used_conservative_fallback": false,
+      "required_capacity": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 700,
+        "concurrency": 1
+      },
+      "reservation_dimension": {
+        "dimension": "TokensPerMinute",
+        "required": 700,
+        "used_before": 100,
+        "used_after": 800
+      }
+    },
+    {
+      "name": "prompt_and_max_completion_to_required_capacity",
+      "estimate_source": "PromptAndMaxCompletion",
+      "estimate_required_tokens": 732,
+      "estimate_required_tokens_i64": 732,
+      "used_conservative_fallback": false,
+      "required_capacity": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 732,
+        "concurrency": 1
+      },
+      "reservation_dimension": {
+        "dimension": "TokensPerMinute",
+        "required": 732,
+        "used_before": 100,
+        "used_after": 832
+      }
+    },
+    {
+      "name": "conservative_fallback_to_required_capacity",
+      "estimate_source": "ConservativeFallback",
+      "estimate_required_tokens": 256,
+      "estimate_required_tokens_i64": 256,
+      "used_conservative_fallback": true,
+      "required_capacity": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 256,
+        "concurrency": 1
+      },
+      "reservation_dimension": {
+        "dimension": "TokensPerMinute",
+        "required": 256,
+        "used_before": 100,
+        "used_after": 356
+      }
+    },
+    {
+      "name": "i64_clamped_estimate_to_required_capacity",
+      "estimate_source": "PromptAndCompletion",
+      "estimate_required_tokens": 18446744073709551614,
+      "estimate_required_tokens_i64": 9223372036854775807,
+      "estimate_clamped_to_i64_max": true,
+      "used_conservative_fallback": false,
+      "required_capacity": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 9223372036854775807,
+        "concurrency": 1
+      },
+      "reservation_dimension": {
+        "dimension": "TokensPerMinute",
+        "required": 9223372036854775807,
+        "used_before": 0,
+        "used_after": 9223372036854775807
+      }
+    }
+  ],
   "safety_contract": {
     "body_material_in_output": false,
     "stores_raw_provider_key": false,

@@ -1200,6 +1200,137 @@ mod tests {
     }
 
     #[test]
+    fn tpm_estimate_to_required_capacity_bridge_preserves_source_semantics() {
+        let cases = [
+            (
+                "total_tokens_to_capacity",
+                RateLimitTpmEstimateInput::new(Some(300), Some(128), Some(512), Some(700), 1_024),
+                RateLimitTpmEstimateSource::TotalTokens,
+                700,
+                false,
+            ),
+            (
+                "prompt_and_completion_to_capacity",
+                RateLimitTpmEstimateInput::new(Some(220), Some(180), None, None, 1_024),
+                RateLimitTpmEstimateSource::PromptAndCompletion,
+                400,
+                false,
+            ),
+            (
+                "prompt_and_max_completion_to_capacity",
+                RateLimitTpmEstimateInput::new(Some(220), Some(180), Some(512), None, 1_024),
+                RateLimitTpmEstimateSource::PromptAndMaxCompletion,
+                732,
+                false,
+            ),
+            (
+                "conservative_fallback_to_capacity",
+                RateLimitTpmEstimateInput::new(None, None, None, None, 256),
+                RateLimitTpmEstimateSource::ConservativeFallback,
+                256,
+                true,
+            ),
+            (
+                "partial_estimate_with_fallback_to_capacity",
+                RateLimitTpmEstimateInput::new(Some(120), None, None, None, 256),
+                RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback,
+                376,
+                true,
+            ),
+        ];
+
+        for (name, input, expected_source, expected_tokens, expected_fallback) in cases {
+            let estimate = estimate_tpm_reservation(input);
+            let required = RateLimitRequiredCapacity::from_tpm_estimate(1, &estimate, 1);
+            let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+                RateLimitCounterWindow::unlimited(),
+                RateLimitCounterWindow::limited(10_000, 100),
+                RateLimitCounterWindow::unlimited(),
+                required,
+            ));
+            let tpm = reservation_dimension_for(&plan, RateLimitDimension::TokensPerMinute);
+
+            assert_eq!(estimate.source, expected_source, "{name}");
+            assert_eq!(estimate.required_tokens, expected_tokens, "{name}");
+            assert_eq!(
+                estimate.used_conservative_fallback, expected_fallback,
+                "{name}"
+            );
+            assert_eq!(required.tokens_per_minute, expected_tokens as i64, "{name}");
+            assert_eq!(tpm.required, expected_tokens, "{name}");
+            assert_eq!(tpm.used_after, 100 + expected_tokens, "{name}");
+            assert_eq!(plan.status, RateLimitReservationStatus::Acquired, "{name}");
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_to_required_capacity_bridge_clamps_i64_before_reservation() {
+        let estimate = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(i64::MAX),
+            Some(i64::MAX),
+            Some(i64::MAX),
+            None,
+            i64::MAX,
+        ));
+        let required = RateLimitRequiredCapacity::from_tpm_estimate(1, &estimate, 1);
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::unlimited(),
+            RateLimitCounterWindow::limited(i64::MAX, 0),
+            RateLimitCounterWindow::unlimited(),
+            required,
+        ));
+        let tpm = reservation_dimension_for(&plan, RateLimitDimension::TokensPerMinute);
+
+        assert!(estimate.clamped_to_i64_max);
+        assert!(estimate.required_tokens > i64::MAX as u64);
+        assert_eq!(estimate.required_tokens_i64(), i64::MAX);
+        assert_eq!(required.tokens_per_minute, i64::MAX);
+        assert_eq!(tpm.required, i64::MAX as u64);
+        assert_eq!(tpm.used_after, i64::MAX as u64);
+        assert_eq!(plan.status, RateLimitReservationStatus::Acquired);
+    }
+
+    #[test]
+    fn tpm_estimate_bridge_serialized_outputs_are_secret_safe() {
+        let estimate =
+            estimate_tpm_reservation(RateLimitTpmEstimateInput::new(None, None, None, None, 256));
+        let required = RateLimitRequiredCapacity::from_tpm_estimate(1, &estimate, 1);
+        let plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::unlimited(),
+            RateLimitCounterWindow::limited(1_000, 900),
+            RateLimitCounterWindow::unlimited(),
+            required,
+        ));
+        let serialized = serde_json::json!({
+            "estimate": estimate,
+            "required_capacity": required,
+            "reservation_plan": plan,
+        })
+        .to_string()
+        .to_ascii_lowercase();
+
+        for forbidden in [
+            "sk-live",
+            "authorization",
+            "bearer",
+            "provider_key",
+            "api_key",
+            "encrypted_secret",
+            "payload",
+            "request_body",
+            "raw_prompt",
+            "raw_completion",
+            "raw_window",
+            "current_window_state",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "rate-limit TPM bridge output leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn tpm_estimate_feeds_reservation_selection_conservatively() {
         let precise = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
             Some(40),
@@ -1277,6 +1408,22 @@ mod tests {
             behavior["name"] == "i64_capacity_clamp"
                 && behavior["required_tokens_i64"] == i64::MAX
                 && behavior["clamped_to_i64_max"] == true
+        }));
+        let bridge_behaviors = fixture["capacity_bridge_behaviors"]
+            .as_array()
+            .expect("capacity bridge behavior array should exist");
+        assert!(bridge_behaviors.iter().any(|behavior| {
+            behavior["name"] == "conservative_fallback_to_required_capacity"
+                && behavior["estimate_source"] == "ConservativeFallback"
+                && behavior["used_conservative_fallback"] == true
+                && behavior["required_capacity"]["tokens_per_minute"] == 256
+                && behavior["reservation_dimension"]["required"] == 256
+        }));
+        assert!(bridge_behaviors.iter().any(|behavior| {
+            behavior["name"] == "i64_clamped_estimate_to_required_capacity"
+                && behavior["estimate_clamped_to_i64_max"] == true
+                && behavior["required_capacity"]["tokens_per_minute"] == i64::MAX
+                && behavior["reservation_dimension"]["required"] == i64::MAX
         }));
 
         let serialized = serde_json::to_string(&fallback)
