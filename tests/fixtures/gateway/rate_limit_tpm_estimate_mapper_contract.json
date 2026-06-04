@@ -132,6 +132,91 @@
       "current_window_state"
     ]
   },
+  "trusted_numeric_source_runtime_noop_integration_guard": {
+    "schema": "gateway_tpm_trusted_numeric_source_runtime_noop_guard_v1",
+    "current_status": "trusted_numeric_source_adapter_not_wired",
+    "trusted_source_adapter_wired": false,
+    "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
+    "current_runtime_fallback_tokens_constant": "GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS",
+    "current_runtime_invokes_trusted_source_helper": false,
+    "future_wiring_required_helpers": [
+      "GatewayTrustedNumericSourceCandidate",
+      "gateway_trusted_numeric_source_availability(",
+      "gateway_tpm_signals_from_trusted_numeric_source("
+    ],
+    "current_runtime_absent_markers": [
+      "GatewayTrustedNumericSourceCandidate",
+      "gateway_trusted_numeric_source_availability(",
+      "gateway_tpm_signals_from_trusted_numeric_source(",
+      "GatewayTpmEstimateSignals::trusted_prompt_tokens(",
+      "GatewayTpmEstimateSignals::trusted_input_tokens(",
+      "GatewayTpmEstimateSignals::new("
+    ],
+    "future_bypass_forbidden_markers": [
+      "GatewayTpmEstimateSignals::trusted_prompt_tokens(",
+      "GatewayTpmEstimateSignals::trusted_input_tokens(",
+      "GatewayTpmEstimateSignals::new(",
+      ".len()",
+      ".chars()",
+      ".bytes()",
+      "split_whitespace",
+      ".tokenize(",
+      "tokenize_raw",
+      "token_count"
+    ],
+    "forbidden_raw_material_markers": [
+      "sk-live",
+      "authorization",
+      "bearer",
+      "provider_key",
+      "api_key",
+      "encrypted_secret",
+      "payload",
+      "request_body",
+      "raw_prompt",
+      "raw_input",
+      "raw_header",
+      "message_text",
+      "embedding_text",
+      "provider_endpoint",
+      "current_window_state",
+      "\"messages\"",
+      "\"contents\"",
+      "\"input\""
+    ],
+    "endpoint_expectations": [
+      {
+        "endpoint": "openai_chat",
+        "expected_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1152
+      },
+      {
+        "endpoint": "openai_responses",
+        "expected_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1324
+      },
+      {
+        "endpoint": "openai_embeddings",
+        "expected_source": "ConservativeFallback",
+        "expected_required_tokens": 1024
+      },
+      {
+        "endpoint": "anthropic_messages",
+        "expected_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1536
+      },
+      {
+        "endpoint": "gemini_native",
+        "expected_source": "PartialEstimateWithConservativeFallback",
+        "expected_required_tokens": 1280
+      }
+    ],
+    "side_effect_ordering": {
+      "prompt_protection_before_estimate": true,
+      "estimate_before_reservation": true,
+      "reservation_before_provider_attempt": true
+    }
+  },
   "runtime_source_guard": {
     "current_runtime_signal": "GatewayTpmEstimateSignals::missing_tokenizer(",
     "trusted_signal_runtime_sources": [],

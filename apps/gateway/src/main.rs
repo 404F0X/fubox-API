@@ -13647,6 +13647,290 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_runtime_noop_trusted_source_guard_blocks_bypass() {
+        let main_source = include_str!("main.rs");
+        let tpm_estimate_source = include_str!("tpm_estimate.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let noop_guard = &fixture["trusted_numeric_source_runtime_noop_integration_guard"];
+        let expected_signal = noop_guard["current_runtime_signal"]
+            .as_str()
+            .expect("runtime no-op guard should define current signal");
+        let fallback_constant = noop_guard["current_runtime_fallback_tokens_constant"]
+            .as_str()
+            .expect("runtime no-op guard should define fallback constant");
+
+        assert_eq!(
+            noop_guard["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_runtime_noop_guard_v1")
+        );
+        assert_eq!(
+            noop_guard["current_status"].as_str(),
+            Some("trusted_numeric_source_adapter_not_wired")
+        );
+        assert_eq!(
+            noop_guard["trusted_source_adapter_wired"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            noop_guard["current_runtime_invokes_trusted_source_helper"].as_bool(),
+            Some(false)
+        );
+        for required_helper in noop_guard["future_wiring_required_helpers"]
+            .as_array()
+            .expect("future wiring required helpers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                tpm_estimate_source.contains(required_helper),
+                "future trusted source wiring must be available through S19 helper shape: {required_helper}"
+            );
+        }
+
+        for (section, section_name, endpoint_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "GatewayTpmEstimateEndpoint::OpenAiChat",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "GatewayTpmEstimateEndpoint::OpenAiResponses",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "GatewayTpmEstimateEndpoint::OpenAiEmbeddings",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "GatewayTpmEstimateEndpoint::AnthropicMessages",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "GatewayTpmEstimateEndpoint::GeminiNative",
+            ),
+        ] {
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+
+            assert!(
+                estimate_section.contains(endpoint_marker),
+                "{section_name} runtime estimate should keep the endpoint-specific mapper"
+            );
+            assert!(
+                estimate_section.contains(expected_signal),
+                "{section_name} runtime should remain on missing-tokenizer fallback while no trusted source adapter is wired"
+            );
+            assert!(
+                estimate_section.contains(fallback_constant),
+                "{section_name} runtime should use the bounded conservative fallback constant"
+            );
+            for absent_marker in noop_guard["current_runtime_absent_markers"]
+                .as_array()
+                .expect("current runtime absent markers should be an array")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+            {
+                assert!(
+                    !estimate_section.contains(absent_marker),
+                    "{section_name} runtime must not enable or bypass trusted numeric source helper before adapter wiring: {absent_marker}"
+                );
+            }
+            for bypass_marker in noop_guard["future_bypass_forbidden_markers"]
+                .as_array()
+                .expect("future bypass forbidden markers should be an array")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+            {
+                assert!(
+                    !estimate_section.contains(bypass_marker),
+                    "{section_name} runtime must not bypass S19 trusted source availability contract: {bypass_marker}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rate_limit_tpm_estimate_runtime_noop_summaries_remain_secret_safe() {
+        fn endpoint_expectation<'a>(guard: &'a Value, endpoint: &str) -> &'a serde_json::Value {
+            guard["endpoint_expectations"]
+                .as_array()
+                .expect("endpoint expectations should be an array")
+                .iter()
+                .find(|entry| entry["endpoint"].as_str() == Some(endpoint))
+                .unwrap_or_else(|| panic!("missing runtime no-op endpoint expectation: {endpoint}"))
+        }
+
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let noop_guard = &fixture["trusted_numeric_source_runtime_noop_integration_guard"];
+        let cases = vec![
+            (
+                "openai_chat",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::OpenAiChat,
+                    br#"{
+                        "model": "mock-gpt",
+                        "messages": [{ "role": "user", "content": "sk-live-secret raw prompt" }],
+                        "headers": { "Authorization": "Bearer sk-live-secret" },
+                        "provider_key": "sk-live-provider-secret",
+                        "max_completion_tokens": 128
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "openai_responses",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::OpenAiResponses,
+                    br#"{
+                        "model": "mock-gpt",
+                        "input": "sk-live-secret raw response input",
+                        "raw_headers": { "Authorization": "Bearer sk-live-secret" },
+                        "max_output_tokens": 300
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "openai_embeddings",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+                    br#"{
+                        "model": "mock-embedding",
+                        "input": ["sk-live-secret raw embedding input", "second raw input"],
+                        "api_key": "sk-live-provider-secret"
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "anthropic_messages",
+                gateway_tpm_estimate_for_request_body(
+                    GatewayTpmEstimateEndpoint::AnthropicMessages,
+                    br#"{
+                        "model": "claude-mock",
+                        "messages": [{ "role": "user", "content": "sk-live-secret raw prompt" }],
+                        "provider_endpoint": "https://provider.example.test/v1/messages",
+                        "max_tokens": 512
+                    }"#,
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+            (
+                "gemini_native",
+                gateway_tpm_estimate_for_request(
+                    GatewayTpmEstimateEndpoint::GeminiNative,
+                    &json!({
+                        "contents": [
+                            {
+                                "role": "user",
+                                "parts": [{ "text": "sk-live-secret raw prompt" }]
+                            }
+                        ],
+                        "current_window_state": { "raw": "must not project" },
+                        "generationConfig": { "maxOutputTokens": 256 }
+                    }),
+                    GatewayTpmEstimateSignals::missing_tokenizer(
+                        GATEWAY_TPM_ESTIMATE_CONSERVATIVE_FALLBACK_TOKENS,
+                    ),
+                ),
+            ),
+        ];
+
+        assert_eq!(
+            noop_guard["endpoint_expectations"]
+                .as_array()
+                .expect("endpoint expectations should be an array")
+                .len(),
+            cases.len()
+        );
+        for (endpoint, estimate) in cases {
+            let expectation = endpoint_expectation(noop_guard, endpoint);
+            let summary = serde_json::to_value(estimate.safe_summary())
+                .expect("TPM estimate safe summary should serialize");
+
+            assert_eq!(summary["endpoint"], endpoint, "{endpoint}");
+            assert_eq!(
+                summary["source"], expectation["expected_source"],
+                "{endpoint}"
+            );
+            assert_eq!(
+                summary["required_tokens_i64"], expectation["expected_required_tokens"],
+                "{endpoint}"
+            );
+            assert_eq!(summary["used_conservative_fallback"], true, "{endpoint}");
+            assert_eq!(summary["prompt_tokens"], Value::Null, "{endpoint}");
+            assert_eq!(summary["completion_tokens"], Value::Null, "{endpoint}");
+
+            let summary_text = summary.to_string().to_ascii_lowercase();
+            for marker in noop_guard["forbidden_raw_material_markers"]
+                .as_array()
+                .expect("forbidden raw material markers should be an array")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+            {
+                assert!(
+                    !summary_text.contains(&marker.to_ascii_lowercase()),
+                    "{endpoint} runtime no-op TPM summary leaked raw material marker: {marker}"
+                );
+            }
+            for marker in [
+                "raw prompt",
+                "raw response input",
+                "raw embedding input",
+                "second raw input",
+                "must not project",
+                "https://provider.example.test",
+                "\"headers\"",
+                "\"parts\"",
+                "\"text\"",
+            ] {
+                assert!(
+                    !summary_text.contains(marker),
+                    "{endpoint} runtime no-op TPM summary leaked raw marker: {marker}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_smoke_evidence_projection_is_secret_safe_and_consistent() {
         fn json_path_exists(value: &Value, path: &str) -> bool {
             path.split('.')
