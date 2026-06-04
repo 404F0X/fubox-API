@@ -14161,6 +14161,182 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_tpm_estimate_trusted_source_opt_in_evidence_gate_does_not_change_runtime_ordering()
+     {
+        let main_source = include_str!("main.rs");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_tpm_estimate_mapper_contract.json"
+        ))
+        .expect("gateway TPM estimate mapper fixture should be valid json");
+        let evidence = &fixture["trusted_numeric_source_opt_in_runtime_evidence_gate_contract"];
+
+        assert_eq!(
+            evidence["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_opt_in_evidence_v1")
+        );
+        assert_eq!(
+            evidence["implementation_status"].as_str(),
+            Some(
+                "opt-in evidence gate only; tokenizer/read-model implementations and live DB/provider smoke are not wired"
+            )
+        );
+        assert_eq!(evidence["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(
+            evidence["marker_names"]["availability"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_available")
+        );
+        assert_eq!(
+            evidence["marker_names"]["preflight_duration"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_preflight_duration_ms")
+        );
+        assert_eq!(
+            evidence["marker_names"]["estimate_duration"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_estimate_duration_ms")
+        );
+        assert_eq!(
+            evidence["marker_names"]["source"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_type")
+        );
+        assert_eq!(
+            evidence["marker_names"]["token_count"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_token_count")
+        );
+
+        for field in [
+            "trusted_source_evidence.status",
+            "trusted_source_evidence.preflight_status",
+            "trusted_source_evidence.availability_status",
+            "trusted_source_evidence.source_type",
+            "trusted_source_evidence.token_count",
+            "trusted_source_evidence.tpm_estimate_required_tokens",
+            "trusted_source_evidence.required_capacity_tokens_per_minute",
+            "trusted_source_evidence.acquire_tpm_required_tokens",
+            "trusted_source_evidence.db_required_capacity_tokens_per_minute",
+            "trusted_source_evidence.live_gap_closure_ready",
+            "trusted_source_evidence.material_in_output",
+        ] {
+            assert!(
+                evidence["reservation_evidence_fields"]
+                    .as_array()
+                    .expect("reservation evidence fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "opt-in evidence should project {field}"
+            );
+        }
+
+        for condition in [
+            "trusted_source_evidence.status is ready",
+            "trusted_source_evidence.availability_status is available",
+            "trusted_source_evidence.token_count is a bounded non-negative integer",
+            "trusted_source_evidence.material_in_output is false",
+            "evidence is recorded after prompt-protection allow and before reservation acquire/provider side effect",
+        ] {
+            assert!(
+                evidence["live_gap_closure_conditions"]
+                    .as_array()
+                    .expect("live gap closure conditions should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(condition)),
+                "opt-in evidence closure should require {condition}"
+            );
+        }
+
+        for (section, section_name, rejection_marker, estimate_marker) in [
+            (
+                source_section(
+                    main_source,
+                    "async fn chat_completions(",
+                    "async fn responses(",
+                ),
+                "chat completions",
+                "if let Some(rejection) = prompt_protection_rejection_for_chat_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(main_source, "async fn responses(", "async fn embeddings("),
+                "responses",
+                "if let Some(rejection) = prompt_protection_rejection_for_responses_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn embeddings(",
+                    "async fn anthropic_messages(",
+                ),
+                "embeddings",
+                "if let Some(rejection) = prompt_protection_rejection_for_embeddings_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn anthropic_messages(",
+                    "async fn gemini_generate_content_native_passthrough(",
+                ),
+                "anthropic messages",
+                "if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request_body(",
+            ),
+            (
+                source_section(
+                    main_source,
+                    "async fn gemini_generate_content_native_passthrough(",
+                    "async fn models(",
+                ),
+                "gemini native",
+                "if let Some(rejection) = prompt_protection_rejection_for_gemini_native_request(",
+                "let rate_limit_tpm_estimate = gateway_tpm_estimate_for_request(",
+            ),
+        ] {
+            assert_marker_before(section, rejection_marker, estimate_marker, section_name);
+            assert_marker_before(
+                section,
+                estimate_marker,
+                "gateway_rate_limit_reservation_for_attempt(route, Some(&rate_limit_tpm_estimate))",
+                section_name,
+            );
+            let estimate_section = source_section(
+                section,
+                "let rate_limit_tpm_estimate =",
+                "let canonical_model",
+            );
+            for helper in [
+                "GatewayTrustedNumericSourceOptInEvidenceInput",
+                "gateway_trusted_numeric_source_opt_in_evidence(",
+                "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA",
+                "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER",
+                "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER",
+                "GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER",
+                "gateway_tpm_signals_for_readiness(",
+                "GatewayTrustedNumericSourceAdapterOutput",
+                "gateway_trusted_numeric_source_availability_from_adapter(",
+                "gateway_tpm_signals_from_trusted_numeric_source(",
+            ] {
+                assert!(
+                    !estimate_section.contains(helper),
+                    "{section_name} runtime must not wire trusted numeric opt-in evidence before tokenizer/read-model implementation is ready: {helper}"
+                );
+            }
+            for forbidden in [
+                ".len()",
+                ".chars()",
+                ".bytes()",
+                "split_whitespace",
+                ".tokenize(",
+                "tokenize_raw",
+                "token_count",
+            ] {
+                assert!(
+                    !estimate_section.contains(forbidden),
+                    "{section_name} runtime must not infer trusted TPM tokens from raw request material: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rate_limit_tpm_estimate_runtime_noop_summaries_remain_secret_safe() {
         fn endpoint_expectation<'a>(guard: &'a Value, endpoint: &str) -> &'a serde_json::Value {
             guard["endpoint_expectations"]

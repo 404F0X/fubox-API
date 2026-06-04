@@ -12,10 +12,18 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_READINESS_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_readiness_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_CONFIG_PREFLIGHT_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_config_preflight_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_opt_in_evidence_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER: &str =
     "gateway_tpm_trusted_numeric_source_available";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER: &str =
     "gateway_tpm_trusted_numeric_source_preflight_duration_ms";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER: &str =
+    "gateway_tpm_trusted_numeric_source_estimate_duration_ms";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER: &str =
+    "gateway_tpm_trusted_numeric_source_type";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER: &str =
+    "gateway_tpm_trusted_numeric_source_token_count";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum GatewayTpmEstimateEndpoint {
@@ -407,6 +415,133 @@ pub(crate) struct GatewayTrustedNumericSourceConfigPreflightSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceOptInEvidenceInput<'a> {
+    pub(crate) preflight: &'a GatewayTrustedNumericSourceConfigPreflight,
+    pub(crate) availability: &'a GatewayTrustedNumericSourceAvailability,
+    pub(crate) tpm_estimate_required_tokens: i64,
+    pub(crate) required_capacity_tokens_per_minute: i64,
+    pub(crate) acquire_tpm_required_tokens: i64,
+    pub(crate) db_required_capacity_tokens_per_minute: i64,
+}
+
+impl<'a> GatewayTrustedNumericSourceOptInEvidenceInput<'a> {
+    pub(crate) const fn new(
+        preflight: &'a GatewayTrustedNumericSourceConfigPreflight,
+        availability: &'a GatewayTrustedNumericSourceAvailability,
+        tpm_estimate_required_tokens: i64,
+        required_capacity_tokens_per_minute: i64,
+        acquire_tpm_required_tokens: i64,
+        db_required_capacity_tokens_per_minute: i64,
+    ) -> Self {
+        Self {
+            preflight,
+            availability,
+            tpm_estimate_required_tokens,
+            required_capacity_tokens_per_minute,
+            acquire_tpm_required_tokens,
+            db_required_capacity_tokens_per_minute,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceOptInEvidenceStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceOptInEvidenceStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceOptInEvidence {
+    pub(crate) status: GatewayTrustedNumericSourceOptInEvidenceStatus,
+    pub(crate) preflight_status: GatewayTrustedNumericSourceConfigPreflightStatus,
+    pub(crate) availability_status: GatewayTrustedNumericSourceAvailabilityStatus,
+    pub(crate) source_type: Option<GatewayTrustedNumericSourceType>,
+    pub(crate) token_kind: Option<GatewayTrustedNumericTokenKind>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) feature_enabled: bool,
+    pub(crate) feature_available: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) tpm_estimate_required_tokens: i64,
+    pub(crate) required_capacity_tokens_per_minute: i64,
+    pub(crate) acquire_tpm_required_tokens: i64,
+    pub(crate) db_required_capacity_tokens_per_minute: i64,
+    pub(crate) capacity_evidence_aligned: bool,
+    pub(crate) reservation_evidence_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) material_in_output: bool,
+}
+
+impl GatewayTrustedNumericSourceOptInEvidence {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceOptInEvidenceSummary {
+        GatewayTrustedNumericSourceOptInEvidenceSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA,
+            status: self.status.as_str(),
+            preflight_status: self.preflight_status.as_str(),
+            availability_status: self.availability_status.as_str(),
+            source_type: self
+                .source_type
+                .map(GatewayTrustedNumericSourceType::as_str),
+            token_kind: self.token_kind.map(GatewayTrustedNumericTokenKind::as_str),
+            token_count: self.token_count,
+            feature_enabled: self.feature_enabled,
+            feature_available: self.feature_available,
+            fallback_required: self.fallback_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            tpm_estimate_required_tokens: self.tpm_estimate_required_tokens,
+            required_capacity_tokens_per_minute: self.required_capacity_tokens_per_minute,
+            acquire_tpm_required_tokens: self.acquire_tpm_required_tokens,
+            db_required_capacity_tokens_per_minute: self.db_required_capacity_tokens_per_minute,
+            capacity_evidence_aligned: self.capacity_evidence_aligned,
+            reservation_evidence_ready: self.reservation_evidence_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            material_in_output: self.material_in_output,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceOptInEvidenceSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) preflight_status: &'static str,
+    pub(crate) availability_status: &'static str,
+    pub(crate) source_type: Option<&'static str>,
+    pub(crate) token_kind: Option<&'static str>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) feature_enabled: bool,
+    pub(crate) feature_available: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) tpm_estimate_required_tokens: i64,
+    pub(crate) required_capacity_tokens_per_minute: i64,
+    pub(crate) acquire_tpm_required_tokens: i64,
+    pub(crate) db_required_capacity_tokens_per_minute: i64,
+    pub(crate) capacity_evidence_aligned: bool,
+    pub(crate) reservation_evidence_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceAvailabilityStatus {
     Available,
     Unavailable,
@@ -634,6 +769,54 @@ pub(crate) fn gateway_trusted_numeric_source_config_preflight(
         feature_available: readiness.feature_available,
         fallback_required: !readiness.feature_available,
         readiness,
+        material_in_output: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_opt_in_evidence(
+    input: GatewayTrustedNumericSourceOptInEvidenceInput<'_>,
+) -> GatewayTrustedNumericSourceOptInEvidence {
+    let status = match input.preflight.status {
+        GatewayTrustedNumericSourceConfigPreflightStatus::Disabled => {
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Disabled
+        }
+        GatewayTrustedNumericSourceConfigPreflightStatus::Blocked => {
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Blocked
+        }
+        GatewayTrustedNumericSourceConfigPreflightStatus::Ready => {
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Ready
+        }
+    };
+    let capacity_evidence_aligned = input.tpm_estimate_required_tokens
+        == input.required_capacity_tokens_per_minute
+        && input.required_capacity_tokens_per_minute == input.acquire_tpm_required_tokens
+        && input.acquire_tpm_required_tokens == input.db_required_capacity_tokens_per_minute;
+    let availability_ready =
+        input.availability.status == GatewayTrustedNumericSourceAvailabilityStatus::Available;
+    let reservation_evidence_ready = input.preflight.status
+        == GatewayTrustedNumericSourceConfigPreflightStatus::Ready
+        && availability_ready
+        && capacity_evidence_aligned
+        && input.tpm_estimate_required_tokens > 0;
+
+    GatewayTrustedNumericSourceOptInEvidence {
+        status,
+        preflight_status: input.preflight.status,
+        availability_status: input.availability.status,
+        source_type: input.availability.source_type,
+        token_kind: input.availability.token_kind,
+        token_count: input.availability.tokens,
+        feature_enabled: input.preflight.feature_enabled,
+        feature_available: input.preflight.feature_available,
+        fallback_required: input.preflight.fallback_required
+            || input.availability.fallback_required,
+        tpm_estimate_required_tokens: input.tpm_estimate_required_tokens,
+        required_capacity_tokens_per_minute: input.required_capacity_tokens_per_minute,
+        acquire_tpm_required_tokens: input.acquire_tpm_required_tokens,
+        db_required_capacity_tokens_per_minute: input.db_required_capacity_tokens_per_minute,
+        capacity_evidence_aligned,
+        reservation_evidence_ready,
+        live_gap_closure_ready: reservation_evidence_ready,
         material_in_output: false,
     }
 }
@@ -2256,6 +2439,369 @@ mod tests {
             assert!(
                 !serialized.contains(raw_marker),
                 "trusted numeric source config preflight output leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_opt_in_evidence_gate() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_opt_in_runtime_evidence_gate_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA)
+        );
+        assert_eq!(
+            contract["implementation_status"].as_str(),
+            Some(
+                "opt-in evidence gate only; tokenizer/read-model implementations and live DB/provider smoke are not wired"
+            )
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(
+            contract["marker_names"]["availability"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER)
+        );
+        assert_eq!(
+            contract["marker_names"]["preflight_duration"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER)
+        );
+        assert_eq!(
+            contract["marker_names"]["estimate_duration"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER)
+        );
+        assert_eq!(
+            contract["marker_names"]["source"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER)
+        );
+        assert_eq!(
+            contract["marker_names"]["token_count"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER)
+        );
+
+        let fields = contract["reservation_evidence_fields"]
+            .as_array()
+            .expect("reservation evidence fields should be an array");
+        for field in [
+            "trusted_source_evidence.status",
+            "trusted_source_evidence.preflight_status",
+            "trusted_source_evidence.availability_status",
+            "trusted_source_evidence.source_type",
+            "trusted_source_evidence.token_count",
+            "trusted_source_evidence.tpm_estimate_required_tokens",
+            "trusted_source_evidence.required_capacity_tokens_per_minute",
+            "trusted_source_evidence.acquire_tpm_required_tokens",
+            "trusted_source_evidence.db_required_capacity_tokens_per_minute",
+            "trusted_source_evidence.live_gap_closure_ready",
+            "trusted_source_evidence.material_in_output",
+        ] {
+            assert!(
+                fields.iter().any(|entry| entry.as_str() == Some(field)),
+                "opt-in evidence contract should include {field}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("opt-in evidence states should be an array");
+        for required_state in [
+            "disabled_maps_to_fallback_evidence",
+            "blocked_maps_to_fallback_evidence",
+            "ready_requires_available_source_and_aligned_capacities",
+            "ready_with_misaligned_capacity_does_not_close_gap",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "opt-in evidence contract missing state: {required_state}"
+            );
+        }
+
+        let closure_conditions = contract["live_gap_closure_conditions"]
+            .as_array()
+            .expect("live gap closure conditions should be an array");
+        for condition in [
+            "trusted_source_evidence.status is ready",
+            "trusted_source_evidence.availability_status is available",
+            "trusted_source_evidence.token_count is a bounded non-negative integer",
+            "trusted_source_evidence.material_in_output is false",
+            "evidence is recorded after prompt-protection allow and before reservation acquire/provider side effect",
+        ] {
+            assert!(
+                closure_conditions
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(condition)),
+                "opt-in evidence closure should require {condition}"
+            );
+        }
+
+        for side_effect in [
+            "reservation_acquire",
+            "provider_attempt",
+            "provider_key_open",
+            "upstream_call",
+            "billing_side_effect",
+        ] {
+            assert_eq!(
+                contract["side_effect_contract"][side_effect].as_bool(),
+                Some(false),
+                "opt-in evidence gate contract should not require {side_effect}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_opt_in_evidence_maps_reservation_gap() {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("opt-in evidence states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing opt-in evidence state: {name}"))
+        }
+
+        fn assert_evidence_summary(
+            summary: &GatewayTrustedNumericSourceOptInEvidenceSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_OPT_IN_EVIDENCE_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.availability_status,
+                expected["availability_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.feature_enabled,
+                expected["feature_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.feature_available,
+                expected["feature_available"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.capacity_evidence_aligned,
+                expected["capacity_evidence_aligned"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_evidence_ready,
+                expected["reservation_evidence_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.source_type,
+                expected["source_type"]
+                    .as_str()
+                    .map(|source_type| match source_type {
+                        "tokenizer" => "tokenizer",
+                        "read_model" => "read_model",
+                        other => panic!("unexpected source type in fixture: {other}"),
+                    })
+            );
+            assert_eq!(
+                summary.token_kind,
+                expected["token_kind"]
+                    .as_str()
+                    .map(|token_kind| match token_kind {
+                        "prompt_tokens" => "prompt_tokens",
+                        "input_tokens" => "input_tokens",
+                        other => panic!("unexpected token kind in fixture: {other}"),
+                    })
+            );
+            assert_eq!(summary.token_count, expected["token_count"].as_u64());
+            if let Some(required) = expected["tpm_estimate_required_tokens"].as_i64() {
+                assert_eq!(summary.tpm_estimate_required_tokens, required);
+            }
+            if let Some(required) = expected["required_capacity_tokens_per_minute"].as_i64() {
+                assert_eq!(summary.required_capacity_tokens_per_minute, required);
+            }
+            if let Some(required) = expected["acquire_tpm_required_tokens"].as_i64() {
+                assert_eq!(summary.acquire_tpm_required_tokens, required);
+            }
+            if let Some(required) = expected["db_required_capacity_tokens_per_minute"].as_i64() {
+                assert_eq!(summary.db_required_capacity_tokens_per_minute, required);
+            }
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_opt_in_runtime_evidence_gate_contract"];
+        let unavailable = gateway_trusted_numeric_source_availability_from_adapter(None);
+        let available_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+
+        let disabled_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::disabled_by_default(),
+        );
+        let disabled = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &disabled_preflight,
+                &unavailable,
+                335,
+                335,
+                335,
+                335,
+            ),
+        );
+        assert_eq!(
+            disabled.status,
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Disabled
+        );
+        assert!(!disabled.live_gap_closure_ready);
+        assert_evidence_summary(
+            &disabled.safe_summary(),
+            state(contract, "disabled_maps_to_fallback_evidence"),
+        );
+
+        let blocked_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, false, false, false),
+        );
+        let blocked = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &blocked_preflight,
+                &unavailable,
+                384,
+                384,
+                384,
+                384,
+            ),
+        );
+        assert_eq!(
+            blocked.status,
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Blocked
+        );
+        assert!(blocked.fallback_required);
+        assert!(!blocked.live_gap_closure_ready);
+        assert_evidence_summary(
+            &blocked.safe_summary(),
+            state(contract, "blocked_maps_to_fallback_evidence"),
+        );
+
+        let ready_preflight = gateway_trusted_numeric_source_config_preflight(
+            GatewayTrustedNumericSourceConfigPreflightInput::new(true, true, false, false),
+        );
+        let ready = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &ready_preflight,
+                &available_prompt,
+                400,
+                400,
+                400,
+                400,
+            ),
+        );
+        assert_eq!(
+            ready.status,
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Ready
+        );
+        assert!(ready.capacity_evidence_aligned);
+        assert!(ready.reservation_evidence_ready);
+        assert!(ready.live_gap_closure_ready);
+        assert_evidence_summary(
+            &ready.safe_summary(),
+            state(
+                contract,
+                "ready_requires_available_source_and_aligned_capacities",
+            ),
+        );
+
+        let misaligned = gateway_trusted_numeric_source_opt_in_evidence(
+            GatewayTrustedNumericSourceOptInEvidenceInput::new(
+                &ready_preflight,
+                &available_prompt,
+                400,
+                400,
+                399,
+                400,
+            ),
+        );
+        assert_eq!(
+            misaligned.status,
+            GatewayTrustedNumericSourceOptInEvidenceStatus::Ready
+        );
+        assert!(!misaligned.capacity_evidence_aligned);
+        assert!(!misaligned.reservation_evidence_ready);
+        assert!(!misaligned.live_gap_closure_ready);
+        assert_evidence_summary(
+            &misaligned.safe_summary(),
+            state(
+                contract,
+                "ready_with_misaligned_capacity_does_not_close_gap",
+            ),
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "evidence": [
+                disabled.safe_summary(),
+                blocked.safe_summary(),
+                ready.safe_summary(),
+                misaligned.safe_summary()
+            ]
+        }))
+        .expect("trusted numeric opt-in evidence summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "trusted numeric source opt-in evidence output leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in [
+            "raw prompt",
+            "raw response input",
+            "raw embedding input",
+            "request_body",
+            "body_length",
+            "string_length",
+            "\"messages\"",
+            "\"contents\"",
+            "\"input\"",
+        ] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "trusted numeric source opt-in evidence output leaked raw marker: {raw_marker}"
             );
         }
     }
