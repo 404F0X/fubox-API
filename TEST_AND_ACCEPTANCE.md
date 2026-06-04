@@ -365,3 +365,39 @@ close these E11-007 backend live gaps:
 Do not close unrelated gaps from this smoke alone. In particular, Admin UI real
 execute submit flow, broader billing-ledger executor integration, staging release
 approval, and any Gateway/routing live smokes remain separate acceptance items.
+
+## 12. Prompt Protection Provider Attempts Postgres Proof Runbook
+
+This section is the acceptance entry for TODO lane `E13-005-S10`. The detailed
+manual live proof is documented in
+`docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
+
+The proof covers prompt-protection reject no-side-effect evidence for:
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/messages`
+- `POST /v1beta/models/{model}:generateContent`
+
+Expected live evidence:
+
+- HTTP response is `400 prompt_protection_rejected` at `request_preflight`.
+- `request_logs` has one latest row per unique `request_body_hash`.
+- The row is `status=rejected`, `http_status=400`, `error_code=prompt_protection_rejected`.
+- Payload logging is hash-only: `redaction_status=hash_only`,
+  `payload_stored=false`, and no payload object reference.
+- Route/provider side-effect fields remain unset before routing:
+  `canonical_model_id`, `resolved_provider_id`, `resolved_channel_id`,
+  `provider_key_id`, and `route_policy_version` are null.
+- A left join to `provider_attempts` returns count `0`.
+- The response and DB metadata do not contain raw prompt text, raw configured
+  pattern values, Authorization, Cookie, bearer tokens, or provider secrets.
+
+This live proof is opt-in. Docker/Postgres/Gateway/mock-provider unavailability
+is an external blocker, not a pass. If wrapped in automation, use exit `0` only
+when every endpoint and DB assertion passes, exit `1` for evidence mismatch, and
+exit `2` for external blockers.
+
+A passing run can close the E13 Postgres `provider_attempts` no-side-effect gap
+for the four Gateway surfaces above. It cannot close Admin UI or audit
+visualization gaps; those require separate UI/audit evidence.
