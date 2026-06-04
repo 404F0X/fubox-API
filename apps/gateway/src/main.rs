@@ -2600,6 +2600,19 @@ async fn anthropic_messages(
     body: Bytes,
 ) -> Response {
     let started_at = Instant::now();
+    #[cfg(test)]
+    if let Some(spy) = state.prompt_protection_reject_http_spy.clone() {
+        return anthropic_messages_prompt_protection_reject_probe(
+            state,
+            client_addr,
+            headers,
+            body,
+            spy,
+            started_at,
+        )
+        .await;
+    }
+
     let token = match bearer_token(&headers) {
         Ok(token) => token,
         Err(error) => {
@@ -3237,6 +3250,135 @@ async fn anthropic_messages(
     )
     .await;
     error.into_response()
+}
+
+#[cfg(test)]
+async fn anthropic_messages_prompt_protection_reject_probe(
+    state: Arc<GatewayState>,
+    client_addr: SocketAddr,
+    headers: HeaderMap,
+    body: Bytes,
+    spy: Arc<PromptProtectionRejectHttpSpy>,
+    started_at: Instant,
+) -> Response {
+    let token = match bearer_token(&headers) {
+        Ok(token) => token,
+        Err(error) => {
+            return gateway_error_response_with_endpoint_metrics(
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                started_at,
+                error,
+            );
+        }
+    };
+    let profile_ref = match ai_profile_header(&headers) {
+        Ok(profile_ref) => profile_ref,
+        Err(error) => {
+            return gateway_error_response_with_endpoint_metrics(
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                started_at,
+                error,
+            );
+        }
+    };
+    let client_ip = match client_ip_for_auth(
+        &headers,
+        client_addr.ip(),
+        &state.app.config().server.trusted_proxy_allowlist,
+    ) {
+        Ok(client_ip) => client_ip,
+        Err(error) => {
+            return gateway_error_response_with_endpoint_metrics(
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                started_at,
+                error,
+            );
+        }
+    };
+    let auth = match spy
+        .authenticate_virtual_key(token, profile_ref, client_ip)
+        .await
+    {
+        Ok(auth) => auth,
+        Err(error) => {
+            return gateway_error_response_with_endpoint_metrics(
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                started_at,
+                error,
+            );
+        }
+    };
+    let payload_policy =
+        resolved_payload_policy(&auth, &state.app.config().security.default_payload_policy);
+    let request_trace = gateway_request_trace_from_headers(&headers);
+
+    if body.len() as u64 > state.app.config().server.max_request_body_bytes {
+        let error = GatewayApiError::request_body_too_large(
+            state.app.config().server.max_request_body_bytes,
+        );
+        return error.into_response();
+    }
+
+    let request = match AnthropicMessagesRequest::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => return anthropic_adapter_error_response(error),
+    };
+    let request_body_hash = sha256_hex(&body);
+
+    if let Some(rejection) = prompt_protection_rejection_for_anthropic_messages_request(
+        &body,
+        &request,
+        &state.prompt_protection_config,
+        &request_body_hash,
+    ) {
+        let error = GatewayApiError::prompt_protection_rejected();
+        let requested_model_for_log = rejection.requested_model_for_log.as_deref();
+        let route = RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
+            &auth,
+            requested_model_for_log,
+            rejection.metadata,
+        ))
+        .with_trace_id(request_trace.trace_id.as_deref());
+        let payload_log =
+            prompt_protection_request_payload_log(&payload_policy, body.len(), &request_body_hash);
+        let request_id = match spy
+            .create_request_started(
+                requested_model_for_log,
+                Some(&request_body_hash),
+                payload_log,
+                route,
+            )
+            .await
+        {
+            Ok(request_id) => request_id,
+            Err(error) => return error.into_response(),
+        };
+        let summary = error.log_summary();
+        let update = RequestFinalUpdate {
+            status: request_status_for_http(summary.http_status),
+            http_status: summary.http_status,
+            error_owner: Some(summary.error_owner),
+            error_code: Some(summary.error_code),
+            retryable: summary.retryable,
+            latency_ms: elapsed_ms(started_at),
+            input_tokens: None,
+            output_tokens: None,
+            final_cost: None,
+            currency: None,
+            price_version_id: None,
+            response_body_hash: None,
+            payload_stored: false,
+            redaction_status: None,
+            payload_metadata: None,
+        };
+        if let Err(error) = spy.finish_request(update).await {
+            return error.into_response();
+        }
+        debug_assert_eq!(request_id, spy.request_id);
+        return error.into_response();
+    }
+
+    GatewayApiError::database_unavailable().into_response()
 }
 
 async fn gemini_generate_content_native_passthrough(
@@ -10390,6 +10532,182 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn prompt_protection_anthropic_http_reject_logs_request_without_provider_side_effects() {
+        let prompt_protection_config = prompt_protection_runtime_config_from_sources(
+            None,
+            None,
+            Some(
+                r#"{
+                    "schema": "prompt_protection_rules_v1",
+                    "mode": "enforce",
+                    "default_rules": false,
+                    "custom_rules": [{
+                        "name": "gateway_reject_ticket",
+                        "action": "reject",
+                        "scope": "messages",
+                        "pattern": { "type": "regex", "value": "ticket-[0-9]{4}" }
+                    }]
+                }"#,
+            ),
+        )
+        .expect("custom prompt protection config");
+        let auth = AuthContext {
+            tenant_id: uuid::Uuid::from_u128(1),
+            project_id: uuid::Uuid::from_u128(2),
+            virtual_key_id: uuid::Uuid::from_u128(3),
+            api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
+            payload_policy_id: None,
+            payload_policy_mode: None,
+            key_prefix: "dev_test".to_string(),
+        };
+        let spy = Arc::new(PromptProtectionRejectHttpSpy::new(auth));
+        let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/config.example.yaml");
+        let config = AppConfig::load_from_path(config_path).expect("example config should load");
+        let mut state = GatewayState::new_with_prompt_protection_config(
+            AppState::new("gateway", config),
+            None,
+            prompt_protection_config,
+        );
+        state.prompt_protection_reject_http_spy = Some(spy.clone());
+        let state = Arc::new(state);
+        let body = Bytes::from_static(
+            br#"{"model":"mock-claude","max_tokens":32,"messages":[{"role":"user","content":"Project Raven ticket-2468 Authorization: Bearer sk-live-secret Cookie: session=secret provider-secret-value"}],"stream":false}"#,
+        );
+        let request_body_hash = sha256_hex(&body);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer dev_test_key_123456789"),
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AI_TRACE_ID_HEADER,
+            HeaderValue::from_static("trace-safe-789"),
+        );
+        headers.insert(
+            HeaderName::from_static("cookie"),
+            HeaderValue::from_static("session=secret-cookie"),
+        );
+
+        let response = anthropic_messages(
+            State(state),
+            ConnectInfo("127.0.0.1:19002".parse().expect("socket addr")),
+            headers,
+            body.clone(),
+        )
+        .await;
+        let status = response.status();
+        let response_body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("response body bytes");
+        let response_json: Value =
+            serde_json::from_slice(&response_body).expect("json error response");
+        let request_log = spy.last_request_log();
+        let finish_log = spy.last_finish_log();
+        let response_text = response_json.to_string();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(response_json["error"]["code"], "prompt_protection_rejected");
+        assert_eq!(response_json["gateway"]["error_stage"], "request_preflight");
+        assert_eq!(spy.authenticate_count(), 1);
+        assert_eq!(spy.request_started_count(), 1);
+        assert_eq!(spy.request_finished_count(), 1);
+        assert_eq!(spy.provider_attempt_started_count(), 0);
+        assert_eq!(spy.provider_key_open_count(), 0);
+        assert_eq!(spy.upstream_call_count(), 0);
+        assert_eq!(request_log.requested_model.as_deref(), Some("mock-claude"));
+        assert_eq!(
+            request_log.request_body_hash.as_deref(),
+            Some(request_body_hash.as_str())
+        );
+        assert_eq!(request_log.payload_log.redaction_status, "hash_only");
+        assert!(!request_log.payload_log.payload_stored);
+        assert_eq!(
+            request_log.payload_log.metadata["request"]["storage_mode"],
+            "hash_only"
+        );
+        assert_eq!(
+            request_log.payload_log.metadata["request"]["hash_sha256"],
+            request_body_hash
+        );
+        assert_eq!(
+            request_log.payload_log.metadata["request"]["redacted_preview"],
+            Value::Null
+        );
+        assert!(request_log.canonical_model_id.is_none());
+        assert!(request_log.upstream_model.is_none());
+        assert!(request_log.resolved_provider_id.is_none());
+        assert!(request_log.resolved_channel_id.is_none());
+        assert!(request_log.provider_key_id.is_none());
+        assert_eq!(
+            request_log.route_decision_snapshot["reason"],
+            "prompt_protection_rejected"
+        );
+        assert_eq!(
+            request_log.route_decision_snapshot["prompt_protection"]["action"],
+            "reject"
+        );
+        assert_eq!(
+            request_log.route_decision_snapshot["prompt_protection"]["reason"],
+            "configured_prompt_rule_rejected"
+        );
+        assert!(
+            request_log.route_decision_snapshot["prompt_protection"]["scopes"]
+                .as_array()
+                .expect("scopes array")
+                .iter()
+                .any(|scope| scope == "messages")
+        );
+        assert_eq!(
+            request_log.route_decision_snapshot["prompt_protection"]["configured_pattern_types"]["regex"],
+            json!(1)
+        );
+        assert_eq!(finish_log.status, "rejected");
+        assert_eq!(finish_log.http_status, 400);
+        assert_eq!(
+            finish_log.error_code.as_deref(),
+            Some("prompt_protection_rejected")
+        );
+        let request_log_text = json!({
+            "requested_model": request_log.requested_model,
+            "request_body_hash": request_log.request_body_hash,
+            "payload_log": request_log.payload_log.metadata,
+            "trace_id": request_log.trace_id,
+            "canonical_model_id": request_log.canonical_model_id,
+            "upstream_model": request_log.upstream_model,
+            "resolved_provider_id": request_log.resolved_provider_id,
+            "resolved_channel_id": request_log.resolved_channel_id,
+            "provider_key_id": request_log.provider_key_id,
+            "route_policy_version": request_log.route_policy_version,
+            "route_decision_snapshot": request_log.route_decision_snapshot,
+        })
+        .to_string();
+
+        for forbidden in [
+            "Project Raven",
+            "ticket-2468",
+            "ticket-[0-9]{4}",
+            "Authorization",
+            "Bearer",
+            "sk-live-secret",
+            "Cookie",
+            "session=secret",
+            "session=secret-cookie",
+            "provider-secret-value",
+        ] {
+            assert!(
+                !request_log_text.contains(forbidden),
+                "anthropic request log leaked forbidden marker: {forbidden}"
+            );
+            assert!(
+                !response_text.contains(forbidden),
+                "anthropic response leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
     #[test]
     fn prompt_protection_custom_regex_rules_reject_with_secret_safe_summary() {
         let config = prompt_protection_runtime_config_from_sources(
@@ -11208,6 +11526,35 @@ mod tests {
             fixture["http_repository_regressions"][1]["assertions"]
                 .as_array()
                 .expect("responses http repository regression assertions")
+                .iter()
+                .any(|assertion| assertion == "upstream_call_count_zero")
+        );
+        assert_eq!(
+            fixture["http_repository_regressions"][2]["name"],
+            "anthropic_messages_reject_no_provider_side_effects"
+        );
+        assert_eq!(
+            fixture["http_repository_regressions"][2]["endpoint"],
+            "POST /v1/messages"
+        );
+        assert!(
+            fixture["http_repository_regressions"][2]["assertions"]
+                .as_array()
+                .expect("anthropic http repository regression assertions")
+                .iter()
+                .any(|assertion| assertion == "provider_attempt_started_count_zero")
+        );
+        assert!(
+            fixture["http_repository_regressions"][2]["assertions"]
+                .as_array()
+                .expect("anthropic http repository regression assertions")
+                .iter()
+                .any(|assertion| assertion == "provider_key_open_count_zero")
+        );
+        assert!(
+            fixture["http_repository_regressions"][2]["assertions"]
+                .as_array()
+                .expect("anthropic http repository regression assertions")
                 .iter()
                 .any(|assertion| assertion == "upstream_call_count_zero")
         );
