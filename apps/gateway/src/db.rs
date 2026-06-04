@@ -2,6 +2,10 @@ use std::net::IpAddr;
 
 use ai_gateway_auth::keys::parse_virtual_key;
 use ai_gateway_config::AppConfig;
+use ai_gateway_db::{
+    DbRepository, ProviderKeyRateLimitReservationExecutionInput,
+    ProviderKeyRateLimitReservationExecutionResult,
+};
 use ai_gateway_routing::{
     ChannelModelMappingPolicy, ExplicitModelMapping, ModelNameCasePolicy, map_upstream_model_name,
 };
@@ -1440,6 +1444,18 @@ impl GatewayRepository {
             id: row.get("id"),
             encrypted_secret: row.get("encrypted_secret"),
         }))
+    }
+
+    pub async fn execute_provider_key_rate_limit_reservation(
+        &self,
+        input: ProviderKeyRateLimitReservationExecutionInput,
+    ) -> Result<ProviderKeyRateLimitReservationExecutionResult, GatewayApiError> {
+        DbRepository::new(self.pool.clone())
+            .execute_provider_key_rate_limit_reservation(input)
+            .await
+            .map_err(|error| {
+                GatewayApiError::database_query_failed("provider_key_rate_limit_reservation", error)
+            })
     }
 
     pub async fn create_provider_attempt_started(

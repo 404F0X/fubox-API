@@ -7,21 +7,22 @@
 
 > 当前执行策略：`[~]` 表示该任务已有一个或多个切片落地，但还没满足最终验收；它不表示当前正在并行开发。实际开发按“当前焦点”顺序推进：先关闭一个目标到 `[x]` 或明确 `[!]`，再进入下一个目标。
 
-当前焦点：
-- 当前只推进 **E8-004 实现 rate-limit-aware key selection**。
-- 退出条件：E8-004 达到 `[x]` 的验收，或因缺少 live Postgres/Docker 等外部条件明确标记 `[!]` 并写清阻塞原因；在此之前不横向打开新的 TODO 目标。
+当前活跃方向：
+- **E8-004 实现 rate-limit-aware key selection**：Gateway runtime DB reservation execution 已完成；下一步收口 live Postgres/concurrency smoke 和精确 TPM 估算。
+- 多方向并行允许，但每个方向必须有明确 owner、切片目标、写入范围、验收检查和退出条件；没有切片记录的并行工作不能合并。
 
 多人协作规则：
-- 主线程 Codex 是协调者，负责选择当前目标、拆切片、合并结果、跑验证、提交和推送。
-- 子 Agent 不拥有独立方向；同一轮只能围绕“当前焦点”做互补切片，不能分别推进不同 Epic/目标。
-- 每个切片必须写清：目标 TODO、切片目标、写入范围、验收检查、完成结果、剩余缺口。
+- 主线程 Codex 是协调者，负责选择活跃方向、拆切片、合并结果、跑验证、提交和推送。
+- 子 Agent 可以负责不同方向，但每个方向必须是协调者显式分配的 lane；不能自行扩大到未分配 Epic/目标。
+- 每个切片必须写清：目标 TODO、切片目标、为什么需要这个切片、写入范围、验收检查、完成结果、剩余缺口。
 - 切片合并后必须更新本文件，再提交；否则 TODO 不能作为进度参考。
-- 2026-06-04 规则修正前已完成的 E9-004、E11-007、E13-005 并行切片保留为历史更新；提交后不再作为当前焦点继续横向推进。
+- 切片存在的原因：把一个大 TODO 拆成可提交、可测试、可回滚、可审查的小验收单元；切片完成不等于 TODO 完成，只有满足该 TODO 的最终验收才改为 `[x]`。
 
 当前目标切片记录：
-- **E8-004-S1，已完成，2026-06-04**：建立 DB repository execution boundary。范围：`crates/db/**`。验收：Noop/Refused 不查询 DB，SqlReady 使用 bounded SQL，tenant/provider_key/channel bind，secret-safe summary，`<=1` row semantics。
-- **E8-004-S2，已完成，2026-06-04**：强化 DB execution contract。范围：`crates/db/**`、`tests/fixtures/db/**`。验收：fixture 覆盖 no-query Noop、invalid required Refused、limited/unlimited dimensions、acquire/release bind count、`fetch_optional`、schema scope 和 secret-safe output。
-- **E8-004-S3，下一片**：Gateway runtime 接入 DB reservation execution。范围：`apps/gateway/**` 与必要的 DB call site。验收：provider key 选中后、打开 key/上游调用前 acquire；失败/未使用时 release；不重复 release；request/provider logs 只记录安全摘要；targeted gateway/db tests 通过。
+- **E8-004-S1，已完成，2026-06-04**：建立 DB repository execution boundary。原因：Gateway 不能直接靠 request-local 计划实现分布式限流，必须先有 bounded DB acquire/release 写边界。范围：`crates/db/**`。验收：Noop/Refused 不查询 DB，SqlReady 使用 bounded SQL，tenant/provider_key/channel bind，secret-safe summary，`<=1` row semantics。
+- **E8-004-S2，已完成，2026-06-04**：强化 DB execution contract。原因：在接 Gateway 前先锁住 no-query、limited/unlimited、<=1 row 和 secret-safe 语义，避免 runtime 接线后才发现 DB 合约不稳。范围：`crates/db/**`、`tests/fixtures/db/**`。验收：fixture 覆盖 no-query Noop、invalid required Refused、limited/unlimited dimensions、acquire/release bind count、`fetch_optional`、schema scope 和 secret-safe output。
+- **E8-004-S3，已完成，2026-06-04**：Gateway runtime 接入 DB reservation execution。原因：把已存在的 request-local reservation 计划提升为真实 provider-key counter mutation 的运行时路径，同时保留 fallback 和 no-side-effect ordering。范围：`apps/gateway/**`、`tests/fixtures/gateway/**`、`Cargo.lock`。验收：provider key 选中后、provider_attempt/key open/upstream 前 acquire；NotApplied/Refused 走 fallback/429；已 Applied 但未正常消耗时 release；全 unlimited/no-counter route 不打 DB；不重复 release；request/provider logs 只记录安全摘要；targeted gateway/db/routing tests、workspace check/test 通过。
+- **E8-004-S4，下一片**：live Postgres/concurrency smoke。原因：S1-S3 已覆盖 contract 和 runtime ordering，但 `[x]` 需要证明真实 DB counter mutation、并发 NotApplied、fallback、release 在实际 schema 上工作。范围：smoke scripts/fixtures 或现有 integration harness。验收：真实 Postgres 上 acquire 会更新 bounded counters；并发超额请求产生 NotApplied/fallback/429；失败/fallback 会 release；secret-safe logs/snapshots；若本机缺 Docker/Postgres，则标记外部阻塞而不是继续增加 contract-only 切片。
 
 > 使用方式：开发组可以直接把本文件拆到 Jira/GitHub Issues。每个任务的完成必须满足 `TEST_AND_ACCEPTANCE.md` 中 Definition of Done。
 
@@ -269,6 +270,7 @@
 - [~] **E8-004 实现 rate-limit-aware key selection**  
   Update 2026-06-04: DB-layer provider-key rate-limit reservation persistence now has a contract-only bounded SQL skeleton and pure planner for acquire/release, scoped by tenant/provider_key/channel, with secret-safe summaries and Noop when no counters require mutation. Remaining work: real repository execution/migrations/integration with Gateway distributed counters, precise TPM estimation, and live smoke.
   Update 2026-06-04: DB repository execution boundary is now in place for provider-key rate-limit reservation acquire/release, using bounded SQL, tenant/provider_key/channel binds, no-query Noop/Refused paths, secret-safe row summaries, and <=1 affected-row semantics. Remaining work: Gateway runtime wiring to the repository method, live Postgres integration tests, distributed counter behavior, precise TPM estimation, and live smoke.
+  Update 2026-06-04: Gateway runtime now calls DB provider-key reservation execution after preauth/request-local planning and before provider_attempt/provider-key/upstream side effects across non-streaming and streaming routes, skips/fallbacks on DB NotApplied/Refused, releases Applied reservations on fallback/error/non-completed stream finalization, avoids DB calls for all-unlimited/no-counter routes, prevents double release, and records only bounded secret-safe execution metadata. Remaining work: live Postgres/concurrency smoke, precise TPM estimation, and final distributed counter acceptance.
   优先级：P0  
   验收：RPM/TPM/concurrency 超限不被选择。当前 DB schema 与 routing core 具备基础字段/过滤位；routing crate 已新增 rate-limit availability 纯函数，统一评估 RPM/TPM/concurrency 窗口、limit/used/required、有限额缺失 counter、0/缺失 limit、非法限额和负数占用，超限或有限额缺失 counter 候选返回 `RateLimitExceeded` 并保留阻断维度摘要，可将 availability 纯函数结果落到 route candidate/filter/snapshot；单测覆盖未超限可选、RPM/TPM/concurrency 超限、并发占用、0/缺失 limit、有限额缺失 counter 保守阻断、负数 used 归零、非法 limit/required 阻断和 snapshot/filter reason 稳定。Gateway 运行态第一切片已在 provider key lateral selection read-model 中 bounded 读取 `rpm_limit`/`tpm_limit`/`concurrency_limit` 与 `current_window_state`，只解析 used 摘要并传入 routing candidate 的 `rate_limit_available`；RPM/TPM/concurrency 任一超限或有限额缺 counter 时候选会被 `RateLimitExceeded` 过滤，不进入 selected/attempt/upstream；`route_decision_snapshot.gateway_rate_limit` 只记录 schema、候选/阻断计数、阻断维度、required capacity 和 window material omitted，不输出 Authorization、provider key、endpoint、payload/body、raw window state。本轮 routing crate 新增 `rate_limit_reservation_contract_v1` 纯函数计划层，固定 acquire/release 对 RPM/TPM/concurrency 三维 counter 的 bounded 增减语义：acquire 仅在所有配置限额窗口 present 且容量足够时计划 increment，超限、缺窗口、非法 limit/required 均保守 reject 且不计划 counter update；release 仅在 prior reservation acquired 时计划 saturating decrement，重复 release no-op，输出只含数字 counter 摘要和维度状态。Gateway runtime 已将 reservation plan 接入非流式与 streaming provider attempt 路径，在 preauth 后、provider attempt/provider key/upstream side effect 前形成 request-local acquire 计划，provider attempt metadata 记录 acquire/finalize 摘要，stream finalizer 对 completed/client_cancel/stream_error 记录 release/finalize 语义；本轮继续补齐 runtime reservation reject fallback：非流式和 streaming chat/responses/embeddings/Anthropic/Gemini native 在 request-local acquire rejected 时会跳过当前 route、在 provider attempt/key/upstream side effect 前尝试下一候选，所有候选 reservation rejected 时返回 secret-safe `429 rate_limit_exceeded`，并在 request route snapshot 写入 bounded `gateway_rate_limit_reservation_rejection_v1` 摘要，过滤 provider key/raw endpoint/payload/window material。真实 Redis/DB counter 写入、精确 TPM 估算和 live smoke 尚未完成。
 

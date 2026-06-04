@@ -32,6 +32,13 @@ use ai_gateway_config::{
     ProviderEndpointValidationError, ip_allowlist_contains, provider_endpoint_resolved_ip_allowed,
     validate_provider_endpoint,
 };
+use ai_gateway_db::{
+    ProviderKeyRateLimitRequiredCapacity, ProviderKeyRateLimitReservationExecutionInput,
+    ProviderKeyRateLimitReservationExecutionResult, ProviderKeyRateLimitReservationExecutionRow,
+    ProviderKeyRateLimitReservationExecutionStatus,
+    ProviderKeyRateLimitReservationOperation as DbRateLimitReservationOperation,
+    ProviderKeyRateLimitReservationRefusal,
+};
 use ai_gateway_observability::{
     PayloadPolicyDecision, PayloadStorageMode, PromptProtectionAction, PromptProtectionHitKind,
     PromptProtectionRuleSet, PromptProtectionRuleSetError, PromptProtectionRuntimeConfig,
@@ -93,6 +100,9 @@ const GATEWAY_RATE_LIMIT_RUNTIME_SCHEMA: &str = "gateway_rate_limit_runtime_v1";
 const GATEWAY_RATE_LIMIT_RESERVATION_RUNTIME_SCHEMA: &str =
     "gateway_rate_limit_reservation_runtime_v1";
 const GATEWAY_RATE_LIMIT_RESERVATION_BACKEND: &str = "request_local_plan";
+const GATEWAY_RATE_LIMIT_RESERVATION_DB_EXECUTION_SCHEMA: &str =
+    "gateway_rate_limit_reservation_db_execution_v1";
+const GATEWAY_RATE_LIMIT_RESERVATION_DB_BACKEND: &str = "db_key_window_counters";
 const GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS: i64 = 1;
 const GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK: i64 = 1;
 const GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY: i64 = 1;
@@ -661,8 +671,21 @@ async fn chat_completions(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            METRICS_ENDPOINT_CHAT_COMPLETIONS,
+            repository,
+            &auth,
+            request_id,
+            started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -688,6 +711,13 @@ async fn chat_completions(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error(
                     repository,
                     &auth,
@@ -711,6 +741,13 @@ async fn chat_completions(
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -735,6 +772,13 @@ async fn chat_completions(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
@@ -828,6 +872,13 @@ async fn chat_completions(
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback(
                         repository,
                         &auth,
@@ -856,6 +907,13 @@ async fn chat_completions(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -1203,8 +1261,21 @@ async fn responses(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            METRICS_ENDPOINT_RESPONSES,
+            repository,
+            &auth,
+            request_id,
+            started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -1230,6 +1301,13 @@ async fn responses(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error_for_endpoint(
                     METRICS_ENDPOINT_RESPONSES,
                     repository,
@@ -1254,6 +1332,13 @@ async fn responses(
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -1286,6 +1371,13 @@ async fn responses(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
@@ -1381,6 +1473,13 @@ async fn responses(
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                         METRICS_ENDPOINT_RESPONSES,
                         repository,
@@ -1410,6 +1509,13 @@ async fn responses(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -1749,8 +1855,21 @@ async fn embeddings(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            METRICS_ENDPOINT_EMBEDDINGS,
+            repository,
+            &auth,
+            request_id,
+            started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -1776,6 +1895,13 @@ async fn embeddings(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error_for_endpoint(
                     METRICS_ENDPOINT_EMBEDDINGS,
                     repository,
@@ -1800,6 +1926,13 @@ async fn embeddings(
             Ok(client) => client,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -1832,6 +1965,13 @@ async fn embeddings(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
@@ -1928,6 +2068,13 @@ async fn embeddings(
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                         METRICS_ENDPOINT_EMBEDDINGS,
                         repository,
@@ -1957,6 +2104,13 @@ async fn embeddings(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -2278,8 +2432,21 @@ async fn anthropic_messages(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+            repository,
+            &auth,
+            request_id,
+            started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -2305,6 +2472,13 @@ async fn anthropic_messages(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error_for_endpoint(
                     METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                     repository,
@@ -2327,6 +2501,13 @@ async fn anthropic_messages(
             Ok(upstream_request) => upstream_request,
             Err(error) => {
                 let summary = summarize_anthropic_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -2357,6 +2538,13 @@ async fn anthropic_messages(
 
         if let Err(error) = validate_anthropic_route_endpoint_for_provider_call(route).await {
             let summary = summarize_anthropic_adapter_error(&error);
+            release_gateway_rate_limit_reservation_if_needed(
+                repository,
+                &auth,
+                route,
+                &mut rate_limit_reservation,
+            )
+            .await;
             finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                 repository,
                 &auth,
@@ -2387,6 +2575,13 @@ async fn anthropic_messages(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
@@ -2484,6 +2679,13 @@ async fn anthropic_messages(
                 {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint(
                         METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                         repository,
@@ -2513,6 +2715,13 @@ async fn anthropic_messages(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -2885,8 +3094,21 @@ async fn gemini_generate_content_native_passthrough(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+            repository,
+            &auth,
+            request_id,
+            started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -2912,6 +3134,13 @@ async fn gemini_generate_content_native_passthrough(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error_for_endpoint(
                     METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                     repository,
@@ -2930,6 +3159,13 @@ async fn gemini_generate_content_native_passthrough(
             Ok(path) => path,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -2962,6 +3198,13 @@ async fn gemini_generate_content_native_passthrough(
                 Ok(prepared) => prepared,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_with_metadata(
                         repository,
                         &auth,
@@ -2992,6 +3235,13 @@ async fn gemini_generate_content_native_passthrough(
 
         if let Err(error) = validate_route_endpoint_for_provider_call(route).await {
             let summary = summarize_adapter_error(&error);
+            release_gateway_rate_limit_reservation_if_needed(
+                repository,
+                &auth,
+                route,
+                &mut rate_limit_reservation,
+            )
+            .await;
             finish_provider_attempt_with_adapter_error_with_metadata(
                 repository,
                 &auth,
@@ -3022,6 +3272,13 @@ async fn gemini_generate_content_native_passthrough(
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     &auth,
@@ -3113,6 +3370,13 @@ async fn gemini_generate_content_native_passthrough(
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                         METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                         repository,
@@ -3142,6 +3406,13 @@ async fn gemini_generate_content_native_passthrough(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    &auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     &auth,
@@ -4875,6 +5146,40 @@ fn route_rate_limit_window(
 pub(crate) struct GatewayRateLimitReservationAttempt {
     acquire: RateLimitReservationPlan,
     release: RateLimitReservationPlan,
+    db_acquire: Option<GatewayRateLimitReservationDbExecution>,
+    db_release: Option<GatewayRateLimitReservationDbExecution>,
+    db_release_attempted: bool,
+    db_release_error: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayRateLimitReservationDbExecutionStatus {
+    Applied,
+    NotApplied,
+    Refused,
+    Noop,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GatewayRateLimitReservationDbExecution {
+    operation: DbRateLimitReservationOperation,
+    status: GatewayRateLimitReservationDbExecutionStatus,
+    refusal_reason: Option<ProviderKeyRateLimitReservationRefusal>,
+    affected_rows: usize,
+    bounded_rows: usize,
+    window_material_in_output: bool,
+    row: Option<GatewayRateLimitReservationDbExecutionRow>,
+    omitted_material_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GatewayRateLimitReservationDbExecutionRow {
+    rpm_limit_present: bool,
+    tpm_limit_present: bool,
+    concurrency_limit_present: bool,
+    rpm_used: Option<u64>,
+    tpm_used: Option<u64>,
+    concurrency_used: Option<u64>,
 }
 
 impl GatewayRateLimitReservationAttempt {
@@ -4887,11 +5192,59 @@ impl GatewayRateLimitReservationAttempt {
             acquire.status == RateLimitReservationStatus::Acquired,
         );
 
-        Self { acquire, release }
+        Self {
+            acquire,
+            release,
+            db_acquire: None,
+            db_release: None,
+            db_release_attempted: false,
+            db_release_error: false,
+        }
     }
 
     pub(crate) fn acquired(&self) -> bool {
         self.acquire.status == RateLimitReservationStatus::Acquired
+    }
+
+    pub(crate) fn executable(&self) -> bool {
+        self.acquired() && self.db_acquire_allows_attempt()
+    }
+
+    fn db_execution_required(&self) -> bool {
+        self.acquire.counter_updates_planned > 0
+    }
+
+    fn db_acquire_allows_attempt(&self) -> bool {
+        self.db_acquire
+            .as_ref()
+            .map(|execution| {
+                matches!(
+                    execution.status,
+                    GatewayRateLimitReservationDbExecutionStatus::Applied
+                        | GatewayRateLimitReservationDbExecutionStatus::Noop
+                )
+            })
+            .unwrap_or(true)
+    }
+
+    fn db_release_needed(&self) -> bool {
+        self.db_acquire.as_ref().is_some_and(|execution| {
+            execution.status == GatewayRateLimitReservationDbExecutionStatus::Applied
+        }) && !self.db_release_attempted
+    }
+
+    fn record_db_acquire(&mut self, result: ProviderKeyRateLimitReservationExecutionResult) {
+        self.db_acquire = Some(GatewayRateLimitReservationDbExecution::from_result(result));
+    }
+
+    fn record_db_release(&mut self, result: ProviderKeyRateLimitReservationExecutionResult) {
+        self.db_release_attempted = true;
+        self.db_release = Some(GatewayRateLimitReservationDbExecution::from_result(result));
+    }
+
+    fn record_db_release_error(&mut self) {
+        self.db_release_attempted = true;
+        self.db_release_error = true;
     }
 
     pub(crate) fn metadata(&self, outcome: &'static str) -> Value {
@@ -4908,6 +5261,74 @@ impl GatewayRateLimitReservationAttempt {
             },
             "window_material_in_output": self.acquire.window_material_in_output
                 || self.release.window_material_in_output,
+            "db_execution": {
+                "schema": GATEWAY_RATE_LIMIT_RESERVATION_DB_EXECUTION_SCHEMA,
+                "backend": GATEWAY_RATE_LIMIT_RESERVATION_DB_BACKEND,
+                "acquire": self.db_acquire.as_ref().map(GatewayRateLimitReservationDbExecution::metadata),
+                "release": self.db_release.as_ref().map(GatewayRateLimitReservationDbExecution::metadata),
+                "acquire_allows_attempt": self.db_acquire_allows_attempt(),
+                "release_attempted": self.db_release_attempted,
+                "release_error": self.db_release_error,
+            },
+        })
+    }
+}
+
+impl GatewayRateLimitReservationDbExecution {
+    fn from_result(result: ProviderKeyRateLimitReservationExecutionResult) -> Self {
+        Self {
+            operation: result.operation,
+            status: gateway_rate_limit_reservation_db_status(result.status),
+            refusal_reason: result.refusal_reason,
+            affected_rows: result.affected_rows,
+            bounded_rows: result.bounded_rows,
+            window_material_in_output: result.current_window_state_material_in_output,
+            row: result
+                .row
+                .map(GatewayRateLimitReservationDbExecutionRow::from_row),
+            omitted_material_count: result.omitted_fields.len(),
+        }
+    }
+
+    fn metadata(&self) -> Value {
+        json!({
+            "operation": db_rate_limit_reservation_operation_label(self.operation),
+            "status": gateway_rate_limit_reservation_db_status_label(self.status),
+            "refusal_reason": self.refusal_reason.map(db_rate_limit_reservation_refusal_label),
+            "affected_rows": self.affected_rows,
+            "bounded_rows": self.bounded_rows,
+            "window_material_in_output": self.window_material_in_output,
+            "row": self.row.as_ref().map(GatewayRateLimitReservationDbExecutionRow::metadata),
+            "omitted_material_count": self.omitted_material_count,
+        })
+    }
+}
+
+impl GatewayRateLimitReservationDbExecutionRow {
+    fn from_row(row: ProviderKeyRateLimitReservationExecutionRow) -> Self {
+        Self {
+            rpm_limit_present: row.rpm_limit.is_some(),
+            tpm_limit_present: row.tpm_limit.is_some(),
+            concurrency_limit_present: row.concurrency_limit.is_some(),
+            rpm_used: row.rpm_used,
+            tpm_used: row.tpm_used,
+            concurrency_used: row.concurrency_used,
+        }
+    }
+
+    fn metadata(&self) -> Value {
+        json!({
+            "present": true,
+            "limit_present": {
+                "rpm": self.rpm_limit_present,
+                "tpm": self.tpm_limit_present,
+                "concurrency": self.concurrency_limit_present,
+            },
+            "used_after": {
+                "rpm": self.rpm_used,
+                "tpm": self.tpm_used,
+                "concurrency": self.concurrency_used,
+            },
         })
     }
 }
@@ -4916,6 +5337,94 @@ pub(crate) fn gateway_rate_limit_reservation_for_attempt(
     route: &ResolvedChatRoute,
 ) -> GatewayRateLimitReservationAttempt {
     GatewayRateLimitReservationAttempt::new(route)
+}
+
+pub(crate) async fn acquire_gateway_rate_limit_reservation_for_attempt(
+    metrics_endpoint: &'static str,
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    request_id: uuid::Uuid,
+    request_started_at: Instant,
+    route: &ResolvedChatRoute,
+    reservation: &mut GatewayRateLimitReservationAttempt,
+) -> Option<Response> {
+    if !reservation.acquired() {
+        return None;
+    }
+    if !reservation.db_execution_required() {
+        return None;
+    }
+
+    let input = ProviderKeyRateLimitReservationExecutionInput::acquire(
+        auth.tenant_id,
+        route.provider_key_id,
+        route.channel_id,
+        gateway_rate_limit_required_capacity_for_db(),
+    );
+
+    match repository
+        .execute_provider_key_rate_limit_reservation(input)
+        .await
+    {
+        Ok(result) => {
+            reservation.record_db_acquire(result);
+            None
+        }
+        Err(error) => {
+            finish_request_with_error_for_endpoint(
+                metrics_endpoint,
+                repository,
+                auth,
+                request_id,
+                request_started_at,
+                error.log_summary(),
+            )
+            .await;
+            Some(error.into_response())
+        }
+    }
+}
+
+pub(crate) async fn release_gateway_rate_limit_reservation_if_needed(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    route: &ResolvedChatRoute,
+    reservation: &mut GatewayRateLimitReservationAttempt,
+) {
+    if !reservation.db_release_needed() {
+        return;
+    }
+
+    let input = ProviderKeyRateLimitReservationExecutionInput::release(
+        auth.tenant_id,
+        route.provider_key_id,
+        route.channel_id,
+        gateway_rate_limit_required_capacity_for_db(),
+        true,
+    );
+
+    match repository
+        .execute_provider_key_rate_limit_reservation(input)
+        .await
+    {
+        Ok(result) => reservation.record_db_release(result),
+        Err(error) => {
+            reservation.record_db_release_error();
+            tracing::warn!(
+                operation = "rate_limit_reservation_release",
+                error_code = %error.code,
+                "failed to release gateway rate-limit reservation"
+            );
+        }
+    }
+}
+
+const fn gateway_rate_limit_required_capacity_for_db() -> ProviderKeyRateLimitRequiredCapacity {
+    ProviderKeyRateLimitRequiredCapacity::new(
+        GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+        GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
+        GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+    )
 }
 
 fn route_rate_limit_reservation_plan(
@@ -5037,6 +5546,57 @@ const fn rate_limit_reservation_status_label(status: RateLimitReservationStatus)
         RateLimitReservationStatus::Rejected => "rejected",
         RateLimitReservationStatus::Released => "released",
         RateLimitReservationStatus::ReleaseNoop => "release_noop",
+    }
+}
+
+const fn gateway_rate_limit_reservation_db_status(
+    status: ProviderKeyRateLimitReservationExecutionStatus,
+) -> GatewayRateLimitReservationDbExecutionStatus {
+    match status {
+        ProviderKeyRateLimitReservationExecutionStatus::Applied => {
+            GatewayRateLimitReservationDbExecutionStatus::Applied
+        }
+        ProviderKeyRateLimitReservationExecutionStatus::NotApplied => {
+            GatewayRateLimitReservationDbExecutionStatus::NotApplied
+        }
+        ProviderKeyRateLimitReservationExecutionStatus::Refused => {
+            GatewayRateLimitReservationDbExecutionStatus::Refused
+        }
+        ProviderKeyRateLimitReservationExecutionStatus::Noop => {
+            GatewayRateLimitReservationDbExecutionStatus::Noop
+        }
+    }
+}
+
+const fn gateway_rate_limit_reservation_db_status_label(
+    status: GatewayRateLimitReservationDbExecutionStatus,
+) -> &'static str {
+    match status {
+        GatewayRateLimitReservationDbExecutionStatus::Applied => "applied",
+        GatewayRateLimitReservationDbExecutionStatus::NotApplied => "not_applied",
+        GatewayRateLimitReservationDbExecutionStatus::Refused => "refused",
+        GatewayRateLimitReservationDbExecutionStatus::Noop => "noop",
+    }
+}
+
+const fn db_rate_limit_reservation_operation_label(
+    operation: DbRateLimitReservationOperation,
+) -> &'static str {
+    match operation {
+        DbRateLimitReservationOperation::Acquire => "acquire",
+        DbRateLimitReservationOperation::Release => "release",
+    }
+}
+
+const fn db_rate_limit_reservation_refusal_label(
+    refusal: ProviderKeyRateLimitReservationRefusal,
+) -> &'static str {
+    match refusal {
+        ProviderKeyRateLimitReservationRefusal::InvalidRequired => "invalid_required",
+        ProviderKeyRateLimitReservationRefusal::InvalidLimit => "invalid_limit",
+        ProviderKeyRateLimitReservationRefusal::MissingWindow => "missing_window",
+        ProviderKeyRateLimitReservationRefusal::InvalidWindow => "invalid_window",
+        ProviderKeyRateLimitReservationRefusal::OverLimit => "over_limit",
     }
 }
 
@@ -7585,6 +8145,68 @@ mod tests {
         route.provider_key_concurrency_limit = concurrency_limit;
         route.provider_key_current_window_state = current_window_state;
         route
+    }
+
+    fn test_db_rate_limit_reservation_execution_result(
+        operation: DbRateLimitReservationOperation,
+        row: Option<ProviderKeyRateLimitReservationExecutionRow>,
+    ) -> ProviderKeyRateLimitReservationExecutionResult {
+        let input = match operation {
+            DbRateLimitReservationOperation::Acquire => {
+                ProviderKeyRateLimitReservationExecutionInput::acquire(
+                    uuid::Uuid::from_u128(1),
+                    uuid::Uuid::from_u128(2),
+                    uuid::Uuid::from_u128(3),
+                    gateway_rate_limit_required_capacity_for_db(),
+                )
+            }
+            DbRateLimitReservationOperation::Release => {
+                ProviderKeyRateLimitReservationExecutionInput::release(
+                    uuid::Uuid::from_u128(1),
+                    uuid::Uuid::from_u128(2),
+                    uuid::Uuid::from_u128(3),
+                    gateway_rate_limit_required_capacity_for_db(),
+                    true,
+                )
+            }
+        };
+        let command =
+            ai_gateway_db::build_provider_key_rate_limit_reservation_execution_command(input);
+
+        ProviderKeyRateLimitReservationExecutionResult::from_command_row(&command, row)
+    }
+
+    fn test_db_rate_limit_reservation_noop_result(
+        route: &ResolvedChatRoute,
+    ) -> ProviderKeyRateLimitReservationExecutionResult {
+        let input = ProviderKeyRateLimitReservationExecutionInput::acquire(
+            uuid::Uuid::from_u128(1),
+            route.provider_key_id,
+            route.channel_id,
+            ProviderKeyRateLimitRequiredCapacity::new(0, 0, 0),
+        );
+        let command =
+            ai_gateway_db::build_provider_key_rate_limit_reservation_execution_command(input);
+
+        ProviderKeyRateLimitReservationExecutionResult::from_command_without_query(&command)
+    }
+
+    fn test_db_rate_limit_reservation_execution_row(
+        route: &ResolvedChatRoute,
+        rpm_used: u64,
+        tpm_used: u64,
+        concurrency_used: u64,
+    ) -> ProviderKeyRateLimitReservationExecutionRow {
+        ProviderKeyRateLimitReservationExecutionRow {
+            provider_key_id: route.provider_key_id,
+            channel_id: route.channel_id,
+            rpm_limit: route.provider_key_rpm_limit,
+            tpm_limit: route.provider_key_tpm_limit,
+            concurrency_limit: route.provider_key_concurrency_limit,
+            rpm_used: Some(rpm_used),
+            tpm_used: Some(tpm_used),
+            concurrency_used: Some(concurrency_used),
+        }
     }
 
     fn test_previous_success(channel_id: uuid::Uuid) -> TraceAffinityPreviousSuccessRoute {
@@ -10586,6 +11208,8 @@ mod tests {
         let main_source = include_str!("main.rs");
         let streaming_source = include_str!("streaming.rs");
         let reservation_marker = "gateway_rate_limit_reservation_for_attempt(";
+        let db_acquire_marker = "acquire_gateway_rate_limit_reservation_for_attempt(";
+        let release_marker = "release_gateway_rate_limit_reservation_if_needed(";
 
         for (source, start, end, section_name, upstream_marker) in [
             (
@@ -10659,23 +11283,30 @@ mod tests {
                 reservation_marker,
                 section_name,
             );
+            assert_marker_before(section, reservation_marker, db_acquire_marker, section_name);
             assert_marker_before(
                 section,
-                reservation_marker,
+                db_acquire_marker,
                 ".create_provider_attempt_started(",
                 section_name,
             );
             assert_marker_before(
                 section,
-                reservation_marker,
+                db_acquire_marker,
                 "open_provider_key_for_route(",
                 section_name,
             );
-            assert_marker_before(section, reservation_marker, upstream_marker, section_name);
+            assert_marker_before(section, db_acquire_marker, upstream_marker, section_name);
+            assert_marker_before(
+                section,
+                release_marker,
+                "provider_attempt_metadata_with_rate_limit_reservation(",
+                section_name,
+            );
 
             let reservation_reject_section = source_section(
                 section,
-                "if !rate_limit_reservation.acquired()",
+                "if !rate_limit_reservation.executable()",
                 "let attempt_id = match repository",
             );
             assert!(reservation_reject_section.contains("rate_limit_reservation_skip_event("));
@@ -10684,6 +11315,54 @@ mod tests {
             assert!(!reservation_reject_section.contains("open_provider_key_for_route("));
             assert!(!reservation_reject_section.contains(upstream_marker));
         }
+
+        let db_acquire_helper = source_section(
+            main_source,
+            "pub(crate) async fn acquire_gateway_rate_limit_reservation_for_attempt(",
+            "pub(crate) async fn release_gateway_rate_limit_reservation_if_needed(",
+        );
+        assert!(db_acquire_helper.contains("execute_provider_key_rate_limit_reservation("));
+        assert_marker_before(
+            db_acquire_helper,
+            "db_execution_required()",
+            "ProviderKeyRateLimitReservationExecutionInput::acquire(",
+            "rate_limit_db_acquire_helper",
+        );
+        assert_marker_before(
+            db_acquire_helper,
+            "ProviderKeyRateLimitReservationExecutionInput::acquire(",
+            "execute_provider_key_rate_limit_reservation(",
+            "rate_limit_db_acquire_helper",
+        );
+
+        let db_release_helper = source_section(
+            main_source,
+            "pub(crate) async fn release_gateway_rate_limit_reservation_if_needed(",
+            "const fn gateway_rate_limit_required_capacity_for_db()",
+        );
+        assert!(db_release_helper.contains("reservation.db_release_needed()"));
+        assert!(
+            db_release_helper.contains("ProviderKeyRateLimitReservationExecutionInput::release(")
+        );
+        assert!(db_release_helper.contains("reservation.record_db_release(result)"));
+
+        let stream_finalizer = source_section(
+            streaming_source,
+            "impl StreamFinalizationSnapshot {",
+            "#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]",
+        );
+        assert_marker_before(
+            stream_finalizer,
+            "end_reason != StreamEndReason::Completed",
+            "stream_provider_attempt_final_update(",
+            "stream_rate_limit_db_release_finalizer",
+        );
+        assert_marker_before(
+            stream_finalizer,
+            "release_gateway_rate_limit_reservation_if_needed(",
+            "provider_attempt_metadata_with_rate_limit_reservation(",
+            "stream_rate_limit_db_release_finalizer",
+        );
     }
 
     #[test]
@@ -10732,6 +11411,16 @@ mod tests {
         );
         assert_eq!(runtime["window_material_in_output"], false);
         assert_eq!(metadata["fallback"]["schema"], "gateway_retry_fallback_v1");
+        assert_eq!(
+            runtime["db_execution"]["schema"],
+            fixture["db_execution"]["schema"]
+        );
+        assert_eq!(
+            runtime["db_execution"]["backend"],
+            fixture["db_execution"]["backend"]
+        );
+        assert!(runtime["db_execution"]["acquire"].is_null());
+        assert!(runtime["db_execution"]["release"].is_null());
 
         let metadata_text = metadata.to_string().to_ascii_lowercase();
         for marker in fixture["forbidden_snapshot_markers"]
@@ -10745,6 +11434,149 @@ mod tests {
                 "rate-limit reservation metadata leaked forbidden marker: {marker}"
             );
         }
+    }
+
+    #[test]
+    fn rate_limit_reservation_db_execution_metadata_releases_once_and_is_secret_safe() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(57),
+            0,
+            Some(60),
+            Some(1_000),
+            Some(4),
+            json!({
+                "rpm": { "used": 10 },
+                "tpm": { "used": 99 },
+                "concurrency": { "used": 1 },
+                "authorization": "Bearer sk-live-secret",
+                "endpoint": "https://provider.example.test/v1",
+                "payload": "raw request body"
+            }),
+        );
+        let mut reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/rate_limit_reservation_runtime_contract.json"
+        ))
+        .expect("gateway rate-limit reservation runtime fixture should be valid json");
+
+        reservation.record_db_acquire(test_db_rate_limit_reservation_execution_result(
+            DbRateLimitReservationOperation::Acquire,
+            Some(test_db_rate_limit_reservation_execution_row(
+                &route, 11, 100, 2,
+            )),
+        ));
+
+        assert!(reservation.executable());
+        assert!(reservation.db_release_needed());
+
+        reservation.record_db_release(test_db_rate_limit_reservation_execution_result(
+            DbRateLimitReservationOperation::Release,
+            Some(test_db_rate_limit_reservation_execution_row(
+                &route, 10, 99, 1,
+            )),
+        ));
+
+        assert!(!reservation.db_release_needed());
+
+        let metadata = reservation.metadata("fallback");
+        let db_execution = &metadata["db_execution"];
+        assert_eq!(
+            db_execution["acquire"]["status"],
+            fixture["expected"]["db_acquire_applied_status"]
+        );
+        assert_eq!(
+            db_execution["release"]["status"],
+            fixture["expected"]["db_release_applied_status"]
+        );
+        assert_eq!(db_execution["release_attempted"], true);
+        assert_eq!(db_execution["release_error"], false);
+        assert_eq!(db_execution["acquire"]["row"]["present"], true);
+        assert_eq!(db_execution["acquire"]["row"]["used_after"]["rpm"], 11);
+        assert_eq!(
+            db_execution["release"]["row"]["used_after"]["concurrency"],
+            1
+        );
+
+        let metadata_text = metadata.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !metadata_text.contains(&marker.to_ascii_lowercase()),
+                "rate-limit reservation db execution metadata leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_limit_reservation_db_acquire_not_applied_skips_and_noop_allows_attempt() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(58),
+            0,
+            Some(60),
+            Some(1_000),
+            Some(4),
+            json!({
+                "rpm": { "used": 59 },
+                "tpm": { "used": 999 },
+                "concurrency": { "used": 3 }
+            }),
+        );
+        let mut not_applied = gateway_rate_limit_reservation_for_attempt(&route);
+        not_applied.record_db_acquire(test_db_rate_limit_reservation_execution_result(
+            DbRateLimitReservationOperation::Acquire,
+            None,
+        ));
+
+        assert!(!not_applied.executable());
+        assert!(!not_applied.db_release_needed());
+        assert_eq!(
+            not_applied.metadata("reservation_rejected")["db_execution"]["acquire"]["status"],
+            "not_applied"
+        );
+
+        let mut noop = gateway_rate_limit_reservation_for_attempt(&route);
+        noop.record_db_acquire(test_db_rate_limit_reservation_noop_result(&route));
+
+        assert!(noop.executable());
+        assert!(!noop.db_release_needed());
+        assert_eq!(
+            noop.metadata("completed")["db_execution"]["acquire"]["status"],
+            "noop"
+        );
+    }
+
+    #[test]
+    fn rate_limit_reservation_unlimited_route_skips_db_execution_requirement() {
+        let route = test_route_with_rate_limit(
+            uuid::Uuid::from_u128(59),
+            0,
+            None,
+            None,
+            None,
+            json!({
+                "authorization": "Bearer sk-live-secret",
+                "payload": "raw request body"
+            }),
+        );
+        let reservation = gateway_rate_limit_reservation_for_attempt(&route);
+        let metadata = reservation.metadata("completed");
+
+        assert!(reservation.acquired());
+        assert!(reservation.executable());
+        assert!(!reservation.db_execution_required());
+        assert!(!reservation.db_release_needed());
+        assert_eq!(metadata["acquire"]["counter_updates_planned"], 0);
+        assert!(metadata["db_execution"]["acquire"].is_null());
+        assert_eq!(metadata["db_execution"]["acquire_allows_attempt"], true);
+
+        let metadata_text = metadata.to_string().to_ascii_lowercase();
+        assert!(!metadata_text.contains("sk-live-secret"));
+        assert!(!metadata_text.contains("authorization"));
+        assert!(!metadata_text.contains("payload"));
     }
 
     #[test]

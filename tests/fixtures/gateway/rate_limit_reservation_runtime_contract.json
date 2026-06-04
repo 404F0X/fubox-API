@@ -3,10 +3,18 @@
   "crate": "apps/gateway",
   "runtime_schema": "gateway_rate_limit_reservation_runtime_v1",
   "backend": "request_local_plan",
+  "db_execution": {
+    "schema": "gateway_rate_limit_reservation_db_execution_v1",
+    "backend": "db_key_window_counters",
+    "acquire_order": "after selected route provider key id is known and before provider_attempt/provider key open/upstream",
+    "release_order": "before provider attempt final metadata on fallback/error and stream non-completed finalization",
+    "release_on_completed": false,
+    "double_release_prevented": true
+  },
   "contract": {
-    "reservation_backend": "request local only until Redis or DB counters are wired",
+    "reservation_backend": "request-local planning plus DB provider key counter execution",
     "acquire_order": "after preauth and before provider attempt side effects",
-    "finalize_order": "provider attempt completion, error, fallback, stream finalizer, or stream pre-response error",
+    "finalize_order": "provider attempt error, fallback, stream non-completed finalizer, or stream pre-response error",
     "bounded_dimensions": [
       "rpm",
       "tpm",
@@ -38,6 +46,10 @@
     "successful_acquire_status": "acquired",
     "successful_finalize_status": "released",
     "successful_counter_updates_planned": 3,
+    "db_acquire_applied_status": "applied",
+    "db_acquire_not_applied_status": "not_applied",
+    "db_acquire_noop_status": "noop",
+    "db_release_applied_status": "applied",
     "missing_window_acquire_status": "rejected",
     "missing_window_finalize_status": "release_noop",
     "reservation_reject_skip_schema": "gateway_rate_limit_reservation_skip_v1",

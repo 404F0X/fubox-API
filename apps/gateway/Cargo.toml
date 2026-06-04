@@ -11,6 +11,7 @@ ai-gateway-app-core.workspace = true
 ai-gateway-auth.workspace = true
 ai-gateway-billing-ledger.workspace = true
 ai-gateway-config.workspace = true
+ai-gateway-db.workspace = true
 ai-gateway-observability.workspace = true
 ai-gateway-routing.workspace = true
 ai-gateway-stream.workspace = true

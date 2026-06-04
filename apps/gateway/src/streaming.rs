@@ -31,7 +31,8 @@ use serde_json::{Value, json};
 
 use crate::{
     EndpointRequestFinalMetrics, GatewayRateLimitReservationAttempt, NativeParsedJsonBody,
-    OpenAiClientCache, anthropic_provider_error_can_fallback, cached_openai_client,
+    OpenAiClientCache, acquire_gateway_rate_limit_reservation_for_attempt,
+    anthropic_provider_error_can_fallback, cached_openai_client,
     db::{
         AuthContext, GatewayRepository, LedgerSettleEntry, ResolvedChatRoute, ResolvedPriceVersion,
         StreamProviderAttemptFinalUpdate, StreamRequestFinalUpdate,
@@ -51,7 +52,8 @@ use crate::{
     provider_error_can_fallback, rate_limit_reservation_rejected_error,
     rate_limit_reservation_skip_event, record_endpoint_request_final_metrics,
     record_request_final_route, record_request_rate_limit_reservation_rejection,
-    request_for_upstream, responses_request_for_upstream, route_snapshot_with_final_attempt,
+    release_gateway_rate_limit_reservation_if_needed, request_for_upstream,
+    responses_request_for_upstream, route_snapshot_with_final_attempt,
     validate_anthropic_route_endpoint_for_provider_call, validate_route_endpoint_for_provider_call,
 };
 
@@ -148,8 +150,21 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -175,6 +190,13 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error_for_endpoint(
                     crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                     repository,
@@ -194,6 +216,13 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                 Ok(client) => client,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_with_metadata(
                         repository,
                         auth,
@@ -225,6 +254,13 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
@@ -293,6 +329,7 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         attempt_id,
                         canonical_model_id: route.canonical_model_id,
                         canonical_model_key: route.canonical_model_key.clone(),
+                        route: route.clone(),
                         protocol: GatewayStreamProtocol::OpenAiChatCompletions,
                         metrics_endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                         request_started_at,
@@ -308,6 +345,13 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback(
                         repository,
                         auth,
@@ -336,6 +380,13 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     auth,
@@ -424,8 +475,21 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            crate::METRICS_ENDPOINT_RESPONSES,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -451,6 +515,13 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error_for_endpoint(
                     crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                     repository,
@@ -470,6 +541,13 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                 Ok(client) => client,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_with_metadata(
                         repository,
                         auth,
@@ -501,6 +579,13 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
@@ -569,6 +654,7 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                         attempt_id,
                         canonical_model_id: route.canonical_model_id,
                         canonical_model_key: route.canonical_model_key.clone(),
+                        route: route.clone(),
                         protocol: GatewayStreamProtocol::OpenAiResponses,
                         metrics_endpoint: crate::METRICS_ENDPOINT_RESPONSES,
                         request_started_at,
@@ -584,6 +670,13 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback(
                         repository,
                         auth,
@@ -612,6 +705,13 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_with_metadata(
                     repository,
                     auth,
@@ -703,8 +803,21 @@ pub(crate) async fn anthropic_messages_streaming(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -730,6 +843,13 @@ pub(crate) async fn anthropic_messages_streaming(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error(
                     repository,
                     auth,
@@ -751,6 +871,13 @@ pub(crate) async fn anthropic_messages_streaming(
             Ok(upstream_request) => upstream_request,
             Err(error) => {
                 let summary = summarize_anthropic_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     auth,
@@ -780,6 +907,13 @@ pub(crate) async fn anthropic_messages_streaming(
 
         if let Err(error) = validate_anthropic_route_endpoint_for_provider_call(route).await {
             let summary = summarize_anthropic_adapter_error(&error);
+            release_gateway_rate_limit_reservation_if_needed(
+                repository,
+                auth,
+                route,
+                &mut rate_limit_reservation,
+            )
+            .await;
             finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                 repository,
                 auth,
@@ -803,6 +937,13 @@ pub(crate) async fn anthropic_messages_streaming(
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
@@ -872,6 +1013,7 @@ pub(crate) async fn anthropic_messages_streaming(
                         attempt_id,
                         canonical_model_id: route.canonical_model_id,
                         canonical_model_key: route.canonical_model_key.clone(),
+                        route: route.clone(),
                         protocol: GatewayStreamProtocol::AnthropicMessages,
                         metrics_endpoint: crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                         request_started_at,
@@ -889,6 +1031,13 @@ pub(crate) async fn anthropic_messages_streaming(
                 {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint(
                         crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                         repository,
@@ -918,6 +1067,13 @@ pub(crate) async fn anthropic_messages_streaming(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_anthropic_adapter_error_with_metadata(
                     repository,
                     auth,
@@ -1008,8 +1164,21 @@ pub(crate) async fn gemini_generate_content_streaming(
             return response;
         }
 
-        let rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
-        if !rate_limit_reservation.acquired() {
+        let mut rate_limit_reservation = gateway_rate_limit_reservation_for_attempt(route);
+        if let Some(response) = acquire_gateway_rate_limit_reservation_for_attempt(
+            crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+            repository,
+            auth,
+            request_id,
+            request_started_at,
+            route,
+            &mut rate_limit_reservation,
+        )
+        .await
+        {
+            return response;
+        }
+        if !rate_limit_reservation.executable() {
             rate_limit_reservation_rejections = rate_limit_reservation_rejections.saturating_add(1);
             if let Some(next_route) = attempt_routes.get(attempt_index + 1) {
                 fallback_events.push(rate_limit_reservation_skip_event(
@@ -1035,6 +1204,13 @@ pub(crate) async fn gemini_generate_content_streaming(
         {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_request_with_error(
                     repository,
                     auth,
@@ -1053,6 +1229,13 @@ pub(crate) async fn gemini_generate_content_streaming(
                 Ok(path) => path,
                 Err(error) => {
                     let summary = summarize_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                         crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                         repository,
@@ -1090,6 +1273,13 @@ pub(crate) async fn gemini_generate_content_streaming(
             Ok(prepared) => prepared,
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                     crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                     repository,
@@ -1122,6 +1312,13 @@ pub(crate) async fn gemini_generate_content_streaming(
 
         if let Err(error) = validate_route_endpoint_for_provider_call(route).await {
             let summary = summarize_adapter_error(&error);
+            release_gateway_rate_limit_reservation_if_needed(
+                repository,
+                auth,
+                route,
+                &mut rate_limit_reservation,
+            )
+            .await;
             finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                 crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                 repository,
@@ -1154,6 +1351,13 @@ pub(crate) async fn gemini_generate_content_streaming(
         let provider_key = match open_provider_key_for_route(repository, auth, route).await {
             Ok(provider_key) => provider_key,
             Err(error) => {
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_error_with_metadata(
                     repository,
                     auth,
@@ -1226,6 +1430,7 @@ pub(crate) async fn gemini_generate_content_streaming(
                         attempt_id,
                         canonical_model_id: route.canonical_model_id,
                         canonical_model_key: route.canonical_model_key.clone(),
+                        route: route.clone(),
                         protocol: GatewayStreamProtocol::GeminiGenerateContent,
                         metrics_endpoint: crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                         request_started_at,
@@ -1241,6 +1446,13 @@ pub(crate) async fn gemini_generate_content_streaming(
                 if attempt_index + 1 < attempt_routes.len() && provider_error_can_fallback(&error) {
                     let next_route = &attempt_routes[attempt_index + 1];
                     let event = fallback_event(attempt_no, &summary, route, next_route);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
                     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                         crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                         repository,
@@ -1270,6 +1482,13 @@ pub(crate) async fn gemini_generate_content_streaming(
                     continue;
                 }
 
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
                 finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint(
                     crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                     repository,
@@ -1336,6 +1555,7 @@ struct StreamLogContext {
     attempt_id: uuid::Uuid,
     canonical_model_id: uuid::Uuid,
     canonical_model_key: String,
+    route: ResolvedChatRoute,
     protocol: GatewayStreamProtocol,
     metrics_endpoint: &'static str,
     request_started_at: Instant,
@@ -1976,7 +2196,7 @@ struct StreamFinalizationSnapshot {
 }
 
 impl StreamFinalizationSnapshot {
-    async fn finish(self, end_reason: StreamEndReason) {
+    async fn finish(mut self, end_reason: StreamEndReason) {
         let rating = match end_reason {
             StreamEndReason::Completed => {
                 rate_stream_request_usage(
@@ -1989,6 +2209,15 @@ impl StreamFinalizationSnapshot {
             }
             _ => None,
         };
+        if end_reason != StreamEndReason::Completed {
+            release_gateway_rate_limit_reservation_if_needed(
+                &self.context.repository,
+                &self.context.auth,
+                &self.context.route,
+                &mut self.context.rate_limit_reservation,
+            )
+            .await;
+        }
 
         let request_update = stream_request_final_update(
             elapsed_ms(self.context.request_started_at),

@@ -75,6 +75,7 @@ dependencies = [
  "ai-gateway-auth",
  "ai-gateway-billing-ledger",
  "ai-gateway-config",
+ "ai-gateway-db",
  "ai-gateway-observability",
  "ai-gateway-routing",
  "ai-gateway-stream",
