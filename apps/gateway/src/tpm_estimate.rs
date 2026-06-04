@@ -147,6 +147,27 @@ impl<'a> GatewayTrustedNumericSourceCandidate<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceAdapterOutput {
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) tokens: Option<i64>,
+}
+
+impl GatewayTrustedNumericSourceAdapterOutput {
+    pub(crate) const fn new(
+        source_type: GatewayTrustedNumericSourceType,
+        token_kind: GatewayTrustedNumericTokenKind,
+        tokens: Option<i64>,
+    ) -> Self {
+        Self {
+            source_type,
+            token_kind,
+            tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GatewayTrustedNumericSourceAvailabilityStatus {
     Available,
     Unavailable,
@@ -296,6 +317,18 @@ pub(crate) fn gateway_trusted_numeric_source_availability(
         material_in_output: false,
         invalid_reason: None,
     }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_availability_from_adapter(
+    output: Option<GatewayTrustedNumericSourceAdapterOutput>,
+) -> GatewayTrustedNumericSourceAvailability {
+    gateway_trusted_numeric_source_availability(output.map(|output| {
+        GatewayTrustedNumericSourceCandidate::new(
+            output.source_type.as_str(),
+            output.token_kind,
+            output.tokens,
+        )
+    }))
 }
 
 pub(crate) fn gateway_tpm_signals_from_trusted_numeric_source(
@@ -1150,6 +1183,264 @@ mod tests {
             assert!(
                 !serialized.contains(raw_marker),
                 "trusted numeric source availability output leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_fixture_defines_trusted_numeric_source_adapter_boundary() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_adapter_boundary_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_adapter_boundary_v1")
+        );
+        assert_eq!(
+            contract["implementation_status"].as_str(),
+            Some("adapter boundary only; tokenizer/read-model adapters are not wired into runtime")
+        );
+        assert_eq!(
+            contract["adapter_output_type"].as_str(),
+            Some("GatewayTrustedNumericSourceAdapterOutput")
+        );
+        assert_eq!(
+            contract["adapter_to_availability_helper"].as_str(),
+            Some("gateway_trusted_numeric_source_availability_from_adapter(")
+        );
+        assert_eq!(contract["raw_material_accepted"].as_bool(), Some(false));
+        assert_eq!(contract["raw_material_emitted"].as_bool(), Some(false));
+        assert_eq!(
+            contract["provider_side_effect_required"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+
+        let source = include_str!("tpm_estimate.rs");
+        for helper in contract["required_helper_pipeline"]
+            .as_array()
+            .expect("required helper pipeline should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                source.contains(helper),
+                "adapter boundary should expose required helper pipeline marker: {helper}"
+            );
+        }
+
+        for source_type in contract["allowed_source_types"]
+            .as_array()
+            .expect("allowed source types should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                GatewayTrustedNumericSourceType::from_str(source_type).is_some(),
+                "adapter boundary should allow trusted source type: {source_type}"
+            );
+        }
+        for source_type in contract["forbidden_source_types"]
+            .as_array()
+            .expect("forbidden source types should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                GatewayTrustedNumericSourceType::from_str(source_type).is_none(),
+                "adapter boundary must reject raw source type: {source_type}"
+            );
+        }
+
+        let states = contract["states"]
+            .as_array()
+            .expect("adapter states should be an array");
+        for required_state in [
+            "adapter_unavailable",
+            "adapter_available_tokenizer_prompt",
+            "adapter_available_read_model_input",
+            "adapter_invalid_negative_tokens",
+            "raw_source_rejected_before_adapter_boundary",
+        ] {
+            assert!(
+                states
+                    .iter()
+                    .any(|state| state["name"].as_str() == Some(required_state)),
+                "adapter boundary contract missing state: {required_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_adapter_boundary_controls_signals() {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_adapter_boundary_contract"];
+
+        let unavailable = gateway_trusted_numeric_source_availability_from_adapter(None);
+        assert_eq!(
+            unavailable.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Unavailable
+        );
+        assert!(unavailable.fallback_required);
+        let unavailable_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "sk-live-secret raw prompt" }],
+                "max_completion_tokens": 128
+            }),
+            gateway_tpm_signals_from_trusted_numeric_source(&unavailable, 256),
+        );
+        assert_eq!(
+            unavailable_plan.estimate.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert_eq!(unavailable_plan.estimate.required_tokens, 384);
+        assert!(unavailable_plan.estimate.used_conservative_fallback);
+
+        let tokenizer_prompt = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        ));
+        let tokenizer_prompt_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({
+                "messages": [{ "content": "raw prompt must not appear" }],
+                "headers": { "Authorization": "Bearer sk-live-secret" },
+                "max_completion_tokens": 79
+            }),
+            gateway_tpm_signals_from_trusted_numeric_source(&tokenizer_prompt, 256),
+        );
+        assert_eq!(
+            tokenizer_prompt.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Available
+        );
+        assert_eq!(
+            tokenizer_prompt.source_type,
+            Some(GatewayTrustedNumericSourceType::Tokenizer)
+        );
+        assert_eq!(tokenizer_prompt.tokens, Some(321));
+        assert!(!tokenizer_prompt.fallback_required);
+        assert_eq!(
+            tokenizer_prompt_plan.estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(tokenizer_prompt_plan.estimate.required_tokens, 400);
+        assert!(!tokenizer_prompt_plan.estimate.used_conservative_fallback);
+
+        let read_model_input = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::ReadModel,
+                GatewayTrustedNumericTokenKind::InputTokens,
+                Some(222),
+            ),
+        ));
+        let read_model_input_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "sk-live-secret raw embedding input" }),
+            gateway_tpm_signals_from_trusted_numeric_source(&read_model_input, 256),
+        );
+        assert_eq!(
+            read_model_input.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Available
+        );
+        assert_eq!(
+            read_model_input.source_type,
+            Some(GatewayTrustedNumericSourceType::ReadModel)
+        );
+        assert_eq!(
+            read_model_input_plan.estimate.source,
+            RateLimitTpmEstimateSource::TotalTokens
+        );
+        assert_eq!(read_model_input_plan.estimate.required_tokens, 222);
+        assert!(!read_model_input_plan.estimate.used_conservative_fallback);
+
+        let invalid_negative = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::ReadModel,
+                GatewayTrustedNumericTokenKind::InputTokens,
+                Some(-7),
+            ),
+        ));
+        let invalid_negative_plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw negative input must not appear" }),
+            gateway_tpm_signals_from_trusted_numeric_source(&invalid_negative, 256),
+        );
+        assert_eq!(
+            invalid_negative.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Invalid
+        );
+        assert_eq!(
+            invalid_negative.invalid_reason,
+            Some(GatewayTrustedNumericSourceInvalidReason::NegativeTokens)
+        );
+        assert!(invalid_negative.fallback_required);
+        assert_eq!(
+            invalid_negative_plan.estimate.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert_eq!(invalid_negative_plan.estimate.required_tokens, 256);
+        assert!(invalid_negative_plan.estimate.used_conservative_fallback);
+
+        let raw_source_candidate = gateway_trusted_numeric_source_availability(Some(
+            GatewayTrustedNumericSourceCandidate::new(
+                "request_body",
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(9_999),
+            ),
+        ));
+        assert_eq!(
+            raw_source_candidate.status,
+            GatewayTrustedNumericSourceAvailabilityStatus::Invalid
+        );
+        assert_eq!(
+            raw_source_candidate.invalid_reason,
+            Some(GatewayTrustedNumericSourceInvalidReason::SourceTypeNotAllowed)
+        );
+        assert!(raw_source_candidate.fallback_required);
+
+        let serialized = serde_json::to_string(&json!({
+            "availability": [
+                unavailable.safe_summary(),
+                tokenizer_prompt.safe_summary(),
+                read_model_input.safe_summary(),
+                invalid_negative.safe_summary(),
+                raw_source_candidate.safe_summary()
+            ],
+            "plans": [
+                unavailable_plan.safe_summary(),
+                tokenizer_prompt_plan.safe_summary(),
+                read_model_input_plan.safe_summary(),
+                invalid_negative_plan.safe_summary()
+            ]
+        }))
+        .expect("adapter boundary summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in contract["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden output markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "adapter boundary output leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in [
+            "raw prompt",
+            "raw embedding input",
+            "raw negative input",
+            "\"headers\"",
+            "\"messages\"",
+            "\"content\"",
+        ] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "adapter boundary output leaked raw marker: {raw_marker}"
             );
         }
     }
