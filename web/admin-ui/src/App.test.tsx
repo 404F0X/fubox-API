@@ -3571,6 +3571,88 @@ describe("App", () => {
     },
   );
 
+  it("imports prompt protection proof audit handoff bridge into the UI closure gate", () => {
+    const bridge = {
+      admin_ui_readback: {
+        auditReadiness: "pass",
+        closureChecklist: [
+          "gateway_live_proof",
+          "postgres_audit_row",
+          "mock_provider_upstream_refusal",
+          "provider_attempts_zero",
+          "latency_envelope",
+          "current_provenance",
+          "duration_available",
+          "freshness_replay_classification",
+        ],
+        closureGaps: ["none"],
+        closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+        currentCommit: "1234567890ab",
+        durationAvailability: "total available",
+        freshnessReplay: "current_live_proof",
+        latencyEnvelope: "eligible",
+        omittedMaterial: "raw payload, raw pattern values",
+        proofClosure: "eligible",
+        proofEvidence: ["provider_attempts_count", "latency_envelope", "provenance"],
+        proofMode: "live / live",
+        providerAttempts: "0",
+        schema: "prompt_protection_evidence_readback_v1",
+      },
+      audit_import_command: {
+        command: "admin_ui_prompt_protection_audit_closure_gate_import",
+        command_values_omitted: true,
+        input_shape: "prompt_protection_evidence_readback_v1",
+        raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder("prompt-bridge-command-hidden")}`,
+        raw_report_path_omitted: true,
+      },
+      closure_gate: {
+        classification: "pass",
+        closure_eligible: true,
+        gaps: ["none"],
+        schema: "prompt_protection_audit_closure_gate_v1",
+      },
+      current_commit: "1234567890abcdef1234567890abcdef12345678",
+      generated_at_utc: "2026-06-04T14:05:00.000Z",
+      raw_report_path: "C:\\secret\\prompt-bridge-proof-report-hidden.json",
+      report_path_marker: "safe_artifact_path_configured",
+      schema_version: "prompt_protection_audit_handoff_bridge.v1",
+      secret_dsn: "postgres://prompt-bridge-dsn-hidden",
+      secret_safe_omissions: {
+        credential_values_omitted: true,
+        database_connection_values_omitted: true,
+        proof_raw_id_omitted: true,
+        provider_secret_values_omitted: true,
+        raw_command_omitted: true,
+        raw_prompt_omitted: true,
+        raw_report_path_omitted: true,
+        raw_request_body_omitted: true,
+      },
+      token: bearerPlaceholder("prompt-bridge-token-hidden"),
+    };
+
+    const gate = promptProtectionAuditClosureGate(bridge.admin_ui_readback);
+    expect(gate).toMatchObject({
+      classification: "pass",
+      closureEligible: true,
+      gaps: [],
+      schema: "prompt_protection_audit_closure_gate_v1",
+    });
+    expect(gate?.readback).toMatchObject({
+      freshnessReplay: "current_live_proof",
+      latencyEnvelope: "eligible",
+      proofMode: "live / live",
+      providerAttempts: "0",
+      schema: "prompt_protection_evidence_readback_v1",
+    });
+
+    const exported = JSON.stringify(gate);
+    expect(exported).not.toContain("prompt-bridge");
+    expect(exported).not.toContain("C:\\secret");
+    expect(exported).not.toContain("postgres://");
+    expect(exported).not.toContain(AUTH_HEADER_NAME);
+    expect(exported).not.toContain(BEARER_SCHEME);
+  });
+
   it("runs routing dry-run and renders selected candidates without secret material", async () => {
     const fetchMock = stubAdminFetch();
 
@@ -4189,6 +4271,49 @@ describe("App", () => {
       secretSafeOutput: {
         echoSessionMaterial: false,
         forbiddenMarkers: ledgerExecuteSmoke.forbiddenSensitiveMarkers,
+      },
+    });
+    expect(parsed.browserLiveRunnerExecutionBridge).toEqual({
+      artifact: {
+        defaultPath: "artifacts/billing_execute_browser_live_e2e_evidence.json",
+        name: "billing_execute_browser_live_e2e_evidence.v1",
+        pathEnv: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
+        readBackRequired: true,
+        writeOptInFlag: "-BrowserEvidenceArtifactWriteOptIn",
+      },
+      command: {
+        flag: "-BrowserLiveRunnerExecutionOptIn",
+        script: "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
+      },
+      defaultClicksAdminUiActions: false,
+      defaultMode: "live_runner_execution_bridge",
+      defaultRunsBridge: false,
+      defaultSubmitsLiveMutation: false,
+      durationFields: parsed.browserEvidenceArtifact.durationFields,
+      env: {
+        artifactWrite: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
+        liveRunner: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER",
+        mutation: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
+        session: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+      },
+      requiredForBridge: {
+        adminUiReachable: true,
+        artifactWriteOptIn: true,
+        browserToolingAvailable: true,
+        controlPlaneHealthReachable: true,
+        liveRunnerOptIn: true,
+        mutationOptIn: true,
+        sessionMaterialPresent: true,
+      },
+      secretSafeOmission: {
+        echoRequestMaterial: false,
+        echoSessionMaterial: false,
+        echoUrlCredentials: false,
+      },
+      statusMarkers: {
+        blocked: "blocked",
+        bridgeAllowed: "bridge_allowed",
+        ready: "ready",
       },
     });
     expect(parsed.browserMutationPassArtifactClosure).toEqual({

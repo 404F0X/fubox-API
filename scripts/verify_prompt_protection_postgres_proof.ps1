@@ -1334,6 +1334,148 @@ function New-ReportIssueObjects {
   return @($result.ToArray())
 }
 
+function New-AuditHandoffBridge {
+  param(
+    [Parameter(Mandatory = $true)]$EndpointReports,
+    [Parameter(Mandatory = $true)][string]$Status,
+    [Parameter(Mandatory = $true)][int]$ExitCode,
+    [Parameter(Mandatory = $true)][string]$GeneratedAt,
+    [Parameter(Mandatory = $true)][string]$RepoCommit,
+    [Parameter(Mandatory = $true)][string]$Mode,
+    [Parameter(Mandatory = $true)][string]$Kind,
+    [Parameter(Mandatory = $true)][bool]$CloseLiveGapEligible,
+    [Parameter(Mandatory = $true)][bool]$LatencyEnvelopeClosureEligible
+  )
+
+  $endpoints = @($EndpointReports)
+  $gaps = New-Object System.Collections.Generic.List[string]
+  if ($script:Blockers.Count -gt 0 -or [string]$Status -eq "blocked") {
+    [void]$gaps.Add("external_blocker")
+  }
+  if ($script:Failures.Count -gt 0 -or [string]$Status -eq "failed") {
+    [void]$gaps.Add("evidence_mismatch")
+  }
+  if ($Kind -ne "live" -or $Mode -ne "live") {
+    [void]$gaps.Add("current_live_proof_missing")
+  }
+  if ([string]$Status -ne "passed" -or [int]$ExitCode -ne 0) {
+    [void]$gaps.Add("live_status_not_passed")
+  }
+
+  $allEndpointsPassed = (
+    $endpoints.Count -eq 4 -and
+    @($endpoints | Where-Object { [string]$_.evidence_status -ne "passed" }).Count -eq 0
+  )
+  if (-not $allEndpointsPassed) {
+    [void]$gaps.Add("endpoint_evidence_not_passed")
+  }
+
+  $providerAttemptsMissing = @($endpoints | Where-Object { $null -eq $_.provider_side_effects.provider_attempts_count }).Count -gt 0
+  $providerAttemptsNonzero = @($endpoints | Where-Object {
+      $null -ne $_.provider_side_effects.provider_attempts_count -and [int]$_.provider_side_effects.provider_attempts_count -ne 0
+    }).Count -gt 0
+  if ($providerAttemptsMissing) {
+    [void]$gaps.Add("provider_attempts_missing")
+  }
+  if ($providerAttemptsNonzero) {
+    [void]$gaps.Add("provider_attempts_nonzero")
+  }
+
+  $durationUnavailable = @($endpoints | Where-Object { $_.performance.duration_available -ne $true }).Count -gt 0
+  if ($durationUnavailable) {
+    [void]$gaps.Add("duration_unavailable")
+  }
+  $latencyMissingOrOutOfBounds = @($endpoints | Where-Object { $_.performance.latency_envelope.within_bounds -ne $true }).Count -gt 0
+  if ($latencyMissingOrOutOfBounds) {
+    [void]$gaps.Add("latency_envelope_missing_or_ineligible")
+  }
+
+  $freshnessReplayClassification = if ($CloseLiveGapEligible) {
+    "current_live_proof"
+  } elseif ($Kind -eq "simulated" -or $Mode -eq "contract" -or $Mode -eq "simulated") {
+    "simulated_replay_refused"
+  } elseif ($RepoCommit -eq "unavailable") {
+    "stale_repo_commit_refused"
+  } else {
+    "freshness_or_replay_refused"
+  }
+  if ($freshnessReplayClassification -ne "current_live_proof") {
+    [void]$gaps.Add("freshness_replay_refused")
+  }
+
+  $uniqueGaps = @($gaps.ToArray() | Select-Object -Unique | Select-Object -First 12)
+  $classification = "blocker"
+  if ($CloseLiveGapEligible -and $LatencyEnvelopeClosureEligible -and $uniqueGaps.Count -eq 0) {
+    $classification = "pass"
+  } elseif ($script:Failures.Count -gt 0 -or [string]$Status -eq "failed" -or $providerAttemptsNonzero) {
+    $classification = "fail"
+  }
+
+  $providerAttemptsSummary = "-"
+  if (-not $providerAttemptsMissing) {
+    $providerAttemptsSummary = if ($providerAttemptsNonzero) { "1" } else { "0" }
+  }
+  $durationSummary = if ($durationUnavailable) { "unavailable: duration_unavailable" } else { "total available" }
+  $latencySummary = if ($LatencyEnvelopeClosureEligible) { "eligible" } else { "not eligible, out of bounds or unavailable" }
+  $proofClosure = if ($CloseLiveGapEligible) { "eligible" } else { "not eligible" }
+  $commitSummary = if ($RepoCommit -match '^[0-9a-f]{40}$') { $RepoCommit.Substring(0, 12) } else { "unavailable" }
+  $closureGaps = if ($uniqueGaps.Count -eq 0) { @("none") } else { @($uniqueGaps) }
+
+  return [ordered]@{
+    schema_version = "prompt_protection_audit_handoff_bridge.v1"
+    generated_at_utc = [string]$GeneratedAt
+    report_path_marker = $(if ([string]::IsNullOrWhiteSpace($EvidenceReportPath)) { "not_requested" } else { "safe_artifact_path_configured" })
+    current_commit = [string]$RepoCommit
+    audit_import_command = [ordered]@{
+      command = "admin_ui_prompt_protection_audit_closure_gate_import"
+      input_shape = "prompt_protection_evidence_readback_v1"
+      raw_report_path_omitted = $true
+      command_values_omitted = $true
+    }
+    closure_gate = [ordered]@{
+      schema = "prompt_protection_audit_closure_gate_v1"
+      classification = [string]$classification
+      closure_eligible = [bool]($classification -eq "pass")
+      gaps = $closureGaps
+    }
+    admin_ui_readback = [ordered]@{
+      schema = "prompt_protection_evidence_readback_v1"
+      auditReadiness = [string]$classification
+      closureChecklist = @(
+        "gateway_live_proof",
+        "postgres_audit_row",
+        "mock_provider_upstream_refusal",
+        "provider_attempts_zero",
+        "latency_envelope",
+        "current_provenance",
+        "duration_available",
+        "freshness_replay_classification"
+      )
+      closureGaps = $closureGaps
+      closureRule = "provider_attempts=0, latency bounded, duration available, current provenance"
+      currentCommit = [string]$commitSummary
+      durationAvailability = [string]$durationSummary
+      freshnessReplay = [string]$freshnessReplayClassification
+      latencyEnvelope = [string]$latencySummary
+      omittedMaterial = "raw payload, raw pattern values"
+      proofClosure = [string]$proofClosure
+      proofEvidence = @("provider_attempts_count", "latency_envelope", "provenance")
+      proofMode = "$Mode / $Kind"
+      providerAttempts = [string]$providerAttemptsSummary
+    }
+    secret_safe_omissions = [ordered]@{
+      raw_report_path_omitted = $true
+      raw_command_omitted = $true
+      raw_prompt_omitted = $true
+      raw_request_body_omitted = $true
+      credential_values_omitted = $true
+      database_connection_values_omitted = $true
+      provider_secret_values_omitted = $true
+      proof_raw_id_omitted = $true
+    }
+  }
+}
+
 function New-EvidenceReport {
   param(
     [Parameter(Mandatory = $true)][string]$Status,
@@ -1386,6 +1528,16 @@ function New-EvidenceReport {
   )
   $latencyEnvelopeClosureEligible = ($closeLiveGapEligible -and $allEndpointPerformanceWithinBounds)
   $latencyBounds = Get-PerformanceEnvelopeBounds
+  $auditHandoffBridge = New-AuditHandoffBridge `
+    -EndpointReports @($endpointReports.ToArray()) `
+    -Status $Status `
+    -ExitCode $ExitCode `
+    -GeneratedAt $generatedAt `
+    -RepoCommit $repoCommit `
+    -Mode $mode `
+    -Kind $kind `
+    -CloseLiveGapEligible $closeLiveGapEligible `
+    -LatencyEnvelopeClosureEligible $latencyEnvelopeClosureEligible
 
   return [ordered]@{
     schema_version = "prompt_protection_postgres_proof_evidence_report.v1"
@@ -1460,6 +1612,7 @@ function New-EvidenceReport {
       external_blocker = 2
     }
     endpoints = @($endpointReports.ToArray())
+    audit_handoff_bridge = $auditHandoffBridge
     blockers = @(New-ReportIssueObjects -Issues $script:Blockers -Kind "external_blocker")
     failures = @(New-ReportIssueObjects -Issues $script:Failures -Kind "evidence_mismatch")
     secret_safety = [ordered]@{
@@ -1705,6 +1858,73 @@ function Assert-EvidenceReportContract {
   }
   if ([bool]$Report.performance_envelope.latency_envelope_closure_eligible -ne [bool]$latencyClosureEligible) {
     throw "evidence report latency envelope closure eligibility mismatch"
+  }
+
+  if ($null -eq $Report.audit_handoff_bridge) {
+    throw "evidence report missing audit handoff bridge"
+  }
+  if ([string]$Report.audit_handoff_bridge.schema_version -ne "prompt_protection_audit_handoff_bridge.v1") {
+    throw "audit handoff bridge schema mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.generated_at_utc -ne [string]$Report.generated_at_utc) {
+    throw "audit handoff bridge generated_at mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.current_commit -ne [string]$Report.provenance.repo.head_commit) {
+    throw "audit handoff bridge commit mismatch"
+  }
+  if (@("not_requested", "safe_artifact_path_configured") -notcontains [string]$Report.audit_handoff_bridge.report_path_marker) {
+    throw "audit handoff bridge report path marker mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_import_command.command -ne "admin_ui_prompt_protection_audit_closure_gate_import") {
+    throw "audit handoff bridge import command mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.audit_import_command.input_shape -ne "prompt_protection_evidence_readback_v1") {
+    throw "audit handoff bridge import shape mismatch"
+  }
+  if ($Report.audit_handoff_bridge.audit_import_command.raw_report_path_omitted -ne $true) {
+    throw "audit handoff bridge raw path omission mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.closure_gate.schema -ne "prompt_protection_audit_closure_gate_v1") {
+    throw "audit handoff bridge closure gate schema mismatch"
+  }
+  if (@("pass", "blocker", "fail") -notcontains [string]$Report.audit_handoff_bridge.closure_gate.classification) {
+    throw "audit handoff bridge classification mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.admin_ui_readback.schema -ne "prompt_protection_evidence_readback_v1") {
+    throw "audit handoff bridge readback schema mismatch"
+  }
+  if ([string]$Report.audit_handoff_bridge.admin_ui_readback.closureRule -ne "provider_attempts=0, latency bounded, duration available, current provenance") {
+    throw "audit handoff bridge closure rule mismatch"
+  }
+  if (@($Report.audit_handoff_bridge.admin_ui_readback.closureChecklist).Count -ne 8) {
+    throw "audit handoff bridge checklist mismatch"
+  }
+  if (@($Report.audit_handoff_bridge.admin_ui_readback.proofEvidence).Count -ne 3) {
+    throw "audit handoff bridge evidence fields mismatch"
+  }
+  if ($Report.audit_handoff_bridge.secret_safe_omissions.raw_report_path_omitted -ne $true -or
+      $Report.audit_handoff_bridge.secret_safe_omissions.raw_command_omitted -ne $true -or
+      $Report.audit_handoff_bridge.secret_safe_omissions.database_connection_values_omitted -ne $true -or
+      $Report.audit_handoff_bridge.secret_safe_omissions.provider_secret_values_omitted -ne $true) {
+    throw "audit handoff bridge secret-safe omission mismatch"
+  }
+  if ($closureEligible -and $latencyClosureEligible) {
+    if ([string]$Report.audit_handoff_bridge.closure_gate.classification -ne "pass") {
+      throw "audit handoff bridge pass classification mismatch"
+    }
+    if ($Report.audit_handoff_bridge.closure_gate.closure_eligible -ne $true) {
+      throw "audit handoff bridge closure eligible mismatch"
+    }
+    if ([string]$Report.audit_handoff_bridge.admin_ui_readback.freshnessReplay -ne "current_live_proof") {
+      throw "audit handoff bridge current proof mismatch"
+    }
+  } else {
+    if ($Report.audit_handoff_bridge.closure_gate.closure_eligible -ne $false) {
+      throw "audit handoff bridge non-live closure mismatch"
+    }
+    if (@($Report.audit_handoff_bridge.closure_gate.gaps).Count -lt 1) {
+      throw "audit handoff bridge missing blocker/failure gaps"
+    }
   }
 
   $json = $Report | ConvertTo-Json -Depth 32 -Compress

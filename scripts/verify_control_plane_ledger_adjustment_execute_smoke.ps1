@@ -9,6 +9,7 @@ param(
   [int]$BrowserProbeTimeoutMilliseconds = 750,
   [string]$BrowserEvidenceArtifactPath = "artifacts/billing_execute_browser_live_e2e_evidence.json",
   [switch]$BrowserEvidenceArtifactWriteOptIn,
+  [switch]$BrowserLiveRunnerExecutionOptIn,
   [switch]$BrowserMutationOptIn,
   [switch]$BrowserPreflight,
   [switch]$ContractOnly,
@@ -45,6 +46,7 @@ if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS) { $BrowserProbeTimeoutMilliseconds = [int]$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH) { $BrowserEvidenceArtifactPath = $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE -eq "1") { $BrowserEvidenceArtifactWriteOptIn = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER -eq "1") { $BrowserLiveRunnerExecutionOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_CONTRACT_ONLY -eq "1") { $ContractOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS -eq "1") { $KeepSmokeRows = $true }
@@ -834,6 +836,7 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
       "ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
+      "ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
       "ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
@@ -841,6 +844,7 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
       "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
       "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
+      "browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
       "browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
       "browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
@@ -859,6 +863,7 @@ function Assert-UiSmokeHandoffFreshness {
       "browserPreflight",
       "browserActionPlan",
       "browserDomActionRunner",
+      "browserLiveRunnerExecutionBridge",
       "browserMutationPassArtifactClosure",
       "browserPlaywrightLaunchReadiness",
       "browserEvidenceArtifact",
@@ -868,6 +873,9 @@ function Assert-UiSmokeHandoffFreshness {
       "dom_action_runner_dry_run_only",
       "playwright_launch_readiness_only",
       "mutation_pass_artifact_closure_gate",
+      "live_runner_execution_bridge",
+      "bridge_allowed",
+      "-BrowserLiveRunnerExecutionOptIn",
       "closure_eligible",
       "browser_launch_duration_ms",
       "context_setup_duration_ms",
@@ -1406,6 +1414,102 @@ function Write-BrowserMutationPassArtifactClosureGate {
   Write-SafeHost "browser_mutation_pass_secret_url_credentials_echoed=false"
   Write-SafeHost "browser_mutation_pass_secret_session_echoed=false"
   Write-SafeHost "browser_mutation_pass_request_material_echoed=false"
+}
+
+function Assert-BrowserLiveRunnerExecutionBridgeContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $bridge = Get-JsonProperty $Handoff "browserLiveRunnerExecutionBridge" "UI handoff"
+  Assert-Equal (Get-JsonProperty $bridge "defaultMode" "UI browser live runner bridge") "live_runner_execution_bridge" "UI browser live runner bridge default mode"
+  Assert-True ((Get-JsonProperty $bridge "defaultRunsBridge" "UI browser live runner bridge") -eq $false) "UI browser live runner must not run by default"
+  Assert-True ((Get-JsonProperty $bridge "defaultClicksAdminUiActions" "UI browser live runner bridge") -eq $false) "UI browser live runner must not click by default"
+  Assert-True ((Get-JsonProperty $bridge "defaultSubmitsLiveMutation" "UI browser live runner bridge") -eq $false) "UI browser live runner must not mutate by default"
+
+  $command = Get-JsonProperty $bridge "command" "UI browser live runner bridge"
+  Assert-Equal (Get-JsonProperty $command "script" "UI browser live runner command") "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1" "UI browser live runner command script"
+  Assert-Equal (Get-JsonProperty $command "flag" "UI browser live runner command") "-BrowserLiveRunnerExecutionOptIn" "UI browser live runner command flag"
+
+  $artifact = Get-JsonProperty $bridge "artifact" "UI browser live runner bridge"
+  Assert-Equal (Get-JsonProperty $artifact "name" "UI browser live runner artifact") "billing_execute_browser_live_e2e_evidence.v1" "UI browser live runner artifact name"
+  Assert-Equal (Get-JsonProperty $artifact "defaultPath" "UI browser live runner artifact") "artifacts/billing_execute_browser_live_e2e_evidence.json" "UI browser live runner artifact default path"
+  Assert-Equal (Get-JsonProperty $artifact "pathEnv" "UI browser live runner artifact") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH" "UI browser live runner artifact path env"
+  Assert-Equal (Get-JsonProperty $artifact "writeOptInFlag" "UI browser live runner artifact") "-BrowserEvidenceArtifactWriteOptIn" "UI browser live runner artifact write flag"
+  Assert-True ([bool](Get-JsonProperty $artifact "readBackRequired" "UI browser live runner artifact")) "UI browser live runner artifact readback must be required"
+  [void](Resolve-BoundedEvidenceArtifactPath ([string](Get-JsonProperty $artifact "defaultPath" "UI browser live runner artifact")))
+
+  $required = Get-JsonProperty $bridge "requiredForBridge" "UI browser live runner bridge"
+  foreach ($name in @("adminUiReachable", "artifactWriteOptIn", "browserToolingAvailable", "controlPlaneHealthReachable", "liveRunnerOptIn", "mutationOptIn", "sessionMaterialPresent")) {
+    Assert-True ([bool](Get-JsonProperty $required $name "UI browser live runner requirements")) "UI browser live runner must require $name"
+  }
+
+  $durationFields = Get-JsonProperty $bridge "durationFields" "UI browser live runner bridge"
+  foreach ($name in @("browserLaunchDurationMs", "contextSetupDurationMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "ledgerRefreshDurationMs", "pageReadyDurationMs", "refundRefusalDurationMs", "selectorSnapshotDurationMs", "serviceReadinessDurationMs", "submitLatencyMs")) {
+    [void](Get-JsonProperty $durationFields $name "UI browser live runner duration fields")
+  }
+
+  $secretSafeOmission = Get-JsonProperty $bridge "secretSafeOmission" "UI browser live runner bridge"
+  foreach ($name in @("echoRequestMaterial", "echoSessionMaterial", "echoUrlCredentials")) {
+    Assert-True ((Get-JsonProperty $secretSafeOmission $name "UI browser live runner secret-safe omission") -eq $false) "UI browser live runner must omit $name"
+  }
+}
+
+function Write-BrowserLiveRunnerExecutionBridgeGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$ToolingStatus,
+    [Parameter(Mandatory = $true)]$AdminUiProbe,
+    [Parameter(Mandatory = $true)]$ControlPlaneProbe,
+    [Parameter(Mandatory = $true)][bool]$MutationEnabled,
+    [Parameter(Mandatory = $true)][bool]$SessionMaterialPresent
+  )
+
+  Assert-BrowserLiveRunnerExecutionBridgeContract $Handoff
+  $bridge = Get-JsonProperty $Handoff "browserLiveRunnerExecutionBridge" "UI handoff"
+  $command = Get-JsonProperty $bridge "command" "UI browser live runner bridge"
+  $artifact = Get-JsonProperty $bridge "artifact" "UI browser live runner bridge"
+  $durationFields = Get-JsonProperty $bridge "durationFields" "UI browser live runner bridge"
+  $statusMarkers = Get-JsonProperty $bridge "statusMarkers" "UI browser live runner bridge"
+  $writeEnabled = Test-BrowserEvidenceArtifactWriteOptIn $Handoff
+  $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
+  $adminUiUrl = Get-SafeSmokeUrlSummary $AdminUiBaseUrl "Admin UI URL"
+  $backendUrl = Get-SafeSmokeUrlSummary $ControlPlaneBaseUrl "Control Plane backend URL"
+  $blockers = @()
+  if (-not $BrowserLiveRunnerExecutionOptIn) { $blockers += "live_runner_opt_in_missing" }
+  if ($ToolingStatus -ne "available") { $blockers += "browser_tooling_unavailable" }
+  if (-not [bool]$AdminUiProbe.Reachable) { $blockers += "admin_ui_unreachable" }
+  if (-not [bool]$ControlPlaneProbe.Reachable) { $blockers += "control_plane_health_unreachable" }
+  if (-not $SessionMaterialPresent) { $blockers += "session_material_missing" }
+  if (-not $MutationEnabled) { $blockers += "live_mutation_opt_in_missing" }
+  if (-not $writeEnabled) { $blockers += "artifact_write_opt_in_missing" }
+  $bridgeAllowed = $blockers.Count -eq 0
+  $status = if ($bridgeAllowed) { [string](Get-JsonProperty $statusMarkers "bridgeAllowed" "UI browser live runner status") } else { [string](Get-JsonProperty $statusMarkers "blocked" "UI browser live runner status") }
+  $blockerSummary = if ($blockers.Count -gt 0) { $blockers -join "+" } else { "none" }
+  $scriptPath = [string](Get-JsonProperty $command "script" "UI browser live runner command")
+  $runnerFlag = [string](Get-JsonProperty $command "flag" "UI browser live runner command")
+  $writeFlag = [string](Get-JsonProperty $artifact "writeOptInFlag" "UI browser live runner artifact")
+  $exactCommand = "powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath -BrowserPreflight -BrowserMutationOptIn $writeFlag $runnerFlag -BrowserEvidenceArtifactPath $([string](Get-JsonProperty $artifact "defaultPath" "UI browser live runner artifact"))"
+
+  Write-SafeHost "Browser ledger execute live runner execution bridge:"
+  Write-SafeHost "browser_live_runner_bridge_status=$status"
+  Write-SafeHost "browser_live_runner_bridge_allowed=$(Format-BoolMarker $bridgeAllowed)"
+  Write-SafeHost "browser_live_runner_bridge_default_runs=false"
+  Write-SafeHost "browser_live_runner_bridge_default_clicks=false"
+  Write-SafeHost "browser_live_runner_bridge_default_mutation=false"
+  Write-SafeHost "browser_live_runner_bridge_exact_command=$exactCommand"
+  Write-SafeHost "browser_live_runner_bridge_blockers=$blockerSummary"
+  Write-SafeHost "browser_live_runner_bridge_admin_ui_origin=$adminUiUrl"
+  Write-SafeHost "browser_live_runner_bridge_control_plane_origin=$backendUrl"
+  Write-SafeHost "browser_live_runner_bridge_session_material_echoed=false"
+  Write-SafeHost "browser_live_runner_bridge_request_material_echoed=false"
+  Write-SafeHost "browser_live_runner_bridge_url_credentials_echoed=false"
+  Write-SafeHost "browser_live_runner_bridge_artifact_name=$([string](Get-JsonProperty $artifact "name" "UI browser live runner artifact"))"
+  Write-SafeHost "browser_live_runner_bridge_artifact_path_bounded=true"
+  Write-SafeHost "browser_live_runner_bridge_artifact_path=$artifactPath"
+  Write-SafeHost "browser_live_runner_bridge_artifact_write_enabled=$(Format-BoolMarker $writeEnabled)"
+  Write-SafeHost "browser_live_runner_bridge_artifact_readback_required=$(Format-BoolMarker ([bool](Get-JsonProperty $artifact "readBackRequired" "UI browser live runner artifact")))"
+  foreach ($name in @("serviceReadinessDurationMs", "browserLaunchDurationMs", "contextSetupDurationMs", "pageReadyDurationMs", "selectorSnapshotDurationMs", "submitLatencyMs", "dryRunPlanDurationMs", "executeApplyDurationMs", "idempotentReplayDurationMs", "refundRefusalDurationMs", "ledgerRefreshDurationMs")) {
+    Write-SafeHost "browser_live_runner_bridge_duration_name=$([string](Get-JsonProperty $durationFields $name "UI browser live runner duration fields"))"
+  }
 }
 
 function Test-BrowserMutationOptIn {
@@ -2002,6 +2106,7 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
   Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
   Write-BrowserMutationPassArtifactClosureGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+  Write-BrowserLiveRunnerExecutionBridgeGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
 }
 
 function Assert-AdminSourceMarkers {

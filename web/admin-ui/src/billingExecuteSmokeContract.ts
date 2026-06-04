@@ -404,11 +404,56 @@ export const ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract =
   },
 } as const;
 
+export const ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract = {
+  artifact: {
+    defaultPath: "artifacts/billing_execute_browser_live_e2e_evidence.json",
+    name: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    pathEnv: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
+    readBackRequired: true,
+    writeOptInFlag: "-BrowserEvidenceArtifactWriteOptIn",
+  },
+  command: {
+    flag: "-BrowserLiveRunnerExecutionOptIn",
+    script: "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
+  },
+  defaultClicksAdminUiActions: false,
+  defaultMode: "live_runner_execution_bridge",
+  defaultRunsBridge: false,
+  defaultSubmitsLiveMutation: false,
+  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+  env: {
+    artifactWrite: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
+    liveRunner: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER",
+    mutation: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
+    session: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+  },
+  requiredForBridge: {
+    adminUiReachable: true,
+    artifactWriteOptIn: true,
+    browserToolingAvailable: true,
+    controlPlaneHealthReachable: true,
+    liveRunnerOptIn: true,
+    mutationOptIn: true,
+    sessionMaterialPresent: true,
+  },
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
+  statusMarkers: {
+    blocked: "blocked",
+    bridgeAllowed: "bridge_allowed",
+    ready: "ready",
+  },
+} as const;
+
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
   browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
+  browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract,
   browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract,
   browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,

@@ -906,6 +906,42 @@ function Invoke-RealToolExecutionBridge {
   Write-SafeHost "[OK] bridge dry-run only; run the execute command in a controlled environment to generate real closure evidence."
 }
 
+function Assert-ControlledRealToolExecutionPassGate {
+  $requestedRealTools = @()
+  if ($Redocly) { $requestedRealTools += "redocly_semantic" }
+  if ($OpenApiGeneratorValidate) { $requestedRealTools += "openapi_generator_validate" }
+  if ($OpenApiTypescript) { $requestedRealTools += "openapi_typescript" }
+  if ($TypescriptFetch) { $requestedRealTools += "typescript_fetch" }
+  if ($requestedRealTools.Count -eq 0) {
+    return $true
+  }
+
+  $plan = Get-RealToolExecutionBridgePlan
+  Assert-RealToolExecutionBridgePlanContract -Plan $plan
+  if ($script:Failures.Count -gt 0) {
+    return $false
+  }
+
+  Write-SafeHost "[OK] controlled real-tool execution pass gate requested: $($requestedRealTools -join ',')"
+  Write-RealToolExecutionBridgeMatrix
+
+  $ready = Add-RealToolReadinessEvidence
+  if (-not $ready) {
+    Add-Blocker "[BLOCKED] controlled real-tool execution pass gate - materialized package cache or tool readiness failed before running requested semantic/client-generation commands"
+    return $false
+  }
+
+  foreach ($target in @($plan.generated_client_targets + $plan.closure_marker_targets)) {
+    if ([string]$target -match "(?i)Authorization|Cookie|Bearer|secret|credential|api[_-]?key|operation[_-]?key|raw[_-]?metadata|payload|body") {
+      Add-Failure "[FAIL] controlled real-tool execution pass gate - generated target summary contains forbidden material"
+      return $false
+    }
+  }
+
+  Write-SafeHost "[OK] controlled real-tool execution pass gate ready; requested commands may run."
+  return $true
+}
+
 function Invoke-LightweightToolVersionProbe {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -2273,6 +2309,26 @@ function Assert-GeneratedClientReadinessGate {
   Assert-GeneratedClientInspectionContract -Path $Path -Label $Label
 }
 
+function Assert-RealGeneratedClientOutputPresent {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+
+  if (-not (Assert-GeneratedClientTargetSafe -Path $Path -Label $Label)) {
+    return $false
+  }
+  if (-not (Test-Path $Path)) {
+    Add-Blocker "[BLOCKED] $Label - generated-client target is missing after real command pass: $(Format-BoundedPath $Path)"
+    return $false
+  }
+  if ((Test-Path $Path -PathType Container) -and @(Get-GeneratedClientFiles -Path $Path).Count -eq 0) {
+    Add-Blocker "[BLOCKED] $Label - generated-client target has no inspectable files after real command pass: $(Format-BoundedPath $Path)"
+    return $false
+  }
+  return $true
+}
+
 function Write-RealToolClosureReadinessMarker {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -3036,6 +3092,9 @@ function Invoke-OpenApiTypescript {
     -Label "openapi-typescript client type generation"
 
   if ($script:Blockers.Count -eq 0 -and $null -ne $result -and $result.ExitCode -eq 0) {
+    if (-not (Assert-RealGeneratedClientOutputPresent -Path $outFile -Label "openapi-typescript controlled real generated-client output")) {
+      return
+    }
     Write-GeneratedClientReadinessMarker `
       -Path $outFile `
       -Target "openapi-typescript" `
@@ -3088,6 +3147,9 @@ function Invoke-TypescriptFetch {
     -RequireJava
 
   if ($script:Blockers.Count -eq 0 -and $null -ne $result -and $result.ExitCode -eq 0) {
+    if (-not (Assert-RealGeneratedClientOutputPresent -Path $outDir -Label "typescript-fetch controlled real generated-client output")) {
+      return
+    }
     Write-GeneratedClientReadinessMarker `
       -Path $outDir `
       -Target "typescript-fetch" `
@@ -3642,6 +3704,10 @@ if ($RealToolExecutionBridge) {
 
 if (-not ($Redocly -or $OpenApiGeneratorValidate -or $OpenApiTypescript -or $TypescriptFetch)) {
   Write-SafeHost "[OK] semantic/client generation tools were not requested; default mode performed lightweight gate only."
+  Exit-WithResult
+}
+
+if (-not (Assert-ControlledRealToolExecutionPassGate)) {
   Exit-WithResult
 }
 

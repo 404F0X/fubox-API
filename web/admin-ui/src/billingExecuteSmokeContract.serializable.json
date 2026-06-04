@@ -182,6 +182,61 @@
       ]
     }
   },
+  "browserLiveRunnerExecutionBridge": {
+    "artifact": {
+      "defaultPath": "artifacts/billing_execute_browser_live_e2e_evidence.json",
+      "name": "billing_execute_browser_live_e2e_evidence.v1",
+      "pathEnv": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
+      "readBackRequired": true,
+      "writeOptInFlag": "-BrowserEvidenceArtifactWriteOptIn"
+    },
+    "command": {
+      "flag": "-BrowserLiveRunnerExecutionOptIn",
+      "script": "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1"
+    },
+    "defaultClicksAdminUiActions": false,
+    "defaultMode": "live_runner_execution_bridge",
+    "defaultRunsBridge": false,
+    "defaultSubmitsLiveMutation": false,
+    "durationFields": {
+      "browserLaunchDurationMs": "browser_launch_duration_ms",
+      "contextSetupDurationMs": "context_setup_duration_ms",
+      "dryRunPlanDurationMs": "dry_run_plan_duration_ms",
+      "executeApplyDurationMs": "execute_apply_duration_ms",
+      "idempotentReplayDurationMs": "idempotent_replay_duration_ms",
+      "ledgerRefreshDurationMs": "ledger_refresh_duration_ms",
+      "pageReadyDurationMs": "page_ready_duration_ms",
+      "refundRefusalDurationMs": "refund_refusal_duration_ms",
+      "selectorSnapshotDurationMs": "selector_snapshot_duration_ms",
+      "serviceReadinessDurationMs": "service_readiness_duration_ms",
+      "submitLatencyMs": "submit_latency_ms"
+    },
+    "env": {
+      "artifactWrite": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
+      "liveRunner": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER",
+      "mutation": "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
+      "session": "CONTROL_PLANE_ADMIN_SESSION_TOKEN"
+    },
+    "requiredForBridge": {
+      "adminUiReachable": true,
+      "artifactWriteOptIn": true,
+      "browserToolingAvailable": true,
+      "controlPlaneHealthReachable": true,
+      "liveRunnerOptIn": true,
+      "mutationOptIn": true,
+      "sessionMaterialPresent": true
+    },
+    "secretSafeOmission": {
+      "echoRequestMaterial": false,
+      "echoSessionMaterial": false,
+      "echoUrlCredentials": false
+    },
+    "statusMarkers": {
+      "blocked": "blocked",
+      "bridgeAllowed": "bridge_allowed",
+      "ready": "ready"
+    }
+  },
   "browserMutationPassArtifactClosure": {
     "artifactName": "billing_execute_browser_live_e2e_evidence.v1",
     "defaultClosesLiveGap": false,

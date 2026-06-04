@@ -992,6 +992,109 @@ function New-LiveDbExecutorProbeCommandBoundary {
   }
 }
 
+function New-LiveDbExecutorSqlBridgeReadinessArtifact {
+  param(
+    [Parameter(Mandatory = $true)]$CommandBoundary,
+    [Parameter(Mandatory = $true)]$ReadbackGate,
+    [Parameter(Mandatory = $true)][bool]$LiveDatabaseUrlPresent,
+    [Parameter(Mandatory = $true)][bool]$SchemaAvailable,
+    [Parameter(Mandatory = $true)][bool]$ToolAvailable
+  )
+
+  $blockers = New-Object System.Collections.Generic.List[string]
+  $failures = New-Object System.Collections.Generic.List[string]
+  if (-not $LiveDatabaseUrlPresent) {
+    [void]$blockers.Add("live_database_url_missing")
+  }
+  if (-not $SchemaAvailable) {
+    [void]$blockers.Add("runtime_schema_unavailable")
+  }
+  if (-not $ToolAvailable) {
+    [void]$blockers.Add("runtime_tool_unavailable")
+  }
+  if ([string]$CommandBoundary.classification -eq "blocker") {
+    foreach ($blocker in @($CommandBoundary.blockers)) {
+      [void]$blockers.Add([string]$blocker)
+    }
+  }
+  if ([string]$CommandBoundary.classification -eq "fail") {
+    foreach ($failure in @($CommandBoundary.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+  if ([string]$ReadbackGate.classification -eq "fail") {
+    foreach ($failure in @($ReadbackGate.failures)) {
+      [void]$failures.Add([string]$failure)
+    }
+  }
+
+  $classification = "blocker"
+  if ($failures.Count -gt 0) {
+    $classification = "fail"
+  } elseif ($blockers.Count -eq 0 -and [string]$CommandBoundary.classification -eq "pass" -and [string]$ReadbackGate.classification -eq "pass") {
+    $classification = "pass"
+  }
+
+  return [ordered]@{
+    schema_version = "control_plane_billing_ledger_live_db_executor_sql_bridge_readiness_artifact.v1"
+    classification = $classification
+    default_db_write_performed = $false
+    raw_sql_output = "omitted"
+    schema_tool_readiness = [ordered]@{
+      live_database_url_present = $LiveDatabaseUrlPresent
+      runtime_schema_available = $SchemaAvailable
+      runtime_tool_available = $ToolAvailable
+      database_url_output = "presence_marker_only"
+    }
+    bounded_statement_kinds = @(
+      "begin_transaction",
+      "lock_idempotency_scope",
+      "lock_wallet_scope",
+      "lock_budget_scope",
+      "insert_probe_ledger_entry",
+      "mark_probe_idempotency",
+      "rollback_transaction"
+    )
+    bind_marker_counts = [ordered]@{
+      lock_idempotency_scope = 4
+      lock_wallet_scope = 3
+      lock_budget_scope = 3
+      insert_probe_ledger_entry = 8
+      mark_probe_idempotency = 4
+    }
+    row_count_field_names = @("statement_kind", "expected_rows", "actual_rows", "rows_match")
+    timing_field_names = @(
+      "begin_transaction_duration_ms",
+      "lock_idempotency_scope_duration_ms",
+      "lock_wallet_scope_duration_ms",
+      "lock_budget_scope_duration_ms",
+      "insert_probe_ledger_entry_duration_ms",
+      "mark_probe_idempotency_duration_ms",
+      "rollback_transaction_duration_ms"
+    )
+    row_count_evidence = $ReadbackGate.row_count_evidence
+    timing_evidence = $ReadbackGate.transaction_timing_durations
+    rollback_no_commit_proof = $ReadbackGate.rollback_no_commit_proof
+    rollback_only = $true
+    commit_forbidden = $true
+    production_writer_unchanged_required = $true
+    dual_commit_allowed = $false
+    blockers = @($blockers | Select-Object -Unique)
+    failures = @($failures | Select-Object -Unique)
+    safe_output = [ordered]@{
+      raw_sql_output = "omitted"
+      database_url_output = "omitted"
+      env_value_output = "omitted"
+      operation_key_output = "omitted"
+      raw_env_value_echoed = $false
+      raw_database_url_echoed = $false
+      raw_metadata_echoed = $false
+      credential_material_echoed = $false
+      raw_executor_error_detail_echoed = $false
+    }
+  }
+}
+
 function New-LiveExecutionHandoff {
   param(
     [Parameter(Mandatory = $true)][string]$Readiness,
@@ -1214,6 +1317,7 @@ $artifactReadResult = Read-ProbeArtifactIfAllowed -FallbackArtifact $liveProbeEv
 $readbackArtifact = $artifactReadResult.artifact
 $liveProbeMeasurementReadbackGate = New-LiveProbeMeasurementReadbackGate -Artifact $readbackArtifact -MissingRowCount ([bool]$SimulateMissingRowCountReadback) -MissingTiming ([bool]$SimulateMissingTimingReadback) -MissingRollbackProof ([bool]$SimulateMissingRollbackProofReadback)
 $liveDbExecutorProbeCommandBoundary = New-LiveDbExecutorProbeCommandBoundary -ProbeRequested $liveDbExecutorProbeRequested -LiveOptIn $liveOptIn -Mode ([string]$mode.Mode) -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -FeatureAvailable $featureAvailable -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable -ArtifactWrite $artifactWriteResult -ArtifactRead $artifactReadResult -ReadbackGate $liveProbeMeasurementReadbackGate
+$liveDbExecutorSqlBridgeReadinessArtifact = New-LiveDbExecutorSqlBridgeReadinessArtifact -CommandBoundary $liveDbExecutorProbeCommandBoundary -ReadbackGate $liveProbeMeasurementReadbackGate -LiveDatabaseUrlPresent $liveDatabaseUrlPresent -SchemaAvailable $runtimeSchemaAvailable -ToolAvailable $runtimeToolAvailable
 
 $summary = [ordered]@{
   schema_version = [string]$readinessContract.schema_version
@@ -1337,6 +1441,7 @@ $summary = [ordered]@{
   }
   live_probe_measurement_readback_gate = $liveProbeMeasurementReadbackGate
   live_db_executor_probe_command_boundary = $liveDbExecutorProbeCommandBoundary
+  live_db_executor_sql_bridge_readiness_artifact = $liveDbExecutorSqlBridgeReadinessArtifact
   dry_run_execution_evidence = (New-DryRunExecutionEvidence -Readiness $readiness -Blockers @($blockers))
   handoff_performance_summary = [ordered]@{
     schema_version = [string]$performanceContract.schema_version

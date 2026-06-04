@@ -578,8 +578,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -Semantic -ClientGeneration
 ```
 
+Controlled execution pass gate:
+
+- The controlled execution command above is disabled by default. It runs only
+  when explicit semantic/client-generation flags or env opt-ins are present.
+- Before running real tools, the wrapper records the same materialized bridge
+  plan and executes real-tool readiness readback. Missing materialization marker,
+  missing local tool, stale/incomplete cache, or missing package readback exits
+  as blocker `2`.
+- When real generated-client commands pass, the wrapper checks that the
+  generated target exists and has inspectable files before writing
+  `.ledger-openapi-generated-client-readiness.json` or
+  `.ledger-openapi-real-tool-closure-readiness.json`.
+- Marker readback must prove current OpenAPI fixture SHA-256, repo commit/status
+  on the closure marker, generated time, bounded duration, tool/package/cache
+  provenance, current materialization marker status, and current generated-client
+  readiness status.
+- A simulated pass, bridge-ready self-test, cache-probe pass, materialization
+  pass, or readiness-only pass cannot set `closure_eligible=true`.
+
 Real-tool execution evidence:
 
+- Explicit `-Semantic`, `-ClientGeneration`, `-OpenApiTypescript`, or
+  `-TypescriptFetch` requests enter the controlled real-tool execution pass gate
+  before any heavy validator/generator command is run.
 - `execution_mode=real_tool_execution` is required for real Redocly, OpenAPI
   Generator, `openapi-typescript`, and `typescript-fetch` opt-in executions.
 - `real_command_executed=true` is required only after the requested external
@@ -593,6 +615,8 @@ Real-tool execution evidence:
   failed.
 - `classification=blocker` means the command could not be run because required
   tooling or package/cache availability was missing.
+- After a real generated-client command exits successfully, a missing generated
+  target or empty generated output directory is a blocker, not closure evidence.
 - Generated-client evidence must have `readiness_marker_status=current` before
   it can be used as acceptance evidence.
 - `closure_eligible=true` is allowed only for `provenance_mode=real`,

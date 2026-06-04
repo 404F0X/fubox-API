@@ -4528,6 +4528,46 @@ fn ledger_adjustment_billing_ledger_live_probe_executor_boundary_contract() -> V
             "dual_commit_allowed": false,
             "artifact_handoff_required": true
         },
+        "live_db_executor_sql_bridge_readiness_artifact": {
+            "schema_version": "control_plane_billing_ledger_live_db_executor_sql_bridge_readiness_artifact.v1",
+            "default_db_write_performed": false,
+            "raw_sql_output": "omitted",
+            "bounded_statement_kinds": [
+                "begin_transaction",
+                "lock_idempotency_scope",
+                "lock_wallet_scope",
+                "lock_budget_scope",
+                "insert_probe_ledger_entry",
+                "mark_probe_idempotency",
+                "rollback_transaction"
+            ],
+            "bind_marker_counts": {
+                "lock_idempotency_scope": 4,
+                "lock_wallet_scope": 3,
+                "lock_budget_scope": 3,
+                "insert_probe_ledger_entry": 8,
+                "mark_probe_idempotency": 4
+            },
+            "row_count_field_names": [
+                "statement_kind",
+                "expected_rows",
+                "actual_rows",
+                "rows_match"
+            ],
+            "timing_field_names": [
+                "begin_transaction_duration_ms",
+                "lock_idempotency_scope_duration_ms",
+                "lock_wallet_scope_duration_ms",
+                "lock_budget_scope_duration_ms",
+                "insert_probe_ledger_entry_duration_ms",
+                "mark_probe_idempotency_duration_ms",
+                "rollback_transaction_duration_ms"
+            ],
+            "rollback_only": true,
+            "commit_forbidden": true,
+            "production_writer_unchanged_required": true,
+            "dual_commit_allowed": false
+        },
         "safe_output_contract": {
             "database_url_output": "omitted",
             "env_value_output": "omitted",
@@ -15633,6 +15673,31 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["schema_version"],
+            json!("control_plane_billing_ledger_live_db_executor_sql_bridge_readiness_artifact.v1")
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["raw_sql_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["bounded_statement_kinds"][4],
+            json!("insert_probe_ledger_entry")
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["bind_marker_counts"]["insert_probe_ledger_entry"],
+            json!(8)
+        );
+        assert_eq!(
+            contract["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["commit_forbidden"],
+            json!(true)
+        );
+        assert_eq!(
             contract["live_probe_executor_boundary_contract"]["safe_output_contract"]["raw_database_url_echoed"],
             json!(false)
         );
@@ -17062,6 +17127,18 @@ mod tests {
                 ["live_probe_executor_boundary_contract"]["live_db_executor_probe_command_boundary"]
                 ["dual_commit_allowed"],
             json!(false)
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["raw_sql_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]
+                ["live_probe_executor_boundary_contract"]["live_db_executor_sql_bridge_readiness_artifact"]
+                ["bind_marker_counts"]["mark_probe_idempotency"],
+            json!(4)
         );
         assert_eq!(
             fixture["billing_ledger_writer_cutover_preflight_contract"]["readiness_smoke_wrapper_contract"]

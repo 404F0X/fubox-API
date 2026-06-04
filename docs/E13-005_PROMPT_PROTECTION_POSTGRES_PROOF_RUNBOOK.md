@@ -260,6 +260,31 @@ Performance envelope guidance:
 - A blocker, preflight-only, contract, simulated, stale, or duration-unavailable
   report closes only the performance envelope contract. It does not close the
   live Postgres proof gap.
+- The root `audit_handoff_bridge` is the secret-safe handoff into Admin UI/audit
+  closure review. It contains `schema_version=prompt_protection_audit_handoff_bridge.v1`,
+  `generated_at_utc`, `current_commit`, a bounded `report_path_marker`, an
+  `audit_import_command` summary, `closure_gate`, and `admin_ui_readback`.
+  `report_path_marker` is only `not_requested` or
+  `safe_artifact_path_configured`; the report path value is not emitted.
+- `audit_handoff_bridge.admin_ui_readback` uses the Admin UI import shape
+  `prompt_protection_evidence_readback_v1`: `auditReadiness`,
+  `closureChecklist`, `closureGaps`, `closureRule`, `currentCommit`,
+  `durationAvailability`, `freshnessReplay`, `latencyEnvelope`,
+  `proofClosure`, `proofEvidence`, `proofMode`, and `providerAttempts`.
+  Admin UI/audit closure gates consume this object rather than raw script
+  output.
+- The bridge can classify only `pass`, `blocker`, or `fail`. A pass requires a
+  current live passed report, `provider_attempts=0`, available durations,
+  latency envelope within bounds, current provenance, and
+  `freshnessReplay=current_live_proof`. Missing Gateway, Postgres, or
+  mock-provider preflight produces a `blocker` bridge. Evidence mismatch or
+  non-zero provider attempts produces `fail`.
+- Stale proof, simulated proof, missing performance evidence, missing
+  `provider_attempts`, or non-empty closure gaps cannot close the audit/live
+  proof gap. They remain visible as bounded bridge gaps such as
+  `current_live_proof_missing`, `freshness_replay_refused`,
+  `duration_unavailable`, `latency_envelope_missing_or_ineligible`, or
+  `provider_attempts_missing`.
 
 Each endpoint report records:
 
@@ -286,6 +311,10 @@ The report must not contain raw prompt text, request bodies, transport header
 values, credential values, database connection strings, regex pattern values, or
 provider secrets. It is intended as the artifact to attach to a passing live run
 alongside the command, timestamp, commit, and four request hashes.
+
+The bridge must also omit raw report path, raw command, DSN, token/header
+material, provider secret, proof raw id, raw prompt, and raw body. It carries
+only the safe marker and import/readback classifications needed by Admin UI.
 
 Live/preflight evidence envelope:
 
