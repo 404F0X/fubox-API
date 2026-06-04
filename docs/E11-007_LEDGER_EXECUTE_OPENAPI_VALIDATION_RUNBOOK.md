@@ -77,6 +77,9 @@ Wrapper env opt-ins are equivalent to the flags:
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_INSPECTION_PASS=1`
 - `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_MISSING_REQUIRED=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_PASS=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE=1`
+- `CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER=1`
 
 Optional path/env overrides:
 
@@ -109,6 +112,12 @@ Expected result:
   executor summary fields while omitting secret-like output fields.
 - Child case `simulated generated-client missing required field` returns exit
   `1`, proving generated-client contract drift is a mismatch, not a blocker.
+- Child case `simulated semantic validator evidence pass` returns exit `0` and
+  writes a bounded evidence report with classification `pass`.
+- Child case `simulated semantic validator evidence failure` returns exit `1`
+  and writes a bounded evidence report with classification `failure`.
+- Child case `simulated semantic validator evidence blocker` returns exit `2`
+  and writes a bounded evidence report with classification `blocker`.
 - Child cases `temp root repo escape rejected` and `npm cache repo escape
   rejected` return exit `1`, proving custom paths cannot write outside the
   allowed repository roots.
@@ -134,15 +143,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientInspectionPass
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateGeneratedClientMissingRequired
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidencePass
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceFailure
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_control_plane_ledger_adjustment_openapi_semantic.ps1 -SimulateSemanticEvidenceBlocker
 ```
 
 The first three direct simulated commands are expected to return `2`, `1`, and
 `1` respectively after the lightweight gate passes. The sensitive-output command
-returns `0`; the sensitive-command failure returns `1`. They prove wrapper
-failure-path classification, path/output hardening, and redaction only. They do
-not run Redocly, OpenAPI Generator, `openapi-typescript`, generated-client
-inspection against real generated output, or any live Postgres checks. Do not
-use simulated passes to close the real semantic/client-generation gap.
+returns `0`; the sensitive-command failure returns `1`. The generated-client
+inspection commands return `0` and `1`. The semantic evidence commands return
+`0`, `1`, and `2`. They prove wrapper failure-path classification, bounded
+evidence, path/output hardening, and redaction only. They do not run Redocly,
+OpenAPI Generator, `openapi-typescript`, generated-client inspection against
+real generated output, or any live Postgres checks. Do not use simulated passes
+to close the real semantic/client-generation gap.
 
 ## Tool Availability And Blocker Semantics
 
@@ -175,6 +192,63 @@ The S16 wrapper uses the same exit semantics for opt-in checks:
   inspection found a mismatch.
 - exit `2`: missing `node`/`npm`/`java`, offline npm package cache, or package
   download/network blocker prevented requested external tooling from running.
+
+## Opt-In Evidence Report
+
+When an external semantic validator or client generator is explicitly requested,
+the wrapper writes bounded evidence to:
+
+```text
+.tmp\ledger-adjustment-openapi-semantic\ledger-adjustment-openapi-semantic-evidence.json
+```
+
+The report is not written by the default lightweight path. It is written for
+real opt-in external checks and for the simulated semantic evidence self-test
+paths.
+
+The report schema is `ledger_openapi_semantic_evidence.v1` and contains only
+bounded fields:
+
+- `report_type`
+- `outcome`: `pass`, `failure`, or `blocker`
+- `checked_schema`: repo-relative OpenAPI skeleton path
+- `generated_at_utc`
+- `evidence[]`
+
+Each evidence record contains:
+
+- `kind`: `semantic_validator` or `client_generation`
+- `label`
+- `tool`
+- `tool_version`
+- `package`
+- `checked_schema`
+- `classification`: `pass`, `failure`, or `blocker`
+- `exit_code`
+- `command`: redacted bounded command summary
+- `output_tail`: up to eight redacted bounded lines
+- `failure_reason`
+- `blocker_reason`
+
+The report must not include raw Authorization/Cookie values, bearer tokens,
+credentials, package tokens, API keys, raw operation keys, raw metadata, payload
+or body data, or raw executor details. The self-test validates the report field
+allowlist, checked schema, output-tail bounds, classification presence, and
+secret-safe redaction.
+
+Interpret report outcomes as follows:
+
+- `pass`: every requested opt-in validator/client generator completed and the
+  generated-client inspection contract passed where applicable.
+- `failure`: a semantic validator failed, generated-client contract inspection
+  failed, or schema/client output drifted. This is exit `1`.
+- `blocker`: local tools, Java, npm package cache, network, or package-download
+  availability prevented requested opt-in tooling from running. This is exit
+  `2`.
+
+Do not close the semantic validator gap from a report with outcome `blocker`.
+Do not close it from a simulated report; the simulated report proves wrapper
+classification and redaction only.
 
 Recommended preflight:
 
@@ -486,6 +560,7 @@ Record all of the following when closing the semantic/client-generation gap:
 - Repository commit.
 - Validator commands and versions.
 - Client generator command and version.
+- Evidence report path and outcome.
 - Whether the npm cache was online, preseeded, or internal-mirror backed.
 - Generated client target, for example `openapi-typescript` or
   `typescript-fetch`.

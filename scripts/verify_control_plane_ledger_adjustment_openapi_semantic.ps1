@@ -17,7 +17,10 @@ param(
   [switch]$SimulateSensitiveOutputTail,
   [switch]$SimulateSensitiveCommandFailure,
   [switch]$SimulateGeneratedClientInspectionPass,
-  [switch]$SimulateGeneratedClientMissingRequired
+  [switch]$SimulateGeneratedClientMissingRequired,
+  [switch]$SimulateSemanticEvidencePass,
+  [switch]$SimulateSemanticEvidenceFailure,
+  [switch]$SimulateSemanticEvidenceBlocker
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +54,9 @@ if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_OUTPUT_T
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SENSITIVE_COMMAND_FAILURE) { $SimulateSensitiveCommandFailure = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_INSPECTION_PASS) { $SimulateGeneratedClientInspectionPass = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_GENERATED_CLIENT_MISSING_REQUIRED) { $SimulateGeneratedClientMissingRequired = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_PASS) { $SimulateSemanticEvidencePass = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_FAILURE) { $SimulateSemanticEvidenceFailure = $true }
+if (Test-TruthyEnv $env:CONTROL_PLANE_LEDGER_OPENAPI_SIMULATE_SEMANTIC_EVIDENCE_BLOCKER) { $SimulateSemanticEvidenceBlocker = $true }
 if (-not [string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT)) {
   $TempRoot = $env:CONTROL_PLANE_LEDGER_OPENAPI_TEMP_ROOT
 }
@@ -122,6 +128,7 @@ if (
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
 $script:Blockers = New-Object System.Collections.Generic.List[string]
+$script:EvidenceRecords = New-Object System.Collections.Generic.List[object]
 
 function Redact-SafeText {
   param([AllowNull()][string]$Text)
@@ -148,6 +155,185 @@ function Write-SafeHost {
   Write-Host (Redact-SafeText $Text)
 }
 
+function Get-RepoRelativePath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $full = [System.IO.Path]::GetFullPath($Path)
+  $repoPrefix = $repoRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+  if ($full.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $full.Substring($repoPrefix.Length)
+  }
+
+  return [System.IO.Path]::GetFileName($full)
+}
+
+function Get-EvidenceReportPath {
+  param([string]$Root = $TempRoot)
+
+  return Join-Path $Root "ledger-adjustment-openapi-semantic-evidence.json"
+}
+
+function Get-BoundedSafeLines {
+  param(
+    [AllowEmptyString()][AllowEmptyCollection()][string[]]$Lines = @(),
+    [int]$TakeLast = 8,
+    [int]$MaxLineLength = 240
+  )
+
+  $bounded = New-Object System.Collections.Generic.List[string]
+  foreach ($line in @($Lines | Select-Object -Last $TakeLast)) {
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      continue
+    }
+
+    $safe = Redact-SafeText ([string]$line)
+    if ($safe.Length -gt $MaxLineLength) {
+      $safe = $safe.Substring(0, $MaxLineLength) + "...[truncated]"
+    }
+    [void]$bounded.Add($safe)
+  }
+  return @($bounded.ToArray())
+}
+
+function Add-EvidenceRecord {
+  param(
+    [Parameter(Mandatory = $true)][string]$Kind,
+    [Parameter(Mandatory = $true)][string]$Label,
+    [Parameter(Mandatory = $true)][string]$Tool,
+    [Parameter(Mandatory = $true)][string]$ToolVersion,
+    [Parameter(Mandatory = $true)][string]$Package,
+    [Parameter(Mandatory = $true)][ValidateSet("pass", "failure", "blocker")][string]$Classification,
+    [Parameter(Mandatory = $true)][int]$ExitCode,
+    [AllowNull()][string]$Command = "",
+    [AllowEmptyString()][AllowEmptyCollection()][string[]]$Output = @(),
+    [AllowNull()][string]$FailureReason = "",
+    [AllowNull()][string]$BlockerReason = ""
+  )
+
+  $record = [ordered]@{
+    kind = Redact-SafeText $Kind
+    label = Redact-SafeText $Label
+    tool = Redact-SafeText $Tool
+    tool_version = Redact-SafeText $ToolVersion
+    package = Redact-SafeText $Package
+    checked_schema = Get-RepoRelativePath $OpenApiPath
+    classification = $Classification
+    exit_code = $ExitCode
+    command = Redact-SafeText $Command
+    output_tail = @(Get-BoundedSafeLines -Lines $Output)
+    failure_reason = Redact-SafeText $FailureReason
+    blocker_reason = Redact-SafeText $BlockerReason
+  }
+  [void]$script:EvidenceRecords.Add([pscustomobject]$record)
+}
+
+function Write-EvidenceReport {
+  if ($script:EvidenceRecords.Count -eq 0) {
+    return
+  }
+
+  $outcome = "pass"
+  if ($script:Failures.Count -gt 0) {
+    $outcome = "failure"
+  } elseif ($script:Blockers.Count -gt 0) {
+    $outcome = "blocker"
+  }
+
+  $report = [ordered]@{
+    schema_version = "ledger_openapi_semantic_evidence.v1"
+    report_type = "control_plane_ledger_adjustment_openapi_semantic"
+    outcome = $outcome
+    checked_schema = Get-RepoRelativePath $OpenApiPath
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    evidence = @($script:EvidenceRecords.ToArray())
+  }
+
+  $path = Get-EvidenceReportPath
+  New-Item -ItemType Directory -Force (Split-Path -Parent $path) | Out-Null
+  ($report | ConvertTo-Json -Depth 8) | Set-Content -Path $path -Encoding ascii
+  Write-SafeHost "[OK] evidence report: $path"
+}
+
+function Assert-EvidenceReportContract {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string[]]$ExpectedClassifications
+  )
+
+  if (-not (Test-Path $Path)) {
+    Add-Failure "[FAIL] evidence report contract - missing report $Path"
+    return
+  }
+
+  $raw = Get-Content -Path $Path -Raw
+  foreach ($pattern in @(
+      "(?i)Authorization\s*[:=]",
+      "(?i)Cookie\s*[:=]",
+      "(?i)Bearer\s+[A-Za-z0-9._~+/\-]+=*",
+      "sk-[A-Za-z0-9._~+/\-]{8,}",
+      "(?i)(password|passwd|secret|token|credential|api[_-]?key|operation[_-]?key|package[_-]?token|npm[_-]?token|raw[_-]?metadata|metadata)\s*[:=]\s*[^,\s]+",
+      "(?i)https?://[^/\s:@]+:[^/\s@]+@"
+    )) {
+    if ($raw -match $pattern) {
+      Add-Failure "[FAIL] evidence report contract - report contains forbidden material pattern"
+      return
+    }
+  }
+
+  $report = $raw | ConvertFrom-Json
+  $rootFields = @($report.PSObject.Properties.Name)
+  foreach ($field in $rootFields) {
+    if (-not @("schema_version", "report_type", "outcome", "checked_schema", "generated_at_utc", "evidence").Contains($field)) {
+      Add-Failure "[FAIL] evidence report contract - unexpected root field '$field'"
+    }
+  }
+
+  if ($report.schema_version -ne "ledger_openapi_semantic_evidence.v1") {
+    Add-Failure "[FAIL] evidence report contract - unexpected schema_version '$($report.schema_version)'"
+  }
+  if ($report.checked_schema -ne (Get-RepoRelativePath $OpenApiPath)) {
+    Add-Failure "[FAIL] evidence report contract - checked_schema drifted"
+  }
+
+  $records = @($report.evidence)
+  if ($records.Count -eq 0) {
+    Add-Failure "[FAIL] evidence report contract - evidence array is empty"
+    return
+  }
+
+  foreach ($expected in $ExpectedClassifications) {
+    if (-not (@($records | Where-Object { $_.classification -eq $expected }).Count -gt 0)) {
+      Add-Failure "[FAIL] evidence report contract - missing classification '$expected'"
+    }
+  }
+
+  foreach ($record in $records) {
+    foreach ($field in @($record.PSObject.Properties.Name)) {
+      if (-not @("kind", "label", "tool", "tool_version", "package", "checked_schema", "classification", "exit_code", "command", "output_tail", "failure_reason", "blocker_reason").Contains($field)) {
+        Add-Failure "[FAIL] evidence report contract - unexpected evidence field '$field'"
+      }
+    }
+    if (-not @("pass", "failure", "blocker").Contains([string]$record.classification)) {
+      Add-Failure "[FAIL] evidence report contract - invalid classification '$($record.classification)'"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$record.tool_version)) {
+      Add-Failure "[FAIL] evidence report contract - missing tool_version"
+    }
+    if ([string]$record.checked_schema -ne (Get-RepoRelativePath $OpenApiPath)) {
+      Add-Failure "[FAIL] evidence report contract - record checked_schema drifted"
+    }
+    $tail = @($record.output_tail)
+    if ($tail.Count -gt 8) {
+      Add-Failure "[FAIL] evidence report contract - output_tail is unbounded"
+    }
+    foreach ($line in $tail) {
+      if (([string]$line).Length -gt 260) {
+        Add-Failure "[FAIL] evidence report contract - output_tail line is unbounded"
+      }
+    }
+  }
+}
+
 function Add-Failure {
   param([Parameter(Mandatory = $true)][string]$Message)
 
@@ -165,6 +351,8 @@ function Add-Blocker {
 }
 
 function Exit-WithResult {
+  Write-EvidenceReport
+
   if ($script:Failures.Count -gt 0) {
     Write-SafeHost ""
     Write-SafeHost "Control Plane ledger adjustment OpenAPI semantic validation failed:"
@@ -278,16 +466,18 @@ function Invoke-Process {
         Write-SafeHost $line
       }
     }
-    return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine }
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = "pass" }
   }
 
   $joined = Redact-SafeText ($output -join "`n")
   if ($ExternalTool -and (Test-BlockerOutput $joined)) {
     Add-Blocker "[BLOCKED] $Label - external tool/package cache unavailable while running: $commandLine"
+    $classification = "blocker"
   } else {
     Add-Failure "[FAIL] $Label - exit $exitCode while running: $commandLine`n$joined"
+    $classification = "failure"
   }
-  return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine }
+  return [pscustomobject]@{ ExitCode = $exitCode; Output = $output; Command = $commandLine; Classification = $classification }
 }
 
 function Invoke-ContractGate {
@@ -331,6 +521,9 @@ function Invoke-NpmTool {
     [Parameter(Mandatory = $true)][string]$Package,
     [Parameter(Mandatory = $true)][string[]]$ToolArguments,
     [Parameter(Mandatory = $true)][string]$Label,
+    [Parameter(Mandatory = $true)][string]$ToolName,
+    [Parameter(Mandatory = $true)][string]$EvidenceKind,
+    [string[]]$VersionToolArguments = @(),
     [switch]$RequireJava
   )
 
@@ -342,6 +535,17 @@ function Invoke-NpmTool {
     }
   } catch {
     Add-Blocker "[BLOCKED] $Label - $($_.Exception.Message)"
+    Add-EvidenceRecord `
+      -Kind $EvidenceKind `
+      -Label $Label `
+      -Tool $ToolName `
+      -ToolVersion "unavailable" `
+      -Package $Package `
+      -Classification "blocker" `
+      -ExitCode 2 `
+      -Command "$ToolName not run" `
+      -Output @($_.Exception.Message) `
+      -BlockerReason "required local tool unavailable"
     return
   }
 
@@ -349,11 +553,71 @@ function Invoke-NpmTool {
   $oldCache = $env:npm_config_cache
   try {
     $env:npm_config_cache = $NpmCache
-    [void](Invoke-Process `
+    $toolVersion = "not_requested"
+    if ($VersionToolArguments.Count -gt 0) {
+      $versionResult = Invoke-Process `
         -FileName "npm" `
-        -Arguments (New-NpmExecArguments -Package $Package -ToolArguments $ToolArguments) `
-        -Label $Label `
-        -ExternalTool)
+        -Arguments (New-NpmExecArguments -Package $Package -ToolArguments $VersionToolArguments) `
+        -Label "$Label version probe" `
+        -ExternalTool
+
+      if ($versionResult.ExitCode -ne 0) {
+        $versionFailureReason = ""
+        $versionBlockerReason = ""
+        if ($versionResult.Classification -eq "failure") {
+          $versionFailureReason = "version probe failed before requested check"
+        } elseif ($versionResult.Classification -eq "blocker") {
+          $versionBlockerReason = "version probe was externally blocked before requested check"
+        }
+        Add-EvidenceRecord `
+          -Kind $EvidenceKind `
+          -Label $Label `
+          -Tool $ToolName `
+          -ToolVersion "unavailable" `
+          -Package $Package `
+          -Classification $versionResult.Classification `
+          -ExitCode $versionResult.ExitCode `
+          -Command $versionResult.Command `
+          -Output $versionResult.Output `
+          -FailureReason $versionFailureReason `
+          -BlockerReason $versionBlockerReason
+        return $versionResult
+      }
+
+      $versionLines = @(Get-BoundedSafeLines -Lines $versionResult.Output -TakeLast 4 -MaxLineLength 120)
+      if ($versionLines.Count -gt 0) {
+        $toolVersion = $versionLines[0]
+      } else {
+        $toolVersion = "unknown"
+      }
+    }
+
+    $result = Invoke-Process `
+      -FileName "npm" `
+      -Arguments (New-NpmExecArguments -Package $Package -ToolArguments $ToolArguments) `
+      -Label $Label `
+      -ExternalTool
+
+    $failureReason = ""
+    $blockerReason = ""
+    if ($result.Classification -eq "failure") {
+      $failureReason = "requested semantic/client contract check failed"
+    } elseif ($result.Classification -eq "blocker") {
+      $blockerReason = "external tool/package cache unavailable"
+    }
+    Add-EvidenceRecord `
+      -Kind $EvidenceKind `
+      -Label $Label `
+      -Tool $ToolName `
+      -ToolVersion $toolVersion `
+      -Package $Package `
+      -Classification $result.Classification `
+      -ExitCode $result.ExitCode `
+      -Command $result.Command `
+      -Output $result.Output `
+      -FailureReason $failureReason `
+      -BlockerReason $blockerReason
+    return $result
   } finally {
     $env:npm_config_cache = $oldCache
   }
@@ -833,17 +1097,59 @@ export interface LedgerAdjustmentExecutorSummary {
   Set-Content -Path (Join-Path $Path "ledger-execute-generated.ts") -Value $content -Encoding ascii
 }
 
+function Add-SimulatedSemanticEvidence {
+  param(
+    [Parameter(Mandatory = $true)][ValidateSet("pass", "failure", "blocker")][string]$Classification,
+    [Parameter(Mandatory = $true)][int]$ExitCode
+  )
+
+  $sensitiveTail = @(
+    "simulated semantic validator checked ledger execute schemas",
+    "Authorization: Bearer selftest-token-123456789",
+    "Cookie: session=selftest-cookie",
+    "operation_key=selftest-operation-key",
+    "raw_metadata={never-return}",
+    "schema=examples/openapi_admin_skeleton.yaml"
+  )
+  $failureReason = ""
+  $blockerReason = ""
+  if ($Classification -eq "failure") {
+    $failureReason = "simulated semantic validator schema mismatch"
+  } elseif ($Classification -eq "blocker") {
+    $blockerReason = "simulated semantic validator package cache blocker"
+  }
+
+  Add-EvidenceRecord `
+    -Kind "semantic_validator" `
+    -Label "simulated semantic validator evidence $Classification" `
+    -Tool "redocly-simulated" `
+    -ToolVersion "simulated-1.0.0" `
+    -Package "@redocly/cli" `
+    -Classification $Classification `
+    -ExitCode $ExitCode `
+    -Command "redocly lint examples/openapi_admin_skeleton.yaml --operation_key=selftest-operation-key" `
+    -Output $sensitiveTail `
+    -FailureReason $failureReason `
+    -BlockerReason $blockerReason
+}
+
 function Invoke-Redocly {
   Invoke-NpmTool `
     -Package "@redocly/cli" `
     -ToolArguments @("redocly", "lint", $OpenApiPath) `
-    -Label "Redocly semantic OpenAPI validation"
+    -Label "Redocly semantic OpenAPI validation" `
+    -ToolName "redocly" `
+    -EvidenceKind "semantic_validator" `
+    -VersionToolArguments @("redocly", "--version")
 }
 
 function Invoke-OpenApiGeneratorValidate {
   Invoke-NpmTool `
     -Package "@openapitools/openapi-generator-cli" `
     -ToolArguments @("openapi-generator-cli", "validate", "-i", $OpenApiPath) `
+    -ToolName "openapi-generator-cli" `
+    -EvidenceKind "semantic_validator" `
+    -VersionToolArguments @("openapi-generator-cli", "version") `
     -Label "OpenAPI Generator semantic validation" `
     -RequireJava
 }
@@ -857,6 +1163,9 @@ function Invoke-OpenApiTypescript {
   Invoke-NpmTool `
     -Package "openapi-typescript" `
     -ToolArguments @("openapi-typescript", $OpenApiPath, "-o", $outFile) `
+    -ToolName "openapi-typescript" `
+    -EvidenceKind "client_generation" `
+    -VersionToolArguments @("openapi-typescript", "--version") `
     -Label "openapi-typescript client type generation"
 
   if ($script:Blockers.Count -eq 0) {
@@ -882,6 +1191,9 @@ function Invoke-TypescriptFetch {
       $outDir,
       "--additional-properties=typescriptThreePlus=true,enumUnknownDefaultCase=true"
     ) `
+    -ToolName "openapi-generator-cli" `
+    -EvidenceKind "client_generation" `
+    -VersionToolArguments @("openapi-generator-cli", "version") `
     -Label "OpenAPI Generator typescript-fetch client generation" `
     -RequireJava
 
@@ -918,7 +1230,8 @@ function Invoke-SelfTestChild {
     [string[]]$Arguments = @(),
     [string]$ChildTempRoot = $TempRoot,
     [string]$ChildNpmCache = $NpmCache,
-    [Parameter(Mandatory = $true)][int]$ExpectedExitCode
+    [Parameter(Mandatory = $true)][int]$ExpectedExitCode,
+    [string[]]$ExpectedEvidenceClassifications = @()
   )
 
   $ps = Get-PowerShellRunner
@@ -964,6 +1277,12 @@ function Invoke-SelfTestChild {
   }
 
   Write-SafeHost "[OK] self-test $Name returned exit $ExpectedExitCode"
+
+  if ($ExpectedEvidenceClassifications.Count -gt 0) {
+    Assert-EvidenceReportContract `
+      -Path (Get-EvidenceReportPath -Root $ChildTempRoot) `
+      -ExpectedClassifications $ExpectedEvidenceClassifications
+  }
 }
 
 function Invoke-SelfTest {
@@ -978,6 +1297,24 @@ function Invoke-SelfTest {
   Invoke-SelfTestChild -Name "sensitive failing command display redacted" -Arguments @("-SimulateSensitiveCommandFailure") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "simulated generated-client inspection pass" -Arguments @("-SimulateGeneratedClientInspectionPass") -ExpectedExitCode 0
   Invoke-SelfTestChild -Name "simulated generated-client missing required field" -Arguments @("-SimulateGeneratedClientMissingRequired") -ExpectedExitCode 1
+  Invoke-SelfTestChild `
+    -Name "simulated semantic validator evidence pass" `
+    -Arguments @("-SimulateSemanticEvidencePass") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-pass") `
+    -ExpectedExitCode 0 `
+    -ExpectedEvidenceClassifications @("pass")
+  Invoke-SelfTestChild `
+    -Name "simulated semantic validator evidence failure" `
+    -Arguments @("-SimulateSemanticEvidenceFailure") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-failure") `
+    -ExpectedExitCode 1 `
+    -ExpectedEvidenceClassifications @("failure")
+  Invoke-SelfTestChild `
+    -Name "simulated semantic validator evidence blocker" `
+    -Arguments @("-SimulateSemanticEvidenceBlocker") `
+    -ChildTempRoot (Join-Path $TempRoot "self-test-semantic-evidence-blocker") `
+    -ExpectedExitCode 2 `
+    -ExpectedEvidenceClassifications @("blocker")
   Invoke-SelfTestChild -Name "temp root repo escape rejected" -Arguments @() -ChildTempRoot (Join-Path $repoRoot "..\ledger-openapi-outside") -ExpectedExitCode 1
   Invoke-SelfTestChild -Name "npm cache repo escape rejected" -Arguments @() -ChildNpmCache (Join-Path $repoRoot "..\ledger-openapi-cache-outside") -ExpectedExitCode 1
 
@@ -1065,6 +1402,20 @@ if ($SimulateGeneratedClientMissingRequired) {
   $path = Join-Path $TempRoot "self-test-generated-client-missing-required"
   Write-SimulatedGeneratedClientFixture -Path $path -MissingRequired
   Assert-GeneratedClientInspectionContract -Path $path -Label "simulated generated-client missing required field"
+  Exit-WithResult
+}
+if ($SimulateSemanticEvidencePass) {
+  Add-SimulatedSemanticEvidence -Classification "pass" -ExitCode 0
+  Exit-WithResult
+}
+if ($SimulateSemanticEvidenceFailure) {
+  Add-SimulatedSemanticEvidence -Classification "failure" -ExitCode 1
+  Add-Failure "[FAIL] simulated semantic validator evidence failure - ledger execute schema drift"
+  Exit-WithResult
+}
+if ($SimulateSemanticEvidenceBlocker) {
+  Add-SimulatedSemanticEvidence -Classification "blocker" -ExitCode 2
+  Add-Blocker "[BLOCKED] simulated semantic validator evidence blocker - package cache unavailable"
   Exit-WithResult
 }
 
