@@ -100,6 +100,78 @@ pub struct RateLimitAvailability {
 }
 
 pub const RATE_LIMIT_RESERVATION_CONTRACT_SCHEMA: &str = "rate_limit_reservation_contract_v1";
+pub const RATE_LIMIT_TPM_ESTIMATE_CONTRACT_SCHEMA: &str = "rate_limit_tpm_estimate_contract_v1";
+pub const RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS: i64 = 1_024;
+pub const RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS: u64 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateLimitTpmEstimateSource {
+    TotalTokens,
+    PromptAndCompletion,
+    PromptAndMaxCompletion,
+    PartialEstimateWithConservativeFallback,
+    ConservativeFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitTpmEstimateInput {
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub max_completion_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub conservative_fallback_tokens: i64,
+}
+
+impl RateLimitTpmEstimateInput {
+    pub const fn new(
+        prompt_tokens: Option<i64>,
+        completion_tokens: Option<i64>,
+        max_completion_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        conservative_fallback_tokens: i64,
+    ) -> Self {
+        Self {
+            prompt_tokens,
+            completion_tokens,
+            max_completion_tokens,
+            total_tokens,
+            conservative_fallback_tokens,
+        }
+    }
+}
+
+impl Default for RateLimitTpmEstimateInput {
+    fn default() -> Self {
+        Self {
+            prompt_tokens: None,
+            completion_tokens: None,
+            max_completion_tokens: None,
+            total_tokens: None,
+            conservative_fallback_tokens: RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitTpmReservationEstimate {
+    pub required_tokens: u64,
+    pub source: RateLimitTpmEstimateSource,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub max_completion_tokens: Option<u64>,
+    pub completion_reservation_tokens: Option<u64>,
+    pub fallback_tokens: u64,
+    pub used_conservative_fallback: bool,
+    pub sanitized_negative_estimate: bool,
+    pub clamped_to_i64_max: bool,
+    pub body_material_in_output: bool,
+}
+
+impl RateLimitTpmReservationEstimate {
+    pub fn required_tokens_i64(&self) -> i64 {
+        self.required_tokens.min(i64::MAX as u64) as i64
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RateLimitReservationOperation {
@@ -169,6 +241,18 @@ impl RateLimitRequiredCapacity {
         Self {
             requests_per_minute,
             tokens_per_minute,
+            concurrency,
+        }
+    }
+
+    pub fn from_tpm_estimate(
+        requests_per_minute: i64,
+        tpm_estimate: &RateLimitTpmReservationEstimate,
+        concurrency: i64,
+    ) -> Self {
+        Self {
+            requests_per_minute,
+            tokens_per_minute: tpm_estimate.required_tokens_i64(),
             concurrency,
         }
     }
@@ -280,6 +364,88 @@ pub fn apply_rate_limit_availability_to_candidate(
     availability: &RateLimitAvailability,
 ) -> RouteCandidate {
     candidate.with_rate_limit_available(availability.selectable)
+}
+
+pub fn estimate_tpm_reservation(
+    input: RateLimitTpmEstimateInput,
+) -> RateLimitTpmReservationEstimate {
+    let (prompt_tokens, prompt_negative) = sanitize_optional_token_estimate(input.prompt_tokens);
+    let (completion_tokens, completion_negative) =
+        sanitize_optional_token_estimate(input.completion_tokens);
+    let (max_completion_tokens, max_completion_negative) =
+        sanitize_optional_token_estimate(input.max_completion_tokens);
+    let (total_tokens, total_negative) = sanitize_optional_token_estimate(input.total_tokens);
+    let (fallback_tokens, fallback_sanitized) =
+        sanitize_conservative_fallback_tokens(input.conservative_fallback_tokens);
+    let completion_reservation_tokens =
+        completion_reservation_tokens(completion_tokens, max_completion_tokens);
+
+    let (required_tokens, source, used_conservative_fallback) = if let Some(total_tokens) =
+        total_tokens
+    {
+        (
+            total_tokens.max(RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS),
+            RateLimitTpmEstimateSource::TotalTokens,
+            false,
+        )
+    } else if let (Some(prompt_tokens), Some(completion_reservation_tokens)) =
+        (prompt_tokens, completion_reservation_tokens)
+    {
+        let max_completion_drives_reservation = match (completion_tokens, max_completion_tokens) {
+            (Some(completion_tokens), Some(max_completion_tokens)) => {
+                max_completion_tokens > completion_tokens
+            }
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        let source = if max_completion_drives_reservation {
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        } else {
+            RateLimitTpmEstimateSource::PromptAndCompletion
+        };
+
+        (
+            prompt_tokens
+                .saturating_add(completion_reservation_tokens)
+                .max(RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS),
+            source,
+            false,
+        )
+    } else if prompt_tokens.is_some() || completion_reservation_tokens.is_some() {
+        let required_tokens = prompt_tokens
+            .unwrap_or(fallback_tokens)
+            .saturating_add(completion_reservation_tokens.unwrap_or(fallback_tokens))
+            .max(RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS);
+        (
+            required_tokens,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback,
+            true,
+        )
+    } else {
+        (
+            fallback_tokens.max(RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS),
+            RateLimitTpmEstimateSource::ConservativeFallback,
+            true,
+        )
+    };
+
+    RateLimitTpmReservationEstimate {
+        required_tokens,
+        source,
+        prompt_tokens,
+        completion_tokens,
+        max_completion_tokens,
+        completion_reservation_tokens,
+        fallback_tokens,
+        used_conservative_fallback,
+        sanitized_negative_estimate: prompt_negative
+            || completion_negative
+            || max_completion_negative
+            || total_negative
+            || fallback_sanitized,
+        clamped_to_i64_max: required_tokens > i64::MAX as u64,
+        body_material_in_output: false,
+    }
 }
 
 pub fn plan_rate_limit_reservation(input: RateLimitReservationInput) -> RateLimitReservationPlan {
@@ -430,6 +596,36 @@ pub fn evaluate_rate_limit_dimension(
 
 fn non_negative_u64(value: i64) -> Option<u64> {
     (value >= 0).then_some(value as u64)
+}
+
+fn sanitize_optional_token_estimate(value: Option<i64>) -> (Option<u64>, bool) {
+    match value {
+        Some(value) if value >= 0 => (Some(value as u64), false),
+        Some(_) => (None, true),
+        None => (None, false),
+    }
+}
+
+fn sanitize_conservative_fallback_tokens(value: i64) -> (u64, bool) {
+    if value > 0 {
+        (value as u64, false)
+    } else {
+        (RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS as u64, true)
+    }
+}
+
+fn completion_reservation_tokens(
+    completion_tokens: Option<u64>,
+    max_completion_tokens: Option<u64>,
+) -> Option<u64> {
+    match (completion_tokens, max_completion_tokens) {
+        (Some(completion_tokens), Some(max_completion_tokens)) => {
+            Some(completion_tokens.max(max_completion_tokens))
+        }
+        (Some(completion_tokens), None) => Some(completion_tokens),
+        (None, Some(max_completion_tokens)) => Some(max_completion_tokens),
+        (None, None) => None,
+    }
 }
 
 fn reservation_availability_input(input: &RateLimitReservationInput) -> RateLimitAvailabilityInput {
@@ -773,6 +969,193 @@ mod tests {
             assert!(
                 !debug.contains(forbidden),
                 "rate-limit summary should omit sensitive provider auth material: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_prefers_total_tokens_when_available() {
+        let estimate = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(300),
+            Some(128),
+            Some(512),
+            Some(700),
+            1_024,
+        ));
+
+        assert_eq!(estimate.required_tokens, 700);
+        assert_eq!(estimate.source, RateLimitTpmEstimateSource::TotalTokens);
+        assert!(!estimate.used_conservative_fallback);
+        assert!(!estimate.sanitized_negative_estimate);
+        assert_eq!(estimate.prompt_tokens, Some(300));
+        assert_eq!(estimate.completion_reservation_tokens, Some(512));
+        assert_eq!(estimate.fallback_tokens, 1_024);
+        assert!(!estimate.body_material_in_output);
+    }
+
+    #[test]
+    fn tpm_estimate_uses_prompt_and_completion_without_fallback() {
+        let estimate = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(220),
+            Some(180),
+            None,
+            None,
+            1_024,
+        ));
+
+        assert_eq!(estimate.required_tokens, 400);
+        assert_eq!(
+            estimate.source,
+            RateLimitTpmEstimateSource::PromptAndCompletion
+        );
+        assert_eq!(estimate.completion_reservation_tokens, Some(180));
+        assert!(!estimate.used_conservative_fallback);
+    }
+
+    #[test]
+    fn tpm_estimate_uses_max_completion_bound_when_it_is_larger() {
+        let estimate = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(220),
+            Some(180),
+            Some(512),
+            None,
+            1_024,
+        ));
+
+        assert_eq!(estimate.required_tokens, 732);
+        assert_eq!(
+            estimate.source,
+            RateLimitTpmEstimateSource::PromptAndMaxCompletion
+        );
+        assert_eq!(estimate.completion_tokens, Some(180));
+        assert_eq!(estimate.max_completion_tokens, Some(512));
+        assert_eq!(estimate.completion_reservation_tokens, Some(512));
+        assert!(!estimate.used_conservative_fallback);
+    }
+
+    #[test]
+    fn tpm_estimate_uses_conservative_fallback_for_missing_or_invalid_data() {
+        let missing =
+            estimate_tpm_reservation(RateLimitTpmEstimateInput::new(None, None, None, None, 256));
+
+        assert_eq!(missing.required_tokens, 256);
+        assert_eq!(
+            missing.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert!(missing.used_conservative_fallback);
+        assert!(!missing.sanitized_negative_estimate);
+
+        let partial = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(120),
+            None,
+            None,
+            None,
+            256,
+        ));
+
+        assert_eq!(partial.required_tokens, 376);
+        assert_eq!(
+            partial.source,
+            RateLimitTpmEstimateSource::PartialEstimateWithConservativeFallback
+        );
+        assert!(partial.used_conservative_fallback);
+
+        let invalid = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(-5),
+            None,
+            None,
+            Some(-10),
+            -1,
+        ));
+
+        assert_eq!(
+            invalid.required_tokens,
+            RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS as u64
+        );
+        assert_eq!(
+            invalid.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+        assert!(invalid.used_conservative_fallback);
+        assert!(invalid.sanitized_negative_estimate);
+    }
+
+    #[test]
+    fn tpm_estimate_feeds_reservation_selection_conservatively() {
+        let precise = estimate_tpm_reservation(RateLimitTpmEstimateInput::new(
+            Some(40),
+            Some(50),
+            None,
+            None,
+            256,
+        ));
+        let precise_plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::unlimited(),
+            RateLimitCounterWindow::limited(1_000, 900),
+            RateLimitCounterWindow::unlimited(),
+            RateLimitRequiredCapacity::from_tpm_estimate(1, &precise, 1),
+        ));
+
+        assert_eq!(precise.required_tokens, 90);
+        assert_eq!(precise_plan.status, RateLimitReservationStatus::Acquired);
+        let precise_tpm =
+            reservation_dimension_for(&precise_plan, RateLimitDimension::TokensPerMinute);
+        assert_eq!(precise_tpm.required, 90);
+        assert_eq!(precise_tpm.used_after, 990);
+
+        let fallback =
+            estimate_tpm_reservation(RateLimitTpmEstimateInput::new(None, None, None, None, 256));
+        let fallback_plan = plan_rate_limit_reservation(RateLimitReservationInput::acquire(
+            RateLimitCounterWindow::unlimited(),
+            RateLimitCounterWindow::limited(1_000, 900),
+            RateLimitCounterWindow::unlimited(),
+            RateLimitRequiredCapacity::from_tpm_estimate(1, &fallback, 1),
+        ));
+
+        assert_eq!(fallback.required_tokens, 256);
+        assert_eq!(fallback_plan.status, RateLimitReservationStatus::Rejected);
+        assert_eq!(
+            fallback_plan.blocking_dimensions,
+            [RateLimitDimension::TokensPerMinute]
+        );
+        assert_eq!(fallback_plan.counter_updates_planned, 0);
+    }
+
+    #[test]
+    fn tpm_estimate_contract_fixture_is_stable_and_secret_safe() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/routing/rate_limit_tpm_estimate_contract.json"
+        ))
+        .expect("rate-limit TPM estimate contract fixture should be valid json");
+        let fallback =
+            estimate_tpm_reservation(RateLimitTpmEstimateInput::new(None, None, None, None, 256));
+
+        assert_eq!(fixture["scenario"], "rate_limit_tpm_estimate_contract");
+        assert_eq!(fixture["schema"], RATE_LIMIT_TPM_ESTIMATE_CONTRACT_SCHEMA);
+        assert_eq!(
+            fallback.required_tokens,
+            fixture["stable_behaviors"][3]["required_tokens"]
+                .as_u64()
+                .expect("fallback required tokens should be numeric")
+        );
+        assert_eq!(
+            fallback.source,
+            RateLimitTpmEstimateSource::ConservativeFallback
+        );
+
+        let serialized = serde_json::to_string(&fallback)
+            .expect("rate-limit TPM estimate should serialize")
+            .to_ascii_lowercase();
+        for forbidden in fixture["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden marker array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(forbidden),
+                "rate-limit TPM estimate leaked forbidden marker: {forbidden}"
             );
         }
     }

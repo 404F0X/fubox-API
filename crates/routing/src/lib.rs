@@ -33,12 +33,16 @@ pub use model_mapping::{
     ChannelModelMappingPolicy, ExplicitModelMapping, ModelNameCasePolicy, map_upstream_model_name,
 };
 pub use rate_limit::{
-    RATE_LIMIT_RESERVATION_CONTRACT_SCHEMA, RateLimitAvailability, RateLimitAvailabilityInput,
-    RateLimitCounterUpdate, RateLimitCounterWindow, RateLimitDimension, RateLimitDimensionStatus,
+    RATE_LIMIT_DEFAULT_TPM_FALLBACK_TOKENS, RATE_LIMIT_MIN_TPM_RESERVATION_TOKENS,
+    RATE_LIMIT_RESERVATION_CONTRACT_SCHEMA, RATE_LIMIT_TPM_ESTIMATE_CONTRACT_SCHEMA,
+    RateLimitAvailability, RateLimitAvailabilityInput, RateLimitCounterUpdate,
+    RateLimitCounterWindow, RateLimitDimension, RateLimitDimensionStatus,
     RateLimitDimensionSummary, RateLimitRequiredCapacity, RateLimitReservationDimensionPlan,
     RateLimitReservationInput, RateLimitReservationOperation, RateLimitReservationPlan,
-    RateLimitReservationStatus, RateLimitWindow, apply_rate_limit_availability_to_candidate,
-    evaluate_rate_limit_availability, evaluate_rate_limit_dimension, plan_rate_limit_reservation,
+    RateLimitReservationStatus, RateLimitTpmEstimateInput, RateLimitTpmEstimateSource,
+    RateLimitTpmReservationEstimate, RateLimitWindow, apply_rate_limit_availability_to_candidate,
+    estimate_tpm_reservation, evaluate_rate_limit_availability, evaluate_rate_limit_dimension,
+    plan_rate_limit_reservation,
 };
 pub use selection::{
     CandidateFilterReason, ChannelHealth, ChannelStatus, EvaluatedCandidate,

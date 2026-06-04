@@ -1,0 +1,102 @@
+{
+  "scenario": "rate_limit_tpm_estimate_contract",
+  "crate": "ai-gateway-routing",
+  "schema": "rate_limit_tpm_estimate_contract_v1",
+  "function": "estimate_tpm_reservation",
+  "input_contract": {
+    "prompt_tokens": "optional non-negative integer tokenizer estimate for prompt/input tokens",
+    "completion_tokens": "optional non-negative integer planned completion token estimate",
+    "max_completion_tokens": "optional non-negative integer max completion bound; used when larger than completion_tokens",
+    "total_tokens": "optional non-negative integer full request token reservation estimate; preferred when present",
+    "conservative_fallback_tokens": "positive integer fallback reservation used when tokenizer/usage data is missing"
+  },
+  "stable_behaviors": [
+    {
+      "name": "total_tokens_preferred",
+      "input": {
+        "prompt_tokens": 300,
+        "completion_tokens": 128,
+        "max_completion_tokens": 512,
+        "total_tokens": 700,
+        "conservative_fallback_tokens": 1024
+      },
+      "source": "TotalTokens",
+      "required_tokens": 700,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "prompt_and_completion",
+      "input": {
+        "prompt_tokens": 220,
+        "completion_tokens": 180,
+        "max_completion_tokens": null,
+        "total_tokens": null,
+        "conservative_fallback_tokens": 1024
+      },
+      "source": "PromptAndCompletion",
+      "required_tokens": 400,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "max_completion_bound",
+      "input": {
+        "prompt_tokens": 220,
+        "completion_tokens": 180,
+        "max_completion_tokens": 512,
+        "total_tokens": null,
+        "conservative_fallback_tokens": 1024
+      },
+      "source": "PromptAndMaxCompletion",
+      "required_tokens": 732,
+      "used_conservative_fallback": false
+    },
+    {
+      "name": "missing_usage_or_tokenizer_data_fallback",
+      "input": {
+        "prompt_tokens": null,
+        "completion_tokens": null,
+        "max_completion_tokens": null,
+        "total_tokens": null,
+        "conservative_fallback_tokens": 256
+      },
+      "source": "ConservativeFallback",
+      "required_tokens": 256,
+      "used_conservative_fallback": true
+    },
+    {
+      "name": "partial_estimate_adds_fallback",
+      "input": {
+        "prompt_tokens": 120,
+        "completion_tokens": null,
+        "max_completion_tokens": null,
+        "total_tokens": null,
+        "conservative_fallback_tokens": 256
+      },
+      "source": "PartialEstimateWithConservativeFallback",
+      "required_tokens": 376,
+      "used_conservative_fallback": true
+    }
+  ],
+  "safety_contract": {
+    "body_material_in_output": false,
+    "stores_raw_provider_key": false,
+    "stores_authorization_material": false,
+    "stores_payload": false,
+    "uses_regex": false,
+    "uses_io": false,
+    "bounded_token_fields": 5
+  },
+  "forbidden_output_markers": [
+    "authorization",
+    "bearer",
+    "provider_key",
+    "api_key",
+    "encrypted_secret",
+    "payload",
+    "request_body",
+    "raw_prompt",
+    "raw_completion",
+    "endpoint",
+    "current_window_state"
+  ]
+}
