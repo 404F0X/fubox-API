@@ -7,7 +7,9 @@
   "request_contract": {
     "required_permission": "billing_adjust",
     "plan_only": true,
+    "dry_run_plan_only": true,
     "ledger_write": false,
+    "execute_ledger_write_on_applied": true,
     "upstream_call": false,
     "operation_enum": ["adjust", "refund"],
     "mode_enum": ["dry_run", "execute_contract", "execute"],
@@ -98,6 +100,66 @@
       "future_behavior": "reference_existing_request_id_only",
       "request_log_mutation_allowed": false,
       "request_material_echoed": false
+    }
+  },
+  "execute": {
+    "endpoint_path": "/admin/ledger/adjustments/dry-run",
+    "mode": "execute",
+    "status_applied": 201,
+    "status_idempotent": 200,
+    "required_permission": "billing_adjust",
+    "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
+    "validates_before_write": true,
+    "refund_remaining_recomputed_after_locks": true,
+    "ledger_write_on_applied": true,
+    "audit_log_write_on_applied": true,
+    "request_log_write": false,
+    "upstream_call": false,
+    "server_generated_dedupe_material": true,
+    "dedupe_material_echoed": false,
+    "idempotent_replay_does_not_write_ledger_or_audit": true,
+    "business_and_success_audit_share_transaction": true,
+    "success_audit_only_after_ledger_write": true,
+    "audit_insert_failure_rolls_back_ledger_write": true,
+    "refusal_does_not_build_success_audit": true,
+    "blocked": false,
+    "transaction_contract": {
+      "isolation": "read_committed_or_stronger",
+      "begin_before_locking": true,
+      "commit_only_after_ledger_and_success_audit": true,
+      "rollback_on_ledger_write_failure": true,
+      "rollback_on_audit_insert_failure": true,
+      "rollback_on_refund_remaining_change": true,
+      "bounded_lock_order": [
+        "source_ledger_entry_for_update",
+        "same_source_confirmed_credit_entries_for_update",
+        "wallet_for_update",
+        "dedupe_reservation_for_update",
+        "ledger_insert",
+        "success_audit_insert"
+      ],
+      "bounded_by": [
+        "tenant_id",
+        "related_ledger_entry_id",
+        "currency",
+        "request_id",
+        "wallet_id",
+        "server_generated_dedupe_material"
+      ],
+      "recompute_after_locks": [
+        "related_entry_status_and_currency",
+        "confirmed_credit_sum",
+        "remaining_refundable_amount",
+        "dedupe_replay_state"
+      ],
+      "unbounded_scan_allowed": false
+    },
+    "safe_output_contract": {
+      "dedupe_material_echoed": false,
+      "ledger_snapshots_echoed": false,
+      "raw_metadata_echoed": false,
+      "request_material_echoed": false,
+      "credential_material_echoed": false
     }
   },
   "future_write_audit_contract": {
@@ -334,6 +396,161 @@
               "request_material_echoed": false,
               "credential_material_echoed": false
             }
+          }
+        }
+      }
+    },
+    "execute_success": {
+      "request": {
+        "mode": "execute",
+        "operation": "refund",
+        "amount": "0.15000000",
+        "currency": "USD",
+        "request_id": "00000000-0000-0000-0000-000000000090",
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000091",
+        "reason": "customer credit"
+      },
+      "response": {
+        "status": 201,
+        "data": {
+          "mode": "execute",
+          "outcome": "applied",
+          "ledger_write": true,
+          "audit_log_write": true,
+          "request_log_write": false,
+          "upstream_call": false,
+          "business_and_success_audit_share_transaction": true,
+          "success_audit_only_after_ledger_write": true,
+          "audit_insert_failure_rolls_back_ledger_write": true,
+          "refusal_does_not_build_success_audit": true,
+          "dedupe_material_echoed": false,
+          "dedupe_public_output": "omitted",
+          "audit_log_id": "00000000-0000-0000-0000-000000000093",
+          "transaction_contract": {
+            "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
+            "write_performed": true,
+            "isolation": "read_committed_or_stronger",
+            "begin_before_locking": true,
+            "commit_only_after_ledger_and_success_audit": true,
+            "rollback_on_ledger_write_failure": true,
+            "rollback_on_audit_insert_failure": true,
+            "rollback_on_refund_remaining_change": true,
+            "bounded_lock_order": [
+              "source_ledger_entry_for_update",
+              "same_source_confirmed_credit_entries_for_update",
+              "wallet_for_update",
+              "dedupe_reservation_for_update",
+              "ledger_insert",
+              "success_audit_insert"
+            ],
+            "bounded_by": [
+              "tenant_id",
+              "related_ledger_entry_id",
+              "currency",
+              "request_id",
+              "wallet_id",
+              "server_generated_dedupe_material"
+            ],
+            "dedupe_material_echoed": false,
+            "unbounded_scan_allowed": false
+          },
+          "ledger_entry": {
+            "id": "00000000-0000-0000-0000-000000000092",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "project_id": "00000000-0000-0000-0000-000000000020",
+            "wallet_id": "00000000-0000-0000-0000-000000000040",
+            "request_id": "00000000-0000-0000-0000-000000000090",
+            "related_ledger_entry_id": "00000000-0000-0000-0000-000000000091",
+            "entry_type": "refund",
+            "amount": "0.15000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "omitted_material": [
+              "dedupe material",
+              "ledger snapshots",
+              "raw metadata"
+            ]
+          },
+          "refund_remaining_summary": {
+            "source_debit_amount": "0.25000000",
+            "confirmed_credit_amount": "0.10000000",
+            "requested_refund_amount": "0.15000000",
+            "remaining_refundable_amount": "0.15000000",
+            "currency": "USD",
+            "confirmed_credit_count": 1,
+            "tenant_bounded": true,
+            "source_entry_bounded": true,
+            "currency_bounded": true,
+            "confirmed_only": true,
+            "credit_entry_types": ["refund", "adjust"]
+          },
+          "validated_plan": {
+            "operation": "refund",
+            "plan_only": true,
+            "ledger_write": false,
+            "upstream_call": false,
+            "request_log_write": false,
+            "audit_log_write": false,
+            "refund_remaining_summary": {
+              "remaining_refundable_amount": "0.15000000",
+              "tenant_bounded": true,
+              "source_entry_bounded": true,
+              "currency_bounded": true,
+              "confirmed_only": true
+            }
+          }
+        }
+      }
+    },
+    "execute_idempotent_replay": {
+      "request": {
+        "mode": "execute",
+        "operation": "adjust",
+        "amount": "0.10000000",
+        "currency": "USD",
+        "wallet_id": "00000000-0000-0000-0000-000000000040"
+      },
+      "response": {
+        "status": 200,
+        "data": {
+          "mode": "execute",
+          "outcome": "idempotent",
+          "ledger_write": false,
+          "audit_log_write": false,
+          "request_log_write": false,
+          "upstream_call": false,
+          "business_and_success_audit_share_transaction": true,
+          "success_audit_only_after_ledger_write": true,
+          "refusal_does_not_build_success_audit": true,
+          "dedupe_material_echoed": false,
+          "dedupe_public_output": "omitted",
+          "transaction_contract": {
+            "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
+            "write_performed": false,
+            "dedupe_material_echoed": false,
+            "unbounded_scan_allowed": false
+          },
+          "ledger_entry": {
+            "id": "00000000-0000-0000-0000-000000000092",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "wallet_id": "00000000-0000-0000-0000-000000000040",
+            "entry_type": "adjust",
+            "amount": "0.10000000",
+            "currency": "USD",
+            "status": "confirmed",
+            "omitted_material": [
+              "dedupe material",
+              "ledger snapshots",
+              "raw metadata"
+            ]
+          },
+          "validated_plan": {
+            "operation": "adjust",
+            "plan_only": true,
+            "ledger_write": false,
+            "upstream_call": false,
+            "request_log_write": false,
+            "audit_log_write": false
           }
         }
       }

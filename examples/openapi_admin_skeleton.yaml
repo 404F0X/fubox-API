@@ -1512,7 +1512,7 @@ paths:
       tags: [Ledger]
       summary: Dry-run ledger adjustment or refund plan
       operationId: dryRunLedgerAdjustment
-      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. Refund plans validate the related confirmed debit and same-tenant, same-source, same-currency confirmed refund/adjust credits before accepting the requested amount. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Requests with mode=execute_contract or mode=execute run the same validation and then return future_writer_required with ledger_adjustment_execute_preflight_contract.v2; future execute semantics require locked refund remaining recompute, ledger write, and success audit to share one database transaction.
+      description: BillingAdjust endpoint for bounded adjustment/refund validation. mode=dry_run returns a plan only. mode=execute revalidates and locks the bounded ledger rows, writes the confirmed ledger entry, and writes the success audit in the same database transaction; idempotent replays return the prior bounded ledger entry without a new ledger or audit write. mode=execute_contract runs validation and returns the stable future-writer refusal contract. No request logs or upstream provider calls are made by any mode.
       requestBody:
         required: true
         content:
@@ -1521,11 +1521,19 @@ paths:
               $ref: '#/components/schemas/LedgerAdjustmentDryRunRequest'
       responses:
         '200':
-          description: Secret-safe adjustment/refund plan.
+          description: Secret-safe adjustment/refund plan, or idempotent execute replay.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LedgerAdjustmentDryRunEnvelope'
+                oneOf:
+                  - $ref: '#/components/schemas/LedgerAdjustmentDryRunEnvelope'
+                  - $ref: '#/components/schemas/LedgerAdjustmentExecuteEnvelope'
+        '201':
+          description: Execute applied a confirmed ledger adjustment/refund and success audit in one database transaction.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerAdjustmentExecuteEnvelope'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1535,7 +1543,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '501':
-          description: Execute contract requested but the transactional ledger writer is not implemented in this slice.
+          description: Execute contract requested; validation succeeded but the caller requested the explicit future-writer refusal contract.
           content:
             application/json:
               schema:
@@ -5450,7 +5458,7 @@ components:
           type: string
           enum: [dry_run, execute_contract, execute]
           default: dry_run
-          description: dry_run returns a plan; execute_contract and execute validate the same plan and return future_writer_required without ledger, request-log, audit, or upstream writes.
+          description: dry_run returns a plan; execute writes a confirmed ledger entry and success audit in one transaction or returns a bounded idempotent replay; execute_contract validates the same plan and returns future_writer_required without ledger, request-log, audit, or upstream writes.
         operation:
           type: string
           enum: [adjust, adjustment, refund]
@@ -5485,6 +5493,180 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/LedgerAdjustmentDryRunPlan'
+    LedgerAdjustmentExecuteEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/LedgerAdjustmentExecuteResult'
+    LedgerAdjustmentExecuteResult:
+      type: object
+      additionalProperties: false
+      required:
+        - mode
+        - outcome
+        - ledger_write
+        - audit_log_write
+        - request_log_write
+        - upstream_call
+        - business_and_success_audit_share_transaction
+        - success_audit_only_after_ledger_write
+        - audit_insert_failure_rolls_back_ledger_write
+        - refusal_does_not_build_success_audit
+        - dedupe_material_echoed
+        - dedupe_public_output
+        - transaction_contract
+        - ledger_entry
+        - validated_plan
+      properties:
+        mode:
+          type: string
+          enum: [execute]
+        outcome:
+          type: string
+          enum: [applied, idempotent]
+        ledger_write:
+          type: boolean
+          description: true only when a new confirmed ledger entry was inserted.
+        audit_log_write:
+          type: boolean
+          description: true only when the same transaction inserted the success audit.
+        request_log_write:
+          type: boolean
+          const: false
+        upstream_call:
+          type: boolean
+          const: false
+        business_and_success_audit_share_transaction:
+          type: boolean
+          const: true
+        success_audit_only_after_ledger_write:
+          type: boolean
+          const: true
+        audit_insert_failure_rolls_back_ledger_write:
+          type: boolean
+          const: true
+        refusal_does_not_build_success_audit:
+          type: boolean
+          const: true
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        dedupe_public_output:
+          type: string
+          enum: [omitted]
+        audit_log_id:
+          type: [string, 'null']
+          format: uuid
+          description: Present only when outcome=applied.
+        transaction_contract:
+          $ref: '#/components/schemas/LedgerAdjustmentExecuteTransactionContract'
+        ledger_entry:
+          $ref: '#/components/schemas/LedgerAdjustmentExecutedEntry'
+        refund_remaining_summary:
+          oneOf:
+            - $ref: '#/components/schemas/LedgerRefundRemainingSummary'
+            - type: 'null'
+        validated_plan:
+          $ref: '#/components/schemas/LedgerAdjustmentDryRunPlan'
+    LedgerAdjustmentExecuteTransactionContract:
+      type: object
+      additionalProperties: false
+      required:
+        - writer
+        - write_performed
+        - isolation
+        - begin_before_locking
+        - commit_only_after_ledger_and_success_audit
+        - rollback_on_ledger_write_failure
+        - rollback_on_audit_insert_failure
+        - rollback_on_refund_remaining_change
+        - bounded_lock_order
+        - bounded_by
+        - dedupe_material_echoed
+        - unbounded_scan_allowed
+      properties:
+        writer:
+          type: string
+          enum: [control_plane_transactional_admin_ledger_adjustment_writer]
+        write_performed:
+          type: boolean
+        isolation:
+          type: string
+          enum: [read_committed_or_stronger]
+        begin_before_locking:
+          type: boolean
+          const: true
+        commit_only_after_ledger_and_success_audit:
+          type: boolean
+        rollback_on_ledger_write_failure:
+          type: boolean
+          const: true
+        rollback_on_audit_insert_failure:
+          type: boolean
+          const: true
+        rollback_on_refund_remaining_change:
+          type: boolean
+          const: true
+        bounded_lock_order:
+          type: array
+          items:
+            type: string
+        bounded_by:
+          type: array
+          items:
+            type: string
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        unbounded_scan_allowed:
+          type: boolean
+          const: false
+    LedgerAdjustmentExecutedEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - entry_type
+        - amount
+        - currency
+        - status
+        - omitted_material
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        project_id:
+          type: [string, 'null']
+          format: uuid
+        wallet_id:
+          type: [string, 'null']
+          format: uuid
+        request_id:
+          type: [string, 'null']
+          format: uuid
+        related_ledger_entry_id:
+          type: [string, 'null']
+          format: uuid
+        entry_type:
+          type: string
+          enum: [adjust, refund]
+        amount:
+          type: string
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [confirmed]
+        omitted_material:
+          type: array
+          items:
+            type: string
     LedgerAdjustmentExecuteContractEnvelope:
       type: object
       additionalProperties: false

@@ -37,7 +37,7 @@ use axum::{
 };
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
-use sqlx::{Row, postgres::PgRow};
+use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
 use uuid::Uuid;
 
 use crate::{
@@ -635,7 +635,7 @@ struct ListLedgerEntriesQuery {
     wallet_id: Option<Uuid>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LedgerAdjustmentDryRunRequest {
     mode: Option<String>,
@@ -2078,11 +2078,15 @@ async fn list_ledger_entries(
 
 async fn dry_run_ledger_adjustment(
     State(state): State<Arc<ControlPlaneState>>,
+    Extension(session): Extension<AdminSession>,
     Json(request): Json<LedgerAdjustmentDryRunRequest>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
     let mode = normalize_ledger_adjustment_request_mode(request.mode.as_deref())?;
-    let plan = build_ledger_adjustment_dry_run_plan(&repository, request).await?;
+    let plan = build_ledger_adjustment_dry_run_plan(&repository, request.clone()).await?;
+    if mode == LedgerAdjustmentRequestMode::Execute {
+        return execute_ledger_adjustment(state.as_ref(), &session, request, plan).await;
+    }
     if mode == LedgerAdjustmentRequestMode::ExecuteContract {
         return Ok(ledger_adjustment_execute_contract_response(plan));
     }
@@ -2494,6 +2498,7 @@ enum LedgerAdjustmentOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LedgerAdjustmentRequestMode {
     DryRun,
+    Execute,
     ExecuteContract,
 }
 
@@ -2635,6 +2640,200 @@ fn ledger_adjustment_execute_contract() -> Value {
     })
 }
 
+async fn execute_ledger_adjustment(
+    state: &ControlPlaneState,
+    session: &AdminSession,
+    request: LedgerAdjustmentDryRunRequest,
+    validated_plan: Value,
+) -> Result<Response, AdminError> {
+    let operation = normalize_ledger_adjustment_operation(request.operation.clone())?;
+    let amount = normalize_ledger_adjustment_amount(request.amount.clone(), operation)?;
+    let currency = normalize_ledger_adjustment_currency(request.currency.clone())?;
+    let reason_provided = normalize_ledger_adjustment_reason(request.reason.clone())?.is_some();
+    let dedupe_key = ledger_adjustment_execute_dedupe_key(
+        operation,
+        &amount,
+        &currency,
+        request.project_id,
+        request.wallet_id,
+        request.request_id,
+        request.related_ledger_entry_id,
+    );
+
+    let mut tx = state
+        .db()
+        .begin()
+        .await
+        .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    let related_ledger_entry = match request.related_ledger_entry_id {
+        Some(ledger_entry_id) => {
+            let entry =
+                match get_ledger_entry_for_adjustment_execute_tx(&mut tx, ledger_entry_id).await? {
+                    Some(entry) => entry,
+                    None => {
+                        rollback_ledger_adjustment_execute_tx(tx).await;
+                        return Err(AdminError::not_found("ledger entry"));
+                    }
+                };
+            if let Err(error) = validate_related_ledger_entry_for_adjustment_plan(
+                operation,
+                &entry,
+                &currency,
+                request.project_id,
+                request.wallet_id,
+                request.request_id,
+            ) {
+                rollback_ledger_adjustment_execute_tx(tx).await;
+                return Err(error);
+            }
+            Some(entry)
+        }
+        None if operation == LedgerAdjustmentOperation::Refund => {
+            rollback_ledger_adjustment_execute_tx(tx).await;
+            return Err(AdminError::bad_request(
+                "related_ledger_entry_id is required for refund execute",
+            ));
+        }
+        None => None,
+    };
+
+    let project_id = request.project_id.or_else(|| {
+        related_ledger_entry
+            .as_ref()
+            .and_then(|entry| entry.project_id)
+    });
+    let wallet_id = request.wallet_id.or_else(|| {
+        related_ledger_entry
+            .as_ref()
+            .and_then(|entry| entry.wallet_id)
+    });
+    let request_id = request.request_id.or_else(|| {
+        related_ledger_entry
+            .as_ref()
+            .and_then(|entry| entry.request_id)
+    });
+
+    if related_ledger_entry.is_none() && wallet_id.is_none() {
+        rollback_ledger_adjustment_execute_tx(tx).await;
+        return Err(AdminError::bad_request(
+            "wallet_id is required for adjustment execute without related_ledger_entry_id",
+        ));
+    }
+    if let Some(wallet_id) = wallet_id
+        && !lock_ledger_adjustment_wallet_tx(&mut tx, wallet_id).await?
+    {
+        rollback_ledger_adjustment_execute_tx(tx).await;
+        return Err(AdminError::not_found("wallet"));
+    }
+
+    let refund_remaining_summary = match operation {
+        LedgerAdjustmentOperation::Refund => {
+            let related_entry = related_ledger_entry
+                .as_ref()
+                .expect("refund requires related entry above");
+            let confirmed_credit_summary = get_confirmed_refund_credit_summary_for_update_tx(
+                &mut tx,
+                related_entry.id,
+                &currency,
+            )
+            .await?;
+            Some(validate_refund_remaining_amount(
+                &amount,
+                &related_entry.amount,
+                &confirmed_credit_summary.confirmed_credit_amount,
+                confirmed_credit_summary.confirmed_credit_count,
+                &currency,
+            )?)
+        }
+        LedgerAdjustmentOperation::Adjust => None,
+    };
+
+    if let Some(existing_entry) =
+        get_ledger_adjustment_dedupe_entry_for_update_tx(&mut tx, &dedupe_key).await?
+    {
+        tx.commit()
+            .await
+            .map_err(|error| AdminError::from(DbError::Query(error)))?;
+        return Ok(Json(json!({
+            "data": ledger_adjustment_execute_idempotent_response(
+                &existing_entry,
+                validated_plan,
+                refund_remaining_summary.as_ref(),
+            )
+        }))
+        .into_response());
+    }
+
+    let metadata = ledger_adjustment_execute_metadata(
+        operation,
+        reason_provided,
+        related_ledger_entry.as_ref().map(|entry| entry.id),
+        request_id,
+    );
+    let inserted_entry = match insert_ledger_adjustment_entry_tx(
+        &mut tx,
+        operation,
+        &amount,
+        &currency,
+        project_id,
+        wallet_id,
+        request_id,
+        related_ledger_entry.as_ref().map(|entry| entry.id),
+        &dedupe_key,
+        metadata,
+    )
+    .await
+    {
+        Ok(entry) => entry,
+        Err(error) => {
+            rollback_ledger_adjustment_execute_tx(tx).await;
+            return Err(error);
+        }
+    };
+
+    let audit = new_admin_audit_log(
+        session,
+        operation.future_audit_action(),
+        None,
+        &inserted_entry,
+        ledger_adjustment_success_audit_metadata(
+            operation,
+            refund_remaining_summary.as_ref(),
+            reason_provided,
+        ),
+        None,
+    );
+    let audit_log_id = match insert_admin_audit_log_tx(&mut tx, audit).await {
+        Ok(audit_log_id) => audit_log_id,
+        Err(error) => {
+            rollback_ledger_adjustment_execute_tx(tx).await;
+            return Err(error);
+        }
+    };
+
+    tx.commit()
+        .await
+        .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "data": ledger_adjustment_execute_success_response(
+                &inserted_entry,
+                audit_log_id,
+                validated_plan,
+                refund_remaining_summary.as_ref(),
+            )
+        })),
+    )
+        .into_response())
+}
+
+async fn rollback_ledger_adjustment_execute_tx(tx: Transaction<'_, Postgres>) {
+    let _ = tx.rollback().await;
+}
+
 async fn build_ledger_adjustment_dry_run_plan(
     repository: &DbRepository,
     request: LedgerAdjustmentDryRunRequest,
@@ -2764,6 +2963,213 @@ async fn get_confirmed_refund_credit_summary(
     })
 }
 
+async fn get_ledger_entry_for_adjustment_execute_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    ledger_entry_id: Uuid,
+) -> Result<Option<LedgerEntry>, AdminError> {
+    let row = sqlx::query(
+        r#"
+        select
+          id, tenant_id, project_id, wallet_id, request_id, virtual_key_id, trace_id,
+          related_ledger_entry_id, entry_type, amount::text as amount, currency, status,
+          idempotency_key, price_version_id, usage_snapshot, policy_snapshot, metadata,
+          occurred_at::text as occurred_at, created_at::text as created_at
+        from ledger_entries
+        where tenant_id = $1 and id = $2
+        for update
+        "#,
+    )
+    .bind(DEFAULT_TENANT_ID)
+    .bind(ledger_entry_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    row.map(ledger_entry_from_row)
+        .transpose()
+        .map_err(|error| AdminError::from(DbError::Query(error)))
+}
+
+async fn lock_ledger_adjustment_wallet_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    wallet_id: Uuid,
+) -> Result<bool, AdminError> {
+    let row = sqlx::query(
+        r#"
+        select id
+        from wallets
+        where tenant_id = $1 and id = $2 and status in ('active', 'suspended')
+        for update
+        "#,
+    )
+    .bind(DEFAULT_TENANT_ID)
+    .bind(wallet_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    Ok(row.is_some())
+}
+
+async fn get_confirmed_refund_credit_summary_for_update_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    related_ledger_entry_id: Uuid,
+    currency: &str,
+) -> Result<ConfirmedRefundCreditSummary, AdminError> {
+    let row = sqlx::query(
+        r#"
+        with locked_credits as (
+          select amount
+          from ledger_entries
+          where tenant_id = $1
+            and related_ledger_entry_id = $2
+            and currency = $3
+            and status = 'confirmed'
+            and entry_type in ('refund', 'adjust')
+            and amount > 0
+          for update
+        )
+        select
+          coalesce(sum(amount), 0)::text as confirmed_credit_amount,
+          count(*)::bigint as confirmed_credit_count
+        from locked_credits
+        "#,
+    )
+    .bind(DEFAULT_TENANT_ID)
+    .bind(related_ledger_entry_id)
+    .bind(currency)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    Ok(ConfirmedRefundCreditSummary {
+        confirmed_credit_amount: row
+            .try_get("confirmed_credit_amount")
+            .map_err(|error| AdminError::from(DbError::Query(error)))?,
+        confirmed_credit_count: row
+            .try_get("confirmed_credit_count")
+            .map_err(|error| AdminError::from(DbError::Query(error)))?,
+    })
+}
+
+async fn get_ledger_adjustment_dedupe_entry_for_update_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    dedupe_key: &str,
+) -> Result<Option<LedgerEntry>, AdminError> {
+    let row = sqlx::query(
+        r#"
+        select
+          id, tenant_id, project_id, wallet_id, request_id, virtual_key_id, trace_id,
+          related_ledger_entry_id, entry_type, amount::text as amount, currency, status,
+          idempotency_key, price_version_id, usage_snapshot, policy_snapshot, metadata,
+          occurred_at::text as occurred_at, created_at::text as created_at
+        from ledger_entries
+        where tenant_id = $1 and idempotency_key = $2
+        for update
+        "#,
+    )
+    .bind(DEFAULT_TENANT_ID)
+    .bind(dedupe_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    row.map(ledger_entry_from_row)
+        .transpose()
+        .map_err(|error| AdminError::from(DbError::Query(error)))
+}
+
+async fn insert_ledger_adjustment_entry_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    operation: LedgerAdjustmentOperation,
+    amount: &str,
+    currency: &str,
+    project_id: Option<Uuid>,
+    wallet_id: Option<Uuid>,
+    request_id: Option<Uuid>,
+    related_ledger_entry_id: Option<Uuid>,
+    dedupe_key: &str,
+    metadata: Value,
+) -> Result<LedgerEntry, AdminError> {
+    let row = sqlx::query(
+        r#"
+        insert into ledger_entries (
+          tenant_id, project_id, wallet_id, request_id, related_ledger_entry_id,
+          entry_type, amount, currency, status, idempotency_key, metadata
+        )
+        values ($1, $2, $3, $4, $5, $6, $7::numeric, $8, 'confirmed', $9, $10)
+        on conflict (tenant_id, idempotency_key) do nothing
+        returning
+          id, tenant_id, project_id, wallet_id, request_id, virtual_key_id, trace_id,
+          related_ledger_entry_id, entry_type, amount::text as amount, currency, status,
+          idempotency_key, price_version_id, usage_snapshot, policy_snapshot, metadata,
+          occurred_at::text as occurred_at, created_at::text as created_at
+        "#,
+    )
+    .bind(DEFAULT_TENANT_ID)
+    .bind(project_id)
+    .bind(wallet_id)
+    .bind(request_id)
+    .bind(related_ledger_entry_id)
+    .bind(operation.planned_entry_type())
+    .bind(amount)
+    .bind(currency)
+    .bind(dedupe_key)
+    .bind(metadata)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    match row {
+        Some(row) => {
+            ledger_entry_from_row(row).map_err(|error| AdminError::from(DbError::Query(error)))
+        }
+        None => Err(AdminError::bad_request(
+            "ledger adjustment execute request already exists",
+        )),
+    }
+}
+
+async fn insert_admin_audit_log_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    audit: NewAuditLog,
+) -> Result<Uuid, AdminError> {
+    let row = sqlx::query(
+        r#"
+        insert into audit_logs (
+          tenant_id, actor_user_id, request_id, action, resource_type, resource_id,
+          resource_tenant_id, before_snapshot, after_snapshot, metadata
+        )
+        values (
+          $1,
+          (
+            select s.user_id
+            from user_sessions s
+            where s.tenant_id = $1 and s.id = $2
+          ),
+          $3, $4, $5, $6, $7, $8, $9, $10
+        )
+        returning id
+        "#,
+    )
+    .bind(audit.tenant_id)
+    .bind(audit.actor_session_id)
+    .bind(audit.request_id)
+    .bind(audit.action)
+    .bind(audit.resource_type)
+    .bind(audit.resource_id)
+    .bind(audit.resource_tenant_id)
+    .bind(audit.before_snapshot)
+    .bind(audit.after_snapshot)
+    .bind(audit.metadata)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|error| AdminError::from(DbError::Query(error)))?;
+
+    row.try_get("id")
+        .map_err(|error| AdminError::from(DbError::Query(error)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RefundRemainingSummary {
     source_debit_amount: String,
@@ -2866,6 +3272,171 @@ fn refund_remaining_summary_response(summary: &RefundRemainingSummary) -> Value 
         "currency_bounded": true,
         "confirmed_only": true,
         "credit_entry_types": ["refund", "adjust"]
+    })
+}
+
+fn ledger_adjustment_execute_success_response(
+    entry: &LedgerEntry,
+    audit_log_id: Uuid,
+    validated_plan: Value,
+    refund_remaining_summary: Option<&RefundRemainingSummary>,
+) -> Value {
+    json!({
+        "mode": "execute",
+        "outcome": "applied",
+        "ledger_write": true,
+        "audit_log_write": true,
+        "request_log_write": false,
+        "upstream_call": false,
+        "business_and_success_audit_share_transaction": true,
+        "success_audit_only_after_ledger_write": true,
+        "audit_insert_failure_rolls_back_ledger_write": true,
+        "refusal_does_not_build_success_audit": true,
+        "dedupe_material_echoed": false,
+        "dedupe_public_output": "omitted",
+        "transaction_contract": ledger_adjustment_execute_transaction_contract(true),
+        "ledger_entry": ledger_adjustment_executed_entry_response(entry),
+        "audit_log_id": audit_log_id,
+        "refund_remaining_summary": refund_remaining_summary.map(refund_remaining_summary_response),
+        "validated_plan": validated_plan
+    })
+}
+
+fn ledger_adjustment_execute_idempotent_response(
+    entry: &LedgerEntry,
+    validated_plan: Value,
+    refund_remaining_summary: Option<&RefundRemainingSummary>,
+) -> Value {
+    json!({
+        "mode": "execute",
+        "outcome": "idempotent",
+        "ledger_write": false,
+        "audit_log_write": false,
+        "request_log_write": false,
+        "upstream_call": false,
+        "business_and_success_audit_share_transaction": true,
+        "success_audit_only_after_ledger_write": true,
+        "refusal_does_not_build_success_audit": true,
+        "dedupe_material_echoed": false,
+        "dedupe_public_output": "omitted",
+        "transaction_contract": ledger_adjustment_execute_transaction_contract(false),
+        "ledger_entry": ledger_adjustment_executed_entry_response(entry),
+        "refund_remaining_summary": refund_remaining_summary.map(refund_remaining_summary_response),
+        "validated_plan": validated_plan
+    })
+}
+
+fn ledger_adjustment_execute_transaction_contract(write_performed: bool) -> Value {
+    json!({
+        "writer": "control_plane_transactional_admin_ledger_adjustment_writer",
+        "write_performed": write_performed,
+        "isolation": "read_committed_or_stronger",
+        "begin_before_locking": true,
+        "commit_only_after_ledger_and_success_audit": write_performed,
+        "rollback_on_ledger_write_failure": true,
+        "rollback_on_audit_insert_failure": true,
+        "rollback_on_refund_remaining_change": true,
+        "bounded_lock_order": [
+            "source_ledger_entry_for_update",
+            "same_source_confirmed_credit_entries_for_update",
+            "wallet_for_update",
+            "dedupe_reservation_for_update",
+            "ledger_insert",
+            "success_audit_insert"
+        ],
+        "bounded_by": [
+            "tenant_id",
+            "related_ledger_entry_id",
+            "currency",
+            "request_id",
+            "wallet_id",
+            "server_generated_dedupe_material"
+        ],
+        "dedupe_material_echoed": false,
+        "unbounded_scan_allowed": false
+    })
+}
+
+fn ledger_adjustment_executed_entry_response(entry: &LedgerEntry) -> Value {
+    json!({
+        "id": entry.id,
+        "tenant_id": entry.tenant_id,
+        "project_id": entry.project_id,
+        "wallet_id": entry.wallet_id,
+        "request_id": entry.request_id,
+        "related_ledger_entry_id": entry.related_ledger_entry_id,
+        "entry_type": entry.entry_type,
+        "amount": entry.amount,
+        "currency": entry.currency,
+        "status": entry.status,
+        "omitted_material": [
+            "dedupe material",
+            "ledger snapshots",
+            "raw metadata"
+        ]
+    })
+}
+
+fn ledger_adjustment_execute_dedupe_key(
+    operation: LedgerAdjustmentOperation,
+    amount: &str,
+    currency: &str,
+    project_id: Option<Uuid>,
+    wallet_id: Option<Uuid>,
+    request_id: Option<Uuid>,
+    related_ledger_entry_id: Option<Uuid>,
+) -> String {
+    format!(
+        "admin-ledger-adjustment:v1:{}:{amount}:{currency}:project:{}:wallet:{}:request:{}:related:{}",
+        operation.as_str(),
+        optional_uuid_dedupe_part(project_id),
+        optional_uuid_dedupe_part(wallet_id),
+        optional_uuid_dedupe_part(request_id),
+        optional_uuid_dedupe_part(related_ledger_entry_id),
+    )
+}
+
+fn optional_uuid_dedupe_part(value: Option<Uuid>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn ledger_adjustment_execute_metadata(
+    operation: LedgerAdjustmentOperation,
+    reason_provided: bool,
+    related_ledger_entry_id: Option<Uuid>,
+    request_id: Option<Uuid>,
+) -> Value {
+    json!({
+        "source": "admin_ledger_adjustment_execute",
+        "operation": operation.as_str(),
+        "reason_provided": reason_provided,
+        "request_id": request_id,
+        "related_ledger_entry_id": related_ledger_entry_id,
+        "dedupe_policy": "server_generated_not_echoed",
+        "metadata_policy": "bounded_admin_adjustment_metadata_only",
+        "sensitive_material_policy": "reason_value_not_echoed"
+    })
+}
+
+fn ledger_adjustment_success_audit_metadata(
+    operation: LedgerAdjustmentOperation,
+    refund_remaining_summary: Option<&RefundRemainingSummary>,
+    reason_provided: bool,
+) -> Value {
+    json!({
+        "transactional_audit": true,
+        "ledger_adjustment_execute": true,
+        "operation": operation.as_str(),
+        "reason_provided": reason_provided,
+        "dedupe_material_echoed": false,
+        "dedupe_public_output": "omitted",
+        "success_audit_same_transaction": true,
+        "audit_insert_failure_rolls_back_ledger_write": true,
+        "refund_remaining_recomputed_after_locks": refund_remaining_summary.is_some(),
+        "refund_remaining_summary": refund_remaining_summary.map(refund_remaining_summary_response),
+        "sensitive_material_policy": "no raw request, raw metadata, payload, authorization, credential, or dedupe key"
     })
 }
 
@@ -2998,11 +3569,10 @@ fn normalize_ledger_adjustment_request_mode(
 ) -> Result<LedgerAdjustmentRequestMode, AdminError> {
     match mode.map(str::trim).filter(|mode| !mode.is_empty()) {
         None | Some("dry_run") | Some("plan") => Ok(LedgerAdjustmentRequestMode::DryRun),
-        Some("execute") | Some("execute_contract") => {
-            Ok(LedgerAdjustmentRequestMode::ExecuteContract)
-        }
+        Some("execute") => Ok(LedgerAdjustmentRequestMode::Execute),
+        Some("execute_contract") => Ok(LedgerAdjustmentRequestMode::ExecuteContract),
         Some(_) => Err(AdminError::bad_request(
-            "mode must be dry_run or execute_contract",
+            "mode must be dry_run, execute_contract, or execute",
         )),
     }
 }
@@ -4012,6 +4582,38 @@ impl AuditResource for PriceVersion {
             "effective_at": self.effective_at,
             "retired_at": self.retired_at,
             "status": self.status,
+        })
+    }
+}
+
+impl AuditResource for LedgerEntry {
+    const RESOURCE_TYPE: &'static str = "ledger_entry";
+
+    fn audit_resource_id(&self) -> Uuid {
+        self.id
+    }
+
+    fn audit_tenant_id(&self) -> Uuid {
+        self.tenant_id
+    }
+
+    fn audit_summary(&self) -> Value {
+        json!({
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "project_id": self.project_id,
+            "wallet_id": self.wallet_id,
+            "request_id": self.request_id,
+            "related_ledger_entry_id": self.related_ledger_entry_id,
+            "entry_type": self.entry_type,
+            "amount": self.amount,
+            "currency": self.currency,
+            "status": self.status,
+            "omitted_material": [
+                "dedupe material",
+                "ledger snapshots",
+                "raw metadata"
+            ]
         })
     }
 }
@@ -9199,7 +9801,7 @@ mod tests {
         );
         assert_eq!(
             normalize_ledger_adjustment_request_mode(Some("execute")).unwrap(),
-            LedgerAdjustmentRequestMode::ExecuteContract
+            LedgerAdjustmentRequestMode::Execute
         );
         assert!(normalize_ledger_adjustment_request_mode(Some("write_now")).is_err());
         assert_eq!(
@@ -9410,6 +10012,149 @@ mod tests {
     }
 
     #[test]
+    fn ledger_adjustment_execute_success_response_is_transactional_and_secret_safe() {
+        let request_id = Uuid::from_u128(90);
+        let related_entry =
+            ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let refund_summary = validate_refund_remaining_amount(
+            "0.15000000",
+            &related_entry.amount,
+            "0.10000000",
+            1,
+            "USD",
+        )
+        .expect("refund should fit remaining amount");
+        let plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Refund,
+            "0.15000000",
+            "USD",
+            related_entry.project_id,
+            related_entry.wallet_id,
+            related_entry.request_id,
+            Some(&related_entry),
+            Some(&refund_summary),
+            true,
+        );
+        let mut executed_entry =
+            ledger_entry_fixture(92, request_id, "refund", "0.15000000", "confirmed");
+        executed_entry.related_ledger_entry_id = Some(related_entry.id);
+        let response = ledger_adjustment_execute_success_response(
+            &executed_entry,
+            Uuid::from_u128(93),
+            plan,
+            Some(&refund_summary),
+        );
+        let serialized = serde_json::to_string(&response).expect("response should serialize");
+
+        assert_eq!(response["mode"], json!("execute"));
+        assert_eq!(response["outcome"], json!("applied"));
+        assert_eq!(response["ledger_write"], json!(true));
+        assert_eq!(response["audit_log_write"], json!(true));
+        assert_eq!(
+            response["business_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            response["audit_insert_failure_rolls_back_ledger_write"],
+            json!(true)
+        );
+        assert_eq!(
+            response["transaction_contract"]["writer"],
+            json!("control_plane_transactional_admin_ledger_adjustment_writer")
+        );
+        assert_eq!(
+            response["transaction_contract"]["commit_only_after_ledger_and_success_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            response["transaction_contract"]["bounded_lock_order"][0],
+            json!("source_ledger_entry_for_update")
+        );
+        assert_eq!(
+            response["transaction_contract"]["unbounded_scan_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            response["ledger_entry"]["omitted_material"],
+            json!(["dedupe material", "ledger snapshots", "raw metadata"])
+        );
+        assert_eq!(
+            response["refund_remaining_summary"]["remaining_refundable_amount"],
+            json!("0.15000000")
+        );
+
+        for forbidden in [
+            "ledger-idempotency-never-return",
+            "raw ledger payload",
+            "Bearer ledger-never-return",
+            "sk-live-ledger-never-return",
+            "sk-live-metadata-never-return",
+            "usage_snapshot",
+            "policy_snapshot",
+            "idempotency_key",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "ledger adjustment execute response must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_execute_idempotent_response_does_not_fake_new_writes() {
+        let request_id = Uuid::from_u128(90);
+        let entry = ledger_entry_fixture(92, request_id, "adjust", "0.10000000", "confirmed");
+        let plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Adjust,
+            "0.10000000",
+            "USD",
+            entry.project_id,
+            entry.wallet_id,
+            entry.request_id,
+            None,
+            None,
+            false,
+        );
+        let response = ledger_adjustment_execute_idempotent_response(&entry, plan, None);
+        let serialized = serde_json::to_string(&response).expect("response should serialize");
+
+        assert_eq!(response["mode"], json!("execute"));
+        assert_eq!(response["outcome"], json!("idempotent"));
+        assert_eq!(response["ledger_write"], json!(false));
+        assert_eq!(response["audit_log_write"], json!(false));
+        assert_eq!(response["request_log_write"], json!(false));
+        assert_eq!(response["upstream_call"], json!(false));
+        assert_eq!(
+            response["transaction_contract"]["write_performed"],
+            json!(false)
+        );
+        assert!(
+            response.get("audit_log_id").is_none(),
+            "idempotent replay must not imply a new success audit"
+        );
+        assert!(!serialized.contains("ledger-idempotency-never-return"));
+        assert!(!serialized.contains("idempotency_key"));
+    }
+
+    #[test]
+    fn ledger_adjustment_execute_source_keeps_bounded_transaction_contract() {
+        let source = include_str!("admin.rs");
+
+        assert!(source.contains("state\n        .db()\n        .begin()"));
+        assert!(source.contains("get_ledger_entry_for_adjustment_execute_tx"));
+        assert!(source.contains("for update"));
+        assert!(source.contains("get_confirmed_refund_credit_summary_for_update_tx"));
+        assert!(source.contains("get_ledger_adjustment_dedupe_entry_for_update_tx"));
+        assert!(source.contains("insert_ledger_adjustment_entry_tx"));
+        assert!(source.contains("insert_admin_audit_log_tx"));
+        assert!(source.contains("tx.commit()"));
+        assert!(source.contains("rollback_ledger_adjustment_execute_tx(tx).await"));
+        assert!(source.contains("where tenant_id = $1"));
+        assert!(source.contains("related_ledger_entry_id = $2"));
+        assert!(source.contains("currency = $3"));
+    }
+
+    #[test]
     fn ledger_adjustment_dry_run_contract_fixture_covers_openapi_and_secret_safe_plan() {
         let fixture = serde_json::from_str::<Value>(include_str!(
             "../../../tests/fixtures/control-plane/ledger_adjustment_dry_run_contract.json"
@@ -9498,6 +10243,36 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            fixture["execute"]["writer"],
+            json!("control_plane_transactional_admin_ledger_adjustment_writer")
+        );
+        assert_eq!(fixture["execute"]["ledger_write_on_applied"], json!(true));
+        assert_eq!(
+            fixture["execute"]["audit_log_write_on_applied"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["business_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["audit_insert_failure_rolls_back_ledger_write"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["refund_remaining_recomputed_after_locks"],
+            json!(true)
+        );
+        assert_eq!(fixture["execute"]["dedupe_material_echoed"], json!(false));
+        assert_eq!(
+            fixture["execute"]["idempotent_replay_does_not_write_ledger_or_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute"]["transaction_contract"]["unbounded_scan_allowed"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["examples"]["execute_contract_refusal"]["response"]["error"]["code"],
             json!("future_writer_required")
         );
@@ -9512,6 +10287,54 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["status"],
+            json!(201)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["mode"],
+            json!("execute")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["outcome"],
+            json!("applied")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["ledger_write"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["audit_log_write"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["transaction_contract"]["writer"],
+            json!("control_plane_transactional_admin_ledger_adjustment_writer")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["transaction_contract"]["dedupe_material_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_success"]["response"]["data"]["ledger_entry"]["omitted_material"],
+            json!(["dedupe material", "ledger snapshots", "raw metadata"])
+        );
+        assert_eq!(
+            fixture["examples"]["execute_idempotent_replay"]["response"]["status"],
+            json!(200)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_idempotent_replay"]["response"]["data"]["outcome"],
+            json!("idempotent")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_idempotent_replay"]["response"]["data"]["ledger_write"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_idempotent_replay"]["response"]["data"]["audit_log_write"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["future_write_audit_contract"]["business_and_success_audit_share_transaction"],
             json!(true)
         );
@@ -9522,8 +10345,10 @@ mod tests {
         assert!(openapi.contains("/admin/ledger/adjustments/dry-run"));
         assert!(openapi.contains("LedgerAdjustmentDryRunRequest"));
         assert!(openapi.contains("LedgerAdjustmentDryRunEnvelope"));
+        assert!(openapi.contains("LedgerAdjustmentExecuteEnvelope"));
         assert!(openapi.contains("LedgerRefundRemainingSummary"));
         assert!(openapi.contains("LedgerAdjustmentExecuteContractEnvelope"));
+        assert!(openapi.contains("control_plane_transactional_admin_ledger_adjustment_writer"));
         assert!(openapi.contains("ledger_adjustment_execute_preflight_contract.v2"));
         assert!(openapi.contains("transaction_contract"));
         assert!(openapi.contains("dedupe_contract"));
