@@ -405,8 +405,8 @@ audit live evidence, Admin UI E2E, or billing-ledger runtime writer gaps.
 
 ## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
-This section is the acceptance entry for TODO lanes `E13-005-S10` and
-`E13-005-S11`. The detailed live proof is documented in
+This section is the acceptance entry for TODO lanes `E13-005-S10` through
+`E13-005-S13`. The detailed live proof is documented in
 `docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
 
 The proof covers prompt-protection reject no-side-effect evidence for:
@@ -442,7 +442,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protec
 ```
 
 This default command must not require Docker, Gateway, Postgres, mock-provider,
-or live credentials.
+or live credentials. It also verifies that `scripts\test.ps1` and
+`scripts\release_check.ps1` keep the proof contract-only by default and reserve
+`-Live` for explicit runtime opt-in.
+
+Exit semantics self-test command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestExitSemantics
+```
+
+This self-test does not connect to live services. It child-runs the default
+contract path and requires exit `0`, child-runs
+`-SimulateLivePreflightBlocker` and requires exit `2`, and child-runs
+`-SimulateEvidenceMismatch` and requires exit `1`.
 
 Live opt-in commands:
 

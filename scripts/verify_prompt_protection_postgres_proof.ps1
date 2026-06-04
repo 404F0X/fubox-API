@@ -10,7 +10,10 @@ param(
   [switch]$ContractOnly,
   [switch]$PreflightOnly,
   [switch]$SkipComposePs,
-  [switch]$SkipMockProviderHealth
+  [switch]$SkipMockProviderHealth,
+  [switch]$SelfTestExitSemantics,
+  [switch]$SimulateLivePreflightBlocker,
+  [switch]$SimulateEvidenceMismatch
 )
 
 $ErrorActionPreference = "Stop"
@@ -141,6 +144,77 @@ function Exit-WithEvidenceStatus {
     }
     exit 1
   }
+}
+
+function Get-PowerShellExecutable {
+  $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+  if ($pwsh) {
+    return $pwsh.Source
+  }
+
+  $powershell = Get-Command powershell -ErrorAction SilentlyContinue
+  if ($powershell) {
+    return $powershell.Source
+  }
+
+  throw "PowerShell executable was not found for exit semantics self-test"
+}
+
+function Invoke-ExitSemanticsChild {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [Parameter(Mandatory = $true)][string[]]$Arguments,
+    [Parameter(Mandatory = $true)][int]$ExpectedExitCode
+  )
+
+  $ps = Get-PowerShellExecutable
+  $psArgs = @("-NoProfile")
+  if ((Split-Path -Leaf $ps) -match '(?i)^powershell(\.exe)?$') {
+    $psArgs += @("-ExecutionPolicy", "Bypass")
+  }
+  $psArgs += @("-File", $PSCommandPath)
+  $psArgs += $Arguments
+
+  $global:LASTEXITCODE = 0
+  $output = @(& $ps @psArgs 2>&1)
+  $exitCode = $global:LASTEXITCODE
+  if ($null -eq $exitCode) {
+    $exitCode = 0
+  }
+
+  if ([int]$exitCode -ne $ExpectedExitCode) {
+    $safeTail = @($output | ForEach-Object { Redact-SecretLikeString ([string]$_) } | Select-Object -Last 12) -join " | "
+    throw "$Name expected exit $ExpectedExitCode, got $exitCode. output_tail=$safeTail"
+  }
+
+  Write-SafeHost "[OK] $Name exit=$exitCode"
+}
+
+function Invoke-ExitSemanticsSelfTest {
+  Invoke-ExitSemanticsChild `
+    -Name "default contract path" `
+    -Arguments @("-ContractOnly") `
+    -ExpectedExitCode 0
+  Invoke-ExitSemanticsChild `
+    -Name "simulated live preflight blocker path" `
+    -Arguments @("-SimulateLivePreflightBlocker") `
+    -ExpectedExitCode 2
+  Invoke-ExitSemanticsChild `
+    -Name "simulated evidence mismatch path" `
+    -Arguments @("-SimulateEvidenceMismatch") `
+    -ExpectedExitCode 1
+
+  Write-SafeHost "Prompt protection Postgres proof exit semantics self-test passed."
+}
+
+function Invoke-SimulatedLivePreflightBlocker {
+  Add-Blocker "[BLOCKED] simulated live preflight blocker - Gateway/Postgres/psql/compose unavailable"
+  Exit-WithEvidenceStatus
+}
+
+function Invoke-SimulatedEvidenceMismatch {
+  Add-Failure "[FAIL] simulated evidence mismatch - provider_attempts_count expected 0, got 1"
+  Exit-WithEvidenceStatus
 }
 
 function Join-Url {
@@ -405,7 +479,10 @@ function Assert-RunbookContract {
       'Exit `0`',
       'Exit `1`',
       'Exit `2`',
-      "external blocker"
+      "external blocker",
+      "-SelfTestExitSemantics",
+      "-SimulateLivePreflightBlocker",
+      "-SimulateEvidenceMismatch"
     )) {
     if (-not $runbook.Contains($needle)) {
       throw "runbook missing '$needle'"
@@ -424,10 +501,51 @@ function Assert-ScriptContract {
       "redaction_status",
       "raw_payload_omitted",
       "raw_pattern_values_omitted",
-      "has_provider_key"
+      "has_provider_key",
+      "SelfTestExitSemantics",
+      "SimulateLivePreflightBlocker",
+      "SimulateEvidenceMismatch",
+      "simulated live preflight blocker",
+      "simulated evidence mismatch"
     )) {
     if (-not $source.Contains($needle)) {
       throw "script missing '$needle'"
+    }
+  }
+}
+
+function Assert-GateWrapperContract {
+  $testScriptPath = Join-Path $repoRoot "scripts\test.ps1"
+  $releaseScriptPath = Join-Path $repoRoot "scripts\release_check.ps1"
+  if (-not (Test-Path -LiteralPath $testScriptPath)) {
+    throw "missing scripts\test.ps1"
+  }
+  if (-not (Test-Path -LiteralPath $releaseScriptPath)) {
+    throw "missing scripts\release_check.ps1"
+  }
+
+  $testScript = Get-Content -LiteralPath $testScriptPath -Raw
+  foreach ($needle in @(
+      "PromptProtectionPostgresProofOnly",
+      "PromptProtectionPostgresProofLive",
+      'return @{ ContractOnly = $true }',
+      'return @{ Live = $true }',
+      "Invoke-PromptProtectionPostgresProof"
+    )) {
+    if (-not $testScript.Contains($needle)) {
+      throw "test wrapper missing '$needle'"
+    }
+  }
+
+  $releaseScript = Get-Content -LiteralPath $releaseScriptPath -Raw
+  foreach ($needle in @(
+      "verify_prompt_protection_postgres_proof.ps1",
+      '@("-ContractOnly")',
+      '@("-Live")',
+      "RunRuntimeSmoke"
+    )) {
+    if (-not $releaseScript.Contains($needle)) {
+      throw "release wrapper missing '$needle'"
     }
   }
 }
@@ -625,6 +743,7 @@ function Invoke-ContractChecks {
   Check "prompt protection proof case catalog covers four endpoints" { Assert-ContractCatalog }
   Check "prompt protection proof runbook documents DB evidence and exit semantics" { Assert-RunbookContract }
   Check "prompt protection proof script documents live env and evidence checks" { Assert-ScriptContract }
+  Check "prompt protection proof wrappers keep contract-only default and live opt-in" { Assert-GateWrapperContract }
   Exit-WithEvidenceStatus
 
   Write-SafeHost "Prompt protection Postgres proof contract/preflight passed."
@@ -692,6 +811,19 @@ function Invoke-LiveProof {
   foreach ($tracked in $script:TrackedCases) {
     Write-SafeHost ("- {0}: endpoint={1}, request_body_hash={2}, expected_scope={3}, provider_attempts_count=0" -f $tracked.Name, $tracked.Endpoint, $tracked.RequestHash, $tracked.ExpectedScope)
   }
+}
+
+if ($SimulateLivePreflightBlocker) {
+  Invoke-SimulatedLivePreflightBlocker
+}
+
+if ($SimulateEvidenceMismatch) {
+  Invoke-SimulatedEvidenceMismatch
+}
+
+if ($SelfTestExitSemantics) {
+  Invoke-ExitSemanticsSelfTest
+  exit 0
 }
 
 Invoke-ContractChecks

@@ -26,8 +26,8 @@ Out of scope:
 - Audit UI visual verification.
 - Provider success/fallback behavior.
 - Changing Gateway runtime.
-- Adding this script to default PR gates. The script remains opt-in for live DB
-  evidence.
+- Adding live DB proof to default PR gates. The script's contract-only checks
+  may run by default; live evidence remains explicit opt-in.
 
 ## Preconditions
 
@@ -107,7 +107,24 @@ Expected default result:
 - Verifies the four endpoint contract entries.
 - Verifies this runbook still documents `request_body_hash`,
   `redaction_status=hash_only`, `provider_attempts_count=0`, and exit `0`/`1`/`2`.
+- Verifies the test/release wrappers still keep `-ContractOnly` as the default
+  and use `-Live` only for explicit runtime opt-in.
 - Returns exit `0` when the contract checks pass.
+
+Exit semantics self-test command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -SelfTestExitSemantics
+```
+
+Expected self-test result:
+
+- Does not require Docker, Gateway, mock-provider, Postgres, `DATABASE_URL`, or
+  `GATEWAY_AUTH_TOKEN`.
+- Child-runs the default contract path and requires exit `0`.
+- Child-runs `-SimulateLivePreflightBlocker` and requires exit `2`.
+- Child-runs `-SimulateEvidenceMismatch` and requires exit `1`.
+- Returns exit `0` only when all three child exit-code assertions pass.
 
 Explicit live proof command:
 
@@ -148,6 +165,11 @@ Script exit semantics:
 - Exit `1`: Gateway/Postgres are reachable, but HTTP/DB evidence mismatches.
 - Exit `2`: external blocker prevents the live proof from being authoritative.
 
+The `-SimulateLivePreflightBlocker` and `-SimulateEvidenceMismatch` switches are
+contract-test helpers only. They do not connect to live services; they inject a
+bounded blocker or mismatch and exit through the same script status function used
+by live proof.
+
 ## Test And Release Gate Wiring
 
 S12 wires the script into the unified test and release gates.
@@ -186,7 +208,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1 -C
 
 The default release smoke gate runs
 `scripts\verify_prompt_protection_postgres_proof.ps1 -ContractOnly` and does not
-require live services.
+require live services. The script's default contract also verifies this wrapper
+boundary so the gate does not drift into live preflight accidentally.
 
 Release live opt-in:
 
