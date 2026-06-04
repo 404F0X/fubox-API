@@ -2265,13 +2265,21 @@ describe("App", () => {
     );
   });
 
-  it("runs ledger adjustment dry-run and renders the plan-only contract without execute actions", async () => {
+  it("runs ledger adjustment dry-run and renders the plan-only contract with disabled execute readiness", async () => {
     const fetchMock = stubAdminFetch();
 
     const user = await renderSignedInApp();
 
     await user.click(screen.getByRole("button", { name: /Billing/ }));
     await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const readinessRegion = await screen.findByRole("region", { name: "Ledger adjustment execute readiness" });
+    const readinessPanel = within(readinessRegion);
+    expect(readinessPanel.getByText("execute_contract_mode=true")).toBeInTheDocument();
+    expect(readinessPanel.getByText("execute_endpoint=false")).toBeInTheDocument();
+    expect(readinessPanel.getByText("fresh_dry_run=false")).toBeInTheDocument();
+    expect(readinessPanel.getByText("execute_network_call=false")).toBeInTheDocument();
+    expect(readinessPanel.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
 
     const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
     const dryRunPanel = within(dryRunRegion);
@@ -2285,6 +2293,7 @@ describe("App", () => {
     expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Plan Flags" })).toBeInTheDocument();
     expect(screen.getByText("plan_only=true")).toBeInTheDocument();
+    expect(screen.getAllByText("fresh_dry_run=true").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("ledger_write=false")).toBeInTheDocument();
     expect(screen.getByText("request_log_write=false")).toBeInTheDocument();
     expect(screen.getByText("audit_log_write=false")).toBeInTheDocument();
@@ -2301,7 +2310,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Future Audit / Write Contract" })).toBeInTheDocument();
     expect(screen.getByText("ledger.refund")).toBeInTheDocument();
     expect(screen.getByText("bounded public ids and amounts only")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /execute/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
 
     const dryRunCall = fetchMock.mock.calls.find(
       ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
@@ -2310,6 +2319,7 @@ describe("App", () => {
     expect(JSON.parse(String(dryRunCall?.[1]?.body))).toEqual({
       amount: "0.25000000",
       currency: "USD",
+      mode: "dry_run",
       operation: "refund",
       reason: "customer credit",
       related_ledger_entry_id: "00000000-0000-0000-0000-000000000091",
@@ -2317,7 +2327,50 @@ describe("App", () => {
     });
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("raw metadata");
+    expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url).includes("/admin/ledger/adjustments/") && !String(url).includes("/dry-run"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("marks ledger adjustment execute readiness stale after form changes without execute calls", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+
+    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunPanel = within(dryRunRegion);
+
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
+    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
+    await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
+    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+
+    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+    expect(screen.getAllByText("fresh_dry_run=true").length).toBeGreaterThanOrEqual(2);
+
+    await user.clear(dryRunPanel.getByLabelText("Amount"));
+    await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
+
+    expect(await screen.findByText("Form changed after dry-run. Run dry-run again before execute can be considered.")).toBeInTheDocument();
+    expect(screen.getAllByText("fresh_dry_run=false").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url]) => String(url).includes("/admin/ledger/adjustments/") && !String(url).includes("/dry-run"),
+      ),
+    ).toHaveLength(0);
   });
 
   it("redacts ledger adjustment dry-run errors without retaining secret material", async () => {

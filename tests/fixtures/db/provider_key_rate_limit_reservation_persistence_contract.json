@@ -2,6 +2,7 @@
   "scenario": "provider_key_rate_limit_reservation_persistence_contract",
   "crate": "ai-gateway-db",
   "function": "build_provider_key_rate_limit_reservation_persistence_plan",
+  "execution_function": "execute_provider_key_rate_limit_reservation",
   "input": {
     "tenant_id": "00000000-0000-0000-0000-000000000001",
     "provider_key_id": "00000000-0000-0000-0000-000000000002",
@@ -102,6 +103,44 @@
       "metadata_material"
     ]
   },
+  "expected_execution_command_summary": {
+    "schema": "provider_key_rate_limit_reservation_persistence_v1",
+    "operation": "Acquire",
+    "status": "SqlReady",
+    "refusal_reason": null,
+    "sql_name": "PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL",
+    "source_table": "provider_keys",
+    "scope_index": "provider_keys_tenant_id_id_channel_scope",
+    "scope_columns": [
+      "tenant_id",
+      "provider_key_id",
+      "channel_id"
+    ],
+    "tenant_scoped": true,
+    "provider_key_scoped": true,
+    "channel_scoped": true,
+    "row_lock": true,
+    "bounded_rows": 1,
+    "bind_count": 6,
+    "requested_counter_updates": 3,
+    "current_window_state_material_in_output": false,
+    "output_fields": [
+      "provider_key_id",
+      "channel_id",
+      "rpm_used",
+      "tpm_used",
+      "concurrency_used"
+    ],
+    "omitted_fields": [
+      "raw_window_state_material",
+      "provider_credential_material",
+      "secret_fingerprint_material",
+      "request_content_material",
+      "response_content_material",
+      "upstream_location_material",
+      "metadata_material"
+    ]
+  },
   "expected_sql_fragments": {
     "acquire": [
       "from provider_keys",
@@ -110,6 +149,9 @@
       "and channel_id = $3",
       "and deleted_at is null",
       "for update",
+      "(rpm_limit is not null and $4::bigint > 0)",
+      "(tpm_limit is not null and $5::bigint > 0)",
+      "(concurrency_limit is not null and $6::bigint > 0)",
       "and rpm_used + $4::bigint <= rpm_limit",
       "and tpm_used + $5::bigint <= tpm_limit",
       "and concurrency_used + $6::bigint <= concurrency_limit",
@@ -124,6 +166,9 @@
       "and channel_id = $3",
       "and $7::boolean = true",
       "for update",
+      "(rpm_limit is not null and $4::bigint > 0)",
+      "(tpm_limit is not null and $5::bigint > 0)",
+      "(concurrency_limit is not null and $6::bigint > 0)",
       "greatest(eligible.rpm_used - $4::bigint, 0)",
       "greatest(eligible.tpm_used - $5::bigint, 0)",
       "greatest(eligible.concurrency_used - $6::bigint, 0)",

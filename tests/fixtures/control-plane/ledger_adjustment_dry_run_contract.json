@@ -10,6 +10,8 @@
     "ledger_write": false,
     "upstream_call": false,
     "operation_enum": ["adjust", "refund"],
+    "mode_enum": ["dry_run", "execute_contract"],
+    "execute_contract_rejects_with": "future_writer_required",
     "amount_decimal_string": true,
     "currency_uppercase": true,
     "refund_requires_related_ledger_entry_id": true,
@@ -35,6 +37,23 @@
     "omits_raw_request_material": true,
     "omits_credential_material": true
   },
+  "execute_contract": {
+    "endpoint_path": "/admin/ledger/adjustments/dry-run",
+    "mode": "execute_contract",
+    "status": 501,
+    "error_code": "future_writer_required",
+    "validates_before_rejecting": true,
+    "ledger_write": false,
+    "audit_log_write": false,
+    "request_log_write": false,
+    "upstream_call": false,
+    "server_generated_dedupe_material": true,
+    "dedupe_material_echoed": false,
+    "business_and_success_audit_share_transaction": true,
+    "success_audit_only_after_ledger_write": true,
+    "audit_insert_failure_rolls_back_ledger_write": true,
+    "refusal_does_not_build_success_audit": true
+  },
   "future_write_audit_contract": {
     "future_actions": ["ledger.adjust", "ledger.refund"],
     "business_and_success_audit_share_transaction": true,
@@ -56,6 +75,7 @@
   "examples": {
     "refund": {
       "request": {
+        "mode": "dry_run",
         "operation": "refund",
         "amount": "0.15000000",
         "currency": "USD",
@@ -137,6 +157,62 @@
             "raw request material",
             "credential material"
           ]
+        }
+      }
+    },
+    "execute_contract_refusal": {
+      "request": {
+        "mode": "execute_contract",
+        "operation": "refund",
+        "amount": "0.15000000",
+        "currency": "USD",
+        "request_id": "00000000-0000-0000-0000-000000000090",
+        "related_ledger_entry_id": "00000000-0000-0000-0000-000000000091",
+        "reason": "customer credit"
+      },
+      "response": {
+        "status": 501,
+        "error": {
+          "code": "future_writer_required",
+          "message": "ledger adjustment execute requires transactional ledger writer"
+        },
+        "data": {
+          "mode": "execute_contract",
+          "validated_plan": {
+            "operation": "refund",
+            "plan_only": true,
+            "ledger_write": false,
+            "upstream_call": false,
+            "request_log_write": false,
+            "audit_log_write": false,
+            "refund_remaining_summary": {
+              "source_debit_amount": "0.25000000",
+              "confirmed_credit_amount": "0.10000000",
+              "requested_refund_amount": "0.15000000",
+              "remaining_refundable_amount": "0.15000000",
+              "currency": "USD",
+              "confirmed_credit_count": 1,
+              "tenant_bounded": true,
+              "source_entry_bounded": true,
+              "currency_bounded": true,
+              "confirmed_only": true,
+              "credit_entry_types": ["refund", "adjust"]
+            }
+          },
+          "execute_contract": {
+            "future_writer_required": true,
+            "ledger_write": false,
+            "audit_log_write": false,
+            "request_log_write": false,
+            "upstream_call": false,
+            "business_and_success_audit_share_transaction": true,
+            "success_audit_only_after_ledger_write": true,
+            "audit_insert_failure_rolls_back_ledger_write": true,
+            "refusal_does_not_build_success_audit": true,
+            "server_generated_dedupe_material": true,
+            "dedupe_material_echoed": false,
+            "audit_snapshot_policy": "bounded public ids and amounts only"
+          }
         }
       }
     }

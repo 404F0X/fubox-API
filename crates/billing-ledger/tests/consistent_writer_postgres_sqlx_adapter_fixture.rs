@@ -9,7 +9,14 @@ use ai_gateway_billing_ledger::{
     plan_consistent_ledger_postgres_sqlx_adapter_contract, plan_consistent_ledger_write,
     plan_consistent_ledger_write_commands,
 };
+#[cfg(feature = "postgres-sqlx")]
+use ai_gateway_billing_ledger::{
+    ConsistentLedgerPostgresSqlxBindValue, ConsistentLedgerPostgresSqlxExecutableStatement,
+    map_consistent_ledger_postgres_sqlx_error,
+};
 use serde::Deserialize;
+#[cfg(feature = "postgres-sqlx")]
+use std::{borrow::Cow, error::Error, fmt};
 use uuid::Uuid;
 
 const EXECUTOR_FIXTURE: &str =
@@ -40,7 +47,8 @@ struct SqlxAdapterFixture {
 struct ExpectedSqlxAdapter {
     schema_version: String,
     sqlx_dependency_declared: bool,
-    db_io_implemented: bool,
+    db_io_implemented_without_feature: bool,
+    db_io_implemented_with_feature: bool,
     future_feature_gate: String,
     transaction_methods: Vec<String>,
     operation_key_bind_marker: String,
@@ -164,9 +172,14 @@ fn sqlx_adapter_fixture_matches_contract_boundary() {
         adapter_contract.sqlx_dependency_declared,
         adapter_fixture.expected.sqlx_dependency_declared
     );
+    let expected_db_io_implemented = if cfg!(feature = "postgres-sqlx") {
+        adapter_fixture.expected.db_io_implemented_with_feature
+    } else {
+        adapter_fixture.expected.db_io_implemented_without_feature
+    };
     assert_eq!(
         adapter_contract.db_io_implemented,
-        adapter_fixture.expected.db_io_implemented
+        expected_db_io_implemented
     );
     assert_eq!(
         adapter_contract.future_feature_gate,
@@ -271,6 +284,73 @@ fn postgres_db_error_mapping_is_stable_and_secret_safe() {
             &case.expected_code,
         );
     }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[test]
+fn postgres_sqlx_feature_boundary_keeps_bind_values_private_and_maps_sqlx_errors() {
+    let adapter_fixture: SqlxAdapterFixture =
+        serde_json::from_str(SQLX_ADAPTER_FIXTURE).expect("adapter fixture should parse");
+    let executable = ConsistentLedgerPostgresSqlxExecutableStatement {
+        order: 7,
+        kind: ConsistentLedgerPostgresStatementKind::InsertLedgerEntry,
+        sql: "insert into ledger_entries (tenant_id, operation_key_hash, metadata) values ($1, $2, $3)",
+        bind_markers: vec![
+            ConsistentLedgerPostgresSqlxBindMarker::TenantId,
+            ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind,
+            ConsistentLedgerPostgresSqlxBindMarker::Metadata,
+        ],
+        binds: vec![
+            ConsistentLedgerPostgresSqlxBindValue::Uuid(
+                "00000000-0000-0000-0000-000000000001"
+                    .parse()
+                    .expect("uuid"),
+            ),
+            ConsistentLedgerPostgresSqlxBindValue::OperationKey(
+                "reserve:00000000-0000-0000-0000-000000000111".to_string(),
+            ),
+            ConsistentLedgerPostgresSqlxBindValue::Json(serde_json::json!({
+                "payload": "secret request material",
+                "Authorization": "Bearer provider_key",
+                "database_url": "postgres://user:pass@db",
+            })),
+        ],
+    };
+
+    let debug = format!("{executable:?}");
+    assert!(debug.contains("operation_key_bind"));
+    assert!(debug.contains("OperationKey(<bind_marker_only>)"));
+    assert_secret_safe_text(
+        &debug,
+        &adapter_fixture.secret_safe_forbidden_terms,
+        "sqlx executable debug",
+    );
+
+    let timeout = map_consistent_ledger_postgres_sqlx_error(
+        &sqlx::Error::PoolTimedOut,
+        Some(ConsistentLedgerPostgresStatementKind::LockWallet),
+    );
+    assert_eq!(timeout.code, "db_timeout");
+    assert_eq!(timeout.category, "db_transaction");
+    assert_eq!(timeout.detail_output, "omitted");
+
+    let unique = map_consistent_ledger_postgres_sqlx_error(
+        &sqlx::Error::Database(Box::new(FakeSqlxDatabaseError {
+            code: "23505",
+            message: "duplicate reserve:00000000-0000-0000-0000-000000000111 postgres://user:pass@db",
+        })),
+        Some(ConsistentLedgerPostgresStatementKind::InsertLedgerEntry),
+    );
+    assert_eq!(unique.code, "db_unique_constraint_violation");
+    assert_eq!(unique.category, "db_constraint");
+    assert_eq!(unique.detail_output, "omitted");
+
+    let serialized = serde_json::to_string(&unique).expect("error should serialize");
+    assert_secret_safe_text(
+        &serialized,
+        &adapter_fixture.secret_safe_forbidden_terms,
+        "sqlx mapped db error",
+    );
 }
 
 fn request_from_fixture(
@@ -406,5 +486,55 @@ fn assert_secret_safe_text(serialized: &str, forbidden_terms: &[String], label: 
             !normalized.contains(&forbidden.to_ascii_lowercase()),
             "{label} contains forbidden term `{forbidden}`"
         );
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[derive(Debug)]
+struct FakeSqlxDatabaseError {
+    code: &'static str,
+    message: &'static str,
+}
+
+#[cfg(feature = "postgres-sqlx")]
+impl fmt::Display for FakeSqlxDatabaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+impl Error for FakeSqlxDatabaseError {}
+
+#[cfg(feature = "postgres-sqlx")]
+impl sqlx::error::DatabaseError for FakeSqlxDatabaseError {
+    fn message(&self) -> &str {
+        self.message
+    }
+
+    fn code(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Borrowed(self.code))
+    }
+
+    fn as_error(&self) -> &(dyn Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn as_error_mut(&mut self) -> &mut (dyn Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn into_error(self: Box<Self>) -> Box<dyn Error + Send + Sync + 'static> {
+        self
+    }
+
+    fn kind(&self) -> sqlx::error::ErrorKind {
+        match self.code {
+            "23505" => sqlx::error::ErrorKind::UniqueViolation,
+            "23503" => sqlx::error::ErrorKind::ForeignKeyViolation,
+            "23514" => sqlx::error::ErrorKind::CheckViolation,
+            "23502" => sqlx::error::ErrorKind::NotNullViolation,
+            _ => sqlx::error::ErrorKind::Other,
+        }
     }
 }

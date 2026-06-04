@@ -1512,7 +1512,7 @@ paths:
       tags: [Ledger]
       summary: Dry-run ledger adjustment or refund plan
       operationId: dryRunLedgerAdjustment
-      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. Refund plans validate the related confirmed debit and same-tenant, same-source, same-currency confirmed refund/adjust credits before accepting the requested amount. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Future execute semantics require the ledger write and success audit to share one database transaction.
+      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. Refund plans validate the related confirmed debit and same-tenant, same-source, same-currency confirmed refund/adjust credits before accepting the requested amount. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Requests with mode=execute_contract run the same validation and then return future_writer_required; future execute semantics require the ledger write and success audit to share one database transaction.
       requestBody:
         required: true
         content:
@@ -1534,6 +1534,12 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '501':
+          description: Execute contract requested but the transactional ledger writer is not implemented in this slice.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerAdjustmentExecuteContractEnvelope'
 components:
   securitySchemes:
     AdminBearerAuth:
@@ -5440,6 +5446,11 @@ components:
       additionalProperties: false
       required: [operation, amount, currency]
       properties:
+        mode:
+          type: string
+          enum: [dry_run, execute_contract]
+          default: dry_run
+          description: dry_run returns a plan; execute_contract validates the same plan and returns future_writer_required without ledger, request-log, audit, or upstream writes.
         operation:
           type: string
           enum: [adjust, adjustment, refund]
@@ -5474,6 +5485,80 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/LedgerAdjustmentDryRunPlan'
+    LedgerAdjustmentExecuteContractEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error, data]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [future_writer_required]
+            message:
+              type: string
+        data:
+          type: object
+          additionalProperties: false
+          required: [mode, validated_plan, execute_contract]
+          properties:
+            mode:
+              type: string
+              enum: [execute_contract]
+            validated_plan:
+              $ref: '#/components/schemas/LedgerAdjustmentDryRunPlan'
+            execute_contract:
+              $ref: '#/components/schemas/LedgerAdjustmentExecuteContract'
+    LedgerAdjustmentExecuteContract:
+      type: object
+      additionalProperties: false
+      required:
+        - future_writer_required
+        - ledger_write
+        - audit_log_write
+        - request_log_write
+        - upstream_call
+        - business_and_success_audit_share_transaction
+        - success_audit_only_after_ledger_write
+        - audit_insert_failure_rolls_back_ledger_write
+        - refusal_does_not_build_success_audit
+        - server_generated_dedupe_material
+        - dedupe_material_echoed
+        - audit_snapshot_policy
+      properties:
+        future_writer_required:
+          type: boolean
+          const: true
+        ledger_write:
+          type: boolean
+          const: false
+        audit_log_write:
+          type: boolean
+          const: false
+        request_log_write:
+          type: boolean
+          const: false
+        upstream_call:
+          type: boolean
+          const: false
+        business_and_success_audit_share_transaction:
+          type: boolean
+        success_audit_only_after_ledger_write:
+          type: boolean
+        audit_insert_failure_rolls_back_ledger_write:
+          type: boolean
+        refusal_does_not_build_success_audit:
+          type: boolean
+        server_generated_dedupe_material:
+          type: boolean
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        audit_snapshot_policy:
+          type: string
     LedgerAdjustmentDryRunPlan:
       type: object
       additionalProperties: false

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(feature = "postgres-sqlx")]
+use std::fmt;
+
 use crate::{
     ConsistentLedgerBoundedCommand, ConsistentLedgerBoundedCommandKind,
     ConsistentLedgerCommandPlan, ConsistentLedgerScope, ConsistentLedgerWriterPlan,
@@ -117,6 +120,95 @@ pub enum ConsistentLedgerPostgresDbErrorKind {
     Timeout,
     Connection,
     Unknown,
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[derive(Clone, PartialEq)]
+pub struct ConsistentLedgerPostgresSqlxExecutableStatement<'a> {
+    pub order: u16,
+    pub kind: ConsistentLedgerPostgresStatementKind,
+    pub sql: &'a str,
+    pub bind_markers: Vec<ConsistentLedgerPostgresSqlxBindMarker>,
+    pub binds: Vec<ConsistentLedgerPostgresSqlxBindValue>,
+}
+
+#[cfg(feature = "postgres-sqlx")]
+impl fmt::Debug for ConsistentLedgerPostgresSqlxExecutableStatement<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bind_markers = self
+            .bind_markers
+            .iter()
+            .map(|marker| sqlx_bind_marker_name(*marker))
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("ConsistentLedgerPostgresSqlxExecutableStatement")
+            .field("order", &self.order)
+            .field("kind", &self.kind)
+            .field("sql", &self.sql)
+            .field("bind_markers", &bind_markers)
+            .field("binds", &self.binds)
+            .finish()
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[derive(Clone, PartialEq)]
+pub enum ConsistentLedgerPostgresSqlxBindValue {
+    Uuid(Uuid),
+    OptionalUuid(Option<Uuid>),
+    Text(String),
+    OptionalText(Option<String>),
+    DecimalText(String),
+    I64(i64),
+    Bool(bool),
+    Json(serde_json::Value),
+    OperationKey(String),
+}
+
+#[cfg(feature = "postgres-sqlx")]
+impl fmt::Debug for ConsistentLedgerPostgresSqlxBindValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uuid(value) => formatter.debug_tuple("Uuid").field(value).finish(),
+            Self::OptionalUuid(value) => {
+                formatter.debug_tuple("OptionalUuid").field(value).finish()
+            }
+            Self::Text(_) => formatter.write_str("Text(<omitted>)"),
+            Self::OptionalText(Some(_)) => formatter.write_str("OptionalText(Some(<omitted>))"),
+            Self::OptionalText(None) => formatter.write_str("OptionalText(None)"),
+            Self::DecimalText(_) => formatter.write_str("DecimalText(<omitted>)"),
+            Self::I64(value) => formatter.debug_tuple("I64").field(value).finish(),
+            Self::Bool(value) => formatter.debug_tuple("Bool").field(value).finish(),
+            Self::Json(_) => formatter.write_str("Json(<omitted>)"),
+            Self::OperationKey(_) => formatter.write_str("OperationKey(<bind_marker_only>)"),
+        }
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn sqlx_bind_marker_name(marker: ConsistentLedgerPostgresSqlxBindMarker) -> &'static str {
+    match marker {
+        ConsistentLedgerPostgresSqlxBindMarker::TenantId => "tenant_id",
+        ConsistentLedgerPostgresSqlxBindMarker::ProjectId => "project_id",
+        ConsistentLedgerPostgresSqlxBindMarker::VirtualKeyId => "virtual_key_id",
+        ConsistentLedgerPostgresSqlxBindMarker::WalletId => "wallet_id",
+        ConsistentLedgerPostgresSqlxBindMarker::Currency => "currency",
+        ConsistentLedgerPostgresSqlxBindMarker::Now => "now",
+        ConsistentLedgerPostgresSqlxBindMarker::RequestId => "request_id",
+        ConsistentLedgerPostgresSqlxBindMarker::SourceLedgerEntryId => "source_ledger_entry_id",
+        ConsistentLedgerPostgresSqlxBindMarker::RelatedLedgerEntryId => "related_ledger_entry_id",
+        ConsistentLedgerPostgresSqlxBindMarker::LedgerEntryId => "ledger_entry_id",
+        ConsistentLedgerPostgresSqlxBindMarker::BudgetId => "budget_id",
+        ConsistentLedgerPostgresSqlxBindMarker::RequiredDebit => "required_debit",
+        ConsistentLedgerPostgresSqlxBindMarker::AvailableBeforeWrite => "available_before_write",
+        ConsistentLedgerPostgresSqlxBindMarker::EntryType => "entry_type",
+        ConsistentLedgerPostgresSqlxBindMarker::Amount => "amount",
+        ConsistentLedgerPostgresSqlxBindMarker::Status => "status",
+        ConsistentLedgerPostgresSqlxBindMarker::FromStatus => "from_status",
+        ConsistentLedgerPostgresSqlxBindMarker::ToStatus => "to_status",
+        ConsistentLedgerPostgresSqlxBindMarker::Metadata => "metadata",
+        ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind => "operation_key_bind",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,10 +478,10 @@ pub fn plan_consistent_ledger_postgres_sqlx_adapter_contract(
     ConsistentLedgerPostgresSqlxAdapterContract {
         schema_version: CONSISTENT_LEDGER_POSTGRES_SQLX_ADAPTER_SCHEMA,
         adapter_name: "SqlxConsistentLedgerPostgresTransactionExecutor",
-        dependency_strategy: "contract_only_no_sqlx_dependency_in_this_crate_slice",
-        sqlx_dependency_declared: false,
-        future_feature_gate: "billing-ledger-postgres-sqlx",
-        db_io_implemented: false,
+        dependency_strategy: "optional_workspace_sqlx_dependency_feature_gated",
+        sqlx_dependency_declared: true,
+        future_feature_gate: "postgres-sqlx",
+        db_io_implemented: cfg!(feature = "postgres-sqlx"),
         transaction_lifecycle: vec![
             ConsistentLedgerPostgresSqlxTransactionStep {
                 order: 1,
@@ -481,6 +573,256 @@ pub fn map_consistent_ledger_postgres_db_error(
         ConsistentLedgerPostgresDbErrorKind::Unknown => {
             ConsistentLedgerPostgresExecutorError::db_error("db_error", "db_unknown")
         }
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+pub fn map_consistent_ledger_postgres_sqlx_error(
+    error: &sqlx::Error,
+    statement_kind: Option<ConsistentLedgerPostgresStatementKind>,
+) -> ConsistentLedgerPostgresExecutorError {
+    let kind = match error {
+        sqlx::Error::Database(error) => postgres_sqlx_database_error_kind(error.as_ref()),
+        sqlx::Error::PoolTimedOut => ConsistentLedgerPostgresDbErrorKind::Timeout,
+        sqlx::Error::PoolClosed | sqlx::Error::Io(_) | sqlx::Error::Tls(_) => {
+            ConsistentLedgerPostgresDbErrorKind::Connection
+        }
+        _ => ConsistentLedgerPostgresDbErrorKind::Unknown,
+    };
+
+    map_consistent_ledger_postgres_db_error(ConsistentLedgerPostgresDbErrorInput {
+        kind,
+        statement_kind,
+        private_detail: None,
+    })
+}
+
+#[cfg(feature = "postgres-sqlx")]
+pub async fn execute_consistent_ledger_postgres_sqlx_plan(
+    pool: &sqlx::PgPool,
+    plan: &ConsistentLedgerPostgresExecutionPlan,
+    executable_statements: &[ConsistentLedgerPostgresSqlxExecutableStatement<'_>],
+) -> ConsistentLedgerPostgresExecutorResult {
+    if let Some(error) = validate_sqlx_executable_statement_set(plan, executable_statements) {
+        return executor_result(
+            plan,
+            ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+            false,
+            false,
+            Vec::new(),
+            Some(error),
+        );
+    }
+
+    let mut transaction = match pool.begin().await {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            return executor_result(
+                plan,
+                ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+                false,
+                false,
+                Vec::new(),
+                Some(map_consistent_ledger_postgres_sqlx_error(&error, None)),
+            );
+        }
+    };
+
+    let mut statement_results = Vec::new();
+    for statement in &plan.sql_statements {
+        let executable = executable_statements
+            .iter()
+            .find(|executable| executable.order == statement.order)
+            .expect("executable statement set was validated");
+
+        match execute_sqlx_executable_statement(&mut transaction, statement, executable).await {
+            Ok(result) => {
+                let mut result = sanitized_statement_result(statement, result);
+                if let Some(error) = enforce_statement_row_count(statement, result.rows_affected) {
+                    result.outcome = ConsistentLedgerPostgresStatementOutcome::Refused;
+                    statement_results.push(result);
+                    let rolled_back = transaction.rollback().await.is_ok();
+                    return executor_result(
+                        plan,
+                        ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+                        false,
+                        rolled_back,
+                        statement_results,
+                        Some(error),
+                    );
+                }
+                statement_results.push(result);
+            }
+            Err(error) => {
+                statement_results.push(refused_statement_result(statement));
+                let rolled_back = transaction.rollback().await.is_ok();
+                return executor_result(
+                    plan,
+                    ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+                    false,
+                    rolled_back,
+                    statement_results,
+                    Some(error),
+                );
+            }
+        }
+    }
+
+    if let Err(error) = transaction.commit().await {
+        return executor_result(
+            plan,
+            ConsistentLedgerPostgresExecutorOutcome::RolledBack,
+            false,
+            false,
+            statement_results,
+            Some(map_consistent_ledger_postgres_sqlx_error(&error, None)),
+        );
+    }
+
+    let outcome = if matches!(plan.outcome, LedgerOperationOutcome::Idempotent { .. }) {
+        ConsistentLedgerPostgresExecutorOutcome::Idempotent
+    } else {
+        ConsistentLedgerPostgresExecutorOutcome::Applied
+    };
+    executor_result(plan, outcome, true, false, statement_results, None)
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn validate_sqlx_executable_statement_set(
+    plan: &ConsistentLedgerPostgresExecutionPlan,
+    executable_statements: &[ConsistentLedgerPostgresSqlxExecutableStatement<'_>],
+) -> Option<ConsistentLedgerPostgresExecutorError> {
+    for statement in &plan.sql_statements {
+        let matches = executable_statements
+            .iter()
+            .filter(|executable| executable.order == statement.order)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => {
+                return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                    "sqlx_executable_statement_missing",
+                ));
+            }
+            [executable] if executable.kind != statement.kind => {
+                return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                    "sqlx_executable_statement_kind_mismatch",
+                ));
+            }
+            [executable] if executable.sql.trim().is_empty() || executable.sql.contains('<') => {
+                return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                    "sqlx_executable_statement_not_concrete",
+                ));
+            }
+            [executable]
+                if sqlx_bind_markers_for_statement(statement.kind)
+                    .contains(&ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind)
+                    && !executable
+                        .bind_markers
+                        .contains(&ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind) =>
+            {
+                return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                    "sqlx_operation_key_bind_marker_missing",
+                ));
+            }
+            [_] => {}
+            _ => {
+                return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+                    "sqlx_executable_statement_duplicate",
+                ));
+            }
+        }
+    }
+
+    if executable_statements.iter().any(|executable| {
+        !plan
+            .sql_statements
+            .iter()
+            .any(|statement| statement.order == executable.order)
+    }) {
+        return Some(ConsistentLedgerPostgresExecutorError::statement_refused(
+            "sqlx_executable_statement_unplanned",
+        ));
+    }
+
+    None
+}
+
+#[cfg(feature = "postgres-sqlx")]
+async fn execute_sqlx_executable_statement(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    statement: &ConsistentLedgerPostgresStatement,
+    executable: &ConsistentLedgerPostgresSqlxExecutableStatement<'_>,
+) -> Result<ConsistentLedgerPostgresStatementResult, ConsistentLedgerPostgresExecutorError> {
+    let mut query = sqlx::query(executable.sql);
+    for bind in &executable.binds {
+        query = bind_sqlx_value(query, bind);
+    }
+
+    let result = query
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| map_consistent_ledger_postgres_sqlx_error(&error, Some(statement.kind)))?;
+
+    Ok(ConsistentLedgerPostgresStatementResult {
+        order: statement.order,
+        kind: statement.kind,
+        target: statement.target,
+        outcome: ConsistentLedgerPostgresStatementOutcome::Executed,
+        rows_affected: result.rows_affected(),
+        operation_key_output: "omitted",
+    })
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn bind_sqlx_value<'query>(
+    query: sqlx::query::Query<'query, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    bind: &'query ConsistentLedgerPostgresSqlxBindValue,
+) -> sqlx::query::Query<'query, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    match bind {
+        ConsistentLedgerPostgresSqlxBindValue::Uuid(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::OptionalUuid(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::Text(value) => query.bind(value.as_str()),
+        ConsistentLedgerPostgresSqlxBindValue::OptionalText(value) => query.bind(value.as_deref()),
+        ConsistentLedgerPostgresSqlxBindValue::DecimalText(value) => query.bind(value.as_str()),
+        ConsistentLedgerPostgresSqlxBindValue::I64(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::Bool(value) => query.bind(*value),
+        ConsistentLedgerPostgresSqlxBindValue::Json(value) => {
+            query.bind(sqlx::types::Json(value.clone()))
+        }
+        ConsistentLedgerPostgresSqlxBindValue::OperationKey(value) => query.bind(value.as_str()),
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn postgres_sqlx_database_error_kind(
+    error: &(dyn sqlx::error::DatabaseError + 'static),
+) -> ConsistentLedgerPostgresDbErrorKind {
+    if let Some(code) = error.code() {
+        match code.as_ref() {
+            "23505" => return ConsistentLedgerPostgresDbErrorKind::UniqueViolation,
+            "23503" => return ConsistentLedgerPostgresDbErrorKind::ForeignKeyViolation,
+            "23514" => return ConsistentLedgerPostgresDbErrorKind::CheckViolation,
+            "23502" => return ConsistentLedgerPostgresDbErrorKind::NotNullViolation,
+            "40001" => return ConsistentLedgerPostgresDbErrorKind::SerializationFailure,
+            "40P01" => return ConsistentLedgerPostgresDbErrorKind::DeadlockDetected,
+            _ => {}
+        }
+    }
+
+    match error.kind() {
+        sqlx::error::ErrorKind::UniqueViolation => {
+            ConsistentLedgerPostgresDbErrorKind::UniqueViolation
+        }
+        sqlx::error::ErrorKind::ForeignKeyViolation => {
+            ConsistentLedgerPostgresDbErrorKind::ForeignKeyViolation
+        }
+        sqlx::error::ErrorKind::CheckViolation => {
+            ConsistentLedgerPostgresDbErrorKind::CheckViolation
+        }
+        sqlx::error::ErrorKind::NotNullViolation => {
+            ConsistentLedgerPostgresDbErrorKind::NotNullViolation
+        }
+        _ => ConsistentLedgerPostgresDbErrorKind::Unknown,
     }
 }
 

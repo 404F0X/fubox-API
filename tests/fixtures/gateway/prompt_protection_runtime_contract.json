@@ -6,6 +6,22 @@
     "streaming_supported": true,
     "runtime_entry": "apps/gateway/src/main.rs::chat_completions"
   },
+  "covered_endpoints": [
+    {
+      "name": "chat_completions",
+      "path": "POST /v1/chat/completions",
+      "streaming_supported": true,
+      "runtime_entry": "apps/gateway/src/main.rs::chat_completions",
+      "preflight_marker": "prompt_protection_rejection_for_chat_request"
+    },
+    {
+      "name": "responses",
+      "path": "POST /v1/responses",
+      "streaming_supported": true,
+      "runtime_entry": "apps/gateway/src/main.rs::responses",
+      "preflight_marker": "prompt_protection_rejection_for_responses_request"
+    }
+  ],
   "runtime_policy": {
     "env": "AI_GATEWAY_PROMPT_PROTECTION",
     "config_json_env": "AI_GATEWAY_PROMPT_PROTECTION_CONFIG_JSON",
@@ -27,19 +43,35 @@
     "custom_rules_compiled_before_requests": true,
     "per_request_config_parse": false
   },
-  "request_flow": [
-    "authenticate_virtual_key",
-    "parse_chat_completion_request",
-    "compute_request_body_hash",
-    "prompt_protection_preflight",
-    "resolve_canonical_model",
-    "select_route_candidates",
-    "create_request_started",
-    "pre_authorize_before_provider_attempt",
-    "create_provider_attempt_started",
-    "open_provider_key_for_route",
-    "upstream_call"
-  ],
+  "request_flow": {
+    "chat_completions": [
+      "authenticate_virtual_key",
+      "parse_chat_completion_request",
+      "compute_request_body_hash",
+      "prompt_protection_preflight",
+      "resolve_canonical_model",
+      "select_route_candidates",
+      "create_request_started",
+      "pre_authorize_before_provider_attempt",
+      "create_provider_attempt_started",
+      "open_provider_key_for_route",
+      "upstream_call"
+    ],
+    "responses": [
+      "authenticate_virtual_key",
+      "parse_responses_request",
+      "compute_request_body_hash",
+      "prompt_protection_preflight",
+      "resolve_canonical_model",
+      "select_route_candidates",
+      "create_request_started",
+      "responses_streaming_or_provider_attempt",
+      "pre_authorize_before_provider_attempt",
+      "create_provider_attempt_started",
+      "open_provider_key_for_route",
+      "upstream_call"
+    ]
+  },
   "rejected_contract": {
     "http_status": 400,
     "openai_error": {
@@ -104,5 +136,5 @@
     "Authorization: Bearer",
     "provider-secret-value"
   ],
-  "notes": "Gateway chat prompt protection runs for non-stream and stream=true requests after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
+  "notes": "Gateway chat and responses prompt protection runs for non-stream and stream=true requests after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
 }

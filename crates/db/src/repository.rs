@@ -17,6 +17,13 @@ use crate::{
         UpdateCanonicalModel, UpdateChannel, UpdateModelAssociation, UpdateProvider, VirtualKey,
     },
     pool::{DbError, PgPool},
+    rate_limit_reservation::{
+        ProviderKeyRateLimitReservationExecutionInput,
+        ProviderKeyRateLimitReservationExecutionResult,
+        ProviderKeyRateLimitReservationExecutionRow, ProviderKeyRateLimitReservationOperation,
+        ProviderKeyRateLimitReservationStatus,
+        build_provider_key_rate_limit_reservation_execution_command,
+    },
     trace_affinity::{
         TRACE_AFFINITY_PREVIOUS_SUCCESS_LOOKUP_SQL, TraceAffinityPreviousSuccessLookupInput,
         TraceAffinityPreviousSuccessLookupPlan, TraceAffinityPreviousSuccessRoute,
@@ -1902,6 +1909,52 @@ impl DbRepository {
         .map_err(DbError::Query)?;
 
         map_rows(rows, provider_key_from_row)
+    }
+
+    pub async fn execute_provider_key_rate_limit_reservation(
+        &self,
+        input: ProviderKeyRateLimitReservationExecutionInput,
+    ) -> Result<ProviderKeyRateLimitReservationExecutionResult, DbError> {
+        let command = build_provider_key_rate_limit_reservation_execution_command(input);
+        if command.status != ProviderKeyRateLimitReservationStatus::SqlReady {
+            return Ok(
+                ProviderKeyRateLimitReservationExecutionResult::from_command_without_query(
+                    &command,
+                ),
+            );
+        }
+
+        let Some(sql) = command.sql() else {
+            return Ok(
+                ProviderKeyRateLimitReservationExecutionResult::from_command_without_query(
+                    &command,
+                ),
+            );
+        };
+
+        let query = sqlx::query(sql)
+            .bind(command.tenant_id)
+            .bind(command.provider_key_id)
+            .bind(command.channel_id)
+            .bind(command.required.requests_per_minute)
+            .bind(command.required.tokens_per_minute)
+            .bind(command.required.concurrency);
+
+        let row = match command.operation {
+            ProviderKeyRateLimitReservationOperation::Acquire => query.fetch_optional(&self.pool),
+            ProviderKeyRateLimitReservationOperation::Release => query
+                .bind(command.reservation_acquired)
+                .fetch_optional(&self.pool),
+        }
+        .await
+        .map_err(DbError::Query)?;
+
+        let row = row
+            .map(provider_key_rate_limit_reservation_execution_row_from_row)
+            .transpose()
+            .map_err(DbError::Query)?;
+
+        Ok(ProviderKeyRateLimitReservationExecutionResult::from_command_row(&command, row))
     }
 
     pub async fn list_recovery_probe_candidates(
@@ -3981,6 +4034,34 @@ fn provider_key_from_row(row: PgRow) -> Result<ProviderKey, sqlx::Error> {
         metadata: row.try_get("metadata")?,
         secret_redacted: row.try_get("secret_redacted")?,
     })
+}
+
+fn provider_key_rate_limit_reservation_execution_row_from_row(
+    row: PgRow,
+) -> Result<ProviderKeyRateLimitReservationExecutionRow, sqlx::Error> {
+    Ok(ProviderKeyRateLimitReservationExecutionRow {
+        provider_key_id: row.try_get("provider_key_id")?,
+        channel_id: row.try_get("channel_id")?,
+        rpm_limit: row.try_get("rpm_limit")?,
+        tpm_limit: row.try_get("tpm_limit")?,
+        concurrency_limit: row.try_get("concurrency_limit")?,
+        rpm_used: row
+            .try_get::<Option<String>, _>("rpm_used")?
+            .and_then(|value| parse_non_negative_counter_text(&value)),
+        tpm_used: row
+            .try_get::<Option<String>, _>("tpm_used")?
+            .and_then(|value| parse_non_negative_counter_text(&value)),
+        concurrency_used: row
+            .try_get::<Option<String>, _>("concurrency_used")?
+            .and_then(|value| parse_non_negative_counter_text(&value)),
+    })
+}
+
+fn parse_non_negative_counter_text(value: &str) -> Option<u64> {
+    value
+        .parse::<i64>()
+        .ok()
+        .and_then(|value| if value >= 0 { Some(value as u64) } else { None })
 }
 
 fn recovery_probe_candidate_from_row(row: PgRow) -> Result<RecoveryProbeCandidate, sqlx::Error> {

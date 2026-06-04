@@ -812,10 +812,12 @@ export type LedgerEntryListFilters = {
 };
 
 export type LedgerAdjustmentOperation = "adjust" | "refund";
+export type LedgerAdjustmentRequestMode = "dry_run" | "execute_contract";
 
 export type LedgerAdjustmentDryRunRequest = {
   amount: string;
   currency: string;
+  mode?: LedgerAdjustmentRequestMode;
   operation: LedgerAdjustmentOperation;
   project_id?: string;
   reason?: string;

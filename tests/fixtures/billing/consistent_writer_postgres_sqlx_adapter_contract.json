@@ -22,9 +22,10 @@
   ],
   "expected": {
     "schema_version": "billing_ledger_postgres_sqlx_adapter_contract.v1",
-    "sqlx_dependency_declared": false,
-    "db_io_implemented": false,
-    "future_feature_gate": "billing-ledger-postgres-sqlx",
+    "sqlx_dependency_declared": true,
+    "db_io_implemented_without_feature": false,
+    "db_io_implemented_with_feature": true,
+    "future_feature_gate": "postgres-sqlx",
     "transaction_methods": ["begin_transaction", "execute_statement", "commit_transaction", "rollback_transaction"],
     "operation_key_bind_marker": "operation_key_bind",
     "required_statement_count": 9

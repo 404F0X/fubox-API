@@ -56,6 +56,11 @@ pub const PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL: &str = r#"
                 and $5::bigint >= 0
                 and $6::bigint >= 0
                 and (
+                  (rpm_limit is not null and $4::bigint > 0)
+                  or (tpm_limit is not null and $5::bigint > 0)
+                  or (concurrency_limit is not null and $6::bigint > 0)
+                )
+                and (
                   rpm_limit is null
                   or (rpm_limit > 0 and rpm_used is not null and rpm_used >= 0 and rpm_used + $4::bigint <= rpm_limit)
                 )
@@ -173,6 +178,11 @@ pub const PROVIDER_KEY_RATE_LIMIT_RESERVATION_RELEASE_SQL: &str = r#"
               where $4::bigint >= 0
                 and $5::bigint >= 0
                 and $6::bigint >= 0
+                and (
+                  (rpm_limit is not null and $4::bigint > 0)
+                  or (tpm_limit is not null and $5::bigint > 0)
+                  or (concurrency_limit is not null and $6::bigint > 0)
+                )
                 and (rpm_limit is null or (rpm_limit > 0 and rpm_used is not null and rpm_used >= 0))
                 and (tpm_limit is null or (tpm_limit > 0 and tpm_used is not null and tpm_used >= 0))
                 and (
@@ -486,6 +496,304 @@ pub struct ProviderKeyRateLimitReservationPersistenceSummary {
     pub dimensions: Vec<ProviderKeyRateLimitReservationDimensionPlan>,
     pub output_fields: Vec<String>,
     pub omitted_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderKeyRateLimitReservationExecutionInput {
+    pub tenant_id: Uuid,
+    pub provider_key_id: Uuid,
+    pub channel_id: Uuid,
+    pub operation: ProviderKeyRateLimitReservationOperation,
+    pub reservation_acquired: bool,
+    pub required: ProviderKeyRateLimitRequiredCapacity,
+}
+
+impl ProviderKeyRateLimitReservationExecutionInput {
+    pub const fn acquire(
+        tenant_id: Uuid,
+        provider_key_id: Uuid,
+        channel_id: Uuid,
+        required: ProviderKeyRateLimitRequiredCapacity,
+    ) -> Self {
+        Self {
+            tenant_id,
+            provider_key_id,
+            channel_id,
+            operation: ProviderKeyRateLimitReservationOperation::Acquire,
+            reservation_acquired: false,
+            required,
+        }
+    }
+
+    pub const fn release(
+        tenant_id: Uuid,
+        provider_key_id: Uuid,
+        channel_id: Uuid,
+        required: ProviderKeyRateLimitRequiredCapacity,
+        reservation_acquired: bool,
+    ) -> Self {
+        Self {
+            tenant_id,
+            provider_key_id,
+            channel_id,
+            operation: ProviderKeyRateLimitReservationOperation::Release,
+            reservation_acquired,
+            required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderKeyRateLimitReservationExecutionCommand {
+    pub operation: ProviderKeyRateLimitReservationOperation,
+    pub status: ProviderKeyRateLimitReservationStatus,
+    pub refusal_reason: Option<ProviderKeyRateLimitReservationRefusal>,
+    pub tenant_id: Uuid,
+    pub provider_key_id: Uuid,
+    pub channel_id: Uuid,
+    pub reservation_acquired: bool,
+    pub required: ProviderKeyRateLimitRequiredCapacity,
+    pub requested_counter_updates: usize,
+}
+
+impl ProviderKeyRateLimitReservationExecutionCommand {
+    pub fn sql(&self) -> Option<&'static str> {
+        if self.status != ProviderKeyRateLimitReservationStatus::SqlReady {
+            return None;
+        }
+
+        match self.operation {
+            ProviderKeyRateLimitReservationOperation::Acquire => {
+                Some(PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL)
+            }
+            ProviderKeyRateLimitReservationOperation::Release => {
+                Some(PROVIDER_KEY_RATE_LIMIT_RESERVATION_RELEASE_SQL)
+            }
+        }
+    }
+
+    pub fn summary(&self) -> ProviderKeyRateLimitReservationExecutionSummary {
+        ProviderKeyRateLimitReservationExecutionSummary {
+            schema: PROVIDER_KEY_RATE_LIMIT_RESERVATION_PERSISTENCE_SCHEMA.to_string(),
+            operation: self.operation,
+            status: self.status,
+            refusal_reason: self.refusal_reason,
+            sql_name: self.sql_name().map(str::to_string),
+            source_table: "provider_keys".to_string(),
+            scope_index: PROVIDER_KEY_RATE_LIMIT_RESERVATION_SCOPE_INDEX.to_string(),
+            scope_columns: static_strings(&["tenant_id", "provider_key_id", "channel_id"]),
+            tenant_scoped: true,
+            provider_key_scoped: true,
+            channel_scoped: true,
+            row_lock: self.status == ProviderKeyRateLimitReservationStatus::SqlReady,
+            bounded_rows: PROVIDER_KEY_RATE_LIMIT_RESERVATION_MAX_ROWS,
+            bind_count: self.bind_count(),
+            requested_counter_updates: self.requested_counter_updates,
+            current_window_state_material_in_output: false,
+            output_fields: static_strings(&[
+                "provider_key_id",
+                "channel_id",
+                "rpm_used",
+                "tpm_used",
+                "concurrency_used",
+            ]),
+            omitted_fields: omitted_material_fields(),
+        }
+    }
+
+    fn sql_name(&self) -> Option<&'static str> {
+        if self.status != ProviderKeyRateLimitReservationStatus::SqlReady {
+            return None;
+        }
+
+        match self.operation {
+            ProviderKeyRateLimitReservationOperation::Acquire => {
+                Some("PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL")
+            }
+            ProviderKeyRateLimitReservationOperation::Release => {
+                Some("PROVIDER_KEY_RATE_LIMIT_RESERVATION_RELEASE_SQL")
+            }
+        }
+    }
+
+    fn bind_count(&self) -> usize {
+        if self.status != ProviderKeyRateLimitReservationStatus::SqlReady {
+            return 0;
+        }
+
+        match self.operation {
+            ProviderKeyRateLimitReservationOperation::Acquire => 6,
+            ProviderKeyRateLimitReservationOperation::Release => 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderKeyRateLimitReservationExecutionSummary {
+    pub schema: String,
+    pub operation: ProviderKeyRateLimitReservationOperation,
+    pub status: ProviderKeyRateLimitReservationStatus,
+    pub refusal_reason: Option<ProviderKeyRateLimitReservationRefusal>,
+    pub sql_name: Option<String>,
+    pub source_table: String,
+    pub scope_index: String,
+    pub scope_columns: Vec<String>,
+    pub tenant_scoped: bool,
+    pub provider_key_scoped: bool,
+    pub channel_scoped: bool,
+    pub row_lock: bool,
+    pub bounded_rows: usize,
+    pub bind_count: usize,
+    pub requested_counter_updates: usize,
+    pub current_window_state_material_in_output: bool,
+    pub output_fields: Vec<String>,
+    pub omitted_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderKeyRateLimitReservationExecutionStatus {
+    Applied,
+    NotApplied,
+    Refused,
+    Noop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderKeyRateLimitReservationExecutionRow {
+    pub provider_key_id: Uuid,
+    pub channel_id: Uuid,
+    pub rpm_limit: Option<i32>,
+    pub tpm_limit: Option<i32>,
+    pub concurrency_limit: Option<i32>,
+    pub rpm_used: Option<u64>,
+    pub tpm_used: Option<u64>,
+    pub concurrency_used: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderKeyRateLimitReservationExecutionResult {
+    pub schema: String,
+    pub operation: ProviderKeyRateLimitReservationOperation,
+    pub status: ProviderKeyRateLimitReservationExecutionStatus,
+    pub refusal_reason: Option<ProviderKeyRateLimitReservationRefusal>,
+    pub sql_name: Option<String>,
+    pub affected_rows: usize,
+    pub bounded_rows: usize,
+    pub current_window_state_material_in_output: bool,
+    pub row: Option<ProviderKeyRateLimitReservationExecutionRow>,
+    pub omitted_fields: Vec<String>,
+}
+
+impl ProviderKeyRateLimitReservationExecutionResult {
+    pub fn from_command_without_query(
+        command: &ProviderKeyRateLimitReservationExecutionCommand,
+    ) -> Self {
+        let status = match command.status {
+            ProviderKeyRateLimitReservationStatus::Noop => {
+                ProviderKeyRateLimitReservationExecutionStatus::Noop
+            }
+            ProviderKeyRateLimitReservationStatus::Refused => {
+                ProviderKeyRateLimitReservationExecutionStatus::Refused
+            }
+            ProviderKeyRateLimitReservationStatus::SqlReady => {
+                ProviderKeyRateLimitReservationExecutionStatus::NotApplied
+            }
+        };
+        Self::new(command, status, None)
+    }
+
+    pub fn from_command_row(
+        command: &ProviderKeyRateLimitReservationExecutionCommand,
+        row: Option<ProviderKeyRateLimitReservationExecutionRow>,
+    ) -> Self {
+        let status = if row.is_some() {
+            ProviderKeyRateLimitReservationExecutionStatus::Applied
+        } else {
+            ProviderKeyRateLimitReservationExecutionStatus::NotApplied
+        };
+        Self::new(command, status, row)
+    }
+
+    fn new(
+        command: &ProviderKeyRateLimitReservationExecutionCommand,
+        status: ProviderKeyRateLimitReservationExecutionStatus,
+        row: Option<ProviderKeyRateLimitReservationExecutionRow>,
+    ) -> Self {
+        let affected_rows = usize::from(row.is_some());
+        Self {
+            schema: PROVIDER_KEY_RATE_LIMIT_RESERVATION_PERSISTENCE_SCHEMA.to_string(),
+            operation: command.operation,
+            status,
+            refusal_reason: command.refusal_reason,
+            sql_name: command.sql_name().map(str::to_string),
+            affected_rows,
+            bounded_rows: PROVIDER_KEY_RATE_LIMIT_RESERVATION_MAX_ROWS,
+            current_window_state_material_in_output: false,
+            row,
+            omitted_fields: omitted_material_fields(),
+        }
+    }
+}
+
+pub fn build_provider_key_rate_limit_reservation_execution_command(
+    input: ProviderKeyRateLimitReservationExecutionInput,
+) -> ProviderKeyRateLimitReservationExecutionCommand {
+    let (status, refusal_reason) = execution_command_status(&input);
+    ProviderKeyRateLimitReservationExecutionCommand {
+        operation: input.operation,
+        status,
+        refusal_reason,
+        tenant_id: input.tenant_id,
+        provider_key_id: input.provider_key_id,
+        channel_id: input.channel_id,
+        reservation_acquired: input.reservation_acquired,
+        required: input.required,
+        requested_counter_updates: if status == ProviderKeyRateLimitReservationStatus::SqlReady {
+            requested_counter_updates(input.required)
+        } else {
+            0
+        },
+    }
+}
+
+fn execution_command_status(
+    input: &ProviderKeyRateLimitReservationExecutionInput,
+) -> (
+    ProviderKeyRateLimitReservationStatus,
+    Option<ProviderKeyRateLimitReservationRefusal>,
+) {
+    if input.required.requests_per_minute < 0
+        || input.required.tokens_per_minute < 0
+        || input.required.concurrency < 0
+    {
+        return (
+            ProviderKeyRateLimitReservationStatus::Refused,
+            Some(ProviderKeyRateLimitReservationRefusal::InvalidRequired),
+        );
+    }
+
+    if requested_counter_updates(input.required) == 0 {
+        return (ProviderKeyRateLimitReservationStatus::Noop, None);
+    }
+
+    if input.operation == ProviderKeyRateLimitReservationOperation::Release
+        && !input.reservation_acquired
+    {
+        return (ProviderKeyRateLimitReservationStatus::Noop, None);
+    }
+
+    (ProviderKeyRateLimitReservationStatus::SqlReady, None)
+}
+
+fn requested_counter_updates(required: ProviderKeyRateLimitRequiredCapacity) -> usize {
+    [
+        required.requests_per_minute,
+        required.tokens_per_minute,
+        required.concurrency,
+    ]
+    .into_iter()
+    .filter(|required| *required > 0)
+    .count()
 }
 
 pub fn build_provider_key_rate_limit_reservation_persistence_plan(
@@ -860,6 +1168,7 @@ mod tests {
     struct RateLimitPersistenceFixture {
         input: RateLimitPersistenceFixtureInput,
         expected_plan_summary: ProviderKeyRateLimitReservationPersistenceSummary,
+        expected_execution_command_summary: ProviderKeyRateLimitReservationExecutionSummary,
         expected_sql_fragments: RateLimitSqlFragments,
         disallowed_sql_fragments: Vec<String>,
         refusal_cases: Vec<RateLimitPersistenceRefusalFixture>,
@@ -909,6 +1218,17 @@ mod tests {
             Some(PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL)
         );
         assert_eq!(summary, fixture.expected_plan_summary);
+        let execution_command = build_provider_key_rate_limit_reservation_execution_command(
+            fixture_execution_input(&fixture.input),
+        );
+        assert_eq!(
+            execution_command.sql(),
+            Some(PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL)
+        );
+        assert_eq!(
+            execution_command.summary(),
+            fixture.expected_execution_command_summary
+        );
 
         for fragment in fixture.expected_sql_fragments.acquire {
             assert!(
@@ -933,6 +1253,156 @@ mod tests {
             assert!(
                 !sql_lower.contains(&fragment.to_ascii_lowercase()),
                 "SQL skeleton should omit sensitive or unbounded fragment: {fragment}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_execution_boundary_is_repository_facing() {
+        let repository_source = include_str!("repository.rs");
+
+        for fragment in [
+            "execute_provider_key_rate_limit_reservation",
+            "ProviderKeyRateLimitReservationExecutionInput",
+            "build_provider_key_rate_limit_reservation_execution_command",
+            "ProviderKeyRateLimitReservationStatus::SqlReady",
+            ".fetch_optional(&self.pool)",
+            "provider_key_rate_limit_reservation_execution_row_from_row",
+        ] {
+            assert!(
+                repository_source.contains(fragment),
+                "repository execution boundary should contain fragment: {fragment}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_execution_command_noops_and_refuses_without_db() {
+        let tenant_id = Uuid::from_u128(1);
+        let provider_key_id = Uuid::from_u128(2);
+        let channel_id = Uuid::from_u128(3);
+
+        let zero_required = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::acquire(
+                tenant_id,
+                provider_key_id,
+                channel_id,
+                ProviderKeyRateLimitRequiredCapacity::new(0, 0, 0),
+            ),
+        );
+        assert_eq!(
+            zero_required.status,
+            ProviderKeyRateLimitReservationStatus::Noop
+        );
+        assert_eq!(zero_required.sql(), None);
+        assert_eq!(zero_required.summary().bind_count, 0);
+        assert_eq!(zero_required.summary().requested_counter_updates, 0);
+
+        let unacquired_release = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::release(
+                tenant_id,
+                provider_key_id,
+                channel_id,
+                ProviderKeyRateLimitRequiredCapacity::new(1, 1, 1),
+                false,
+            ),
+        );
+        assert_eq!(
+            unacquired_release.status,
+            ProviderKeyRateLimitReservationStatus::Noop
+        );
+        assert_eq!(unacquired_release.sql(), None);
+
+        let invalid_required = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::acquire(
+                tenant_id,
+                provider_key_id,
+                channel_id,
+                ProviderKeyRateLimitRequiredCapacity::new(-1, 1, 1),
+            ),
+        );
+        assert_eq!(
+            invalid_required.status,
+            ProviderKeyRateLimitReservationStatus::Refused
+        );
+        assert_eq!(
+            invalid_required.refusal_reason,
+            Some(ProviderKeyRateLimitReservationRefusal::InvalidRequired)
+        );
+        assert_eq!(invalid_required.sql(), None);
+
+        let release = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::release(
+                tenant_id,
+                provider_key_id,
+                channel_id,
+                ProviderKeyRateLimitRequiredCapacity::new(1, 1, 1),
+                true,
+            ),
+        );
+        assert_eq!(
+            release.status,
+            ProviderKeyRateLimitReservationStatus::SqlReady
+        );
+        assert_eq!(
+            release.sql(),
+            Some(PROVIDER_KEY_RATE_LIMIT_RESERVATION_RELEASE_SQL)
+        );
+        assert_eq!(release.summary().bind_count, 7);
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_execution_result_is_secret_safe() {
+        let command = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::acquire(
+                Uuid::from_u128(1),
+                Uuid::from_u128(2),
+                Uuid::from_u128(3),
+                ProviderKeyRateLimitRequiredCapacity::new(1, 128, 1),
+            ),
+        );
+        let result = ProviderKeyRateLimitReservationExecutionResult::from_command_row(
+            &command,
+            Some(ProviderKeyRateLimitReservationExecutionRow {
+                provider_key_id: Uuid::from_u128(2),
+                channel_id: Uuid::from_u128(3),
+                rpm_limit: Some(60),
+                tpm_limit: Some(1_000),
+                concurrency_limit: Some(4),
+                rpm_used: Some(11),
+                tpm_used: Some(378),
+                concurrency_used: Some(2),
+            }),
+        );
+
+        assert_eq!(
+            result.status,
+            ProviderKeyRateLimitReservationExecutionStatus::Applied
+        );
+        assert_eq!(result.affected_rows, 1);
+        assert_eq!(
+            result.bounded_rows,
+            PROVIDER_KEY_RATE_LIMIT_RESERVATION_MAX_ROWS
+        );
+        assert_eq!(result.current_window_state_material_in_output, false);
+
+        let result_text = serde_json::to_string(&result)
+            .expect("result should serialize")
+            .to_ascii_lowercase();
+        for forbidden in [
+            "sk-live-secret",
+            "bearer",
+            "authorization",
+            "provider_key_secret",
+            "\"current_window_state\":",
+            "request_body",
+            "response_body",
+            "payload",
+            "endpoint",
+        ] {
+            assert!(
+                !result_text.contains(forbidden),
+                "execution result leaked forbidden marker: {forbidden}"
             );
         }
     }
@@ -1112,6 +1582,17 @@ mod tests {
             fixture.rpm_limit,
             fixture.tpm_limit,
             fixture.concurrency_limit,
+        )
+    }
+
+    fn fixture_execution_input(
+        fixture: &RateLimitPersistenceFixtureInput,
+    ) -> ProviderKeyRateLimitReservationExecutionInput {
+        ProviderKeyRateLimitReservationExecutionInput::acquire(
+            fixture.tenant_id,
+            fixture.provider_key_id,
+            fixture.channel_id,
+            fixture.required,
         )
     }
 }

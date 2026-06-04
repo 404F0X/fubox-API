@@ -71,6 +71,11 @@ type LedgerAdjustmentDryRunForm = {
   walletId: string;
 };
 
+type LedgerAdjustmentDryRunState = {
+  request: LedgerAdjustmentDryRunRequest;
+  result: LedgerAdjustmentDryRunResponse;
+};
+
 type ReconciliationFilterState = {
   day: string;
   limit: string;
@@ -470,7 +475,7 @@ function LedgerOverviewSection() {
   const [dryRunError, setDryRunError] = useState<string | null>(null);
   const [dryRunForm, setDryRunForm] = useState<LedgerAdjustmentDryRunForm>(defaultLedgerAdjustmentDryRunForm);
   const [dryRunLoading, setDryRunLoading] = useState(false);
-  const [dryRunResult, setDryRunResult] = useState<LedgerAdjustmentDryRunResponse | null>(null);
+  const [dryRunPlan, setDryRunPlan] = useState<LedgerAdjustmentDryRunState | null>(null);
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<LedgerFilterState>(defaultLedgerFilters);
@@ -506,12 +511,13 @@ function LedgerOverviewSection() {
   async function handleDryRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setDryRunError(null);
-    setDryRunResult(null);
+    setDryRunPlan(null);
     setDryRunLoading(true);
 
     try {
-      const result = await dryRunLedgerAdjustment(toLedgerAdjustmentDryRunRequest(dryRunForm));
-      setDryRunResult(result);
+      const request = toLedgerAdjustmentDryRunRequest(dryRunForm);
+      const result = await dryRunLedgerAdjustment(request);
+      setDryRunPlan({ request, result });
     } catch (requestError) {
       setDryRunError(requestError instanceof LedgerAdjustmentFormError ? requestError.message : errorMessage(requestError));
     } finally {
@@ -614,7 +620,17 @@ function LedgerOverviewSection() {
         {dryRunError ? <p className="form-status form-status--error">{dryRunError}</p> : null}
       </section>
 
-      {dryRunResult ? <LedgerAdjustmentDryRunResult result={dryRunResult} /> : null}
+      <LedgerAdjustmentExecuteAffordance
+        hasDryRun={Boolean(dryRunPlan)}
+        dryRunFresh={isLedgerAdjustmentDryRunFresh(dryRunPlan?.request, dryRunForm)}
+      />
+
+      {dryRunPlan ? (
+        <LedgerAdjustmentDryRunResult
+          result={dryRunPlan.result}
+          dryRunFresh={isLedgerAdjustmentDryRunFresh(dryRunPlan.request, dryRunForm)}
+        />
+      ) : null}
 
       <section className="admin-panel" aria-label="Ledger filters">
         <div className="section-heading">
@@ -744,7 +760,50 @@ function LedgerOverviewSection() {
   );
 }
 
-function LedgerAdjustmentDryRunResult({ result }: { result: LedgerAdjustmentDryRunResponse }) {
+function LedgerAdjustmentExecuteAffordance({
+  dryRunFresh,
+  hasDryRun,
+}: {
+  dryRunFresh: boolean;
+  hasDryRun: boolean;
+}) {
+  const statusText = !hasDryRun
+    ? "Run a dry-run before execute can be considered."
+    : dryRunFresh
+      ? "Fresh dry-run result is available; execute contract mode is validation-only in this build."
+      : "Form changed after dry-run. Run dry-run again before execute can be considered.";
+
+  return (
+    <section className="admin-panel" aria-label="Ledger adjustment execute readiness">
+      <div className="section-heading">
+        <div>
+          <h2>Execute Readiness</h2>
+          <p>{statusText}</p>
+        </div>
+      </div>
+      <div className="manual-test-flags" aria-label="Execute contract flags">
+        <span>execute_contract_mode=true</span>
+        <span>execute_endpoint=false</span>
+        <span>fresh_dry_run={String(dryRunFresh)}</span>
+        <span>execute_network_call=false</span>
+      </div>
+      <div className="action-row">
+        <button className="secondary-button" type="button" disabled>
+          Execute ledger adjustment
+        </button>
+        <p className="muted-copy">Dry-run is the only active ledger adjustment action in this UI build.</p>
+      </div>
+    </section>
+  );
+}
+
+function LedgerAdjustmentDryRunResult({
+  dryRunFresh,
+  result,
+}: {
+  dryRunFresh: boolean;
+  result: LedgerAdjustmentDryRunResponse;
+}) {
   const plannedEntry = result.planned_ledger_entry;
   const relatedEntry = result.related_ledger_entry;
   const futureContract = result.future_write_contract;
@@ -761,6 +820,7 @@ function LedgerAdjustmentDryRunResult({ result }: { result: LedgerAdjustmentDryR
         </div>
         <div className="manual-test-flags" aria-label="Plan-only flags">
           <span>plan_only={String(result.plan_only)}</span>
+          <span>fresh_dry_run={String(dryRunFresh)}</span>
           <span>ledger_write={String(result.ledger_write)}</span>
           <span>request_log_write={String(result.request_log_write)}</span>
           <span>audit_log_write={String(result.audit_log_write)}</span>
@@ -1334,7 +1394,7 @@ function toLedgerAdjustmentDryRunRequest(form: LedgerAdjustmentDryRunForm): Ledg
 
   if (reason && (isSensitiveDisplayText(reason) || containsUnsafeReasonText(reason))) {
     throw new LedgerAdjustmentFormError(
-      "Reason cannot contain credentials, tokens, keys, raw request material, or payload/body text.",
+      "Reason cannot contain credentials, tokens, keys, payload, or body text.",
     );
   }
 
@@ -1345,6 +1405,7 @@ function toLedgerAdjustmentDryRunRequest(form: LedgerAdjustmentDryRunForm): Ledg
   return {
     amount: requiredAdjustmentString(form.amount, "Amount"),
     currency: requiredAdjustmentString(form.currency, "Currency").toUpperCase(),
+    mode: "dry_run",
     operation,
     project_id: optionalString(form.projectId),
     reason,
@@ -1352,6 +1413,35 @@ function toLedgerAdjustmentDryRunRequest(form: LedgerAdjustmentDryRunForm): Ledg
     request_id: optionalString(form.requestId),
     wallet_id: optionalString(form.walletId),
   };
+}
+
+function isLedgerAdjustmentDryRunFresh(
+  previousRequest: LedgerAdjustmentDryRunRequest | undefined,
+  form: LedgerAdjustmentDryRunForm,
+): boolean {
+  if (!previousRequest) {
+    return false;
+  }
+
+  try {
+    return ledgerAdjustmentRequestKey(previousRequest) === ledgerAdjustmentRequestKey(toLedgerAdjustmentDryRunRequest(form));
+  } catch {
+    return false;
+  }
+}
+
+function ledgerAdjustmentRequestKey(request: LedgerAdjustmentDryRunRequest): string {
+  return JSON.stringify({
+    amount: request.amount,
+    currency: request.currency,
+    mode: request.mode ?? null,
+    operation: request.operation,
+    project_id: request.project_id ?? null,
+    reason: request.reason ?? null,
+    related_ledger_entry_id: request.related_ledger_entry_id ?? null,
+    request_id: request.request_id ?? null,
+    wallet_id: request.wallet_id ?? null,
+  });
 }
 
 function toReconciliationFilters(filters: ReconciliationFilterState): BillingReconciliationReportFilters {

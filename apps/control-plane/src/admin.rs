@@ -638,6 +638,7 @@ struct ListLedgerEntriesQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LedgerAdjustmentDryRunRequest {
+    mode: Option<String>,
     operation: String,
     amount: String,
     currency: String,
@@ -2080,7 +2081,11 @@ async fn dry_run_ledger_adjustment(
     Json(request): Json<LedgerAdjustmentDryRunRequest>,
 ) -> Result<Response, AdminError> {
     let repository = repo(&state);
+    let mode = normalize_ledger_adjustment_request_mode(request.mode.as_deref())?;
     let plan = build_ledger_adjustment_dry_run_plan(&repository, request).await?;
+    if mode == LedgerAdjustmentRequestMode::ExecuteContract {
+        return Ok(ledger_adjustment_execute_contract_response(plan));
+    }
 
     Ok(Json(json!({ "data": plan })).into_response())
 }
@@ -2486,6 +2491,12 @@ enum LedgerAdjustmentOperation {
     Refund,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerAdjustmentRequestMode {
+    DryRun,
+    ExecuteContract,
+}
+
 impl LedgerAdjustmentOperation {
     fn as_str(self) -> &'static str {
         match self {
@@ -2507,6 +2518,41 @@ impl LedgerAdjustmentOperation {
             Self::Refund => "ledger.refund",
         }
     }
+}
+
+fn ledger_adjustment_execute_contract_response(plan: Value) -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(ledger_adjustment_execute_contract_body(plan)),
+    )
+        .into_response()
+}
+
+fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
+    json!({
+        "error": {
+            "code": "future_writer_required",
+            "message": "ledger adjustment execute requires transactional ledger writer"
+        },
+        "data": {
+            "mode": "execute_contract",
+            "validated_plan": plan,
+            "execute_contract": {
+                "future_writer_required": true,
+                "ledger_write": false,
+                "audit_log_write": false,
+                "request_log_write": false,
+                "upstream_call": false,
+                "business_and_success_audit_share_transaction": true,
+                "success_audit_only_after_ledger_write": true,
+                "audit_insert_failure_rolls_back_ledger_write": true,
+                "refusal_does_not_build_success_audit": true,
+                "server_generated_dedupe_material": true,
+                "dedupe_material_echoed": false,
+                "audit_snapshot_policy": "bounded public ids and amounts only"
+            }
+        }
+    })
 }
 
 async fn build_ledger_adjustment_dry_run_plan(
@@ -2863,6 +2909,20 @@ fn normalize_ledger_adjustment_operation(
         "refund" => Ok(LedgerAdjustmentOperation::Refund),
         _ => Err(AdminError::bad_request(
             "operation must be adjust or refund",
+        )),
+    }
+}
+
+fn normalize_ledger_adjustment_request_mode(
+    mode: Option<&str>,
+) -> Result<LedgerAdjustmentRequestMode, AdminError> {
+    match mode.map(str::trim).filter(|mode| !mode.is_empty()) {
+        None | Some("dry_run") | Some("plan") => Ok(LedgerAdjustmentRequestMode::DryRun),
+        Some("execute") | Some("execute_contract") => {
+            Ok(LedgerAdjustmentRequestMode::ExecuteContract)
+        }
+        Some(_) => Err(AdminError::bad_request(
+            "mode must be dry_run or execute_contract",
         )),
     }
 }
@@ -9050,6 +9110,19 @@ mod tests {
     #[test]
     fn ledger_adjustment_dry_run_validation_rejects_bad_amounts_and_sensitive_fields() {
         assert_eq!(
+            normalize_ledger_adjustment_request_mode(None).unwrap(),
+            LedgerAdjustmentRequestMode::DryRun
+        );
+        assert_eq!(
+            normalize_ledger_adjustment_request_mode(Some("execute_contract")).unwrap(),
+            LedgerAdjustmentRequestMode::ExecuteContract
+        );
+        assert_eq!(
+            normalize_ledger_adjustment_request_mode(Some("execute")).unwrap(),
+            LedgerAdjustmentRequestMode::ExecuteContract
+        );
+        assert!(normalize_ledger_adjustment_request_mode(Some("write_now")).is_err());
+        assert_eq!(
             normalize_ledger_adjustment_operation(" adjustment ".to_string()).unwrap(),
             LedgerAdjustmentOperation::Adjust
         );
@@ -9135,6 +9208,7 @@ mod tests {
             "secret",
         ] {
             let mut request = serde_json::Map::new();
+            request.insert("mode".to_string(), json!("dry_run"));
             request.insert("operation".to_string(), json!("adjust"));
             request.insert("amount".to_string(), json!("1.00000000"));
             request.insert("currency".to_string(), json!("USD"));
@@ -9144,6 +9218,81 @@ mod tests {
                 serde_json::from_value::<LedgerAdjustmentDryRunRequest>(Value::Object(request))
                     .is_err(),
                 "request must reject unexpected sensitive field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_adjustment_execute_contract_rejects_with_validated_secret_safe_plan() {
+        let request_id = Uuid::from_u128(90);
+        let related_entry =
+            ledger_entry_fixture(91, request_id, "settle", "-0.25000000", "confirmed");
+        let refund_summary = validate_refund_remaining_amount(
+            "0.15000000",
+            &related_entry.amount,
+            "0.10000000",
+            1,
+            "USD",
+        )
+        .expect("refund should fit remaining amount");
+        let plan = ledger_adjustment_dry_run_response(
+            LedgerAdjustmentOperation::Refund,
+            "0.15000000",
+            "USD",
+            related_entry.project_id,
+            related_entry.wallet_id,
+            related_entry.request_id,
+            Some(&related_entry),
+            Some(&refund_summary),
+            true,
+        );
+        let body = ledger_adjustment_execute_contract_body(plan);
+        let serialized = serde_json::to_string(&body).expect("body should serialize");
+
+        assert_eq!(body["error"]["code"], json!("future_writer_required"));
+        assert_eq!(body["data"]["mode"], json!("execute_contract"));
+        assert_eq!(
+            body["data"]["execute_contract"]["ledger_write"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["audit_log_write"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["request_log_write"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["business_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["refusal_does_not_build_success_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["dedupe_material_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["validated_plan"]["refund_remaining_summary"]["remaining_refundable_amount"],
+            json!("0.15000000")
+        );
+
+        for forbidden in [
+            "ledger-idempotency-never-return",
+            "raw ledger payload",
+            "Bearer ledger-never-return",
+            "sk-live-ledger-never-return",
+            "sk-live-metadata-never-return",
+            "usage_snapshot",
+            "policy_snapshot",
+            "idempotency_key",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "ledger adjustment execute contract response must not contain {forbidden}"
             );
         }
     }
@@ -9164,6 +9313,10 @@ mod tests {
         assert_eq!(
             fixture["request_contract"]["required_permission"],
             json!("billing_adjust")
+        );
+        assert_eq!(
+            fixture["request_contract"]["execute_contract_rejects_with"],
+            json!("future_writer_required")
         );
         assert_eq!(fixture["request_contract"]["ledger_write"], json!(false));
         assert_eq!(fixture["request_contract"]["upstream_call"], json!(false));
@@ -9197,6 +9350,28 @@ mod tests {
             json!("0.10000000")
         );
         assert_eq!(
+            fixture["execute_contract"]["business_and_success_audit_share_transaction"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["refusal_does_not_build_success_audit"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["error"]["code"],
+            json!("future_writer_required")
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["execute_contract"]
+                ["dedupe_material_echoed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["examples"]["execute_contract_refusal"]["response"]["data"]["execute_contract"]
+                ["request_log_write"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["future_write_audit_contract"]["business_and_success_audit_share_transaction"],
             json!(true)
         );
@@ -9208,6 +9383,8 @@ mod tests {
         assert!(openapi.contains("LedgerAdjustmentDryRunRequest"));
         assert!(openapi.contains("LedgerAdjustmentDryRunEnvelope"));
         assert!(openapi.contains("LedgerRefundRemainingSummary"));
+        assert!(openapi.contains("LedgerAdjustmentExecuteContractEnvelope"));
+        assert!(openapi.contains("future_writer_required"));
 
         for forbidden in [
             "usage_snapshot",
