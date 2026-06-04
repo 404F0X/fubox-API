@@ -379,10 +379,10 @@ A clean run can close the E11 OpenAPI semantic/client-generation gap only. It
 does not close live Postgres, success audit live evidence, Admin UI E2E, or
 billing-ledger runtime writer gaps.
 
-## 12. Prompt Protection Provider Attempts Postgres Proof Runbook
+## 12. Prompt Protection Provider Attempts Postgres Proof Runbook And Script
 
-This section is the acceptance entry for TODO lane `E13-005-S10`. The detailed
-manual live proof is documented in
+This section is the acceptance entry for TODO lanes `E13-005-S10` and
+`E13-005-S11`. The detailed live proof is documented in
 `docs/E13-005_PROMPT_PROTECTION_POSTGRES_PROOF_RUNBOOK.md`.
 
 The proof covers prompt-protection reject no-side-effect evidence for:
@@ -410,6 +410,30 @@ This live proof is opt-in. Docker/Postgres/Gateway/mock-provider unavailability
 is an external blocker, not a pass. If wrapped in automation, use exit `0` only
 when every endpoint and DB assertion passes, exit `1` for evidence mismatch, and
 exit `2` for external blockers.
+
+Default script contract/preflight command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1
+```
+
+This default command must not require Docker, Gateway, Postgres, mock-provider,
+or live credentials.
+
+Live opt-in commands:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live
+
+$env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1
+```
+
+Live preflight without sending evidence requests:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -PreflightOnly
+```
 
 A passing run can close the E13 Postgres `provider_attempts` no-side-effect gap
 for the four Gateway surfaces above. It cannot close Admin UI or audit

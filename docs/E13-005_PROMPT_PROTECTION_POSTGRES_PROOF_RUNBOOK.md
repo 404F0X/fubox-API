@@ -25,7 +25,9 @@ Out of scope:
 - Admin UI display verification.
 - Audit UI visual verification.
 - Provider success/fallback behavior.
-- Changing Gateway runtime or adding a smoke script.
+- Changing Gateway runtime.
+- Adding this script to default PR gates. The script remains opt-in for live DB
+  evidence.
 
 ## Preconditions
 
@@ -86,6 +88,65 @@ Optional custom-rule startup check:
 
 If this optional config is used, set it at Gateway startup/config boundary and
 restart Gateway before sending requests. Do not set or parse it per request.
+
+## Script Entry
+
+The S11 script turns this runbook into a contract/default preflight and an
+explicit live proof.
+
+Default contract/preflight command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1
+```
+
+Expected default result:
+
+- Does not require Docker, Gateway, mock-provider, Postgres, `DATABASE_URL`, or
+  `GATEWAY_AUTH_TOKEN`.
+- Verifies the four endpoint contract entries.
+- Verifies this runbook still documents `request_body_hash`,
+  `redaction_status=hash_only`, `provider_attempts_count=0`, and exit `0`/`1`/`2`.
+- Returns exit `0` when the contract checks pass.
+
+Explicit live proof command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live
+```
+
+Equivalent env opt-in:
+
+```powershell
+$env:PROMPT_PROTECTION_POSTGRES_PROOF_LIVE = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1
+```
+
+Live preflight without evidence requests:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_prompt_protection_postgres_proof.ps1 -Live -PreflightOnly
+```
+
+Useful live environment overrides:
+
+- `GATEWAY_BASE_URL`: Gateway URL, default `http://127.0.0.1:8080`.
+- `GATEWAY_AUTH_TOKEN`: virtual key used for live proof.
+- `MOCK_PROVIDER_BASE_URL`: mock-provider URL, default `http://127.0.0.1:18080`.
+- `COMPOSE_FILE`: compose file used for compose psql mode.
+- `DATABASE_URL` or `POSTGRES_URL`: direct psql mode. When set, the script does
+  not require compose for DB access.
+- `PROMPT_PROTECTION_POSTGRES_PROOF_PREFLIGHT_ONLY=1`: live preflight only.
+- `PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_COMPOSE_PS=1`: skip compose service
+  status inspection.
+- `PROMPT_PROTECTION_POSTGRES_PROOF_SKIP_MOCK_PROVIDER_HEALTH=1`: skip
+  mock-provider health check.
+
+Script exit semantics:
+
+- Exit `0`: default contract passes, or live proof passes for all four endpoints.
+- Exit `1`: Gateway/Postgres are reachable, but HTTP/DB evidence mismatches.
+- Exit `2`: external blocker prevents the live proof from being authoritative.
 
 ## Request Commands
 
