@@ -286,18 +286,37 @@ The live smoke must produce all of this evidence on the migrated schema:
 - Calls `POST /admin/ledger/adjustments/dry-run` with `mode=execute`.
 - Apply path returns HTTP `201`, `outcome=applied`, `ledger_write=true`, and
   `audit_log_write=true`.
+- Apply path includes `ledger_executor_summary_contract` with
+  `schema_version=billing_ledger_postgres_executor_summary.v1`,
+  `response_field=ledger_executor_summary`, `operation_key_output=omitted`,
+  `error_detail_output=omitted`, `dedupe_material_echoed=false`,
+  `raw_metadata_echoed=false`, and `credential_material_echoed=false`.
+- Apply path includes `ledger_executor_summary` with
+  `executor=control_plane_transactional_admin_ledger_adjustment_writer`,
+  `operation=adjust|refund`, `outcome=applied`, `committed=true`,
+  `rolled_back=false`, `statement_count=1`, `executed_statement_count=1`,
+  `refused_statement_count=0`, `total_rows_affected=1`,
+  `final_statement_order=1`, `final_statement_kind=insert_ledger_entry`,
+  `row_count_mismatch=false`, and omitted operation-key/error-detail output.
 - The inserted success audit has `resource_type=ledger_entry`, `action=ledger.refund`,
   `resource_id` equal to the inserted ledger entry id, and transaction metadata
   markers including `transactional_audit=true` and `ledger_adjustment_execute=true`.
 - Idempotent replay returns HTTP `200`, `outcome=idempotent`, and does not
   increase ledger or audit counts.
+- Idempotent replay includes the same executor summary contract and a
+  `ledger_executor_summary` with `outcome=idempotent`, `ledger_write=false`,
+  `audit_log_write=false`, `committed=true`, `rolled_back=false`,
+  `statement_count=0`, `executed_statement_count=0`, `total_rows_affected=0`,
+  `final_statement_order=null`, `final_statement_kind=null`, and
+  `row_count_mismatch=false`.
 - Refund over remaining returns HTTP `400` with `bad_request` and does not
   increase ledger or audit counts.
 - Concurrent refund race leaves one applied refund and one refusal, with exactly
   one confirmed credit row and one success audit for that source debit.
 - Response and audit snapshot checks remain secret-safe: no raw idempotency key,
-  raw metadata, ledger snapshots, Authorization, provider key material, or secret
-  material is echoed.
+  dedupe material, raw metadata, ledger snapshots, Authorization, Cookie,
+  credentials, provider key material, payload/body, operation key, raw executor
+  error detail, or secret material is echoed.
 
 ### 11.5 Blocker Semantics
 

@@ -1512,7 +1512,7 @@ paths:
       tags: [Ledger]
       summary: Dry-run ledger adjustment or refund plan
       operationId: dryRunLedgerAdjustment
-      description: BillingAdjust endpoint for bounded adjustment/refund validation. mode=dry_run returns a plan only. mode=execute revalidates and locks the bounded ledger rows, writes the confirmed ledger entry, and writes the success audit in the same database transaction; idempotent replays return the prior bounded ledger entry without a new ledger or audit write. mode=execute_contract runs validation and returns the stable future-writer refusal contract. No request logs or upstream provider calls are made by any mode.
+      description: BillingAdjust endpoint for bounded adjustment/refund validation. mode=dry_run returns a plan only. mode=execute revalidates and locks the bounded ledger rows, writes the confirmed ledger entry, and writes the success audit in the same database transaction; idempotent replays return the prior bounded ledger entry without a new ledger or audit write. Applied and idempotent execute responses include a secret-safe ledger_executor_summary_contract and ledger_executor_summary with executor, outcome, commit/rollback, statement count, row count, row-count mismatch, and omitted operation-key/error-detail markers. mode=execute_contract runs validation and returns the stable refusal contract plus the same safe summary contract. No request logs or upstream provider calls are made by any mode, and raw dedupe material, request metadata, credentials, Authorization/Cookie headers, payload/body, and operation keys are omitted.
       requestBody:
         required: true
         content:
@@ -5516,6 +5516,8 @@ components:
         - refusal_does_not_build_success_audit
         - dedupe_material_echoed
         - dedupe_public_output
+        - ledger_executor_summary_contract
+        - ledger_executor_summary
         - transaction_contract
         - ledger_entry
         - validated_plan
@@ -5556,6 +5558,10 @@ components:
         dedupe_public_output:
           type: string
           enum: [omitted]
+        ledger_executor_summary_contract:
+          $ref: '#/components/schemas/LedgerAdjustmentExecutorSummaryContract'
+        ledger_executor_summary:
+          $ref: '#/components/schemas/LedgerAdjustmentExecutorSummary'
         audit_log_id:
           type: [string, 'null']
           format: uuid
@@ -5623,6 +5629,258 @@ components:
         unbounded_scan_allowed:
           type: boolean
           const: false
+    LedgerAdjustmentExecutorSummaryContract:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - response_field
+        - operation_key_output
+        - error_detail_output
+        - dedupe_material_echoed
+        - raw_metadata_echoed
+        - credential_material_echoed
+      properties:
+        schema_version:
+          type: string
+          enum: [billing_ledger_postgres_executor_summary.v1]
+        response_field:
+          type: string
+          enum: [ledger_executor_summary]
+        operation_key_output:
+          type: string
+          enum: [omitted]
+        error_detail_output:
+          type: string
+          enum: [omitted]
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        raw_metadata_echoed:
+          type: boolean
+          const: false
+        credential_material_echoed:
+          type: boolean
+          const: false
+        compatible_fields:
+          type: array
+          items:
+            type: string
+          description: Safe field names clients may inspect; this list must not contain raw operation keys, metadata, credentials, Authorization/Cookie headers, payload/body, or executor error details.
+    LedgerAdjustmentExecutorRefusalSummaryContract:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - response_field
+        - supported_outcomes
+        - operation_key_output
+        - error_detail_output
+        - raw_executor_error_detail_echoed
+        - dedupe_material_echoed
+        - raw_metadata_echoed
+        - credential_material_echoed
+        - preflight_refusal
+        - rollback_refusal
+      properties:
+        schema_version:
+          type: string
+          enum: [billing_ledger_postgres_executor_summary.v1]
+        response_field:
+          type: string
+          enum: [ledger_executor_summary]
+        supported_outcomes:
+          type: array
+          items:
+            type: string
+            enum: [refused_preflight, refused_rollback]
+        operation_key_output:
+          type: string
+          enum: [omitted]
+        error_detail_output:
+          type: string
+          enum: [omitted]
+        raw_executor_error_detail_echoed:
+          type: boolean
+          const: false
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        raw_metadata_echoed:
+          type: boolean
+          const: false
+        credential_material_echoed:
+          type: boolean
+          const: false
+        preflight_refusal:
+          type: object
+          additionalProperties: false
+          required: [committed, rolled_back, refused_statement_count, row_count_mismatch]
+          properties:
+            committed:
+              type: boolean
+              const: false
+            rolled_back:
+              type: boolean
+              const: false
+            refused_statement_count:
+              type: integer
+              minimum: 0
+            row_count_mismatch:
+              type: boolean
+              const: false
+        rollback_refusal:
+          type: object
+          additionalProperties: false
+          required: [committed, rolled_back, refused_statement_count, row_count_mismatch]
+          properties:
+            committed:
+              type: boolean
+              const: false
+            rolled_back:
+              type: boolean
+              const: true
+            refused_statement_count:
+              type: string
+              enum: [one_or_more]
+            row_count_mismatch:
+              type: string
+              enum: [boolean_only]
+    LedgerAdjustmentExecutorRollbackSummaryContract:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - response_field
+        - outcome
+        - committed
+        - rolled_back
+        - refused_statement_count
+        - row_count_mismatch
+        - operation_key_output
+        - error_detail_output
+        - raw_executor_error_detail_echoed
+        - dedupe_material_echoed
+        - raw_metadata_echoed
+        - credential_material_echoed
+      properties:
+        schema_version:
+          type: string
+          enum: [billing_ledger_postgres_executor_summary.v1]
+        response_field:
+          type: string
+          enum: [ledger_executor_summary]
+        outcome:
+          type: string
+          enum: [refused_rollback]
+        committed:
+          type: boolean
+          const: false
+        rolled_back:
+          type: boolean
+          const: true
+        refused_statement_count:
+          type: string
+          enum: [one_or_more]
+        row_count_mismatch:
+          type: string
+          enum: [boolean_only]
+        operation_key_output:
+          type: string
+          enum: [omitted]
+        error_detail_output:
+          type: string
+          enum: [omitted]
+        raw_executor_error_detail_echoed:
+          type: boolean
+          const: false
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        raw_metadata_echoed:
+          type: boolean
+          const: false
+        credential_material_echoed:
+          type: boolean
+          const: false
+    LedgerAdjustmentExecutorSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - executor
+        - operation
+        - outcome
+        - operation_key_output
+        - committed
+        - rolled_back
+        - statement_count
+        - executed_statement_count
+        - refused_statement_count
+        - total_rows_affected
+        - final_statement_order
+        - final_statement_kind
+        - error_detail_output
+        - row_count_mismatch
+        - dedupe_material_echoed
+        - omitted_material
+      properties:
+        schema_version:
+          type: string
+          enum: [billing_ledger_postgres_executor_summary.v1]
+        executor:
+          type: string
+          enum: [control_plane_transactional_admin_ledger_adjustment_writer]
+        operation:
+          type: string
+          description: Bounded operation label, for example adjust, refund, or execute_contract on explicit preflight refusal.
+        outcome:
+          type: string
+          enum: [applied, idempotent, refused_preflight, refused_rollback]
+        operation_key_output:
+          type: string
+          enum: [omitted]
+        committed:
+          type: boolean
+          description: true for applied/idempotent execute responses, false for refusal summaries.
+        rolled_back:
+          type: boolean
+          description: true only when a transactional refusal rolled back after a bounded writer attempt.
+        statement_count:
+          type: integer
+          minimum: 0
+        executed_statement_count:
+          type: integer
+          minimum: 0
+        refused_statement_count:
+          type: integer
+          minimum: 0
+        total_rows_affected:
+          type: integer
+          minimum: 0
+        final_statement_order:
+          type: [integer, 'null']
+          minimum: 1
+        final_statement_kind:
+          type: [string, 'null']
+          description: Safe statement kind marker such as insert_ledger_entry, statement_refusal, or row_count_enforcement; null when no statement was attempted.
+        error_detail_output:
+          type: string
+          enum: [omitted]
+        row_count_mismatch:
+          type: boolean
+        dedupe_material_echoed:
+          type: boolean
+          const: false
+        raw_executor_error_detail_echoed:
+          type: boolean
+          const: false
+          description: Present on refusal summaries; omitted from applied/idempotent summaries.
+        omitted_material:
+          type: array
+          items:
+            type: string
+          description: Bounded omission classes only; no raw operation key, dedupe material, raw metadata, credentials, Authorization/Cookie headers, payload/body, or executor error detail.
     LedgerAdjustmentExecutedEntry:
       type: object
       additionalProperties: false
@@ -5685,13 +5943,15 @@ components:
         data:
           type: object
           additionalProperties: false
-          required: [mode, validated_plan, execute_contract]
+          required: [mode, validated_plan, ledger_executor_summary, execute_contract]
           properties:
             mode:
               type: string
               enum: [execute_contract]
             validated_plan:
               $ref: '#/components/schemas/LedgerAdjustmentDryRunPlan'
+            ledger_executor_summary:
+              $ref: '#/components/schemas/LedgerAdjustmentExecutorSummary'
             execute_contract:
               $ref: '#/components/schemas/LedgerAdjustmentExecuteContract'
     LedgerAdjustmentExecuteContract:
@@ -5713,6 +5973,9 @@ components:
         - server_generated_dedupe_material
         - dedupe_material_echoed
         - audit_snapshot_policy
+        - ledger_executor_summary_contract
+        - ledger_executor_refusal_summary_contract
+        - preflight_refusal_summary
         - transaction_contract
         - dedupe_contract
         - ledger_writer_contract
@@ -5760,6 +6023,12 @@ components:
           const: false
         audit_snapshot_policy:
           type: string
+        ledger_executor_summary_contract:
+          $ref: '#/components/schemas/LedgerAdjustmentExecutorSummaryContract'
+        ledger_executor_refusal_summary_contract:
+          $ref: '#/components/schemas/LedgerAdjustmentExecutorRefusalSummaryContract'
+        preflight_refusal_summary:
+          $ref: '#/components/schemas/LedgerAdjustmentExecutorSummary'
         transaction_contract:
           type: object
           additionalProperties: false
@@ -5774,6 +6043,7 @@ components:
             - bounded_by
             - recompute_after_locks
             - unbounded_scan_allowed
+            - rollback_executor_summary_contract
           properties:
             future_isolation:
               type: string
@@ -5802,6 +6072,8 @@ components:
             unbounded_scan_allowed:
               type: boolean
               const: false
+            rollback_executor_summary_contract:
+              $ref: '#/components/schemas/LedgerAdjustmentExecutorRollbackSummaryContract'
         dedupe_contract:
           type: object
           additionalProperties: false
