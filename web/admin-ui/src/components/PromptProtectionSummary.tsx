@@ -9,11 +9,15 @@ type PromptProtectionSummaryData = {
   configuredRuleCount: string;
   defaultHitCount: string;
   detectedAction: string;
+  durationAvailability: string;
   effectiveAction: string;
   hitCount: string;
   hitKinds: string;
+  latencyClosure: string;
+  liveBlockerStatus: string;
   mode: string;
   omittedMaterial: string;
+  providerAttempts: string;
   reason: string;
   scopes: string;
 };
@@ -102,6 +106,22 @@ export function PromptProtectionSummary({
           <dd>{summary.configuredRuleCount}</dd>
         </div>
         <div>
+          <dt>Provider attempts</dt>
+          <dd>{summary.providerAttempts}</dd>
+        </div>
+        <div>
+          <dt>Duration</dt>
+          <dd>{summary.durationAvailability}</dd>
+        </div>
+        <div>
+          <dt>Latency envelope</dt>
+          <dd>{summary.latencyClosure}</dd>
+        </div>
+        <div>
+          <dt>Live blocker</dt>
+          <dd>{summary.liveBlockerStatus}</dd>
+        </div>
+        <div>
           <dt>Omitted material</dt>
           <dd>{summary.omittedMaterial}</dd>
         </div>
@@ -145,11 +165,15 @@ function summarizePromptProtection(value: JsonValue | null | undefined): PromptP
     configuredRuleCount: configuredRuleCount(record.configured_rules),
     defaultHitCount: numberField(record.default_hit_count),
     detectedAction: enumField(record.detected_action),
+    durationAvailability: durationAvailabilityField(record),
     effectiveAction: enumField(record.effective_action),
     hitCount: numberField(record.hit_count),
     hitKinds: countMapField(record.hit_kinds),
+    latencyClosure: latencyClosureField(record),
+    liveBlockerStatus: liveBlockerStatusField(record),
     mode: enumField(record.mode),
     omittedMaterial: omittedMaterialField(record),
+    providerAttempts: providerAttemptsField(record),
     reason: enumField(record.reason),
     scopes: listField(record.scopes),
   };
@@ -301,4 +325,91 @@ function omittedMaterialField(record: Record<string, JsonValue>): string {
   ].filter((item): item is string => Boolean(item));
 
   return omitted.length > 0 ? omitted.join(", ") : "-";
+}
+
+function providerAttemptsField(record: Record<string, JsonValue>): string {
+  const direct = numberField(record.provider_attempts_count);
+
+  if (direct !== "-") {
+    return direct;
+  }
+
+  if (isJsonRecord(record.provider_side_effects)) {
+    const nested = numberField(record.provider_side_effects.provider_attempts_count);
+
+    if (nested !== "-") {
+      return nested;
+    }
+  }
+
+  if (isJsonRecord(record.performance_envelope) && record.performance_envelope.provider_attempts_zero_required === true) {
+    return "0 required";
+  }
+
+  return "-";
+}
+
+function durationAvailabilityField(record: Record<string, JsonValue>): string {
+  const performance = isJsonRecord(record.performance) ? record.performance : null;
+  const durationAvailable = performance?.duration_available;
+
+  if (durationAvailable === true) {
+    const total = numberField(performance?.total_case_duration_ms);
+    const request = numberField(performance?.request_preflight_duration_ms);
+    const db = numberField(performance?.db_evidence_duration_ms);
+
+    return `total ${total} ms / preflight ${request} ms / db ${db} ms`;
+  }
+
+  if (durationAvailable === false) {
+    const reason = enumField(performance?.unavailable_reason);
+
+    return reason === "-" ? "unavailable" : `unavailable: ${reason}`;
+  }
+
+  if (isJsonRecord(record.performance_envelope)) {
+    const marker =
+      record.performance_envelope.duration_unavailable_marker === "duration_available=false"
+        ? "duration_available=false"
+        : enumField(record.performance_envelope.duration_unavailable_marker);
+
+    if (marker !== "-") {
+      return marker;
+    }
+  }
+
+  return "-";
+}
+
+function latencyClosureField(record: Record<string, JsonValue>): string {
+  const envelope = isJsonRecord(record.performance_envelope) ? record.performance_envelope : null;
+
+  if (!envelope) {
+    return "-";
+  }
+
+  const closure = envelope.latency_envelope_closure_eligible;
+  const withinBounds = envelope.all_endpoint_performance_within_bounds;
+
+  if (closure === true) {
+    return "eligible";
+  }
+
+  if (closure === false && withinBounds === true) {
+    return "not eligible";
+  }
+
+  if (closure === false && withinBounds === false) {
+    return "not eligible, out of bounds or unavailable";
+  }
+
+  return "-";
+}
+
+function liveBlockerStatusField(record: Record<string, JsonValue>): string {
+  if (!isJsonRecord(record.performance_envelope)) {
+    return "-";
+  }
+
+  return enumField(record.performance_envelope.live_blocker_status);
 }

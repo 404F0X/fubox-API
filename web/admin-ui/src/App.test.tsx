@@ -229,6 +229,33 @@ function stubAdminFetch(
     mode: "enforce",
     pattern: skPlaceholder("prompt-pattern-hidden"),
     provider_secret: skPlaceholder("prompt-provider-hidden"),
+    provider_side_effects: {
+      provider_attempts_count: 0,
+      provider_secret: skPlaceholder("prompt-side-effect-hidden"),
+    },
+    performance: {
+      db_evidence_duration_ms: null,
+      duration_available: false,
+      raw_body: "raw prompt protection performance body hidden",
+      request_preflight_duration_ms: null,
+      total_case_duration_ms: null,
+      unavailable_reason: "live_request_or_query_blocked",
+    },
+    performance_envelope: {
+      all_endpoint_performance_within_bounds: false,
+      command_summary: {
+        authorization: bearerPlaceholder("prompt-performance-command-hidden"),
+        database_url: "postgres://prompt-performance-dsn-hidden",
+      },
+      duration_unavailable_marker: "duration_available=false",
+      external_blocker_count: 1,
+      latency_envelope_closure_eligible: false,
+      live_blocker_status: "blocked",
+      provider_attempts_zero_required: true,
+      raw_headers: {
+        [AUTH_HEADER_NAME]: bearerPlaceholder("prompt-performance-header-hidden"),
+      },
+    },
     raw_pattern: "secret-like prompt protection pattern hidden",
     raw_pattern_values_omitted: true,
     raw_payload_omitted: true,
@@ -2438,6 +2465,10 @@ describe("App", () => {
     expect(within(promptProtectionPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("authorization_bearer: 1, prompt_injection_phrase: 1")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("regex: 1")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("0")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
+    expect(within(promptProtectionPanel as HTMLElement).getByText("blocked")).toBeInTheDocument();
     expect(within(promptProtectionPanel as HTMLElement).getByText("raw payload, raw pattern values")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
     expect(screen.getByText("settle")).toBeInTheDocument();
@@ -2456,8 +2487,13 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-rule-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-pattern-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-provider-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-side-effect-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-token-hidden"));
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-protection-hidden"));
+    expect(document.body.textContent).not.toContain("raw prompt protection performance body hidden");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-command-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-header-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-performance-dsn-hidden");
     expect(screen.queryByText("provider-key-1")).not.toBeInTheDocument();
     expect(screen.queryByText("settle:request-1")).not.toBeInTheDocument();
     expect(screen.queryByText("price-version-1")).not.toBeInTheDocument();
@@ -2619,6 +2655,10 @@ describe("App", () => {
     expect(within(auditPromptPanel as HTMLElement).getAllByText("reject").length).toBeGreaterThanOrEqual(2);
     expect(within(auditPromptPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
     expect(within(auditPromptPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("0")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
+    expect(within(auditPromptPanel as HTMLElement).getByText("blocked")).toBeInTheDocument();
     expect(document.body.textContent).toContain("manual_disabled");
     expect(document.body.textContent).toContain("client-ip-hash");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
@@ -2634,8 +2674,13 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-rule-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-pattern-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-provider-hidden"));
+    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-side-effect-hidden"));
     expect(document.body.textContent).not.toContain(skPlaceholder("prompt-token-hidden"));
     expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-protection-hidden"));
+    expect(document.body.textContent).not.toContain("raw prompt protection performance body hidden");
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-command-hidden"));
+    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-header-hidden"));
+    expect(document.body.textContent).not.toContain("postgres://prompt-performance-dsn-hidden");
     expect(document.body.textContent).not.toContain("prompt_protection");
     expect(document.body.textContent).not.toContain("raw_headers");
     expect(document.body.textContent).not.toContain('"payload"');
