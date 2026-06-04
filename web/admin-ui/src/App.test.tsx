@@ -2,8 +2,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { ledgerAdjustmentExecuteLiveSmokeContract } from "./billingExecuteSmokeContract";
 
 vi.setConfig({ testTimeout: 15000 });
+
+const ledgerExecuteSmoke = ledgerAdjustmentExecuteLiveSmokeContract;
 
 const AUTH_HEADER_NAME = ["Author", "ization"].join("");
 const BEARER_SCHEME = ["Bear", "er"].join("");
@@ -2818,42 +2821,97 @@ describe("App", () => {
     ledgerRefreshStatus?: "success" | "error";
     status: string;
   }) {
-    const readiness = screen.getByTestId("ledger-adjustment-execute-readiness");
+    const { markers, selectors } = ledgerExecuteSmoke;
+    const readiness = screen.getByTestId(selectors.readiness);
 
-    expect(screen.getByTestId("ledger-adjustment-execute-contract-mode")).toHaveTextContent("execute_contract_mode=true");
-    expect(screen.getByTestId("ledger-adjustment-execute-endpoint")).toHaveTextContent("execute_endpoint=true");
-    expect(screen.getByTestId("ledger-adjustment-dry-run-fresh")).toHaveTextContent(`fresh_dry_run=${String(dryRunFresh)}`);
-    expect(screen.getByTestId("ledger-adjustment-contract-check-network-call")).toHaveTextContent(
-      `contract_check_network_call=${String(contractCheckNetworkCall)}`,
+    expect(screen.getByTestId(selectors.executeContractMode)).toHaveTextContent(`${markers.executeContractMode}=true`);
+    expect(screen.getByTestId(selectors.executeEndpoint)).toHaveTextContent(`${markers.executeEndpoint}=true`);
+    expect(screen.getByTestId(selectors.dryRunFresh)).toHaveTextContent(`${markers.dryRunFresh}=${String(dryRunFresh)}`);
+    expect(screen.getByTestId(selectors.contractCheckNetworkCall)).toHaveTextContent(
+      `${markers.contractCheckNetworkCall}=${String(contractCheckNetworkCall)}`,
     );
-    expect(screen.getByTestId("ledger-adjustment-execute-write-network-call")).toHaveTextContent(
-      `execute_write_network_call=${String(executeWriteNetworkCall)}`,
+    expect(screen.getByTestId(selectors.executeWriteNetworkCall)).toHaveTextContent(
+      `${markers.executeWriteNetworkCall}=${String(executeWriteNetworkCall)}`,
     );
     if (executeEnabled) {
-      expect(screen.getByTestId("ledger-adjustment-execute-button")).toBeEnabled();
+      expect(screen.getByTestId(selectors.executeButton)).toBeEnabled();
     } else {
-      expect(screen.getByTestId("ledger-adjustment-execute-button")).toBeDisabled();
+      expect(screen.getByTestId(selectors.executeButton)).toBeDisabled();
     }
     expect(within(readiness).getAllByText(status).length).toBeGreaterThan(0);
 
     if (executeOutcome) {
-      expect(screen.getByTestId("ledger-adjustment-execute-result-fresh")).toHaveTextContent(
-        `execute_result_fresh=${String(executeResultFresh ?? true)}`,
+      expect(screen.getByTestId(selectors.executeResultFresh)).toHaveTextContent(
+        `${markers.executeResultFresh}=${String(executeResultFresh ?? true)}`,
       );
-      expect(screen.getByTestId("ledger-adjustment-execute-outcome")).toHaveTextContent(`execute_outcome=${executeOutcome}`);
+      expect(screen.getByTestId(selectors.executeOutcome)).toHaveTextContent(`${markers.executeOutcome}=${executeOutcome}`);
     } else {
-      expect(screen.queryByTestId("ledger-adjustment-execute-result-fresh")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("ledger-adjustment-execute-outcome")).not.toBeInTheDocument();
+      expect(screen.queryByTestId(selectors.executeResultFresh)).not.toBeInTheDocument();
+      expect(screen.queryByTestId(selectors.executeOutcome)).not.toBeInTheDocument();
     }
 
     if (ledgerRefreshStatus) {
-      expect(screen.getByTestId("ledger-adjustment-ledger-refresh-status")).toHaveTextContent(
-        `ledger_entries_refresh_after_execute=${ledgerRefreshStatus}`,
+      expect(screen.getByTestId(selectors.ledgerRefreshStatus)).toHaveTextContent(
+        `${markers.ledgerEntriesRefreshAfterExecute}=${ledgerRefreshStatus}`,
       );
     } else {
-      expect(screen.queryByTestId("ledger-adjustment-ledger-refresh-status")).not.toBeInTheDocument();
+      expect(screen.queryByTestId(selectors.ledgerRefreshStatus)).not.toBeInTheDocument();
     }
   }
+
+  it("exports the ledger execute live-smoke selector and status contract", () => {
+    const { forbiddenSensitiveMarkers, markers, refreshStatuses, selectors, statuses } = ledgerExecuteSmoke;
+
+    expect(selectors).toMatchObject({
+      contractCheckFresh: "ledger-adjustment-contract-check-fresh",
+      contractCheckNetworkCall: "ledger-adjustment-contract-check-network-call",
+      executeButton: "ledger-adjustment-execute-button",
+      executeContractButton: "ledger-adjustment-execute-contract-button",
+      executeContractMode: "ledger-adjustment-execute-contract-mode",
+      executeEndpoint: "ledger-adjustment-execute-endpoint",
+      executeFlags: "ledger-adjustment-execute-flags",
+      executeOutcome: "ledger-adjustment-execute-outcome",
+      executeResultFresh: "ledger-adjustment-execute-result-fresh",
+      executeWriteNetworkCall: "ledger-adjustment-execute-write-network-call",
+      ledgerRefreshStatus: "ledger-adjustment-ledger-refresh-status",
+      readiness: "ledger-adjustment-execute-readiness",
+      dryRunFresh: "ledger-adjustment-dry-run-fresh",
+    });
+    expect(new Set(Object.values(selectors)).size).toBe(Object.values(selectors).length);
+    expect(markers).toMatchObject({
+      contractCheckNetworkCall: "contract_check_network_call",
+      dryRunFresh: "fresh_dry_run",
+      executeContractMode: "execute_contract_mode",
+      executeEndpoint: "execute_endpoint",
+      executeOutcome: "execute_outcome",
+      executeResultFresh: "execute_result_fresh",
+      executeWriteNetworkCall: "execute_write_network_call",
+      ledgerEntriesRefreshAfterExecute: "ledger_entries_refresh_after_execute",
+    });
+    expect(statuses).toEqual({
+      applied: "applied",
+      blocked: "blocked",
+      dryRunRequired: "dry run required",
+      executePreflight: "execute preflight",
+      failed: "failed",
+      idempotent: "idempotent",
+      stalePlan: "stale plan",
+    });
+    expect(refreshStatuses).toEqual({
+      error: "error",
+      success: "success",
+    });
+    expect(forbiddenSensitiveMarkers).toEqual([
+      "Authorization",
+      "Cookie",
+      "token",
+      "credential",
+      "operation_key",
+      "raw metadata",
+      "raw executor error detail",
+      "dedupe material",
+    ]);
+  });
 
   it("runs ledger adjustment dry-run and renders the plan-only contract with execute readiness", async () => {
     const fetchMock = stubAdminFetch();

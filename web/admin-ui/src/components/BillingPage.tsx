@@ -28,6 +28,7 @@ import {
   requestLedgerAdjustmentExecuteContract,
   type JsonValue,
 } from "../api/client";
+import { ledgerAdjustmentExecuteLiveSmokeContract } from "../billingExecuteSmokeContract";
 import {
   StateChip,
   errorMessage,
@@ -41,6 +42,8 @@ import {
   shortId,
 } from "./adminUtils";
 import { Eye, Plus, RefreshCw, Search } from "./icons";
+
+const executeSmokeSelectors = ledgerAdjustmentExecuteLiveSmokeContract.selectors;
 
 type BillingTab = "priceVersions" | "ledger" | "reconciliation";
 
@@ -931,7 +934,7 @@ function LedgerAdjustmentExecuteAffordance({
     <section
       className="admin-panel"
       aria-label="Ledger adjustment execute readiness"
-      data-testid="ledger-adjustment-execute-readiness"
+      data-testid={executeSmokeSelectors.readiness}
     >
       <div className="section-heading">
         <div>
@@ -949,24 +952,24 @@ function LedgerAdjustmentExecuteAffordance({
           })}
         />
       </div>
-      <div className="manual-test-flags" aria-label="Execute contract flags" data-testid="ledger-adjustment-execute-flags">
-        <span data-testid="ledger-adjustment-execute-contract-mode">execute_contract_mode=true</span>
-        <span data-testid="ledger-adjustment-execute-endpoint">execute_endpoint=true</span>
-        <span data-testid="ledger-adjustment-dry-run-fresh">fresh_dry_run={String(dryRunFresh)}</span>
-        <span data-testid="ledger-adjustment-contract-check-fresh">contract_check_fresh={String(contractFresh)}</span>
-        <span data-testid="ledger-adjustment-contract-check-network-call">
+      <div className="manual-test-flags" aria-label="Execute contract flags" data-testid={executeSmokeSelectors.executeFlags}>
+        <span data-testid={executeSmokeSelectors.executeContractMode}>execute_contract_mode=true</span>
+        <span data-testid={executeSmokeSelectors.executeEndpoint}>execute_endpoint=true</span>
+        <span data-testid={executeSmokeSelectors.dryRunFresh}>fresh_dry_run={String(dryRunFresh)}</span>
+        <span data-testid={executeSmokeSelectors.contractCheckFresh}>contract_check_fresh={String(contractFresh)}</span>
+        <span data-testid={executeSmokeSelectors.contractCheckNetworkCall}>
           contract_check_network_call={String(Boolean(contractResult))}
         </span>
-        <span data-testid="ledger-adjustment-execute-write-network-call">
+        <span data-testid={executeSmokeSelectors.executeWriteNetworkCall}>
           execute_write_network_call={String(Boolean(executeResult || executeError))}
         </span>
         {executeResult && executeResult.kind === "future_execute" ? (
           <>
-            <span data-testid="ledger-adjustment-execute-result-fresh">execute_result_fresh={String(executeFresh)}</span>
-            <span data-testid="ledger-adjustment-execute-outcome">
+            <span data-testid={executeSmokeSelectors.executeResultFresh}>execute_result_fresh={String(executeFresh)}</span>
+            <span data-testid={executeSmokeSelectors.executeOutcome}>
               execute_outcome={safeFieldValue(executeOutcome(executeResult.response))}
             </span>
-            <span data-testid="ledger-adjustment-ledger-refresh-status">
+            <span data-testid={executeSmokeSelectors.ledgerRefreshStatus}>
               ledger_entries_refresh_after_execute={executeRefreshState.status}
             </span>
           </>
@@ -986,7 +989,7 @@ function LedgerAdjustmentExecuteAffordance({
       <div className="action-row">
         <button
           className="secondary-button"
-          data-testid="ledger-adjustment-execute-contract-button"
+          data-testid={executeSmokeSelectors.executeContractButton}
           type="button"
           disabled={!dryRunFresh || checking}
           onClick={onCheckExecuteContract}
@@ -995,7 +998,7 @@ function LedgerAdjustmentExecuteAffordance({
         </button>
         <button
           className="primary-button primary-button--inline"
-          data-testid="ledger-adjustment-execute-button"
+          data-testid={executeSmokeSelectors.executeButton}
           type="button"
           disabled={!dryRunFresh || executing}
           onClick={onExecute}
