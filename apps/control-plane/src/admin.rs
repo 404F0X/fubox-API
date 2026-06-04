@@ -3554,6 +3554,14 @@ fn ledger_adjustment_billing_runtime_writer_mapping_contract() -> Value {
                 "billing_ledger_operation": "refund_partial",
                 "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::RefundPartial",
                 "current_billing_ledger_writer_support": true,
+                "writer_request_fields": [
+                    "scope",
+                    "refund_operation_id",
+                    "request_id",
+                    "related_ledger_entry_id",
+                    "amount",
+                    "currency"
+                ],
                 "response_summary_operation": "refund",
                 "operation_key_bind": "operation_key_bind",
                 "operation_key_output": "omitted",
@@ -3562,9 +3570,18 @@ fn ledger_adjustment_billing_runtime_writer_mapping_contract() -> Value {
             {
                 "control_plane_operation": "adjust",
                 "control_plane_entry_type": "adjust",
-                "billing_ledger_operation": "admin_adjustment_extension_required",
-                "billing_ledger_write_request_variant": "future_admin_adjustment",
-                "current_billing_ledger_writer_support": false,
+                "billing_ledger_operation": "admin_adjustment",
+                "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::AdminAdjustment",
+                "current_billing_ledger_writer_support": true,
+                "writer_request_fields": [
+                    "scope",
+                    "adjustment_operation_id",
+                    "request_id",
+                    "related_ledger_entry_id",
+                    "amount",
+                    "currency"
+                ],
+                "amount_policy": "signed_control_plane_adjust_amount_maps_to_admin_adjustment_credit_or_debit",
                 "response_summary_operation": "adjust",
                 "operation_key_bind": "operation_key_bind",
                 "operation_key_output": "omitted",
@@ -3700,6 +3717,28 @@ fn ledger_adjustment_billing_runtime_operation_mapping(validated_plan: &Value) -
             "billing_ledger_operation": "refund_partial",
             "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::RefundPartial",
             "current_billing_ledger_writer_support": true,
+            "writer_request": {
+                "variant": "ConsistentLedgerWriteRequest::RefundPartial",
+                "operation_id_field": "refund_operation_id",
+                "operation_id_source": "server_generated_execute_operation_id_or_existing_replay_entry_id",
+                "scope": {
+                    "tenant_id": validated_plan.get("tenant_id").is_some(),
+                    "project_id": validated_plan.get("project_id").is_some(),
+                    "virtual_key_id": "not_available_in_control_plane_adjustment_plan"
+                },
+                "request_id": validated_plan.get("request_id").is_some(),
+                "related_ledger_entry_id": planned_entry
+                    .and_then(|entry| entry.get("related_ledger_entry_id"))
+                    .is_some_and(|value| !value.is_null()),
+                "amount": planned_entry
+                    .and_then(|entry| entry.get("amount"))
+                    .is_some(),
+                "currency": planned_entry
+                    .and_then(|entry| entry.get("currency"))
+                    .is_some(),
+                "operation_key": "bind_only",
+                "public_operation_key_output": "omitted"
+            },
             "response_summary_operation": "refund",
             "binds": {
                 "tenant_id": validated_plan.get("tenant_id").is_some(),
@@ -3724,15 +3763,41 @@ fn ledger_adjustment_billing_runtime_operation_mapping(validated_plan: &Value) -
         "adjust" => json!({
             "control_plane_operation": source_operation,
             "control_plane_entry_type": source_entry_type,
-            "billing_ledger_operation": "admin_adjustment_extension_required",
-            "billing_ledger_write_request_variant": "future_admin_adjustment",
-            "current_billing_ledger_writer_support": false,
+            "billing_ledger_operation": "admin_adjustment",
+            "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::AdminAdjustment",
+            "current_billing_ledger_writer_support": true,
+            "writer_request": {
+                "variant": "ConsistentLedgerWriteRequest::AdminAdjustment",
+                "operation_id_field": "adjustment_operation_id",
+                "operation_id_source": "server_generated_execute_operation_id_or_existing_replay_entry_id",
+                "scope": {
+                    "tenant_id": validated_plan.get("tenant_id").is_some(),
+                    "project_id": validated_plan.get("project_id").is_some(),
+                    "virtual_key_id": "not_available_in_control_plane_adjustment_plan"
+                },
+                "request_id": validated_plan.get("request_id").is_some(),
+                "related_ledger_entry_id": planned_entry
+                    .and_then(|entry| entry.get("related_ledger_entry_id"))
+                    .is_some_and(|value| !value.is_null()),
+                "amount": planned_entry
+                    .and_then(|entry| entry.get("amount"))
+                    .is_some(),
+                "amount_policy": "signed_control_plane_adjust_amount_maps_to_credit_or_debit",
+                "currency": planned_entry
+                    .and_then(|entry| entry.get("currency"))
+                    .is_some(),
+                "operation_key": "bind_only",
+                "public_operation_key_output": "omitted"
+            },
             "response_summary_operation": "adjust",
             "binds": {
                 "tenant_id": validated_plan.get("tenant_id").is_some(),
                 "project_id": validated_plan.get("project_id").is_some(),
                 "wallet_id": validated_plan.get("wallet_id").is_some(),
                 "request_id": validated_plan.get("request_id").is_some(),
+                "related_ledger_entry_id": planned_entry
+                    .and_then(|entry| entry.get("related_ledger_entry_id"))
+                    .is_some_and(|value| !value.is_null()),
                 "amount": planned_entry
                     .and_then(|entry| entry.get("amount"))
                     .is_some(),
@@ -10626,11 +10691,43 @@ mod tests {
         assert_eq!(adjust_mapping["source_operation"], json!("adjust"));
         assert_eq!(
             adjust_mapping["target_operation"]["billing_ledger_operation"],
-            json!("admin_adjustment_extension_required")
+            json!("admin_adjustment")
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["billing_ledger_write_request_variant"],
+            json!("ConsistentLedgerWriteRequest::AdminAdjustment")
         );
         assert_eq!(
             adjust_mapping["target_operation"]["current_billing_ledger_writer_support"],
-            json!(false)
+            json!(true)
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["variant"],
+            json!("ConsistentLedgerWriteRequest::AdminAdjustment")
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["operation_id_field"],
+            json!("adjustment_operation_id")
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["operation_key"],
+            json!("bind_only")
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["public_operation_key_output"],
+            json!("omitted")
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["amount_policy"],
+            json!("signed_control_plane_adjust_amount_maps_to_credit_or_debit")
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["request_id"],
+            json!(true)
+        );
+        assert_eq!(
+            adjust_mapping["target_operation"]["writer_request"]["scope"]["tenant_id"],
+            json!(true)
         );
         assert_eq!(
             adjust_mapping["target_operation"]["operation_key_output"],
@@ -10711,6 +10808,18 @@ mod tests {
             json!("ConsistentLedgerWriteRequest::RefundPartial")
         );
         assert_eq!(
+            refund_mapping["target_operation"]["writer_request"]["variant"],
+            json!("ConsistentLedgerWriteRequest::RefundPartial")
+        );
+        assert_eq!(
+            refund_mapping["target_operation"]["writer_request"]["operation_id_field"],
+            json!("refund_operation_id")
+        );
+        assert_eq!(
+            refund_mapping["target_operation"]["writer_request"]["operation_key"],
+            json!("bind_only")
+        );
+        assert_eq!(
             refund_mapping["target_operation"]["current_billing_ledger_writer_support"],
             json!(true)
         );
@@ -10735,6 +10844,123 @@ mod tests {
             refund_mapping["response_summary"]["statement_count"],
             json!(0)
         );
+
+        for (plan_label, plan) in [("adjust", &adjust_plan), ("refund", &refund_plan)] {
+            let applied = ledger_adjustment_billing_runtime_writer_mapping(plan, "applied");
+            assert_eq!(
+                applied["response_summary"]["outcome"],
+                json!("applied"),
+                "{plan_label} applied summary outcome"
+            );
+            assert_eq!(
+                applied["response_summary"]["committed"],
+                json!(true),
+                "{plan_label} applied summary commit"
+            );
+            assert_eq!(
+                applied["response_summary"]["operation_key_output"],
+                json!("omitted"),
+                "{plan_label} applied operation key output"
+            );
+
+            let idempotent = ledger_adjustment_billing_runtime_writer_mapping(plan, "idempotent");
+            assert_eq!(
+                idempotent["response_summary"]["outcome"],
+                json!("idempotent"),
+                "{plan_label} idempotent summary outcome"
+            );
+            assert_eq!(
+                idempotent["response_summary"]["statement_count"],
+                json!(0),
+                "{plan_label} idempotent statement count"
+            );
+
+            let refused_preflight =
+                ledger_adjustment_billing_runtime_writer_mapping(plan, "refused_preflight");
+            assert_eq!(
+                refused_preflight["response_summary"]["outcome"],
+                json!("refused_preflight"),
+                "{plan_label} preflight summary outcome"
+            );
+            assert_eq!(
+                refused_preflight["response_summary"]["committed"],
+                json!(false),
+                "{plan_label} preflight commit"
+            );
+            assert_eq!(
+                refused_preflight["response_summary"]["rolled_back"],
+                json!(false),
+                "{plan_label} preflight rollback"
+            );
+            assert_eq!(
+                refused_preflight["response_summary"]["error_detail_output"],
+                json!("omitted"),
+                "{plan_label} preflight error detail"
+            );
+
+            let refused_rollback =
+                ledger_adjustment_billing_runtime_writer_mapping(plan, "refused_rollback");
+            assert_eq!(
+                refused_rollback["response_summary"]["outcome"],
+                json!("refused_rollback"),
+                "{plan_label} rollback summary outcome"
+            );
+            assert_eq!(
+                refused_rollback["response_summary"]["rolled_back"],
+                json!(true),
+                "{plan_label} rollback flag"
+            );
+            assert_eq!(
+                refused_rollback["response_summary"]["refused_statement_count"],
+                json!(1),
+                "{plan_label} rollback refused count"
+            );
+            assert_eq!(
+                refused_rollback["response_summary"]["row_count_mismatch"],
+                json!(true),
+                "{plan_label} rollback row count mismatch"
+            );
+            assert_eq!(
+                refused_rollback["response_summary"]["error_detail_output"],
+                json!("omitted"),
+                "{plan_label} rollback error detail"
+            );
+
+            for (outcome_label, mapping) in [
+                ("applied", &applied),
+                ("idempotent", &idempotent),
+                ("refused_preflight", &refused_preflight),
+                ("refused_rollback", &refused_rollback),
+            ] {
+                let serialized =
+                    serde_json::to_string(mapping).expect("runtime mapping should serialize");
+                assert!(
+                    mapping["response_summary"].get("error_code").is_none(),
+                    "{plan_label} {outcome_label} summary must omit runtime error_code"
+                );
+                assert!(
+                    mapping["response_summary"].get("error_category").is_none(),
+                    "{plan_label} {outcome_label} summary must omit runtime error_category"
+                );
+                for forbidden in [
+                    "ledger-idempotency-never-return",
+                    "idempotency_key",
+                    "dedupe_key",
+                    "raw ledger payload",
+                    "Authorization",
+                    "Bearer",
+                    "sk-live",
+                    "raw executor failure detail",
+                    "raw credential value",
+                    "raw metadata value",
+                ] {
+                    assert!(
+                        !serialized.contains(forbidden),
+                        "{plan_label} {outcome_label} runtime mapping must not contain {forbidden}"
+                    );
+                }
+            }
+        }
 
         for (label, serialized) in [
             ("adjust runtime mapping", adjust_serialized),
@@ -11316,11 +11542,15 @@ mod tests {
         );
         assert_eq!(
             fixture["billing_ledger_runtime_writer_mapping_contract"]["operation_mapping"][1]["billing_ledger_operation"],
-            json!("admin_adjustment_extension_required")
+            json!("admin_adjustment")
+        );
+        assert_eq!(
+            fixture["billing_ledger_runtime_writer_mapping_contract"]["operation_mapping"][1]["billing_ledger_write_request_variant"],
+            json!("ConsistentLedgerWriteRequest::AdminAdjustment")
         );
         assert_eq!(
             fixture["billing_ledger_runtime_writer_mapping_contract"]["operation_mapping"][1]["current_billing_ledger_writer_support"],
-            json!(false)
+            json!(true)
         );
         assert_eq!(
             fixture["billing_ledger_runtime_writer_mapping_contract"]["safe_output_contract"]["raw_executor_error_detail_echoed"],

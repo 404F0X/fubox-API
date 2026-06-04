@@ -289,6 +289,14 @@
         "billing_ledger_operation": "refund_partial",
         "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::RefundPartial",
         "current_billing_ledger_writer_support": true,
+        "writer_request_fields": [
+          "scope",
+          "refund_operation_id",
+          "request_id",
+          "related_ledger_entry_id",
+          "amount",
+          "currency"
+        ],
         "response_summary_operation": "refund",
         "operation_key_bind": "operation_key_bind",
         "operation_key_output": "omitted",
@@ -297,9 +305,18 @@
       {
         "control_plane_operation": "adjust",
         "control_plane_entry_type": "adjust",
-        "billing_ledger_operation": "admin_adjustment_extension_required",
-        "billing_ledger_write_request_variant": "future_admin_adjustment",
-        "current_billing_ledger_writer_support": false,
+        "billing_ledger_operation": "admin_adjustment",
+        "billing_ledger_write_request_variant": "ConsistentLedgerWriteRequest::AdminAdjustment",
+        "current_billing_ledger_writer_support": true,
+        "writer_request_fields": [
+          "scope",
+          "adjustment_operation_id",
+          "request_id",
+          "related_ledger_entry_id",
+          "amount",
+          "currency"
+        ],
+        "amount_policy": "signed_control_plane_adjust_amount_maps_to_admin_adjustment_credit_or_debit",
         "response_summary_operation": "adjust",
         "operation_key_bind": "operation_key_bind",
         "operation_key_output": "omitted",
