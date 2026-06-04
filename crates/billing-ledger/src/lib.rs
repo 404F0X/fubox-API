@@ -41,7 +41,9 @@ pub use postgres_execution::{
 #[cfg(feature = "postgres-sqlx")]
 pub use postgres_execution::{
     ConsistentLedgerPostgresSqlxBindValue, ConsistentLedgerPostgresSqlxExecutableStatement,
-    execute_consistent_ledger_postgres_sqlx_plan, map_consistent_ledger_postgres_sqlx_error,
+    execute_consistent_ledger_postgres_sqlx_plan,
+    execute_consistent_ledger_postgres_sqlx_writer_plan, map_consistent_ledger_postgres_sqlx_error,
+    plan_consistent_ledger_postgres_sqlx_executable_statements,
 };
 pub use pre_authorize::{
     PreAuthorizeBalance, PreAuthorizeBudget, PreAuthorizeDecision, PreAuthorizeEstimate,

@@ -1512,7 +1512,7 @@ paths:
       tags: [Ledger]
       summary: Dry-run ledger adjustment or refund plan
       operationId: dryRunLedgerAdjustment
-      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. Refund plans validate the related confirmed debit and same-tenant, same-source, same-currency confirmed refund/adjust credits before accepting the requested amount. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Requests with mode=execute_contract run the same validation and then return future_writer_required; future execute semantics require the ledger write and success audit to share one database transaction.
+      description: Plan-only BillingAdjust endpoint for bounded adjustment/refund validation. Refund plans validate the related confirmed debit and same-tenant, same-source, same-currency confirmed refund/adjust credits before accepting the requested amount. It does not write ledger entries, does not write request logs or audit logs, and does not call upstream providers. Requests with mode=execute_contract or mode=execute run the same validation and then return future_writer_required with ledger_adjustment_execute_preflight_contract.v2; future execute semantics require locked refund remaining recompute, ledger write, and success audit to share one database transaction.
       requestBody:
         required: true
         content:
@@ -5448,9 +5448,9 @@ components:
       properties:
         mode:
           type: string
-          enum: [dry_run, execute_contract]
+          enum: [dry_run, execute_contract, execute]
           default: dry_run
-          description: dry_run returns a plan; execute_contract validates the same plan and returns future_writer_required without ledger, request-log, audit, or upstream writes.
+          description: dry_run returns a plan; execute_contract and execute validate the same plan and return future_writer_required without ledger, request-log, audit, or upstream writes.
         operation:
           type: string
           enum: [adjust, adjustment, refund]
@@ -5516,7 +5516,10 @@ components:
       type: object
       additionalProperties: false
       required:
+        - contract_version
         - future_writer_required
+        - validated_before_refusal
+        - dry_run_constraints_enforced_before_refusal
         - ledger_write
         - audit_log_write
         - request_log_write
@@ -5528,10 +5531,26 @@ components:
         - server_generated_dedupe_material
         - dedupe_material_echoed
         - audit_snapshot_policy
+        - transaction_contract
+        - dedupe_contract
+        - ledger_writer_contract
+        - audit_contract
+        - request_log_contract
+        - safe_output_contract
       properties:
+        contract_version:
+          type: string
+          enum: [ledger_adjustment_execute_preflight_contract.v2]
         future_writer_required:
           type: boolean
           const: true
+        validated_before_refusal:
+          type: boolean
+          const: true
+        dry_run_constraints_enforced_before_refusal:
+          type: array
+          items:
+            type: string
         ledger_write:
           type: boolean
           const: false
@@ -5559,6 +5578,132 @@ components:
           const: false
         audit_snapshot_policy:
           type: string
+        transaction_contract:
+          type: object
+          additionalProperties: false
+          required:
+            - future_isolation
+            - begin_before_locking
+            - commit_only_after_ledger_and_success_audit
+            - rollback_on_ledger_write_failure
+            - rollback_on_audit_insert_failure
+            - rollback_on_refund_remaining_change
+            - bounded_lock_order
+            - bounded_by
+            - recompute_after_locks
+            - unbounded_scan_allowed
+          properties:
+            future_isolation:
+              type: string
+            begin_before_locking:
+              type: boolean
+            commit_only_after_ledger_and_success_audit:
+              type: boolean
+            rollback_on_ledger_write_failure:
+              type: boolean
+            rollback_on_audit_insert_failure:
+              type: boolean
+            rollback_on_refund_remaining_change:
+              type: boolean
+            bounded_lock_order:
+              type: array
+              items:
+                type: string
+            bounded_by:
+              type: array
+              items:
+                type: string
+            recompute_after_locks:
+              type: array
+              items:
+                type: string
+            unbounded_scan_allowed:
+              type: boolean
+              const: false
+        dedupe_contract:
+          type: object
+          additionalProperties: false
+          required: [server_generated_dedupe_material, client_supplied_dedupe_material_rejected, dedupe_material_echoed, public_output, replay_same_digest_returns_prior_result_after_writer_exists, conflicting_duplicate_refused_before_ledger_insert]
+          properties:
+            server_generated_dedupe_material:
+              type: boolean
+            client_supplied_dedupe_material_rejected:
+              type: boolean
+            dedupe_material_echoed:
+              type: boolean
+              const: false
+            public_output:
+              type: string
+            replay_same_digest_returns_prior_result_after_writer_exists:
+              type: boolean
+            conflicting_duplicate_refused_before_ledger_insert:
+              type: boolean
+        ledger_writer_contract:
+          type: object
+          additionalProperties: false
+          required: [write_performed, future_writer, insert_status_on_success, metadata_policy, refund_over_remaining_refused_after_locked_recompute]
+          properties:
+            write_performed:
+              type: boolean
+              const: false
+            future_writer:
+              type: string
+            insert_status_on_success:
+              type: string
+            metadata_policy:
+              type: string
+            refund_over_remaining_refused_after_locked_recompute:
+              type: boolean
+        audit_contract:
+          type: object
+          additionalProperties: false
+          required: [write_performed, business_and_success_audit_share_transaction, success_audit_only_after_ledger_write, audit_insert_failure_rolls_back_ledger_write, refusal_does_not_build_success_audit, snapshot_policy]
+          properties:
+            write_performed:
+              type: boolean
+              const: false
+            business_and_success_audit_share_transaction:
+              type: boolean
+            success_audit_only_after_ledger_write:
+              type: boolean
+            audit_insert_failure_rolls_back_ledger_write:
+              type: boolean
+            refusal_does_not_build_success_audit:
+              type: boolean
+            snapshot_policy:
+              type: string
+        request_log_contract:
+          type: object
+          additionalProperties: false
+          required: [write_performed, future_behavior, request_log_mutation_allowed, request_material_echoed]
+          properties:
+            write_performed:
+              type: boolean
+              const: false
+            future_behavior:
+              type: string
+            request_log_mutation_allowed:
+              type: boolean
+              const: false
+            request_material_echoed:
+              type: boolean
+              const: false
+        safe_output_contract:
+          type: object
+          additionalProperties: false
+          required: [dedupe_material_echoed, audit_snapshot_policy, request_material_echoed, credential_material_echoed]
+          properties:
+            dedupe_material_echoed:
+              type: boolean
+              const: false
+            audit_snapshot_policy:
+              type: string
+            request_material_echoed:
+              type: boolean
+              const: false
+            credential_material_echoed:
+              type: boolean
+              const: false
     LedgerAdjustmentDryRunPlan:
       type: object
       additionalProperties: false

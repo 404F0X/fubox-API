@@ -20,6 +20,13 @@
       "streaming_supported": true,
       "runtime_entry": "apps/gateway/src/main.rs::responses",
       "preflight_marker": "prompt_protection_rejection_for_responses_request"
+    },
+    {
+      "name": "embeddings",
+      "path": "POST /v1/embeddings",
+      "streaming_supported": false,
+      "runtime_entry": "apps/gateway/src/main.rs::embeddings",
+      "preflight_marker": "prompt_protection_rejection_for_embeddings_request"
     }
   ],
   "runtime_policy": {
@@ -66,6 +73,19 @@
       "select_route_candidates",
       "create_request_started",
       "responses_streaming_or_provider_attempt",
+      "pre_authorize_before_provider_attempt",
+      "create_provider_attempt_started",
+      "open_provider_key_for_route",
+      "upstream_call"
+    ],
+    "embeddings": [
+      "authenticate_virtual_key",
+      "parse_embeddings_request",
+      "compute_request_body_hash",
+      "prompt_protection_preflight",
+      "resolve_canonical_model",
+      "select_route_candidates",
+      "create_request_started",
       "pre_authorize_before_provider_attempt",
       "create_provider_attempt_started",
       "open_provider_key_for_route",
@@ -136,5 +156,5 @@
     "Authorization: Bearer",
     "provider-secret-value"
   ],
-  "notes": "Gateway chat and responses prompt protection runs for non-stream and stream=true requests after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
+  "notes": "Gateway chat, responses, and embeddings prompt protection runs after auth/body parse and before canonical routing, request_started, provider_attempts, provider key opening, and upstream calls. Chat and responses cover stream=true requests through their shared preflight; embeddings is non-stream. Enforce rejects with hash-only request logging plus bounded action/reason/hit summary. Audit logs only the hash and summary before continuing."
 }

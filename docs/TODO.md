@@ -2,8 +2,26 @@
 
 版本：0.1-dev-start  
 日期：2026-06-01  
-状态标记：`[ ] 未开始`、`[~] 进行中`、`[x] 完成`、`[!] 阻塞`  
+状态标记：`[ ] 未开始`、`[~] 部分完成/未最终验收`、`[x] 完成`、`[!] 阻塞`
 优先级：P0 必须、P1 重要、P2 后续。
+
+> 当前执行策略：`[~]` 表示该任务已有一个或多个切片落地，但还没满足最终验收；它不表示当前正在并行开发。实际开发按“当前焦点”顺序推进：先关闭一个目标到 `[x]` 或明确 `[!]`，再进入下一个目标。
+
+当前焦点：
+- 当前只推进 **E8-004 实现 rate-limit-aware key selection**。
+- 退出条件：E8-004 达到 `[x]` 的验收，或因缺少 live Postgres/Docker 等外部条件明确标记 `[!]` 并写清阻塞原因；在此之前不横向打开新的 TODO 目标。
+
+多人协作规则：
+- 主线程 Codex 是协调者，负责选择当前目标、拆切片、合并结果、跑验证、提交和推送。
+- 子 Agent 不拥有独立方向；同一轮只能围绕“当前焦点”做互补切片，不能分别推进不同 Epic/目标。
+- 每个切片必须写清：目标 TODO、切片目标、写入范围、验收检查、完成结果、剩余缺口。
+- 切片合并后必须更新本文件，再提交；否则 TODO 不能作为进度参考。
+- 2026-06-04 规则修正前已完成的 E9-004、E11-007、E13-005 并行切片保留为历史更新；提交后不再作为当前焦点继续横向推进。
+
+当前目标切片记录：
+- **E8-004-S1，已完成，2026-06-04**：建立 DB repository execution boundary。范围：`crates/db/**`。验收：Noop/Refused 不查询 DB，SqlReady 使用 bounded SQL，tenant/provider_key/channel bind，secret-safe summary，`<=1` row semantics。
+- **E8-004-S2，已完成，2026-06-04**：强化 DB execution contract。范围：`crates/db/**`、`tests/fixtures/db/**`。验收：fixture 覆盖 no-query Noop、invalid required Refused、limited/unlimited dimensions、acquire/release bind count、`fetch_optional`、schema scope 和 secret-safe output。
+- **E8-004-S3，下一片**：Gateway runtime 接入 DB reservation execution。范围：`apps/gateway/**` 与必要的 DB call site。验收：provider key 选中后、打开 key/上游调用前 acquire；失败/未使用时 release；不重复 release；request/provider logs 只记录安全摘要；targeted gateway/db tests 通过。
 
 > 使用方式：开发组可以直接把本文件拆到 Jira/GitHub Issues。每个任务的完成必须满足 `TEST_AND_ACCEPTANCE.md` 中 Definition of Done。
 
@@ -285,6 +303,7 @@
 - [~] **E9-004 实现 reserve/settle/refund ledger**  
   Update 2026-06-04: billing-ledger now exposes a `billing_ledger_postgres_sqlx_adapter_contract.v1` boundary derived from the Postgres execution plan, with sqlx dependency/I/O explicitly still disabled, transaction lifecycle, bind-marker-only operation key handling, row-count enforcement handoff, and secret-safe DB error code/category mapping. Remaining work: feature-gated real sqlx transaction executor and integration tests against Postgres.
   Update 2026-06-04: billing-ledger now has a feature-gated `postgres-sqlx` executor boundary with optional workspace sqlx dependency, async begin/execute/commit/rollback flow, executable statement bind values, private operation-key bind handling, and sqlx error mapping to stable secret-safe code/category. Remaining work: convert bounded command plans into concrete SQL/binds automatically and add live Postgres integration tests.
+  Update 2026-06-04: billing-ledger `postgres-sqlx` now automatically converts bounded Postgres execution plans plus the writer's private operation key into ordered concrete SQLx executable statements/binds, with SQL/debug output redacted to bind markers, bind type fixture coverage, context-mismatch refusal, and existing row-count/rollback lifecycle preserved. Remaining work: live Postgres integration tests against real schema/constraints and runtime wiring.
   优先级：P0  
   验收：幂等 key 生效，重复 settle 不重复扣。当前 DB 已验证重复 settle 被拒绝；非流式 chat 成功链路已在 usage/rating 完整且 `final_cost` 非 0 时 best-effort 写入 confirmed settle ledger entry，幂等 key 为 `settle:{request_id}`；billing-ledger 已新增 reserve/settle/refund contract plan 纯函数，固定 `reserve:{request_id}`、`settle:{request_id}`、`refund:{related_ledger_entry_id}`、`refund_partial:{related_ledger_entry_id}:{refund_operation_id}` 幂等 key，reserve 生成 pending debit，settle 生成 confirmed debit 并计划反转同 request pending reserve，重复 reserve/settle/full refund/partial refund 幂等返回，非幂等重复 settle 与同 refund key 不同金额被拒绝；第二切片已新增 `tests/fixtures/billing/reserve_settle_refund_ledger_contract.json` fixture 回放，覆盖 reserve pending -> settle confirmed -> partial/full refund、重复请求幂等、非法重复 settle/refund 拒绝和 metadata secret-safe。本轮新增 `billing_ledger_consistent_writer_plan.v1` 纯函数/fixture，输出未来 writer 的 `wallets -> credit_grants -> budgets -> ledger_entries` FOR UPDATE 锁顺序、tenant/request/source/idempotency bounded ledger reads、余额窗口、预算维度检查、reserve pending debit、settle incremental debit + reserve reversal、refund confirmed credit 和并发拒绝状态机；`tests/fixtures/billing/consistent_writer_contract.json` 覆盖余额足够/不足、幂等 replay、非幂等重复 settle、refund over amount 和 multi-budget limit，序列化输出不含 payload/Authorization/secret/raw wallet credential/DB URL；本轮继续新增 `billing_ledger_command_executor.v1` mockable writer trait/command plan 与 in-memory executor，能把 reserve/settle/refund plan 转为 bounded assert/insert/update commands，并固定 applied/idempotent/rejected 执行结果语义；`tests/fixtures/billing/consistent_writer_executor_contract.json` 覆盖幂等 replay、非幂等重复、余额不足、multi-budget 不足、refund over amount 和 reserve/settle/refund apply，执行序列化同样不输出 raw idempotency key/payload/Authorization/provider key/DB URL。runtime reserve/refund Postgres writer 和真实 DB integration 验收仍待完成。
 

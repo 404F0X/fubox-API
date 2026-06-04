@@ -30,6 +30,54 @@
     "operation_key_bind_marker": "operation_key_bind",
     "required_statement_count": 9
   },
+  "executable_conversion": {
+    "source_case": "reserve_apply_generates_bounded_commands_and_inserts_pending_debit",
+    "automatic_conversion_implemented_with_feature": true,
+    "operation_key_output": "bind_marker_only",
+    "debug_sql_output": "omitted",
+    "concrete_sql_template_placeholders_allowed": false,
+    "required_statement_order": [
+      "lock_wallet",
+      "lock_credit_grants",
+      "lock_budgets",
+      "lock_ledger_entries",
+      "assert_balance_window",
+      "assert_budget_window",
+      "assert_budget_window",
+      "assert_budget_window",
+      "insert_ledger_entry"
+    ],
+    "lock_credit_grants_bind_markers": ["tenant_id", "wallet_id", "currency"],
+    "insert_bind_markers": [
+      "tenant_id",
+      "project_id",
+      "virtual_key_id",
+      "wallet_id",
+      "request_id",
+      "related_ledger_entry_id",
+      "entry_type",
+      "amount",
+      "currency",
+      "status",
+      "operation_key_bind",
+      "metadata"
+    ],
+    "insert_bind_types": [
+      "uuid",
+      "optional_uuid",
+      "optional_uuid",
+      "uuid",
+      "optional_uuid",
+      "optional_uuid",
+      "text",
+      "decimal_text",
+      "text",
+      "text",
+      "operation_key",
+      "json"
+    ],
+    "conversion_error_code": "sqlx_plan_context_mismatch"
+  },
   "db_error_cases": [
     {
       "kind": "unique_violation",

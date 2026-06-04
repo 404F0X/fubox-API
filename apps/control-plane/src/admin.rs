@@ -2537,20 +2537,100 @@ fn ledger_adjustment_execute_contract_body(plan: Value) -> Value {
         "data": {
             "mode": "execute_contract",
             "validated_plan": plan,
-            "execute_contract": {
-                "future_writer_required": true,
-                "ledger_write": false,
-                "audit_log_write": false,
-                "request_log_write": false,
-                "upstream_call": false,
-                "business_and_success_audit_share_transaction": true,
-                "success_audit_only_after_ledger_write": true,
-                "audit_insert_failure_rolls_back_ledger_write": true,
-                "refusal_does_not_build_success_audit": true,
-                "server_generated_dedupe_material": true,
-                "dedupe_material_echoed": false,
-                "audit_snapshot_policy": "bounded public ids and amounts only"
-            }
+            "execute_contract": ledger_adjustment_execute_contract()
+        }
+    })
+}
+
+fn ledger_adjustment_execute_contract() -> Value {
+    json!({
+        "contract_version": "ledger_adjustment_execute_preflight_contract.v2",
+        "future_writer_required": true,
+        "validated_before_refusal": true,
+        "dry_run_constraints_enforced_before_refusal": [
+            "billing_adjust_permission",
+            "tenant_scoped_related_entry",
+            "amount_positive_and_scale_checked",
+            "currency_uppercase_checked",
+            "reason_bounded_and_secret_checked",
+            "refund_source_confirmed_debit_checked",
+            "refund_remaining_amount_checked"
+        ],
+        "ledger_write": false,
+        "audit_log_write": false,
+        "request_log_write": false,
+        "upstream_call": false,
+        "business_and_success_audit_share_transaction": true,
+        "success_audit_only_after_ledger_write": true,
+        "audit_insert_failure_rolls_back_ledger_write": true,
+        "refusal_does_not_build_success_audit": true,
+        "server_generated_dedupe_material": true,
+        "dedupe_material_echoed": false,
+        "audit_snapshot_policy": "bounded public ids and amounts only",
+        "transaction_contract": {
+            "future_isolation": "read_committed_or_stronger",
+            "begin_before_locking": true,
+            "commit_only_after_ledger_and_success_audit": true,
+            "rollback_on_ledger_write_failure": true,
+            "rollback_on_audit_insert_failure": true,
+            "rollback_on_refund_remaining_change": true,
+            "bounded_lock_order": [
+                "source_ledger_entry_for_update",
+                "same_source_confirmed_credit_entries_for_update",
+                "dedupe_reservation_for_update",
+                "ledger_insert",
+                "success_audit_insert"
+            ],
+            "bounded_by": [
+                "tenant_id",
+                "related_ledger_entry_id",
+                "currency",
+                "request_id",
+                "wallet_id",
+                "server_dedupe_digest"
+            ],
+            "recompute_after_locks": [
+                "related_entry_status_and_currency",
+                "confirmed_credit_sum",
+                "remaining_refundable_amount",
+                "dedupe_replay_state"
+            ],
+            "unbounded_scan_allowed": false
+        },
+        "dedupe_contract": {
+            "server_generated_dedupe_material": true,
+            "client_supplied_dedupe_material_rejected": true,
+            "dedupe_material_echoed": false,
+            "public_output": "digest_marker_only",
+            "replay_same_digest_returns_prior_result_after_writer_exists": true,
+            "conflicting_duplicate_refused_before_ledger_insert": true
+        },
+        "ledger_writer_contract": {
+            "write_performed": false,
+            "future_writer": "transactional_admin_ledger_adjustment_writer",
+            "insert_status_on_success": "confirmed",
+            "metadata_policy": "bounded_admin_adjustment_metadata_only",
+            "refund_over_remaining_refused_after_locked_recompute": true
+        },
+        "audit_contract": {
+            "write_performed": false,
+            "business_and_success_audit_share_transaction": true,
+            "success_audit_only_after_ledger_write": true,
+            "audit_insert_failure_rolls_back_ledger_write": true,
+            "refusal_does_not_build_success_audit": true,
+            "snapshot_policy": "bounded public ids and amounts only"
+        },
+        "request_log_contract": {
+            "write_performed": false,
+            "future_behavior": "reference_existing_request_id_only",
+            "request_log_mutation_allowed": false,
+            "request_material_echoed": false
+        },
+        "safe_output_contract": {
+            "dedupe_material_echoed": false,
+            "audit_snapshot_policy": "bounded public ids and amounts only",
+            "request_material_echoed": false,
+            "credential_material_echoed": false
         }
     })
 }
@@ -9276,6 +9356,38 @@ mod tests {
             json!(false)
         );
         assert_eq!(
+            body["data"]["execute_contract"]["contract_version"],
+            json!("ledger_adjustment_execute_preflight_contract.v2")
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["validated_before_refusal"],
+            json!(true)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["transaction_contract"]["bounded_lock_order"][0],
+            json!("source_ledger_entry_for_update")
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["transaction_contract"]["rollback_on_refund_remaining_change"],
+            json!(true)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["transaction_contract"]["unbounded_scan_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["dedupe_contract"]["public_output"],
+            json!("digest_marker_only")
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["dedupe_contract"]["conflicting_duplicate_refused_before_ledger_insert"],
+            json!(true)
+        );
+        assert_eq!(
+            body["data"]["execute_contract"]["request_log_contract"]["write_performed"],
+            json!(false)
+        );
+        assert_eq!(
             body["data"]["validated_plan"]["refund_remaining_summary"]["remaining_refundable_amount"],
             json!("0.15000000")
         );
@@ -9318,6 +9430,10 @@ mod tests {
             fixture["request_contract"]["execute_contract_rejects_with"],
             json!("future_writer_required")
         );
+        assert_eq!(
+            fixture["request_contract"]["mode_enum"],
+            json!(["dry_run", "execute_contract", "execute"])
+        );
         assert_eq!(fixture["request_contract"]["ledger_write"], json!(false));
         assert_eq!(fixture["request_contract"]["upstream_call"], json!(false));
         assert_eq!(fixture["request_contract"]["reason_max_bytes"], json!(256));
@@ -9358,6 +9474,30 @@ mod tests {
             json!(true)
         );
         assert_eq!(
+            fixture["execute_contract"]["contract_version"],
+            json!("ledger_adjustment_execute_preflight_contract.v2")
+        );
+        assert_eq!(
+            fixture["execute_contract"]["validated_before_refusal"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["transaction_contract"]["rollback_on_refund_remaining_change"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["transaction_contract"]["unbounded_scan_allowed"],
+            json!(false)
+        );
+        assert_eq!(
+            fixture["execute_contract"]["dedupe_contract"]["public_output"],
+            json!("digest_marker_only")
+        );
+        assert_eq!(
+            fixture["execute_contract"]["request_log_contract"]["request_log_mutation_allowed"],
+            json!(false)
+        );
+        assert_eq!(
             fixture["examples"]["execute_contract_refusal"]["response"]["error"]["code"],
             json!("future_writer_required")
         );
@@ -9384,6 +9524,10 @@ mod tests {
         assert!(openapi.contains("LedgerAdjustmentDryRunEnvelope"));
         assert!(openapi.contains("LedgerRefundRemainingSummary"));
         assert!(openapi.contains("LedgerAdjustmentExecuteContractEnvelope"));
+        assert!(openapi.contains("ledger_adjustment_execute_preflight_contract.v2"));
+        assert!(openapi.contains("transaction_contract"));
+        assert!(openapi.contains("dedupe_contract"));
+        assert!(openapi.contains("request_log_contract"));
         assert!(openapi.contains("future_writer_required"));
 
         for forbidden in [

@@ -5,11 +5,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    FixedDecimal, LedgerContractError, LedgerEntryRecord, LedgerEntryStatus, LedgerEntryType,
-    LedgerOperationKind, LedgerOperationOutcome, LedgerOperationPlan, RefundLedgerRequest,
-    ReserveLedgerRequest, SettleLedgerRequest, plan_ledger_refund, plan_ledger_reserve,
-    plan_ledger_settle, refund_ledger_idempotency_key, refund_partial_ledger_idempotency_key,
-    reserve_ledger_idempotency_key, settle_ledger_idempotency_key,
+    FixedDecimal, LedgerContractError, LedgerEntryMetadata, LedgerEntryRecord, LedgerEntryStatus,
+    LedgerEntryType, LedgerOperationKind, LedgerOperationOutcome, LedgerOperationPlan,
+    RefundLedgerRequest, ReserveLedgerRequest, SettleLedgerRequest, plan_ledger_refund,
+    plan_ledger_reserve, plan_ledger_settle, refund_ledger_idempotency_key,
+    refund_partial_ledger_idempotency_key, reserve_ledger_idempotency_key,
+    settle_ledger_idempotency_key,
 };
 
 pub const CONSISTENT_LEDGER_WRITER_SCHEMA: &str = "billing_ledger_consistent_writer_plan.v1";
@@ -245,6 +246,7 @@ pub struct ConsistentBalanceWindow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConsistentWalletCheck {
+    pub wallet_id: Uuid,
     pub required: bool,
     pub passed: bool,
     pub reason: &'static str,
@@ -314,6 +316,8 @@ pub struct ConsistentLedgerBoundedCommand {
     pub budget_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_dimension: Option<ConsistentBudgetDimension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<LedgerEntryMetadata>,
     pub operation_key_output: &'static str,
 }
 
@@ -436,7 +440,11 @@ pub fn plan_consistent_ledger_write(
         required_debit,
         refund_credit,
     )?;
-    let wallet_check = wallet_check(balance_window.available_before_write, required_debit);
+    let wallet_check = wallet_check(
+        wallet.wallet_id,
+        balance_window.available_before_write,
+        required_debit,
+    );
     if !wallet_check.passed {
         return Err(ConsistentLedgerWriterError::InsufficientWalletBalance {
             available: balance_window.available_before_write,
@@ -628,6 +636,7 @@ fn balance_assert_command(
         currency: Some(plan.balance_window.currency.clone()),
         budget_id: None,
         budget_dimension: None,
+        metadata: None,
         operation_key_output: "omitted",
     }
 }
@@ -651,6 +660,7 @@ fn budget_assert_command(
         currency: None,
         budget_id: Some(budget.budget_id),
         budget_dimension: Some(budget.dimension),
+        metadata: None,
         operation_key_output: "omitted",
     }
 }
@@ -679,6 +689,7 @@ fn insert_ledger_command(
         currency: Some(entry.currency.clone()),
         budget_id: None,
         budget_dimension: None,
+        metadata: Some(entry.metadata.clone()),
         operation_key_output: "omitted",
     }
 }
@@ -699,6 +710,7 @@ fn status_update_command(order: u16, ledger_entry_id: Uuid) -> ConsistentLedgerB
         currency: None,
         budget_id: None,
         budget_dimension: None,
+        metadata: None,
         operation_key_output: "omitted",
     }
 }
@@ -1037,11 +1049,13 @@ fn active_ledger_effect(
 }
 
 fn wallet_check(
+    wallet_id: Uuid,
     available_before_write: FixedDecimal,
     required_debit: FixedDecimal,
 ) -> ConsistentWalletCheck {
     let passed = required_debit.is_zero() || available_before_write >= required_debit;
     ConsistentWalletCheck {
+        wallet_id,
         required: !required_debit.is_zero(),
         passed,
         reason: if passed {
@@ -1092,14 +1106,14 @@ fn lock_plan_for_request(request: &ConsistentLedgerWriteRequest) -> ConsistentWr
             order: 2,
             resource: "credit_grants",
             lock_mode: "for_update_ordered",
-            query_shape: "select active credit grants by wallet/currency/effective window ordered by grant_id for update",
-            bounded_by: vec!["wallet_id", "currency", "effective_at", "expires_at"],
+            query_shape: "select active credit grants by tenant/wallet/currency/validity window ordered by grant_id for update",
+            bounded_by: vec!["tenant_id", "wallet_id", "currency", "validity_window"],
         },
         ConsistentWriterLockStep {
             order: 3,
             resource: "budgets",
             lock_mode: "for_update_ordered",
-            query_shape: "select active tenant/project/virtual_key budgets ordered by dimension,budget_id for update",
+            query_shape: "select active tenant/project/virtual_key budgets ordered by scope,budget_id for update",
             bounded_by: vec!["tenant_id", "project_id", "virtual_key_id", "currency"],
         },
     ];

@@ -10,7 +10,7 @@
     "ledger_write": false,
     "upstream_call": false,
     "operation_enum": ["adjust", "refund"],
-    "mode_enum": ["dry_run", "execute_contract"],
+    "mode_enum": ["dry_run", "execute_contract", "execute"],
     "execute_contract_rejects_with": "future_writer_required",
     "amount_decimal_string": true,
     "currency_uppercase": true,
@@ -43,6 +43,8 @@
     "status": 501,
     "error_code": "future_writer_required",
     "validates_before_rejecting": true,
+    "contract_version": "ledger_adjustment_execute_preflight_contract.v2",
+    "validated_before_refusal": true,
     "ledger_write": false,
     "audit_log_write": false,
     "request_log_write": false,
@@ -52,7 +54,51 @@
     "business_and_success_audit_share_transaction": true,
     "success_audit_only_after_ledger_write": true,
     "audit_insert_failure_rolls_back_ledger_write": true,
-    "refusal_does_not_build_success_audit": true
+    "refusal_does_not_build_success_audit": true,
+    "transaction_contract": {
+      "future_isolation": "read_committed_or_stronger",
+      "begin_before_locking": true,
+      "commit_only_after_ledger_and_success_audit": true,
+      "rollback_on_ledger_write_failure": true,
+      "rollback_on_audit_insert_failure": true,
+      "rollback_on_refund_remaining_change": true,
+      "bounded_lock_order": [
+        "source_ledger_entry_for_update",
+        "same_source_confirmed_credit_entries_for_update",
+        "dedupe_reservation_for_update",
+        "ledger_insert",
+        "success_audit_insert"
+      ],
+      "bounded_by": [
+        "tenant_id",
+        "related_ledger_entry_id",
+        "currency",
+        "request_id",
+        "wallet_id",
+        "server_dedupe_digest"
+      ],
+      "recompute_after_locks": [
+        "related_entry_status_and_currency",
+        "confirmed_credit_sum",
+        "remaining_refundable_amount",
+        "dedupe_replay_state"
+      ],
+      "unbounded_scan_allowed": false
+    },
+    "dedupe_contract": {
+      "server_generated_dedupe_material": true,
+      "client_supplied_dedupe_material_rejected": true,
+      "dedupe_material_echoed": false,
+      "public_output": "digest_marker_only",
+      "replay_same_digest_returns_prior_result_after_writer_exists": true,
+      "conflicting_duplicate_refused_before_ledger_insert": true
+    },
+    "request_log_contract": {
+      "write_performed": false,
+      "future_behavior": "reference_existing_request_id_only",
+      "request_log_mutation_allowed": false,
+      "request_material_echoed": false
+    }
   },
   "future_write_audit_contract": {
     "future_actions": ["ledger.adjust", "ledger.refund"],
@@ -200,7 +246,18 @@
             }
           },
           "execute_contract": {
+            "contract_version": "ledger_adjustment_execute_preflight_contract.v2",
             "future_writer_required": true,
+            "validated_before_refusal": true,
+            "dry_run_constraints_enforced_before_refusal": [
+              "billing_adjust_permission",
+              "tenant_scoped_related_entry",
+              "amount_positive_and_scale_checked",
+              "currency_uppercase_checked",
+              "reason_bounded_and_secret_checked",
+              "refund_source_confirmed_debit_checked",
+              "refund_remaining_amount_checked"
+            ],
             "ledger_write": false,
             "audit_log_write": false,
             "request_log_write": false,
@@ -211,7 +268,72 @@
             "refusal_does_not_build_success_audit": true,
             "server_generated_dedupe_material": true,
             "dedupe_material_echoed": false,
-            "audit_snapshot_policy": "bounded public ids and amounts only"
+            "audit_snapshot_policy": "bounded public ids and amounts only",
+            "transaction_contract": {
+              "future_isolation": "read_committed_or_stronger",
+              "begin_before_locking": true,
+              "commit_only_after_ledger_and_success_audit": true,
+              "rollback_on_ledger_write_failure": true,
+              "rollback_on_audit_insert_failure": true,
+              "rollback_on_refund_remaining_change": true,
+              "bounded_lock_order": [
+                "source_ledger_entry_for_update",
+                "same_source_confirmed_credit_entries_for_update",
+                "dedupe_reservation_for_update",
+                "ledger_insert",
+                "success_audit_insert"
+              ],
+              "bounded_by": [
+                "tenant_id",
+                "related_ledger_entry_id",
+                "currency",
+                "request_id",
+                "wallet_id",
+                "server_dedupe_digest"
+              ],
+              "recompute_after_locks": [
+                "related_entry_status_and_currency",
+                "confirmed_credit_sum",
+                "remaining_refundable_amount",
+                "dedupe_replay_state"
+              ],
+              "unbounded_scan_allowed": false
+            },
+            "dedupe_contract": {
+              "server_generated_dedupe_material": true,
+              "client_supplied_dedupe_material_rejected": true,
+              "dedupe_material_echoed": false,
+              "public_output": "digest_marker_only",
+              "replay_same_digest_returns_prior_result_after_writer_exists": true,
+              "conflicting_duplicate_refused_before_ledger_insert": true
+            },
+            "ledger_writer_contract": {
+              "write_performed": false,
+              "future_writer": "transactional_admin_ledger_adjustment_writer",
+              "insert_status_on_success": "confirmed",
+              "metadata_policy": "bounded_admin_adjustment_metadata_only",
+              "refund_over_remaining_refused_after_locked_recompute": true
+            },
+            "audit_contract": {
+              "write_performed": false,
+              "business_and_success_audit_share_transaction": true,
+              "success_audit_only_after_ledger_write": true,
+              "audit_insert_failure_rolls_back_ledger_write": true,
+              "refusal_does_not_build_success_audit": true,
+              "snapshot_policy": "bounded public ids and amounts only"
+            },
+            "request_log_contract": {
+              "write_performed": false,
+              "future_behavior": "reference_existing_request_id_only",
+              "request_log_mutation_allowed": false,
+              "request_material_echoed": false
+            },
+            "safe_output_contract": {
+              "dedupe_material_echoed": false,
+              "audit_snapshot_policy": "bounded public ids and amounts only",
+              "request_material_echoed": false,
+              "credential_material_echoed": false
+            }
           }
         }
       }

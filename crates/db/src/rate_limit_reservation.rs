@@ -1169,6 +1169,9 @@ mod tests {
         input: RateLimitPersistenceFixtureInput,
         expected_plan_summary: ProviderKeyRateLimitReservationPersistenceSummary,
         expected_execution_command_summary: ProviderKeyRateLimitReservationExecutionSummary,
+        execution_command_cases: Vec<RateLimitExecutionCommandFixture>,
+        limited_unlimited_cases: Vec<RateLimitLimitedUnlimitedFixture>,
+        execution_result_contract: RateLimitExecutionResultFixture,
         expected_sql_fragments: RateLimitSqlFragments,
         disallowed_sql_fragments: Vec<String>,
         refusal_cases: Vec<RateLimitPersistenceRefusalFixture>,
@@ -1200,6 +1203,55 @@ mod tests {
         concurrency_limit: Option<i32>,
         required: ProviderKeyRateLimitRequiredCapacity,
         expected_refusal_reason: ProviderKeyRateLimitReservationRefusal,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RateLimitExecutionCommandFixture {
+        name: String,
+        operation: ProviderKeyRateLimitReservationOperation,
+        reservation_acquired: bool,
+        required: ProviderKeyRateLimitRequiredCapacity,
+        expected_status: ProviderKeyRateLimitReservationStatus,
+        expected_refusal_reason: Option<ProviderKeyRateLimitReservationRefusal>,
+        expected_sql_name: Option<String>,
+        expected_queries_db: bool,
+        expected_bind_count: usize,
+        expected_requested_counter_updates: usize,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RateLimitLimitedUnlimitedFixture {
+        name: String,
+        operation: ProviderKeyRateLimitReservationOperation,
+        reservation_acquired: bool,
+        rpm_limit: Option<i32>,
+        tpm_limit: Option<i32>,
+        concurrency_limit: Option<i32>,
+        required: ProviderKeyRateLimitRequiredCapacity,
+        current_window_state: Value,
+        expected_status: ProviderKeyRateLimitReservationStatus,
+        expected_refusal_reason: Option<ProviderKeyRateLimitReservationRefusal>,
+        expected_counter_updates: usize,
+        expected_dimensions: Vec<RateLimitDimensionExpectation>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RateLimitDimensionExpectation {
+        dimension: ProviderKeyRateLimitDimension,
+        status: ProviderKeyRateLimitDimensionStatus,
+        counter_update: ProviderKeyRateLimitCounterUpdate,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RateLimitExecutionResultFixture {
+        expected_applied_status: ProviderKeyRateLimitReservationExecutionStatus,
+        expected_not_applied_status: ProviderKeyRateLimitReservationExecutionStatus,
+        expected_noop_status: ProviderKeyRateLimitReservationExecutionStatus,
+        expected_refused_status: ProviderKeyRateLimitReservationExecutionStatus,
+        expected_bounded_rows: usize,
+        expected_max_affected_rows: usize,
+        applied_row: ProviderKeyRateLimitReservationExecutionRow,
+        forbidden_output_markers: Vec<String>,
     }
 
     #[test]
@@ -1260,6 +1312,13 @@ mod tests {
     #[test]
     fn provider_key_rate_limit_reservation_execution_boundary_is_repository_facing() {
         let repository_source = include_str!("repository.rs");
+        let method_source = repository_source
+            .split("pub async fn execute_provider_key_rate_limit_reservation")
+            .nth(1)
+            .expect("repository should expose rate-limit reservation execution method")
+            .split("pub async fn list_recovery_probe_candidates")
+            .next()
+            .expect("rate-limit reservation method should precede recovery candidates");
 
         for fragment in [
             "execute_provider_key_rate_limit_reservation",
@@ -1274,6 +1333,247 @@ mod tests {
                 "repository execution boundary should contain fragment: {fragment}"
             );
         }
+
+        let no_query_guard = method_source
+            .find("if command.status != ProviderKeyRateLimitReservationStatus::SqlReady")
+            .expect("repository method should guard no-query statuses before sqlx");
+        let query_start = method_source
+            .find("sqlx::query(sql)")
+            .expect("repository method should build a bounded SQL query");
+        assert!(
+            no_query_guard < query_start,
+            "repository method must return Noop/Refused before creating a query"
+        );
+        assert!(
+            !method_source.contains("fetch_all"),
+            "reservation execution must not fetch unbounded rows"
+        );
+        assert!(
+            method_source.contains(".fetch_optional(&self.pool)"),
+            "reservation execution must use <=1 affected-row semantics"
+        );
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_execution_cases_match_fixture() {
+        let fixture: RateLimitPersistenceFixture = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/db/provider_key_rate_limit_reservation_persistence_contract.json"
+        ))
+        .expect("rate-limit persistence fixture should be valid");
+
+        for case in fixture.execution_command_cases {
+            let command = build_provider_key_rate_limit_reservation_execution_command(
+                fixture_execution_input_for_case(
+                    &fixture.input,
+                    case.operation,
+                    case.reservation_acquired,
+                    case.required,
+                ),
+            );
+            let summary = command.summary();
+
+            assert_eq!(command.status, case.expected_status, "{}", case.name);
+            assert_eq!(
+                command.refusal_reason, case.expected_refusal_reason,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                command.sql().is_some(),
+                case.expected_queries_db,
+                "{}",
+                case.name
+            );
+            assert_eq!(summary.sql_name, case.expected_sql_name, "{}", case.name);
+            assert_eq!(
+                summary.bind_count, case.expected_bind_count,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                summary.requested_counter_updates, case.expected_requested_counter_updates,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                summary.bounded_rows, PROVIDER_KEY_RATE_LIMIT_RESERVATION_MAX_ROWS,
+                "{}",
+                case.name
+            );
+
+            if !case.expected_queries_db {
+                let result =
+                    ProviderKeyRateLimitReservationExecutionResult::from_command_without_query(
+                        &command,
+                    );
+                assert_eq!(result.affected_rows, 0, "{}", case.name);
+                assert_eq!(result.row, None, "{}", case.name);
+                assert_eq!(
+                    result.bounded_rows, PROVIDER_KEY_RATE_LIMIT_RESERVATION_MAX_ROWS,
+                    "{}",
+                    case.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_limited_unlimited_cases_match_fixture() {
+        let fixture: RateLimitPersistenceFixture = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/db/provider_key_rate_limit_reservation_persistence_contract.json"
+        ))
+        .expect("rate-limit persistence fixture should be valid");
+
+        for case in fixture.limited_unlimited_cases {
+            let input = fixture_persistence_input_for_case(
+                &fixture.input,
+                case.operation,
+                case.reservation_acquired,
+                case.current_window_state,
+                case.required,
+            )
+            .with_limits(case.rpm_limit, case.tpm_limit, case.concurrency_limit);
+            let plan = build_provider_key_rate_limit_reservation_persistence_plan(input);
+
+            assert_eq!(plan.status, case.expected_status, "{}", case.name);
+            assert_eq!(
+                plan.refusal_reason, case.expected_refusal_reason,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                plan.counter_updates_planned, case.expected_counter_updates,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                plan.sql().is_some(),
+                case.expected_status == ProviderKeyRateLimitReservationStatus::SqlReady,
+                "{}",
+                case.name
+            );
+
+            for expected in case.expected_dimensions {
+                let actual = plan
+                    .dimensions
+                    .iter()
+                    .find(|dimension| dimension.dimension == expected.dimension)
+                    .expect("expected dimension should be present");
+                assert_eq!(actual.status, expected.status, "{}", case.name);
+                assert_eq!(
+                    actual.counter_update, expected.counter_update,
+                    "{}",
+                    case.name
+                );
+            }
+
+            let summary_text = serde_json::to_string(&plan.summary())
+                .expect("summary should serialize")
+                .to_ascii_lowercase();
+            for forbidden in &fixture.execution_result_contract.forbidden_output_markers {
+                assert!(
+                    !summary_text.contains(&forbidden.to_ascii_lowercase()),
+                    "limited/unlimited summary leaked forbidden marker in {}: {}",
+                    case.name,
+                    forbidden
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_execution_result_contract_matches_fixture() {
+        let fixture: RateLimitPersistenceFixture = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/db/provider_key_rate_limit_reservation_persistence_contract.json"
+        ))
+        .expect("rate-limit persistence fixture should be valid");
+        let contract = fixture.execution_result_contract;
+        let command = build_provider_key_rate_limit_reservation_execution_command(
+            fixture_execution_input(&fixture.input),
+        );
+
+        let applied = ProviderKeyRateLimitReservationExecutionResult::from_command_row(
+            &command,
+            Some(contract.applied_row.clone()),
+        );
+        assert_eq!(applied.status, contract.expected_applied_status);
+        assert_eq!(applied.affected_rows, contract.expected_max_affected_rows);
+        assert!(applied.affected_rows <= contract.expected_max_affected_rows);
+        assert_eq!(applied.bounded_rows, contract.expected_bounded_rows);
+        assert_eq!(applied.current_window_state_material_in_output, false);
+
+        let not_applied =
+            ProviderKeyRateLimitReservationExecutionResult::from_command_row(&command, None);
+        assert_eq!(not_applied.status, contract.expected_not_applied_status);
+        assert_eq!(not_applied.affected_rows, 0);
+        assert_eq!(not_applied.bounded_rows, contract.expected_bounded_rows);
+
+        let noop_command = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::acquire(
+                fixture.input.tenant_id,
+                fixture.input.provider_key_id,
+                fixture.input.channel_id,
+                ProviderKeyRateLimitRequiredCapacity::new(0, 0, 0),
+            ),
+        );
+        let noop = ProviderKeyRateLimitReservationExecutionResult::from_command_without_query(
+            &noop_command,
+        );
+        assert_eq!(noop.status, contract.expected_noop_status);
+        assert_eq!(noop.affected_rows, 0);
+
+        let refused_command = build_provider_key_rate_limit_reservation_execution_command(
+            ProviderKeyRateLimitReservationExecutionInput::acquire(
+                fixture.input.tenant_id,
+                fixture.input.provider_key_id,
+                fixture.input.channel_id,
+                ProviderKeyRateLimitRequiredCapacity::new(-1, 0, 0),
+            ),
+        );
+        let refused = ProviderKeyRateLimitReservationExecutionResult::from_command_without_query(
+            &refused_command,
+        );
+        assert_eq!(refused.status, contract.expected_refused_status);
+        assert_eq!(refused.affected_rows, 0);
+        assert_eq!(
+            refused.refusal_reason,
+            Some(ProviderKeyRateLimitReservationRefusal::InvalidRequired)
+        );
+
+        let output_text = serde_json::to_string(&(applied, not_applied, noop, refused))
+            .expect("execution results should serialize")
+            .to_ascii_lowercase();
+        for forbidden in contract.forbidden_output_markers {
+            assert!(
+                !output_text.contains(&forbidden.to_ascii_lowercase()),
+                "execution result leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_key_rate_limit_reservation_schema_scope_matches_existing_schema() {
+        let init_schema = include_str!("../../../db/migrations/0001_init.sql").to_ascii_lowercase();
+        for fragment in [
+            "create table if not exists provider_keys",
+            "unique (tenant_id, channel_id, id)",
+            "check (rpm_limit is null or rpm_limit > 0)",
+            "check (tpm_limit is null or tpm_limit > 0)",
+            "check (concurrency_limit is null or concurrency_limit > 0)",
+            "check (jsonb_typeof(current_window_state) = 'object')",
+        ] {
+            assert!(
+                init_schema.contains(fragment),
+                "provider_key schema should contain fragment: {fragment}"
+            );
+        }
+
+        let upgrade_schema = include_str!("../../../db/migrations/0002_upgrade_dev_skeleton.sql")
+            .to_ascii_lowercase();
+        assert!(
+            upgrade_schema.contains("on provider_keys(tenant_id, channel_id, id)"),
+            "upgrade schema should preserve tenant/channel/provider-key lookup scope"
+        );
     }
 
     #[test]
@@ -1594,5 +1894,62 @@ mod tests {
             fixture.channel_id,
             fixture.required,
         )
+    }
+
+    fn fixture_execution_input_for_case(
+        fixture: &RateLimitPersistenceFixtureInput,
+        operation: ProviderKeyRateLimitReservationOperation,
+        reservation_acquired: bool,
+        required: ProviderKeyRateLimitRequiredCapacity,
+    ) -> ProviderKeyRateLimitReservationExecutionInput {
+        match operation {
+            ProviderKeyRateLimitReservationOperation::Acquire => {
+                ProviderKeyRateLimitReservationExecutionInput::acquire(
+                    fixture.tenant_id,
+                    fixture.provider_key_id,
+                    fixture.channel_id,
+                    required,
+                )
+            }
+            ProviderKeyRateLimitReservationOperation::Release => {
+                ProviderKeyRateLimitReservationExecutionInput::release(
+                    fixture.tenant_id,
+                    fixture.provider_key_id,
+                    fixture.channel_id,
+                    required,
+                    reservation_acquired,
+                )
+            }
+        }
+    }
+
+    fn fixture_persistence_input_for_case(
+        fixture: &RateLimitPersistenceFixtureInput,
+        operation: ProviderKeyRateLimitReservationOperation,
+        reservation_acquired: bool,
+        current_window_state: Value,
+        required: ProviderKeyRateLimitRequiredCapacity,
+    ) -> ProviderKeyRateLimitReservationPersistenceInput {
+        match operation {
+            ProviderKeyRateLimitReservationOperation::Acquire => {
+                ProviderKeyRateLimitReservationPersistenceInput::acquire(
+                    fixture.tenant_id,
+                    fixture.provider_key_id,
+                    fixture.channel_id,
+                    current_window_state,
+                    required,
+                )
+            }
+            ProviderKeyRateLimitReservationOperation::Release => {
+                ProviderKeyRateLimitReservationPersistenceInput::release(
+                    fixture.tenant_id,
+                    fixture.provider_key_id,
+                    fixture.channel_id,
+                    current_window_state,
+                    required,
+                    reservation_acquired,
+                )
+            }
+        }
     }
 }

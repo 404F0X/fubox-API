@@ -141,6 +141,200 @@
       "metadata_material"
     ]
   },
+  "execution_command_cases": [
+    {
+      "name": "no_required_capacity_is_noop_without_query",
+      "operation": "Acquire",
+      "reservation_acquired": false,
+      "required": {
+        "requests_per_minute": 0,
+        "tokens_per_minute": 0,
+        "concurrency": 0
+      },
+      "expected_status": "Noop",
+      "expected_refusal_reason": null,
+      "expected_sql_name": null,
+      "expected_queries_db": false,
+      "expected_bind_count": 0,
+      "expected_requested_counter_updates": 0
+    },
+    {
+      "name": "release_without_acquired_marker_is_noop_without_query",
+      "operation": "Release",
+      "reservation_acquired": false,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 128,
+        "concurrency": 1
+      },
+      "expected_status": "Noop",
+      "expected_refusal_reason": null,
+      "expected_sql_name": null,
+      "expected_queries_db": false,
+      "expected_bind_count": 0,
+      "expected_requested_counter_updates": 0
+    },
+    {
+      "name": "negative_required_capacity_is_refused_without_query",
+      "operation": "Acquire",
+      "reservation_acquired": false,
+      "required": {
+        "requests_per_minute": -1,
+        "tokens_per_minute": 128,
+        "concurrency": 1
+      },
+      "expected_status": "Refused",
+      "expected_refusal_reason": "InvalidRequired",
+      "expected_sql_name": null,
+      "expected_queries_db": false,
+      "expected_bind_count": 0,
+      "expected_requested_counter_updates": 0
+    },
+    {
+      "name": "positive_acquire_is_sql_ready_with_bounded_binds",
+      "operation": "Acquire",
+      "reservation_acquired": false,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 128,
+        "concurrency": 1
+      },
+      "expected_status": "SqlReady",
+      "expected_refusal_reason": null,
+      "expected_sql_name": "PROVIDER_KEY_RATE_LIMIT_RESERVATION_ACQUIRE_SQL",
+      "expected_queries_db": true,
+      "expected_bind_count": 6,
+      "expected_requested_counter_updates": 3
+    },
+    {
+      "name": "acquired_release_is_sql_ready_with_acquired_marker_bind",
+      "operation": "Release",
+      "reservation_acquired": true,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 128,
+        "concurrency": 1
+      },
+      "expected_status": "SqlReady",
+      "expected_refusal_reason": null,
+      "expected_sql_name": "PROVIDER_KEY_RATE_LIMIT_RESERVATION_RELEASE_SQL",
+      "expected_queries_db": true,
+      "expected_bind_count": 7,
+      "expected_requested_counter_updates": 3
+    }
+  ],
+  "limited_unlimited_cases": [
+    {
+      "name": "mixed_limited_and_unlimited_acquire_updates_only_limited_dimensions",
+      "operation": "Acquire",
+      "reservation_acquired": false,
+      "rpm_limit": 60,
+      "tpm_limit": null,
+      "concurrency_limit": 4,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 999,
+        "concurrency": 1
+      },
+      "current_window_state": {
+        "rpm": {
+          "used": 10
+        },
+        "concurrency": {
+          "used": 1
+        },
+        "authorization": "Bearer sk-live-secret",
+        "payload": "raw request body"
+      },
+      "expected_status": "SqlReady",
+      "expected_refusal_reason": null,
+      "expected_counter_updates": 2,
+      "expected_dimensions": [
+        {
+          "dimension": "RequestsPerMinute",
+          "status": "WindowReady",
+          "counter_update": "Increment"
+        },
+        {
+          "dimension": "TokensPerMinute",
+          "status": "Unlimited",
+          "counter_update": "None"
+        },
+        {
+          "dimension": "Concurrency",
+          "status": "WindowReady",
+          "counter_update": "Increment"
+        }
+      ]
+    },
+    {
+      "name": "all_unlimited_acquire_is_noop_without_query",
+      "operation": "Acquire",
+      "reservation_acquired": false,
+      "rpm_limit": null,
+      "tpm_limit": null,
+      "concurrency_limit": null,
+      "required": {
+        "requests_per_minute": 1,
+        "tokens_per_minute": 128,
+        "concurrency": 1
+      },
+      "current_window_state": {
+        "authorization": "Bearer sk-live-secret",
+        "endpoint": "https://provider.example.test/v1"
+      },
+      "expected_status": "Noop",
+      "expected_refusal_reason": null,
+      "expected_counter_updates": 0,
+      "expected_dimensions": [
+        {
+          "dimension": "RequestsPerMinute",
+          "status": "Unlimited",
+          "counter_update": "None"
+        },
+        {
+          "dimension": "TokensPerMinute",
+          "status": "Unlimited",
+          "counter_update": "None"
+        },
+        {
+          "dimension": "Concurrency",
+          "status": "Unlimited",
+          "counter_update": "None"
+        }
+      ]
+    }
+  ],
+  "execution_result_contract": {
+    "expected_applied_status": "Applied",
+    "expected_not_applied_status": "NotApplied",
+    "expected_noop_status": "Noop",
+    "expected_refused_status": "Refused",
+    "expected_bounded_rows": 1,
+    "expected_max_affected_rows": 1,
+    "applied_row": {
+      "provider_key_id": "00000000-0000-0000-0000-000000000002",
+      "channel_id": "00000000-0000-0000-0000-000000000003",
+      "rpm_limit": 60,
+      "tpm_limit": null,
+      "concurrency_limit": 4,
+      "rpm_used": 11,
+      "tpm_used": null,
+      "concurrency_used": 2
+    },
+    "forbidden_output_markers": [
+      "sk-live-secret",
+      "bearer",
+      "authorization",
+      "encrypted_secret",
+      "provider_key_secret",
+      "\"current_window_state\"",
+      "payload",
+      "request_body",
+      "response_body",
+      "endpoint"
+    ]
+  },
   "expected_sql_fragments": {
     "acquire": [
       "from provider_keys",

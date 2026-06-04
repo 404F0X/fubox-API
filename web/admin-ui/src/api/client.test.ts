@@ -1012,6 +1012,150 @@ describe("api client", () => {
     );
   });
 
+  it("wraps ledger adjustment execute contract writer-required responses without claiming success", async () => {
+    const { requestLedgerAdjustmentExecuteContract } = await loadClient();
+    const validatedPlan = {
+      audit_log_write: false,
+      future_write_contract: {
+        audit_action: "ledger.refund",
+        audit_insert_failure_rolls_back_ledger_write: true,
+        audit_snapshot_policy: "bounded public ids and amounts only",
+        business_and_success_audit_share_transaction: true,
+        ledger_write: false,
+        refusal_does_not_build_success_audit: true,
+        success_audit_only_after_ledger_write: true,
+        upstream_call: false,
+      },
+      ledger_write: false,
+      operation: "refund",
+      plan_only: true,
+      planned_ledger_entry: {
+        amount: "0.25000000",
+        currency: "USD",
+        dedupe_policy: "server_generated_on_execute",
+        entry_type: "refund",
+        metadata_policy: "bounded_admin_adjustment_metadata_only",
+        related_ledger_entry_id: "ledger-entry-1",
+        status: "planned",
+      },
+      request_log_write: false,
+      tenant_id: "tenant-1",
+      upstream_call: false,
+      validation: {
+        amount_checked: true,
+        currency_checked: true,
+        refund_remaining_checked: true,
+        reason_provided: true,
+        related_ledger_entry_checked: true,
+        sensitive_material_policy: "rejected_by_schema",
+      },
+    };
+    const contractData = {
+      execute_contract: {
+        audit_insert_failure_rolls_back_ledger_write: true,
+        audit_log_write: false,
+        audit_snapshot_policy: "bounded public ids and amounts only",
+        business_and_success_audit_share_transaction: true,
+        dedupe_material_echoed: false,
+        future_writer_required: true,
+        ledger_write: false,
+        refusal_does_not_build_success_audit: true,
+        request_log_write: false,
+        server_generated_dedupe_material: true,
+        success_audit_only_after_ledger_write: true,
+        upstream_call: false,
+      },
+      mode: "execute_contract",
+      validated_plan: validatedPlan,
+    };
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: contractData,
+            error: {
+              code: "future_writer_required",
+              message: "ledger adjustment execute requires transactional ledger writer",
+            },
+          }),
+          {
+            status: 501,
+            statusText: "Not Implemented",
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      requestLedgerAdjustmentExecuteContract({
+        amount: "0.25000000",
+        currency: "USD",
+        mode: "dry_run",
+        operation: "refund",
+        reason: "customer credit",
+        related_ledger_entry_id: "ledger-entry-1",
+        request_id: "request-1",
+      }),
+    ).resolves.toEqual({
+      kind: "writer_required",
+      message: "ledger adjustment execute requires transactional ledger writer",
+      response: contractData,
+      status: 501,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(init).toMatchObject({ credentials: "include", method: "POST" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      amount: "0.25000000",
+      currency: "USD",
+      mode: "execute_contract",
+      operation: "refund",
+      reason: "customer credit",
+      related_ledger_entry_id: "ledger-entry-1",
+      request_id: "request-1",
+    });
+  });
+
+  it("wraps future ledger adjustment execute responses as explicit future execute results", async () => {
+    const { requestLedgerAdjustmentExecuteContract } = await loadClient();
+    const futureExecuteResponse = {
+      audit_log_write: true,
+      executed: true,
+      ledger_entry: {
+        amount: "0.25000000",
+        currency: "USD",
+        entry_type: "refund",
+        id: "ledger-entry-2",
+        project_id: "project-1",
+        related_ledger_entry_id: "ledger-entry-1",
+        request_id: "request-1",
+        status: "confirmed",
+        wallet_id: "wallet-1",
+      },
+      ledger_write: true,
+      mode: "execute",
+      request_log_write: true,
+      upstream_call: false,
+    };
+    const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse(futureExecuteResponse));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      requestLedgerAdjustmentExecuteContract({
+        amount: "0.25000000",
+        currency: "USD",
+        operation: "refund",
+        related_ledger_entry_id: "ledger-entry-1",
+      }),
+    ).resolves.toEqual({
+      kind: "future_execute",
+      response: futureExecuteResponse,
+    });
+  });
+
   it("loads the current admin session through cookie credentials without fallback headers", async () => {
     const { ADMIN_SESSION_HEADER, getAdminMe } = await loadClient();
     const fetchMock = vi.fn((_url: RequestInfo | URL, _init?: RequestInit) =>

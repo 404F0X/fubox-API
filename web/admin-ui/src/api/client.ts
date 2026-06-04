@@ -125,6 +125,7 @@ export type HealthSummaryFilters = {
 export type ServiceName = "gateway" | "controlPlane" | "mockProvider";
 
 export type ErrorEnvelope = {
+  data?: unknown;
   error?: {
     code?: unknown;
     message?: unknown;
@@ -903,6 +904,57 @@ export type LedgerAdjustmentDryRunResponse = {
   wallet_id?: string | null;
 };
 
+export type LedgerAdjustmentExecuteContractFlags = {
+  audit_insert_failure_rolls_back_ledger_write: boolean;
+  audit_log_write: boolean;
+  audit_snapshot_policy?: string;
+  business_and_success_audit_share_transaction: boolean;
+  dedupe_material_echoed?: boolean;
+  future_writer_required?: boolean;
+  ledger_write: boolean;
+  refusal_does_not_build_success_audit: boolean;
+  request_log_write: boolean;
+  server_generated_dedupe_material?: boolean;
+  success_audit_only_after_ledger_write: boolean;
+  upstream_call: boolean;
+};
+
+export type LedgerAdjustmentExecuteContractResponse = {
+  execute_contract: LedgerAdjustmentExecuteContractFlags;
+  mode: "execute_contract";
+  validated_plan: LedgerAdjustmentDryRunResponse;
+};
+
+export type LedgerAdjustmentFutureExecuteResponse = {
+  audit_log_write: boolean;
+  executed?: boolean;
+  ledger_entry?: LedgerAdjustmentRelatedEntrySummary;
+  ledger_write: boolean;
+  mode: "execute";
+  request_log_write: boolean;
+  upstream_call: boolean;
+};
+
+export type LedgerAdjustmentExecuteResponse =
+  | LedgerAdjustmentExecuteContractResponse
+  | LedgerAdjustmentFutureExecuteResponse;
+
+export type LedgerAdjustmentExecuteResult =
+  | {
+      kind: "writer_required";
+      message: string;
+      response: LedgerAdjustmentExecuteContractResponse;
+      status?: number;
+    }
+  | {
+      kind: "contract_ready";
+      response: LedgerAdjustmentExecuteContractResponse;
+    }
+  | {
+      kind: "future_execute";
+      response: LedgerAdjustmentFutureExecuteResponse;
+    };
+
 export type BillingReconciliationReportFilters = {
   day?: string;
   limit?: number;
@@ -1611,6 +1663,38 @@ export function dryRunLedgerAdjustment(
   });
 }
 
+export async function requestLedgerAdjustmentExecuteContract(
+  request: LedgerAdjustmentDryRunRequest,
+  options: Omit<JsonRequestOptions, "body" | "method"> = {},
+): Promise<LedgerAdjustmentExecuteResult> {
+  const executeContractRequest = { ...request, mode: "execute_contract" } satisfies LedgerAdjustmentDryRunRequest;
+
+  try {
+    const response = await apiJson<LedgerAdjustmentExecuteResponse>("/admin/ledger/adjustments/dry-run", {
+      ...options,
+      body: executeContractRequest,
+      method: "POST",
+    });
+
+    return ledgerAdjustmentExecuteResultFromResponse(response);
+  } catch (error) {
+    if (error instanceof ApiClientError && error.status === 501 && error.code === "future_writer_required") {
+      const response = ledgerAdjustmentExecuteResponseFromEnvelope(error.envelope);
+
+      if (response?.mode === "execute_contract") {
+        return {
+          kind: "writer_required",
+          message: error.message,
+          response,
+          status: error.status,
+        };
+      }
+    }
+
+    throw error;
+  }
+}
+
 export function getBillingReconciliationReport(
   filters: BillingReconciliationReportFilters = {},
   options: Omit<JsonRequestOptions, "body" | "method"> = {},
@@ -1765,6 +1849,44 @@ function unwrapDataEnvelope(payload: unknown): unknown {
   }
 
   return payload;
+}
+
+function ledgerAdjustmentExecuteResultFromResponse(
+  response: LedgerAdjustmentExecuteResponse,
+): LedgerAdjustmentExecuteResult {
+  if (response.mode === "execute") {
+    return {
+      kind: "future_execute",
+      response,
+    };
+  }
+
+  return {
+    kind: "contract_ready",
+    response,
+  };
+}
+
+function ledgerAdjustmentExecuteResponseFromEnvelope(
+  envelope: ErrorEnvelope | undefined,
+): LedgerAdjustmentExecuteResponse | undefined {
+  return ledgerAdjustmentExecuteResponseFromUnknown(envelope?.data);
+}
+
+function ledgerAdjustmentExecuteResponseFromUnknown(value: unknown): LedgerAdjustmentExecuteResponse | undefined {
+  if (!isRecord(value) || typeof value.mode !== "string") {
+    return undefined;
+  }
+
+  if (value.mode === "execute_contract" && isRecord(value.execute_contract) && isRecord(value.validated_plan)) {
+    return value as LedgerAdjustmentExecuteContractResponse;
+  }
+
+  if (value.mode === "execute") {
+    return value as LedgerAdjustmentFutureExecuteResponse;
+  }
+
+  return undefined;
 }
 
 function queryString(filters: Record<string, unknown>): string {

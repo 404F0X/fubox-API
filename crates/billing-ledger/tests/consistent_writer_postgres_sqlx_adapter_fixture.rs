@@ -13,6 +13,7 @@ use ai_gateway_billing_ledger::{
 use ai_gateway_billing_ledger::{
     ConsistentLedgerPostgresSqlxBindValue, ConsistentLedgerPostgresSqlxExecutableStatement,
     map_consistent_ledger_postgres_sqlx_error,
+    plan_consistent_ledger_postgres_sqlx_executable_statements,
 };
 use serde::Deserialize;
 #[cfg(feature = "postgres-sqlx")]
@@ -40,6 +41,8 @@ struct SqlxAdapterFixture {
     source_case: String,
     secret_safe_forbidden_terms: Vec<String>,
     expected: ExpectedSqlxAdapter,
+    #[allow(dead_code)]
+    executable_conversion: ExecutableConversionFixture,
     db_error_cases: Vec<DbErrorCaseFixture>,
 }
 
@@ -53,6 +56,21 @@ struct ExpectedSqlxAdapter {
     transaction_methods: Vec<String>,
     operation_key_bind_marker: String,
     required_statement_count: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct ExecutableConversionFixture {
+    source_case: String,
+    automatic_conversion_implemented_with_feature: bool,
+    operation_key_output: String,
+    debug_sql_output: String,
+    concrete_sql_template_placeholders_allowed: bool,
+    required_statement_order: Vec<String>,
+    lock_credit_grants_bind_markers: Vec<String>,
+    insert_bind_markers: Vec<String>,
+    insert_bind_types: Vec<String>,
+    conversion_error_code: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +306,111 @@ fn postgres_db_error_mapping_is_stable_and_secret_safe() {
 
 #[cfg(feature = "postgres-sqlx")]
 #[test]
+fn postgres_sqlx_converter_builds_ordered_concrete_secret_safe_executables() {
+    let source_fixture: SourceFixture =
+        serde_json::from_str(EXECUTOR_FIXTURE).expect("source fixture should parse");
+    let adapter_fixture: SqlxAdapterFixture =
+        serde_json::from_str(SQLX_ADAPTER_FIXTURE).expect("adapter fixture should parse");
+    let conversion = &adapter_fixture.executable_conversion;
+    assert!(
+        conversion.automatic_conversion_implemented_with_feature,
+        "fixture should require feature-gated conversion"
+    );
+    assert!(
+        !conversion.concrete_sql_template_placeholders_allowed,
+        "fixture should reject template placeholders"
+    );
+    assert_eq!(conversion.operation_key_output, "bind_marker_only");
+    assert_eq!(conversion.debug_sql_output, "omitted");
+
+    let source_case = source_fixture
+        .cases
+        .iter()
+        .find(|case| case.name == conversion.source_case)
+        .expect("source case");
+    let request = request_from_fixture(&source_fixture.scope, source_case);
+    let state = state_from_fixture(&source_case.state);
+    let writer_plan =
+        plan_consistent_ledger_write(request, &state).expect("writer plan should build");
+    let command_plan = plan_consistent_ledger_write_commands(&writer_plan);
+    let postgres_plan = plan_consistent_ledger_postgres_execution(&writer_plan, &command_plan);
+    let executable_statements =
+        plan_consistent_ledger_postgres_sqlx_executable_statements(&writer_plan, &postgres_plan)
+            .expect("sqlx executable statements should convert");
+
+    assert_eq!(
+        executable_statements.len(),
+        postgres_plan.sql_statements.len()
+    );
+    let statement_order = executable_statements
+        .iter()
+        .map(|statement| statement_kind_name(statement.kind).to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(statement_order, conversion.required_statement_order);
+
+    for (executable, source_statement) in executable_statements
+        .iter()
+        .zip(&postgres_plan.sql_statements)
+    {
+        assert_eq!(executable.order, source_statement.order);
+        assert_eq!(executable.kind, source_statement.kind);
+        assert_eq!(executable.bind_markers.len(), executable.binds.len());
+        assert!(!executable.sql.trim().is_empty());
+        assert!(!executable.sql.contains("<private"));
+        assert!(!executable.sql.contains("$tenant_id"));
+    }
+
+    let lock_credit_grants = executable_statements
+        .iter()
+        .find(|statement| statement.kind == ConsistentLedgerPostgresStatementKind::LockCreditGrants)
+        .expect("credit grant lock executable");
+    assert_eq!(
+        bind_marker_names(&lock_credit_grants.bind_markers),
+        conversion.lock_credit_grants_bind_markers
+    );
+
+    let insert = executable_statements
+        .iter()
+        .find(|statement| {
+            statement.kind == ConsistentLedgerPostgresStatementKind::InsertLedgerEntry
+        })
+        .expect("insert executable");
+    assert_eq!(
+        bind_marker_names(&insert.bind_markers),
+        conversion.insert_bind_markers
+    );
+    assert_eq!(bind_type_names(&insert.binds), conversion.insert_bind_types);
+    assert!(insert.binds.iter().any(|bind| {
+        matches!(
+            bind,
+            ConsistentLedgerPostgresSqlxBindValue::OperationKey(value)
+                if value == &writer_plan.idempotency_key
+        )
+    }));
+
+    let debug = format!("{executable_statements:?}");
+    assert!(debug.contains("operation_key_bind"));
+    assert!(debug.contains("OperationKey(<bind_marker_only>)"));
+    assert!(debug.contains("<concrete_sql_omitted>"));
+    assert!(!debug.contains(insert.sql));
+    assert_secret_safe_text(
+        &debug,
+        &adapter_fixture.secret_safe_forbidden_terms,
+        "generated sqlx executable debug",
+    );
+
+    let mut mismatched_plan = postgres_plan.clone();
+    mismatched_plan.scope.tenant_id = Uuid::from_u128(999);
+    let mismatch =
+        plan_consistent_ledger_postgres_sqlx_executable_statements(&writer_plan, &mismatched_plan)
+            .expect_err("mismatched plan should not convert");
+    assert_eq!(mismatch.code, conversion.conversion_error_code);
+    assert_eq!(mismatch.category, "statement_refusal");
+    assert_eq!(mismatch.detail_output, "omitted");
+}
+
+#[cfg(feature = "postgres-sqlx")]
+#[test]
 fn postgres_sqlx_feature_boundary_keeps_bind_values_private_and_maps_sqlx_errors() {
     let adapter_fixture: SqlxAdapterFixture =
         serde_json::from_str(SQLX_ADAPTER_FIXTURE).expect("adapter fixture should parse");
@@ -486,6 +609,77 @@ fn assert_secret_safe_text(serialized: &str, forbidden_terms: &[String], label: 
             !normalized.contains(&forbidden.to_ascii_lowercase()),
             "{label} contains forbidden term `{forbidden}`"
         );
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn bind_marker_names(markers: &[ConsistentLedgerPostgresSqlxBindMarker]) -> Vec<String> {
+    markers
+        .iter()
+        .map(|marker| bind_marker_name(*marker).to_string())
+        .collect()
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn bind_marker_name(marker: ConsistentLedgerPostgresSqlxBindMarker) -> &'static str {
+    match marker {
+        ConsistentLedgerPostgresSqlxBindMarker::TenantId => "tenant_id",
+        ConsistentLedgerPostgresSqlxBindMarker::ProjectId => "project_id",
+        ConsistentLedgerPostgresSqlxBindMarker::VirtualKeyId => "virtual_key_id",
+        ConsistentLedgerPostgresSqlxBindMarker::WalletId => "wallet_id",
+        ConsistentLedgerPostgresSqlxBindMarker::Currency => "currency",
+        ConsistentLedgerPostgresSqlxBindMarker::Now => "now",
+        ConsistentLedgerPostgresSqlxBindMarker::RequestId => "request_id",
+        ConsistentLedgerPostgresSqlxBindMarker::SourceLedgerEntryId => "source_ledger_entry_id",
+        ConsistentLedgerPostgresSqlxBindMarker::RelatedLedgerEntryId => "related_ledger_entry_id",
+        ConsistentLedgerPostgresSqlxBindMarker::LedgerEntryId => "ledger_entry_id",
+        ConsistentLedgerPostgresSqlxBindMarker::BudgetId => "budget_id",
+        ConsistentLedgerPostgresSqlxBindMarker::RequiredDebit => "required_debit",
+        ConsistentLedgerPostgresSqlxBindMarker::AvailableBeforeWrite => "available_before_write",
+        ConsistentLedgerPostgresSqlxBindMarker::EntryType => "entry_type",
+        ConsistentLedgerPostgresSqlxBindMarker::Amount => "amount",
+        ConsistentLedgerPostgresSqlxBindMarker::Status => "status",
+        ConsistentLedgerPostgresSqlxBindMarker::FromStatus => "from_status",
+        ConsistentLedgerPostgresSqlxBindMarker::ToStatus => "to_status",
+        ConsistentLedgerPostgresSqlxBindMarker::Metadata => "metadata",
+        ConsistentLedgerPostgresSqlxBindMarker::OperationKeyBind => "operation_key_bind",
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn bind_type_names(binds: &[ConsistentLedgerPostgresSqlxBindValue]) -> Vec<String> {
+    binds
+        .iter()
+        .map(|bind| bind_type_name(bind).to_string())
+        .collect()
+}
+
+#[cfg(feature = "postgres-sqlx")]
+fn bind_type_name(bind: &ConsistentLedgerPostgresSqlxBindValue) -> &'static str {
+    match bind {
+        ConsistentLedgerPostgresSqlxBindValue::Uuid(_) => "uuid",
+        ConsistentLedgerPostgresSqlxBindValue::OptionalUuid(_) => "optional_uuid",
+        ConsistentLedgerPostgresSqlxBindValue::Text(_) => "text",
+        ConsistentLedgerPostgresSqlxBindValue::OptionalText(_) => "optional_text",
+        ConsistentLedgerPostgresSqlxBindValue::DecimalText(_) => "decimal_text",
+        ConsistentLedgerPostgresSqlxBindValue::I64(_) => "i64",
+        ConsistentLedgerPostgresSqlxBindValue::Bool(_) => "bool",
+        ConsistentLedgerPostgresSqlxBindValue::Json(_) => "json",
+        ConsistentLedgerPostgresSqlxBindValue::OperationKey(_) => "operation_key",
+    }
+}
+
+#[cfg(feature = "postgres-sqlx")]
+const fn statement_kind_name(kind: ConsistentLedgerPostgresStatementKind) -> &'static str {
+    match kind {
+        ConsistentLedgerPostgresStatementKind::LockWallet => "lock_wallet",
+        ConsistentLedgerPostgresStatementKind::LockCreditGrants => "lock_credit_grants",
+        ConsistentLedgerPostgresStatementKind::LockBudgets => "lock_budgets",
+        ConsistentLedgerPostgresStatementKind::LockLedgerEntries => "lock_ledger_entries",
+        ConsistentLedgerPostgresStatementKind::AssertBalanceWindow => "assert_balance_window",
+        ConsistentLedgerPostgresStatementKind::AssertBudgetWindow => "assert_budget_window",
+        ConsistentLedgerPostgresStatementKind::InsertLedgerEntry => "insert_ledger_entry",
+        ConsistentLedgerPostgresStatementKind::UpdateLedgerStatus => "update_ledger_status",
     }
 }
 
