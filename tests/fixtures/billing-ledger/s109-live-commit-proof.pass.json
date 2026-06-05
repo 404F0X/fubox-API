@@ -1,0 +1,47 @@
+{
+  "schema_version": "control_plane_billing_ledger_live_commit_proof_artifact.v1",
+  "classification": "pass",
+  "artifact_mode": "external_runtime_writer_commit",
+  "current_commit": "fixture-current",
+  "runtime_container_commit": "fixture-current",
+  "measurement_source": "external_controlled_runtime_writer_commit",
+  "generated_by_this_script": false,
+  "simulated": false,
+  "stale_artifact": false,
+  "live_commit_readback": "billing_ledger_runtime_writer",
+  "active_writer": "billing_ledger_runtime_writer",
+  "source_of_truth": "billing_ledger_runtime_writer",
+  "single_active_writer_count": 1,
+  "row_count_proof": [
+    {
+      "statement_kind": "insert_runtime_writer_commit_ledger_entry",
+      "expected_rows": 1,
+      "actual_rows": 1,
+      "rows_match": true
+    },
+    {
+      "statement_kind": "mark_runtime_writer_commit_idempotency",
+      "expected_rows": 1,
+      "actual_rows": 1,
+      "rows_match": true
+    }
+  ],
+  "commit_proof": {
+    "runtime_writer_commit_observed": true,
+    "production_source_of_truth_switch_observed": true,
+    "committed_writer": "billing_ledger_runtime_writer"
+  },
+  "no_dual_commit_proof": {
+    "dual_commit_observed": false,
+    "local_and_billing_ledger_commit_same_request_observed": false,
+    "production_writer_replaced": false
+  },
+  "safe_output": {
+    "database_url_output": "omitted",
+    "env_value_output": "omitted",
+    "operation_key_output": "omitted",
+    "raw_env_value_echoed": false,
+    "raw_database_url_echoed": false,
+    "credential_material_echoed": false
+  }
+}

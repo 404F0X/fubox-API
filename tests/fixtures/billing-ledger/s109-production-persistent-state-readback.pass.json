@@ -1,0 +1,25 @@
+{
+  "schema_version": "control_plane_billing_ledger_persistent_cutover_state_switch.v1",
+  "classification": "pass",
+  "action": "readback",
+  "environment_scope": "production",
+  "persistent_state": {
+    "action_attempted": true,
+    "classification": "readback",
+    "active_writer": "billing_ledger_runtime_writer",
+    "source_of_truth": "billing_ledger_runtime_writer",
+    "cutover_observed": true,
+    "rollback_observed": false,
+    "generation": 7,
+    "rollback_generation": 7
+  },
+  "safe_output": {
+    "database_url_output": "omitted",
+    "env_value_output": "omitted",
+    "operation_key_output": "omitted",
+    "rollback_token_output": "omitted",
+    "raw_env_value_echoed": false,
+    "raw_database_url_echoed": false,
+    "credential_material_echoed": false
+  }
+}

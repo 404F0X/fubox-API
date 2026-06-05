@@ -1,0 +1,33 @@
+{
+  "schema_version": "billing_ledger_runtime_writer_commit_input.reserve_paid_minimal.v1",
+  "purpose": "shape guide only; copy to .tmp/billing-ledger/runtime-writer-commit-input.json before an explicitly approved live paid commit rehearsal",
+  "operation": "reserve",
+  "operation_scope": "paid-beta-bounded-ledger-reserve",
+  "idempotency_key_source": "reserve_ledger_idempotency_key(request_id)",
+  "tenant_id": "11111111-1111-4111-8111-111111111111",
+  "project_id": "22222222-2222-4222-8222-222222222222",
+  "virtual_key_id": "33333333-3333-4333-8333-333333333333",
+  "user_id": "44444444-4444-4444-8444-444444444444",
+  "wallet_id": "55555555-5555-4555-8555-555555555555",
+  "request_id": "66666666-6666-4666-8666-666666666666",
+  "source": "operator_controlled_paid_beta_rehearsal",
+  "amount": "0.00010000",
+  "currency": "USD",
+  "available_balance": "1.00000000",
+  "budgets": [
+    {
+      "budget_id": "77777777-7777-4777-8777-777777777777",
+      "dimension": "tenant",
+      "remaining_amount": "1.00000000",
+      "active": true
+    }
+  ],
+  "artifact_path": ".tmp/billing-ledger/live-commit-proof-artifact.json",
+  "safe_output_contract": {
+    "database_url_output": "omitted",
+    "env_value_output": "omitted",
+    "operation_key_output": "omitted",
+    "raw_metadata_echoed": false,
+    "credential_material_echoed": false
+  }
+}

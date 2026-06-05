@@ -52,6 +52,7 @@ version = "0.1.0-alpha"
 dependencies = [
  "ai-gateway-app-core",
  "ai-gateway-auth",
+ "ai-gateway-billing-ledger",
  "ai-gateway-config",
  "ai-gateway-db",
  "ai-gateway-observability",
@@ -59,6 +60,7 @@ dependencies = [
  "axum",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tower-http",

@@ -1,0 +1,20 @@
+{
+  "schema_version": "control_plane_billing_ledger_writer_readiness_smoke_wrapper.v1",
+  "readiness": "ready",
+  "runtime_writer_commit_runner_artifact_handoff": {
+    "classification": "pass"
+  },
+  "live_commit_proof_readback_boundary": {
+    "classification": "pass"
+  },
+  "single_writer_cutover_proof_gate": {
+    "classification": "pass",
+    "no_dual_commit_proof": {
+      "classification": "pass",
+      "commit_observed": false,
+      "dual_commit_observed": false,
+      "production_writer_replaced": false,
+      "dual_commit_allowed": false
+    }
+  }
+}

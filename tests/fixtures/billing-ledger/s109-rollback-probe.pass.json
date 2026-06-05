@@ -1,0 +1,25 @@
+{
+  "schema_version": "control_plane_billing_ledger_live_probe_evidence_artifact.v1",
+  "classification": "pass",
+  "artifact_mode": "post_probe_measurement_contract",
+  "current_commit": "fixture-current",
+  "freshness_marker": "current",
+  "stale_artifact": false,
+  "rollback_no_commit_proof": {
+    "proof_source": "fixture_rollback_only_readback",
+    "commit_observed": false,
+    "rollback_observed": true,
+    "dual_commit_observed": false,
+    "local_writer_fallback": "control_plane_local_sql_writer",
+    "production_writer_replaced": false,
+    "probe_commits_billing_ledger": false
+  },
+  "safe_output": {
+    "database_url_output": "omitted",
+    "env_value_output": "omitted",
+    "operation_key_output": "omitted",
+    "raw_env_value_echoed": false,
+    "raw_database_url_echoed": false,
+    "credential_material_echoed": false
+  }
+}
