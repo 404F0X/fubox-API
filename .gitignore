@@ -13,6 +13,7 @@ tests/integration/sdk-smoke/node_modules/
 .env
 .env.*
 !.env.example
+.claude/
 *.pem
 *.key
 *.p12
