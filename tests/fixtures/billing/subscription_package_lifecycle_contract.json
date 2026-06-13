@@ -1,0 +1,929 @@
+{
+  "schema": "subscription_package_lifecycle_contract.v1",
+  "status": "contract_enforced_not_runtime_wired",
+  "runtime_implemented": false,
+  "contract_only": true,
+  "paid_gate_changed": false,
+  "secret_safe": true,
+  "runtime_acceptance_contract": {
+    "runtime_artifact_schema": "subscription_package_lifecycle_runtime.v1",
+    "runtime_artifact_path": ".tmp/credit-wallet/subscription_package_lifecycle_runtime.json",
+    "contract_artifact_must_not_mark_runtime_verified": true,
+    "runtime_implemented_required": true,
+    "contract_only_required": false,
+    "route_or_internal_runtime_invocation_required": true,
+    "plan_package_crud_readback_required": true,
+    "subscription_lifecycle_readback_required": true,
+    "subscription_state_transitions_readback_required": true,
+    "trial_proration_dunning_readback_required": true,
+    "credit_grant_or_ledger_effect_readback_required": true,
+    "invoice_order_linkage_readback_required": true,
+    "idempotency_replay_readback_required": true,
+    "conflict_no_duplicate_write_readback_required": true,
+    "refusal_no_write_readback_required": true,
+    "audit_readback_required": true,
+    "money_decimal_strings_required": true,
+    "secret_safe_required": true,
+    "paid_gate_changed_required": false,
+    "direct_wallet_snapshot_mutation_forbidden": true,
+    "raw_provider_payload_output_allowed": false,
+    "raw_plan_payload_output_allowed": false,
+    "token_output_allowed": false,
+    "voucher_or_code_output_allowed": false
+  },
+  "expected_payment_reconciliation": {
+    "schema": "admin_subscription_scheduler_expected_payment_reconciliation.v1",
+    "source_handoff_schema": "admin_subscription_scheduler_provider_capture_reconciliation_plan.v1",
+    "candidate_schema": "payment_provider_stripe_like_response_object_reconciliation.v1",
+    "candidate_source": "/admin/billing/payment-provider/executor.data.stripe_like_response_object_reconciliation",
+    "candidate_required_before_subscription_capture_apply": true,
+    "payment_logic_reimplemented_by_subscription": false,
+    "expected_provider_object_types": [
+      "payment_intent",
+      "charge"
+    ],
+    "expected_provider_statuses": [
+      "succeeded"
+    ],
+    "expected_local_refs": [
+      "payment_intent_id"
+    ],
+    "status_mapping": {
+      "matched": "provider_capture_reconciliation_matched_waiting_executor_apply",
+      "mismatch": "blocked_review_payment_reconciliation_mismatch",
+      "blocked": "provider_source_ready_waiting_fetch"
+    },
+    "safe_next_action_mapping": {
+      "matched": "accept_reconciliation_candidate_then_apply_or_replay_local_action_in_payment_executor",
+      "mismatch": "do_not_apply_local_action_review_mismatch_reasons",
+      "blocked_retryable": "retry_provider_object_fetch_after_backoff_without_local_write",
+      "blocked_missing_summary": "load_provider_object_summary_before_local_write"
+    },
+    "scheduler_handoff_network_call_enabled": false,
+    "scheduler_handoff_network_call_performed": false,
+    "scheduler_handoff_writes": {
+      "payment_captures": "not_written_by_subscription_handoff",
+      "ledger_entries": "not_written_by_subscription_handoff",
+      "credit_grants": "not_written_by_subscription_handoff"
+    },
+    "raw_provider_payload_output_allowed": false,
+    "authorization_output_allowed": false,
+    "provider_secret_output_allowed": false,
+    "secret_safe": true
+  },
+  "execution_plan_contract": {
+    "schema": "admin_subscription_scheduler_execution_plan_readback.v1",
+    "runtime_daemon_running": false,
+    "local_business_logic_implemented": true,
+    "real_payment_capture_enabled": false,
+    "event_types": [
+      "renew",
+      "payment_failed",
+      "dunning",
+      "expire",
+      "prorate"
+    ],
+    "execute_modes": [
+      "dry_run",
+      "apply",
+      "refuse",
+      "replay"
+    ],
+    "required_readbacks": [
+      "payment_capture_handoff",
+      "dunning_state",
+      "proration_state",
+      "local_write_policy",
+      "idempotency",
+      "refusal"
+    ],
+    "no_write_paths": [
+      "dry_run",
+      "terminal_idempotent_replay",
+      "refusal_accounting_no_write"
+    ],
+    "forbidden_output_terms": [
+      "raw_provider_payload_value",
+      "authorization_value",
+      "provider_secret_value",
+      "raw_invoice_metadata_value",
+      "raw_idempotency_key_value"
+    ]
+  },
+  "runtime_feasibility_plan": {
+    "status": "feasible_with_new_schema_and_control_plane_runtime",
+    "runtime_implemented": false,
+    "contract_only": true,
+    "paid_gate_changed": false,
+    "gateway_change_required": false,
+    "control_plane_runtime_required": true,
+    "new_schema_required": true,
+    "reusable_primitives": [
+      {
+        "primitive": "credit_grants",
+        "status": "available",
+        "usage": "subscription credit issuance can materialize as credit_grants rows for recurring/package credit"
+      },
+      {
+        "primitive": "ledger_entries_admin_adjustment",
+        "status": "available",
+        "usage": "subscription credit, reversal, proration, and cancel effects can map to ledger/admin-adjustment markers when grant rows are not enough"
+      },
+      {
+        "primitive": "audit_logs",
+        "status": "available",
+        "usage": "plan/package/subscription lifecycle and refusal events can record bounded audit ids"
+      },
+      {
+        "primitive": "admin_credit_grant_crud_runtime",
+        "status": "available",
+        "usage": "credit grant create/expire/revoke runtime can be reused for subscription credit issuance and cancellation effects"
+      },
+      {
+        "primitive": "opening_balance_import_idempotent_transaction_pattern",
+        "status": "available",
+        "usage": "idempotency replay/conflict and refusal no-write transaction order can be reused as the subscription transaction pattern"
+      },
+      {
+        "primitive": "remaining_balance_read_model",
+        "status": "available",
+        "usage": "accepted subscription credit effects should flow through existing wallet/credit/ledger balance summaries"
+      }
+    ],
+    "missing_primitives": [
+      {
+        "primitive": "subscription_plans_and_packages_schema",
+        "required": true,
+        "reason": "no current plan/package persistence table was found"
+      },
+      {
+        "primitive": "subscriptions_schema",
+        "required": true,
+        "reason": "subscription state, current period, trial, pause/resume, cancellation, and idempotency metadata need durable rows"
+      },
+      {
+        "primitive": "subscription_events_or_schedules_schema",
+        "required": true,
+        "reason": "renewal, proration, dunning, retry, and state-transition readback need bounded event/schedule rows"
+      },
+      {
+        "primitive": "invoice_order_linkage_schema_or_runtime_reference",
+        "required": true,
+        "reason": "subscription activation and renewal must link to order/invoice markers without relying on raw provider payloads"
+      },
+      {
+        "primitive": "payment_provider_callback_or_scheduler_hook",
+        "required": true,
+        "reason": "recurring renewal, payment_failed, dunning, and cancellation outcomes need runtime invocation proof"
+      }
+    ],
+    "proposed_slices": [
+      {
+        "slice": "TODO-32K-S1",
+        "owner": "E11 Control Plane",
+        "scope": "Add subscription plan/package/subscription/event schema and DB-free contract tests",
+        "requires_migration": true,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32K-S2",
+        "owner": "E11 Control Plane + Product",
+        "scope": "Implement plan/package CRUD and secret-safe readback behind Admin/Billing RBAC",
+        "requires_migration": false,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32K-S3",
+        "owner": "E11 Control Plane + E9 Billing Ledger",
+        "scope": "Implement subscription create/activate/renew/cancel/pause/resume transaction using credit_grants or ledger/admin adjustment effects plus audit",
+        "requires_migration": false,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32K-S4",
+        "owner": "Product + E11 Control Plane",
+        "scope": "Add scheduler/provider callback/dunning hook contract and refusal taxonomy without raw provider payload output",
+        "requires_migration": false,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32K-S5",
+        "owner": "QA + E9",
+        "scope": "Emit and verify subscription_package_lifecycle_runtime.v1 with all runtime acceptance fields true",
+        "requires_migration": false,
+        "runtime_acceptance": true
+      }
+    ]
+  },
+  "schema_contract": {
+    "schema_contract_version": "subscription_package_lifecycle_schema_contract.v1",
+    "runtime_implemented": false,
+    "contract_only": true,
+    "paid_gate_changed": false,
+    "migration_required": true,
+    "draft_migration_path": "db/migrations/TODO-32K_subscription_package_lifecycle.sql",
+    "tables": [
+      {
+        "name": "subscription_plans",
+        "required": true,
+        "purpose": "durable product plan definition",
+        "required_columns": [
+          "id",
+          "tenant_id",
+          "plan_code",
+          "display_name",
+          "status",
+          "currency",
+          "billing_interval",
+          "unit_price",
+          "included_credit_amount",
+          "metadata",
+          "created_at",
+          "updated_at"
+        ],
+        "money_decimal_columns": [
+          "unit_price",
+          "included_credit_amount"
+        ],
+        "unique_constraints": [
+          "unique(tenant_id, plan_code)"
+        ],
+        "foreign_keys": [
+          "tenant_id -> tenants.id"
+        ],
+        "secret_safe_columns": [
+          "metadata"
+        ]
+      },
+      {
+        "name": "subscription_packages",
+        "required": true,
+        "purpose": "package/entitlement grouping linked to a plan",
+        "required_columns": [
+          "id",
+          "tenant_id",
+          "plan_id",
+          "package_code",
+          "status",
+          "entitlement_summary",
+          "metadata",
+          "created_at",
+          "updated_at"
+        ],
+        "unique_constraints": [
+          "unique(tenant_id, package_code)"
+        ],
+        "foreign_keys": [
+          "tenant_id, plan_id -> subscription_plans.tenant_id, id"
+        ],
+        "secret_safe_columns": [
+          "metadata",
+          "entitlement_summary"
+        ]
+      },
+      {
+        "name": "subscriptions",
+        "required": true,
+        "purpose": "durable subscription state and current billing period",
+        "required_columns": [
+          "id",
+          "tenant_id",
+          "project_id",
+          "wallet_id",
+          "plan_id",
+          "package_id",
+          "status",
+          "currency",
+          "current_period_start",
+          "current_period_end",
+          "trial_ends_at",
+          "paused_at",
+          "cancelled_at",
+          "idempotency_fingerprint",
+          "latest_credit_grant_id",
+          "latest_ledger_entry_id",
+          "latest_invoice_id",
+          "latest_order_id",
+          "metadata",
+          "created_at",
+          "updated_at"
+        ],
+        "unique_constraints": [
+          "unique(tenant_id, idempotency_fingerprint)"
+        ],
+        "foreign_keys": [
+          "tenant_id, wallet_id -> wallets.tenant_id, id",
+          "tenant_id, plan_id -> subscription_plans.tenant_id, id",
+          "tenant_id, package_id -> subscription_packages.tenant_id, id",
+          "tenant_id, latest_credit_grant_id -> credit_grants.tenant_id, id",
+          "tenant_id, latest_ledger_entry_id -> ledger_entries.tenant_id, id"
+        ],
+        "secret_safe_columns": [
+          "metadata"
+        ]
+      },
+      {
+        "name": "subscription_events_or_schedules",
+        "required": true,
+        "purpose": "renewal/proration/dunning/refusal/audit readback and scheduler intent",
+        "required_columns": [
+          "id",
+          "tenant_id",
+          "subscription_id",
+          "event_type",
+          "event_status",
+          "effective_at",
+          "idempotency_fingerprint",
+          "credit_grant_id",
+          "ledger_entry_id",
+          "invoice_id",
+          "order_id",
+          "audit_id",
+          "refusal_code",
+          "request_summary",
+          "metadata",
+          "created_at",
+          "updated_at"
+        ],
+        "unique_constraints": [
+          "unique(tenant_id, idempotency_fingerprint)"
+        ],
+        "foreign_keys": [
+          "tenant_id, subscription_id -> subscriptions.tenant_id, id",
+          "tenant_id, credit_grant_id -> credit_grants.tenant_id, id",
+          "tenant_id, ledger_entry_id -> ledger_entries.tenant_id, id",
+          "tenant_id, audit_id -> audit_logs.tenant_id, id"
+        ],
+        "secret_safe_columns": [
+          "request_summary",
+          "metadata"
+        ]
+      }
+    ],
+    "required_relationships": [
+      "subscription credit issuance links to credit_grants.id or ledger_entries.id",
+      "renewal and activation link to bounded invoice_id and order_id references",
+      "refusal events write no credit_grants, ledger_entries, invoice, or order rows",
+      "audit_id is present for accepted lifecycle events and bounded refusal records",
+      "wallet balance snapshot is never directly mutated as accounting truth"
+    ],
+    "invariants": [
+      "idempotency_fingerprint is stored hashed or otherwise non-raw",
+      "same idempotency key and same body replays original subscription/event ids",
+      "same idempotency key and different body refuses without new writes",
+      "amount and price fields use fixed decimal strings and SQL numeric scale 8",
+      "currency mismatch and invalid plan refusals produce no accounting writes",
+      "metadata and request_summary omit raw provider payloads, tokens, DB URLs, voucher codes, and secrets"
+    ]
+  },
+  "money_contract": {
+    "format": "decimal_string_with_currency",
+    "scale": 8,
+    "float_allowed": false
+  },
+  "plan_states": [
+    "created",
+    "updated",
+    "archived"
+  ],
+  "subscription_states": [
+    "created",
+    "trialing",
+    "active",
+    "renewed",
+    "paused",
+    "resumed",
+    "cancelled",
+    "payment_failed",
+    "expired",
+    "terminated"
+  ],
+  "secret_safe_contract": {
+    "raw_provider_payload_output_allowed": false,
+    "raw_plan_payload_output_allowed": false,
+    "token_output_allowed": false,
+    "voucher_or_code_output_allowed": false,
+    "forbidden_output_terms": [
+      "authorization",
+      "bearer",
+      "provider_key",
+      "virtual_key",
+      "database_url",
+      "postgres://",
+      "password",
+      "raw_secret",
+      "raw_provider_payload",
+      "token",
+      "voucher_code",
+      "client_secret"
+    ]
+  },
+  "accounting_contract": {
+    "subscription_credit_requires_credit_grant_or_ledger_marker": true,
+    "renewal_requires_invoice_or_order_linkage": true,
+    "cancel_or_terminate_requires_grant_revoke_or_ledger_reversal_marker_when_credit_issued": true,
+    "audit_metadata_required": true,
+    "direct_wallet_snapshot_mutation_allowed": false,
+    "allowed_markers": [
+      "plan_row",
+      "package_row",
+      "subscription_row",
+      "subscription_schedule_row",
+      "credit_grant_row",
+      "admin_adjustment_entry",
+      "ledger_reversal_entry",
+      "credit_grant_revoke_row",
+      "invoice_link",
+      "order_link",
+      "dunning_event",
+      "audit_log",
+      "reconciliation_marker"
+    ]
+  },
+  "required_cases": [
+    "plan_package_created",
+    "plan_package_updated",
+    "subscription_created_trial",
+    "trial_end_activates_subscription",
+    "subscription_active_credit_issued",
+    "subscription_renewed",
+    "subscription_paused",
+    "subscription_resumed",
+    "subscription_cancelled",
+    "subscription_proration_applied",
+    "subscription_payment_failed_dunning",
+    "subscription_expired",
+    "subscription_terminated",
+    "subscription_create_idempotent_replay",
+    "subscription_create_same_key_conflict_refused",
+    "ownership_mismatch_refused",
+    "currency_mismatch_refused",
+    "non_positive_price_refused",
+    "invalid_plan_refused"
+  ],
+  "cases": [
+    {
+      "name": "plan_package_created",
+      "operation": "plan_package_create",
+      "decision": "created",
+      "idempotency": "applied",
+      "request": {
+        "idempotency_key_present": true,
+        "tenant_id": "00000000-0000-0000-0000-000000370101",
+        "plan_code": "pro_monthly_redacted",
+        "package_code": "usage_credit_pack_redacted",
+        "currency": "USD",
+        "monthly_price": "49.00000000",
+        "included_credit_amount": "49.00000000",
+        "billing_interval": "monthly"
+      },
+      "response": {
+        "plan_id": "00000000-0000-0000-0000-000000370201",
+        "package_id": "00000000-0000-0000-0000-000000370202",
+        "status": "created",
+        "currency": "USD",
+        "monthly_price": "49.00000000",
+        "included_credit_amount": "49.00000000",
+        "audit_id": "00000000-0000-0000-0000-000000370901",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "plan_row",
+        "package_row",
+        "audit_log"
+      ],
+      "audit_metadata": {
+        "operation": "plan_package_create",
+        "actor_id_present": true,
+        "request_or_operation_id_present": true
+      }
+    },
+    {
+      "name": "plan_package_updated",
+      "operation": "plan_package_update",
+      "decision": "updated",
+      "idempotency": "applied",
+      "response": {
+        "plan_id": "00000000-0000-0000-0000-000000370201",
+        "package_id": "00000000-0000-0000-0000-000000370202",
+        "status": "updated",
+        "currency": "USD",
+        "monthly_price": "59.00000000",
+        "audit_id": "00000000-0000-0000-0000-000000370902",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "plan_row",
+        "package_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_created_trial",
+      "operation": "subscription_create",
+      "decision": "trialing",
+      "idempotency": "applied",
+      "request": {
+        "idempotency_key_present": true,
+        "tenant_id": "00000000-0000-0000-0000-000000370101",
+        "project_id": "00000000-0000-0000-0000-000000370102",
+        "wallet_id": "00000000-0000-0000-0000-000000370301",
+        "plan_id": "00000000-0000-0000-0000-000000370201",
+        "currency": "USD",
+        "trial_days": 14
+      },
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "trialing",
+        "currency": "USD",
+        "trial_credit_amount": "10.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370501",
+        "audit_id": "00000000-0000-0000-0000-000000370903",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "subscription_schedule_row",
+        "credit_grant_row",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "subscription_credit_amount": "10.00000000",
+        "issued_credit_amount": "10.00000000",
+        "ledger_effect_amount": "10.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "trial_end_activates_subscription",
+      "operation": "subscription_trial_end",
+      "decision": "active",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "active",
+        "currency": "USD",
+        "invoice_id": "00000000-0000-0000-0000-000000370701",
+        "order_id": "00000000-0000-0000-0000-000000370801",
+        "audit_id": "00000000-0000-0000-0000-000000370904",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "invoice_link",
+        "order_link",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_active_credit_issued",
+      "operation": "subscription_credit_issue",
+      "decision": "active",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "active",
+        "currency": "USD",
+        "credit_amount": "49.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370502",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000370601",
+        "invoice_id": "00000000-0000-0000-0000-000000370701",
+        "order_id": "00000000-0000-0000-0000-000000370801",
+        "audit_id": "00000000-0000-0000-0000-000000370905",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "invoice_link",
+        "order_link",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "subscription_credit_amount": "49.00000000",
+        "invoice_amount": "49.00000000",
+        "issued_credit_amount": "49.00000000",
+        "ledger_effect_amount": "49.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "subscription_renewed",
+      "operation": "subscription_renew",
+      "decision": "renewed",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "renewal_id": "00000000-0000-0000-0000-000000370402",
+        "status": "renewed",
+        "currency": "USD",
+        "renewal_amount": "49.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370503",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000370602",
+        "invoice_id": "00000000-0000-0000-0000-000000370702",
+        "order_id": "00000000-0000-0000-0000-000000370802",
+        "audit_id": "00000000-0000-0000-0000-000000370906",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "invoice_link",
+        "order_link",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "subscription_credit_amount": "49.00000000",
+        "invoice_amount": "49.00000000",
+        "issued_credit_amount": "49.00000000",
+        "ledger_effect_amount": "49.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "subscription_paused",
+      "operation": "subscription_pause",
+      "decision": "paused",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "paused",
+        "currency": "USD",
+        "future_credit_issuance_paused": true,
+        "audit_id": "00000000-0000-0000-0000-000000370907",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_resumed",
+      "operation": "subscription_resume",
+      "decision": "resumed",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "resumed",
+        "currency": "USD",
+        "audit_id": "00000000-0000-0000-0000-000000370908",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_cancelled",
+      "operation": "subscription_cancel",
+      "decision": "cancelled",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "cancelled",
+        "currency": "USD",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370503",
+        "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000370603",
+        "audit_id": "00000000-0000-0000-0000-000000370909",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "credit_grant_revoke_row",
+        "ledger_reversal_entry",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "cancelled_credit_amount": "49.00000000",
+        "reversed_credit_amount": "49.00000000",
+        "ledger_reversal_amount": "49.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "subscription_proration_applied",
+      "operation": "subscription_plan_change_prorate",
+      "decision": "active",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "active",
+        "currency": "USD",
+        "proration_credit_amount": "15.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370504",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000370604",
+        "invoice_id": "00000000-0000-0000-0000-000000370703",
+        "audit_id": "00000000-0000-0000-0000-000000370910",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "invoice_link",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "proration_amount": "15.00000000",
+        "issued_credit_amount": "15.00000000",
+        "ledger_effect_amount": "15.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "subscription_payment_failed_dunning",
+      "operation": "subscription_payment_failed",
+      "decision": "payment_failed",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "payment_failed",
+        "dunning_event_id": "00000000-0000-0000-0000-000000370901",
+        "next_retry_at": "2026-06-13T00:00:00Z",
+        "credit_issued": false,
+        "audit_id": "00000000-0000-0000-0000-000000370911",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "dunning_event",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_expired",
+      "operation": "subscription_expire",
+      "decision": "expired",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "expired",
+        "currency": "USD",
+        "audit_id": "00000000-0000-0000-0000-000000370912",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_terminated",
+      "operation": "subscription_terminate",
+      "decision": "terminated",
+      "idempotency": "applied",
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "status": "terminated",
+        "currency": "USD",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370503",
+        "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000370605",
+        "audit_id": "00000000-0000-0000-0000-000000370913",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "credit_grant_revoke_row",
+        "ledger_reversal_entry",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "terminated_credit_amount": "49.00000000",
+        "reversed_credit_amount": "49.00000000",
+        "ledger_reversal_amount": "49.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "subscription_create_idempotent_replay",
+      "operation": "subscription_create",
+      "decision": "replayed",
+      "idempotency": "replayed",
+      "same_idempotency_key": true,
+      "same_body": true,
+      "new_subscription_row_written": false,
+      "new_credit_grant_row_written": false,
+      "new_ledger_entry_written": false,
+      "new_invoice_row_written": false,
+      "response": {
+        "subscription_id": "00000000-0000-0000-0000-000000370401",
+        "credit_grant_id": "00000000-0000-0000-0000-000000370501",
+        "idempotency": "replayed",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "subscription_row",
+        "credit_grant_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "subscription_create_same_key_conflict_refused",
+      "operation": "subscription_create",
+      "decision": "refused",
+      "refusal_code": "subscription_idempotency_conflict",
+      "subscription_write_allowed": false,
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "subscription_idempotency_conflict",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "ownership_mismatch_refused",
+      "operation": "subscription_create",
+      "decision": "refused",
+      "refusal_code": "subscription_ownership_mismatch",
+      "subscription_write_allowed": false,
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "subscription_ownership_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "currency_mismatch_refused",
+      "operation": "subscription_create",
+      "decision": "refused",
+      "refusal_code": "subscription_currency_mismatch",
+      "subscription_write_allowed": false,
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "subscription_currency_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "non_positive_price_refused",
+      "operation": "plan_package_create",
+      "decision": "refused",
+      "refusal_code": "non_positive_subscription_price",
+      "subscription_write_allowed": false,
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "non_positive_subscription_price",
+        "monthly_price": "0.00000000",
+        "currency": "USD",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "invalid_plan_refused",
+      "operation": "subscription_create",
+      "decision": "refused",
+      "refusal_code": "invalid_or_archived_plan",
+      "subscription_write_allowed": false,
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "invalid_or_archived_plan",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    }
+  ]
+}

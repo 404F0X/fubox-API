@@ -2,6 +2,96 @@
   "contract": "clickhouse_log_store_plan_v1",
   "network_requests": "never",
   "runtime_connected": false,
+  "wal_dry_run_readback": {
+    "input": {
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "wal_root": ".tmp/clickhouse-log-store/wal",
+      "segment_name": "wal-0000000000000001.jsonl",
+      "reference_time_utc": "2026-06-05T00:00:00Z",
+      "max_wal_bytes": 536870912,
+      "max_segment_bytes": 16777216,
+      "max_unacked_records": 42,
+      "checkpoint_after_acked_records": 2500,
+      "delete_acked_segments_after_seconds": 86400,
+      "delete_failed_segments_after_seconds": 604800,
+      "retry_max_attempts": 5,
+      "records": [
+        {
+          "wal_sequence": 1,
+          "sink": "request_logs",
+          "source_relation": "request_logs",
+          "source_record_id": "req_0001",
+          "request_id": "req_0001",
+          "dedup_key": "request_logs:req_0001",
+          "payload_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "payload_policy": "redacted",
+          "status": "pending",
+          "attempt": 0,
+          "simulate_operation": "ack",
+          "age_seconds": 90000
+        },
+        {
+          "wal_sequence": 2,
+          "sink": "provider_attempts",
+          "source_relation": "provider_attempts",
+          "source_record_id": "attempt_0001",
+          "request_id": "req_0002",
+          "provider_attempt_id": "pa_0001",
+          "dedup_key": "provider_attempts:req_0002:pa_0001",
+          "payload_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "payload_policy": "redacted",
+          "status": "pending",
+          "attempt": 1,
+          "simulate_operation": "retry",
+          "age_seconds": 120
+        },
+        {
+          "wal_sequence": 3,
+          "sink": "event_log",
+          "source_relation": "event_log",
+          "source_record_id": "evt_0001",
+          "event_id": "evt_0001",
+          "dedup_key": "event_log:evt_0001:provider_timeout",
+          "payload_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "payload_policy": "redacted",
+          "status": "leased",
+          "attempt": 4,
+          "simulate_operation": "retry",
+          "age_seconds": 700000
+        },
+        {
+          "wal_sequence": 4,
+          "sink": "request_logs",
+          "source_relation": "request_logs",
+          "source_record_id": "req_0001",
+          "request_id": "req_0001",
+          "dedup_key": "request_logs:req_0001",
+          "payload_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "payload_policy": "redacted",
+          "status": "pending",
+          "attempt": 0,
+          "simulate_operation": "write",
+          "age_seconds": 0
+        }
+      ]
+    },
+    "expected": {
+      "contract": "clickhouse_log_store_wal_dry_run_readback_v1",
+      "mode": "dry_run_readback",
+      "path_repo_local_safe": true,
+      "record_count": 4,
+      "readback_hash_match_count": 4,
+      "dedup_journal_entries": 3,
+      "pending_or_leased_records": 2,
+      "safe_to_delete_segment": false,
+      "classification_counts": {
+        "eligible_acked_segment_delete": 1,
+        "eligible_failed_segment_delete": 1,
+        "retain_pending": 1,
+        "retain_retry": 1
+      }
+    }
+  },
   "default": {
     "env": {},
     "expected": {
@@ -62,6 +152,114 @@
           "http_5xx"
         ]
       },
+      "wal_service_guard": {
+        "service_opt_in": false,
+        "production_root_present": false,
+        "production_root": null,
+        "default_production_root": "<data_dir>/clickhouse-log-store/wal",
+        "root_scope": "missing",
+        "readiness": "blocked",
+        "blocker": "production_wal_root_missing",
+        "production_service_readiness": {
+          "ready": false,
+          "requires_service_opt_in": true,
+          "requires_production_root": true,
+          "requires_production_root_scope": true,
+          "blocker": "production_wal_root_missing"
+        },
+        "runtime_artifact_path_contract": {
+          "artifact_scope": ".tmp",
+          "requires_explicit_worker_opt_in": true,
+          "repo_bounded_runtime_artifact_allowed": true,
+          "service_readiness_artifact_allowed": true,
+          "can_satisfy_production_wal_root": false,
+          "artifact_tmp_root_is_production_blocker": true,
+          "production_directory_writes_enabled_by_config_readback": false
+        },
+        "service_execution_dry_run_contract": {
+          "default_readiness_only": true,
+          "requires_explicit_artifact_opt_in": true,
+          "service_loop_start_enabled": false,
+          "wal_replay_enabled": false,
+          "clickhouse_send_enabled": false,
+          "production_wal_root_write_enabled": false
+        },
+        "final_dod_contract_summary": {
+          "readiness_or_artifact_proof_can_mark_production_ready": false,
+          "readiness_or_artifact_proof_can_mark_final_x": false,
+          "final_x_requires_live_smoke_readback": true,
+          "required_live_evidence": [
+            "real_clickhouse_insert_writer",
+            "db_changefeed_or_export_cursor",
+            "production_wal_root_writes",
+            "wal_service_loop_replay_send",
+            "dedup_journal_persistence",
+            "retention_load_smoke",
+            "secret_safe_evidence",
+            "no_network_default_and_execute_refusal"
+          ]
+        },
+        "production_smoke_handoff_summary": {
+          "contract": "clickhouse_log_store_production_smoke_handoff_v1",
+          "default_connects_clickhouse": false,
+          "default_network_requests": false,
+          "default_writes_production_wal_root": false,
+          "requires_explicit_live_opt_in": true,
+          "simulated_artifact_can_pass": false,
+          "fixture_can_mark_final_x": false,
+          "handoff_can_mark_final_x": false,
+          "stale_artifact_can_pass": false,
+          "final_x_requires_live_smoke_readback": true
+        },
+        "production_smoke_acceptance_gate_summary": {
+          "contract": "clickhouse_log_store_production_smoke_acceptance_gate_v1",
+          "default_reads_artifact": false,
+          "default_connects_clickhouse": false,
+          "default_network_requests": false,
+          "default_writes_production_wal_root": false,
+          "requires_explicit_artifact_readback": true,
+          "accepted_shape_simulation_supported": true,
+          "simulation_can_mark_final_x": false,
+          "fixture_can_mark_final_x": false,
+          "refusal_can_mark_final_x": false,
+          "unsafe_path_refusal": true,
+          "secret_echo_refusal": true
+        },
+        "final_closure_audit_summary": {
+          "contract": "clickhouse_log_store_final_closure_audit_v1",
+          "default_reads_artifact": false,
+          "default_connects_clickhouse": false,
+          "default_network_requests": false,
+          "default_writes_production_wal_root": false,
+          "requires_explicit_artifact_readback": true,
+          "simulation_can_mark_final_x": false,
+          "fixture_can_mark_final_x": false,
+          "handoff_can_mark_final_x": false,
+          "audit_without_real_artifact_can_mark_final_x": false,
+          "refusal_can_mark_final_x": false,
+          "watcher_can_mark_final_x": false,
+          "final_x_requires_accepted_live_smoke_artifact": true,
+          "final_x_requires_real_writer_cursor_wal_dedup_load_retention_secret_safe": true,
+          "reports_blocking_reasons": true
+        },
+        "production_smoke_evidence_watcher_summary": {
+          "contract": "clickhouse_log_store_production_smoke_evidence_watcher_v1",
+          "default_reads_artifact": false,
+          "default_connects_clickhouse": false,
+          "default_network_requests": false,
+          "default_writes_production_wal_root": false,
+          "watcher_can_mark_final_x": false,
+          "simulation_can_mark_final_x": false,
+          "fixture_can_mark_final_x": false,
+          "handoff_can_mark_final_x": false,
+          "refusal_can_mark_final_x": false,
+          "requires_real_writer_cursor_wal_dedup_load_retention_secret_safe": true
+        },
+        "artifact_tmp_allowed_for_runtime_artifact_only": true,
+        "production_wal_writes_enabled_in_this_slice": false,
+        "clickhouse_network_requests_enabled": false,
+        "secret_safe": true
+      },
       "payload_policy": {
         "requested_policy": "hash",
         "effective_policy": "hash",
@@ -94,6 +292,8 @@
         "AI_GATEWAY_CLICKHOUSE_RETRY_MAX_ATTEMPTS": "5",
         "AI_GATEWAY_CLICKHOUSE_RETRY_INITIAL_BACKOFF_MS": "200",
         "AI_GATEWAY_CLICKHOUSE_RETRY_MAX_BACKOFF_MS": "4000",
+        "AI_GATEWAY_CLICKHOUSE_WAL_SERVICE_ENABLED": "true",
+        "AI_GATEWAY_CLICKHOUSE_WAL_DIR": "/var/lib/ai-gateway/clickhouse-log-store/wal",
         "AI_GATEWAY_CLICKHOUSE_PAYLOAD_POLICY": "redacted"
       },
       "expected": {
@@ -153,6 +353,114 @@
             "http_429",
             "http_5xx"
           ]
+        },
+        "wal_service_guard": {
+          "service_opt_in": true,
+          "production_root_present": true,
+          "production_root": "/var/lib/ai-gateway/clickhouse-log-store/wal",
+          "default_production_root": "<data_dir>/clickhouse-log-store/wal",
+          "root_scope": "production",
+          "readiness": "ready",
+          "blocker": null,
+          "production_service_readiness": {
+            "ready": true,
+            "requires_service_opt_in": true,
+            "requires_production_root": true,
+            "requires_production_root_scope": true,
+            "blocker": null
+          },
+          "runtime_artifact_path_contract": {
+            "artifact_scope": ".tmp",
+            "requires_explicit_worker_opt_in": true,
+            "repo_bounded_runtime_artifact_allowed": true,
+            "service_readiness_artifact_allowed": true,
+            "can_satisfy_production_wal_root": false,
+            "artifact_tmp_root_is_production_blocker": true,
+            "production_directory_writes_enabled_by_config_readback": false
+          },
+          "service_execution_dry_run_contract": {
+            "default_readiness_only": true,
+            "requires_explicit_artifact_opt_in": true,
+            "service_loop_start_enabled": false,
+            "wal_replay_enabled": false,
+            "clickhouse_send_enabled": false,
+            "production_wal_root_write_enabled": false
+          },
+          "final_dod_contract_summary": {
+            "readiness_or_artifact_proof_can_mark_production_ready": true,
+            "readiness_or_artifact_proof_can_mark_final_x": false,
+            "final_x_requires_live_smoke_readback": true,
+            "required_live_evidence": [
+              "real_clickhouse_insert_writer",
+              "db_changefeed_or_export_cursor",
+              "production_wal_root_writes",
+              "wal_service_loop_replay_send",
+              "dedup_journal_persistence",
+              "retention_load_smoke",
+              "secret_safe_evidence",
+              "no_network_default_and_execute_refusal"
+            ]
+          },
+          "production_smoke_handoff_summary": {
+            "contract": "clickhouse_log_store_production_smoke_handoff_v1",
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "requires_explicit_live_opt_in": true,
+            "simulated_artifact_can_pass": false,
+            "fixture_can_mark_final_x": false,
+            "handoff_can_mark_final_x": false,
+            "stale_artifact_can_pass": false,
+            "final_x_requires_live_smoke_readback": true
+          },
+          "production_smoke_acceptance_gate_summary": {
+            "contract": "clickhouse_log_store_production_smoke_acceptance_gate_v1",
+            "default_reads_artifact": false,
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "requires_explicit_artifact_readback": true,
+            "accepted_shape_simulation_supported": true,
+            "simulation_can_mark_final_x": false,
+            "fixture_can_mark_final_x": false,
+            "refusal_can_mark_final_x": false,
+            "unsafe_path_refusal": true,
+            "secret_echo_refusal": true
+          },
+          "final_closure_audit_summary": {
+            "contract": "clickhouse_log_store_final_closure_audit_v1",
+            "default_reads_artifact": false,
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "requires_explicit_artifact_readback": true,
+            "simulation_can_mark_final_x": false,
+            "fixture_can_mark_final_x": false,
+            "handoff_can_mark_final_x": false,
+            "audit_without_real_artifact_can_mark_final_x": false,
+            "refusal_can_mark_final_x": false,
+            "watcher_can_mark_final_x": false,
+            "final_x_requires_accepted_live_smoke_artifact": true,
+            "final_x_requires_real_writer_cursor_wal_dedup_load_retention_secret_safe": true,
+            "reports_blocking_reasons": true
+          },
+          "production_smoke_evidence_watcher_summary": {
+            "contract": "clickhouse_log_store_production_smoke_evidence_watcher_v1",
+            "default_reads_artifact": false,
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "watcher_can_mark_final_x": false,
+            "simulation_can_mark_final_x": false,
+            "fixture_can_mark_final_x": false,
+            "handoff_can_mark_final_x": false,
+            "refusal_can_mark_final_x": false,
+            "requires_real_writer_cursor_wal_dedup_load_retention_secret_safe": true
+          },
+          "artifact_tmp_allowed_for_runtime_artifact_only": true,
+          "production_wal_writes_enabled_in_this_slice": false,
+          "clickhouse_network_requests_enabled": false,
+          "secret_safe": true
         },
         "payload_policy": {
           "requested_policy": "redacted",
@@ -230,6 +538,114 @@
             "http_429",
             "http_5xx"
           ]
+        },
+        "wal_service_guard": {
+          "service_opt_in": false,
+          "production_root_present": false,
+          "production_root": null,
+          "default_production_root": "<data_dir>/clickhouse-log-store/wal",
+          "root_scope": "missing",
+          "readiness": "blocked",
+          "blocker": "wal_service_not_opted_in",
+          "production_service_readiness": {
+            "ready": false,
+            "requires_service_opt_in": true,
+            "requires_production_root": true,
+            "requires_production_root_scope": true,
+            "blocker": "wal_service_not_opted_in"
+          },
+          "runtime_artifact_path_contract": {
+            "artifact_scope": ".tmp",
+            "requires_explicit_worker_opt_in": true,
+            "repo_bounded_runtime_artifact_allowed": true,
+            "service_readiness_artifact_allowed": true,
+            "can_satisfy_production_wal_root": false,
+            "artifact_tmp_root_is_production_blocker": true,
+            "production_directory_writes_enabled_by_config_readback": false
+          },
+          "service_execution_dry_run_contract": {
+            "default_readiness_only": true,
+            "requires_explicit_artifact_opt_in": true,
+            "service_loop_start_enabled": false,
+            "wal_replay_enabled": false,
+            "clickhouse_send_enabled": false,
+            "production_wal_root_write_enabled": false
+          },
+          "final_dod_contract_summary": {
+            "readiness_or_artifact_proof_can_mark_production_ready": false,
+            "readiness_or_artifact_proof_can_mark_final_x": false,
+            "final_x_requires_live_smoke_readback": true,
+            "required_live_evidence": [
+              "real_clickhouse_insert_writer",
+              "db_changefeed_or_export_cursor",
+              "production_wal_root_writes",
+              "wal_service_loop_replay_send",
+              "dedup_journal_persistence",
+              "retention_load_smoke",
+              "secret_safe_evidence",
+              "no_network_default_and_execute_refusal"
+            ]
+          },
+          "production_smoke_handoff_summary": {
+            "contract": "clickhouse_log_store_production_smoke_handoff_v1",
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "requires_explicit_live_opt_in": true,
+            "simulated_artifact_can_pass": false,
+            "fixture_can_mark_final_x": false,
+            "handoff_can_mark_final_x": false,
+            "stale_artifact_can_pass": false,
+            "final_x_requires_live_smoke_readback": true
+          },
+          "production_smoke_acceptance_gate_summary": {
+            "contract": "clickhouse_log_store_production_smoke_acceptance_gate_v1",
+            "default_reads_artifact": false,
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "requires_explicit_artifact_readback": true,
+            "accepted_shape_simulation_supported": true,
+            "simulation_can_mark_final_x": false,
+            "fixture_can_mark_final_x": false,
+            "refusal_can_mark_final_x": false,
+            "unsafe_path_refusal": true,
+            "secret_echo_refusal": true
+          },
+          "final_closure_audit_summary": {
+            "contract": "clickhouse_log_store_final_closure_audit_v1",
+            "default_reads_artifact": false,
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "requires_explicit_artifact_readback": true,
+            "simulation_can_mark_final_x": false,
+            "fixture_can_mark_final_x": false,
+            "handoff_can_mark_final_x": false,
+            "audit_without_real_artifact_can_mark_final_x": false,
+            "refusal_can_mark_final_x": false,
+            "watcher_can_mark_final_x": false,
+            "final_x_requires_accepted_live_smoke_artifact": true,
+            "final_x_requires_real_writer_cursor_wal_dedup_load_retention_secret_safe": true,
+            "reports_blocking_reasons": true
+          },
+          "production_smoke_evidence_watcher_summary": {
+            "contract": "clickhouse_log_store_production_smoke_evidence_watcher_v1",
+            "default_reads_artifact": false,
+            "default_connects_clickhouse": false,
+            "default_network_requests": false,
+            "default_writes_production_wal_root": false,
+            "watcher_can_mark_final_x": false,
+            "simulation_can_mark_final_x": false,
+            "fixture_can_mark_final_x": false,
+            "handoff_can_mark_final_x": false,
+            "refusal_can_mark_final_x": false,
+            "requires_real_writer_cursor_wal_dedup_load_retention_secret_safe": true
+          },
+          "artifact_tmp_allowed_for_runtime_artifact_only": true,
+          "production_wal_writes_enabled_in_this_slice": false,
+          "clickhouse_network_requests_enabled": false,
+          "secret_safe": true
         },
         "payload_policy": {
           "requested_policy": "full",

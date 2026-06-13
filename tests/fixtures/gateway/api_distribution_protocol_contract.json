@@ -1,0 +1,112 @@
+{
+  "scenario": "gateway_api_distribution_protocol_contract_v1",
+  "scope": "gateway_contract_only_no_external_provider",
+  "endpoints": [
+    {
+      "name": "openai_chat_stream",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "request_stream": true,
+      "coverage": {
+        "sdk_smoke": "covered_when_SDK_SMOKE_INCLUDE_STREAMING_is_enabled",
+        "gateway_contract": "tests/fixtures/gateway/streaming_acceptance.json",
+        "live_compose": "scripts/verify_gateway_streaming_smoke.ps1"
+      },
+      "expected_status": "needs_live_compose"
+    },
+    {
+      "name": "openai_responses_stream_terminal",
+      "method": "POST",
+      "path": "/v1/responses",
+      "request_stream": true,
+      "coverage": {
+        "sdk_smoke": "covered_when_SDK_SMOKE_INCLUDE_PROTOCOL_COVERAGE_is_enabled",
+        "gateway_contract": "tests/fixtures/gateway/responses_stream_runtime_contract.json",
+        "rust_contract_test": "apps/gateway/src/main.rs::responses_stream_runtime_contract_is_routed_and_secret_safe"
+      },
+      "expected_status": "needs_live_compose"
+    },
+    {
+      "name": "anthropic_messages",
+      "method": "POST",
+      "path": "/v1/messages",
+      "request_stream": false,
+      "coverage": {
+        "sdk_smoke": "covered_when_SDK_SMOKE_INCLUDE_PROTOCOL_COVERAGE_is_enabled",
+        "gateway_contract": "tests/fixtures/gateway/anthropic_messages_runtime_contract.json",
+        "rust_contract_test": "apps/gateway/src/main.rs::anthropic_messages_runtime_contract_documents_routable_billable_gateway_path"
+      },
+      "expected_status": "needs_live_compose"
+    },
+    {
+      "name": "gemini_generate_content",
+      "method": "POST",
+      "path": "/v1beta/models/{model}:generateContent",
+      "request_stream": false,
+      "coverage": {
+        "sdk_smoke": "covered_when_SDK_SMOKE_INCLUDE_PROTOCOL_COVERAGE_is_enabled",
+        "gateway_contract": "tests/fixtures/gateway/gemini_generate_content_stream_runtime_contract.json",
+        "rust_contract_test": "apps/gateway/src/main.rs::gemini_stream_runtime_contract_is_routed_and_secret_safe",
+        "non_stream_gateway_entry": "apps/gateway/src/main.rs::gemini_generate_content_native_passthrough"
+      },
+      "expected_status": "needs_live_compose"
+    },
+    {
+      "name": "models_gateway_filtering",
+      "method": "GET",
+      "path": "/v1/models",
+      "request_stream": false,
+      "coverage": {
+        "sdk_smoke": "covered_when_SDK_SMOKE_INCLUDE_PROTOCOL_COVERAGE_is_enabled",
+        "gateway_contract": "this_file",
+        "runtime_entry": "apps/gateway/src/main.rs::models",
+        "db_query": "apps/gateway/src/db.rs::list_visible_models"
+      },
+      "gateway_contract": {
+        "auth": "virtual_key_required",
+        "profile_header": "x-ai-profile",
+        "model_source": "database",
+        "response_object": "list",
+        "response_data_item": {
+          "id": "canonical_models.model_key",
+          "object": "model",
+          "created": 0,
+          "owned_by": "capabilities.owned_by_or_gateway"
+        },
+        "filters": [
+          "tenant_id",
+          "canonical_models.status_active",
+          "canonical_models.deleted_at_null",
+          "canonical_models.visibility_public_or_internal",
+          "api_key_profiles.bound_to_project_when_profile_present",
+          "api_key_profiles.status_active",
+          "api_key_profiles.allowed_models",
+          "api_key_profiles.denied_models",
+          "api_key_profiles.model_aliases_shadowed_canonical_keys_hidden",
+          "api_key_profiles.allowed_channel_tags",
+          "api_key_profiles.blocked_provider_ids",
+          "model_associations.enabled_route_required",
+          "channels.openai_compatible_not_deleted",
+          "providers.enabled_not_deleted",
+          "provider_keys.currently_usable_not_deleted",
+          "model_aliases_are_request_aliases_not_response_ids"
+        ],
+        "does_not_require_control_plane_change": true
+      },
+      "expected_status": "pass"
+    }
+  ],
+  "status_legend": {
+    "pass": "contract verified without external provider",
+    "needs_live_compose": "gateway contract exists but runtime provider/db path still needs local compose or live mock-provider evidence",
+    "blocker": "no bounded contract verifier exists"
+  },
+  "forbidden_markers": [
+    "sk-live",
+    "plain-provider-secret",
+    "provider-secret-value",
+    "Authorization: Bearer",
+    "x-api-key: sk",
+    "x-goog-api-key: sk"
+  ]
+}

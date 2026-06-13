@@ -169,6 +169,34 @@ function Check {
   }
 }
 
+function Reset-MockRouteRuntimeState {
+  if ($SkipComposePs) { return }
+
+  . "$PSScriptRoot\common.ps1"
+  $sql = @"
+update provider_keys
+set status = 'enabled',
+    health_score = 1.0,
+    cooldown_until = null,
+    last_error_code = null,
+    updated_at = now()
+where tenant_id = '00000000-0000-0000-0000-000000000001'
+  and id = '00000000-0000-0000-0000-000000000075';
+
+update channels
+set status = 'enabled',
+    health_score = 1.0,
+    updated_at = now()
+where tenant_id = '00000000-0000-0000-0000-000000000001'
+  and id = '00000000-0000-0000-0000-000000000070';
+"@
+
+  Invoke-Docker compose -f deploy/docker-compose/docker-compose.yml exec -T postgres psql -U ai_gateway -d ai_gateway -q -c $sql | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "failed to reset mock route runtime state after provider error smoke"
+  }
+}
+
 function Report-PendingOrFail {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -385,6 +413,10 @@ try {
   }
   $gatewayAuthHeaders = @{ Authorization = "Bearer $GatewayAuthToken" }
 
+  Check "gateway mock route runtime reset" {
+    Reset-MockRouteRuntimeState
+  }
+
   if ($StrictGatewayContracts) {
     Check "gateway models endpoint contract (strict)" {
       Assert-GatewayModelsContract -Headers $gatewayAuthHeaders
@@ -417,12 +449,16 @@ try {
   }
 
   Check "gateway propagates provider 429 as JSON" {
-    $body = $chatBody.Clone()
-    $body.mock_scenario = "429"
-    $response = Invoke-SmokeRequest -Method POST -Uri (Join-Url $GatewayBaseUrl "/v1/chat/completions") -Headers $gatewayAuthHeaders -Body $body
-    Assert-Status $response 429
-    Assert-Contains $response.Content "provider_429"
-    Assert-Contains $response.Content "rate_limit_error"
+    try {
+      $body = $chatBody.Clone()
+      $body.mock_scenario = "429"
+      $response = Invoke-SmokeRequest -Method POST -Uri (Join-Url $GatewayBaseUrl "/v1/chat/completions") -Headers $gatewayAuthHeaders -Body $body
+      Assert-Status $response 429
+      Assert-Contains $response.Content "provider_429"
+      Assert-Contains $response.Content "rate_limit_error"
+    } finally {
+      Reset-MockRouteRuntimeState
+    }
   }
 
   Check "control-plane healthz" {

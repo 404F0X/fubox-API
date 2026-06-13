@@ -1,0 +1,130 @@
+{
+  "name": "anthropic_messages_tool_use_valid",
+  "request": {
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 128,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Use the fixture tool."
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "name": "fixture_lookup",
+        "description": "Return fixture data.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item_id"
+          ]
+        }
+      }
+    ],
+    "tool_choice": {
+      "type": "tool",
+      "name": "fixture_lookup"
+    },
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "stream": false,
+    "body": {
+      "model": "claude-3-5-sonnet-20241022",
+      "max_tokens": 128,
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use the fixture tool."
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "name": "fixture_lookup",
+          "description": "Return fixture data.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "item_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "item_id"
+            ]
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "tool",
+        "name": "fixture_lookup"
+      },
+      "stream": false
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "msg_fixture_tool_use",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-3-5-sonnet-20241022",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_fixture_01",
+          "name": "fixture_lookup",
+          "input": {
+            "item_id": "fixture-item-1"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "usage": {
+        "input_tokens": 21,
+        "output_tokens": 9
+      }
+    }
+  },
+  "expected_content_blocks": {
+    "response_content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_fixture_01",
+        "name": "fixture_lookup",
+        "input": {
+          "item_id": "fixture-item-1"
+        }
+      }
+    ],
+    "tool_use_count": 1,
+    "tool_use_name": "fixture_lookup"
+  },
+  "expected_finish_reason_mapping": {
+    "stop_reason": "tool_use",
+    "finish_reason": "tool_calls"
+  },
+  "expected_usage": {
+    "prompt_tokens": 21,
+    "completion_tokens": 9,
+    "total_tokens": 30
+  }
+}

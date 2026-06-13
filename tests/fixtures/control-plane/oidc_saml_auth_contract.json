@@ -15,6 +15,369 @@
     "metadata XML body",
     "Authorization header"
   ],
+  "enterprise_identity_connection_readback": {
+    "path": "GET /admin/enterprise/identity-connections",
+    "schema": "enterprise_identity_connections_readback.v1",
+    "runtime_implemented": true,
+    "production_sso_verification_implemented": false,
+    "required_permission": "key_manage",
+    "provider_fields": [
+      "provider_type",
+      "status",
+      "config_needed",
+      "metadata_url_present",
+      "mapped_roles",
+      "mapped_groups",
+      "next_step"
+    ],
+    "provider_types": ["oidc", "saml"],
+    "allowed_statuses": ["disabled", "config-needed", "validation-pending"],
+    "callback_exchange_boundary": {
+      "status": "rejected_until_real_validation",
+      "oidc_callback_status": "plan_only_refusal",
+      "saml_acs_status": "config-needed",
+      "raw_tokens_or_assertions_accepted": false,
+      "network_request_attempted": false,
+      "session_creation_implemented": false
+    },
+    "secret_safe": true,
+    "raw_material_returned": false
+  },
+  "enterprise_identity_validation_plan": {
+    "path": "GET /admin/enterprise/identity-connections/validation-plan",
+    "schema": "enterprise_identity_validation_plan.v1",
+    "required_permission": "key_manage",
+    "dry_run_only": true,
+    "network_requests": false,
+    "raw_tokens_or_assertions_accepted": false,
+    "session_creation_implemented": false,
+    "provider_types": ["oidc", "saml"],
+    "oidc_presence_fields": [
+      "issuer_present",
+      "client_id_present",
+      "jwks_uri_present",
+      "metadata_url_present",
+      "authorization_endpoint_present",
+      "token_endpoint_present"
+    ],
+    "saml_presence_fields": [
+      "entity_id_present",
+      "metadata_url_present",
+      "metadata_xml_present",
+      "acs_url_present",
+      "signature_required",
+      "signature_validation_implemented",
+      "idp_certificate_present"
+    ],
+    "role_group_mapping": {
+      "values_returned": false,
+      "raw_claim_values_returned": false
+    },
+    "callback_acs_boundary": {
+      "status": "disabled_until_real_validation",
+      "oidc_callback_enabled_for_login": false,
+      "saml_acs_enabled_for_login": false,
+      "raw_material_echoed": false
+    },
+    "secret_safe": true
+  },
+  "enterprise_oidc_validate_code_plan": {
+    "path": "POST /admin/enterprise/identity-connections/oidc/validate-code-plan",
+    "schema": "enterprise_oidc_validate_code_plan.v1",
+    "required_permission": "key_manage",
+    "dry_run_only": true,
+    "network_requests": false,
+    "token_endpoint_called": false,
+    "jwks_fetched": false,
+    "session_created": false,
+    "accepted_input_fields": [
+      "authorization_code_present",
+      "authorization_code_sha256",
+      "authorization_code_hash",
+      "state_record_present",
+      "nonce_record_present",
+      "pkce_verifier_present",
+      "redirect_uri_present",
+      "fixture_claims_summary",
+      "sample_claims_summary"
+    ],
+    "rejected_input_fields": [
+      "code",
+      "authorization_code",
+      "id_token",
+      "access_token",
+      "refresh_token",
+      "claims",
+      "raw_claims",
+      "client_secret",
+      "code_verifier",
+      "Authorization",
+      "private_key",
+      "certificate",
+      "SAMLResponse",
+      "raw_assertion"
+    ],
+    "plans_returned": [
+      "authorization_code_exchange_plan",
+      "jwks_validation_plan",
+      "user_identity_binding_plan",
+      "session_binding_plan"
+    ],
+    "user_identity_binding": {
+      "lookup": "user_identities(provider_type, issuer, subject, tenant_id)",
+      "raw_subject_returned": false,
+      "raw_email_returned": false,
+      "raw_role_or_group_values_returned": false
+    },
+    "session_binding": {
+      "session_creation_implemented": false,
+      "session_created_in_this_request": false,
+      "cookie_returned": false
+    },
+    "secret_safe": true
+  },
+  "enterprise_oidc_execute_validated_login": {
+    "path": "POST /admin/enterprise/identity-connections/oidc/execute-validated-login",
+    "schema": "enterprise_oidc_validated_login_execution.v1",
+    "required_permission": "key_manage",
+    "runtime_implemented": true,
+    "mockable_executor": true,
+    "server_side_simulated_input": true,
+    "network_requests": false,
+    "token_endpoint_called": false,
+    "jwks_fetched": false,
+    "jwks_validation_result_required": true,
+    "accepted_input_fields": [
+      "external_subject_hash",
+      "email",
+      "domain",
+      "mapped_groups",
+      "mapped_roles",
+      "verified_claims_summary",
+      "jwks_validation_result",
+      "issuer_present",
+      "audience_client_id_present",
+      "nonce_valid",
+      "expiration_valid",
+      "issued_at_checked",
+      "apply"
+    ],
+    "rejected_input_fields": [
+      "code",
+      "authorization_code",
+      "id_token",
+      "access_token",
+      "refresh_token",
+      "claims",
+      "raw_claims",
+      "subject",
+      "sub",
+      "raw_email",
+      "client_secret",
+      "Authorization",
+      "jwks",
+      "jwk",
+      "private_key",
+      "certificate",
+      "SAMLResponse",
+      "raw_assertion"
+    ],
+    "binding_result": {
+      "lookup": "user_identities(provider, provider_subject, tenant_id)",
+      "apply_true_may_write_user_identities": true,
+      "create_user_disabled": true,
+      "raw_subject_returned": false,
+      "raw_claims_returned": false
+    },
+    "session_binding": {
+      "session_creation_disabled": true,
+      "session_created": false,
+      "cookie_returned": false
+    },
+    "secret_safe": true
+  },
+  "enterprise_saml_validate_acs_plan": {
+    "path": "POST /admin/enterprise/identity-connections/saml/validate-acs-plan",
+    "schema": "enterprise_saml_validate_acs_plan.v1",
+    "required_permission": "key_manage",
+    "dry_run_only": true,
+    "network_requests": false,
+    "xml_parsed": false,
+    "signature_verified": false,
+    "session_created": false,
+    "accepted_input_fields": [
+      "saml_response_present",
+      "saml_response_sha256",
+      "assertion_present",
+      "assertion_sha256",
+      "idp_certificate_sha256",
+      "metadata_summary",
+      "fixture_assertion_summary",
+      "issuer_present",
+      "audience_present",
+      "name_id_present"
+    ],
+    "rejected_input_fields": [
+      "SAMLResponse",
+      "assertion",
+      "metadata_xml",
+      "certificate",
+      "private_key",
+      "Authorization",
+      "client_secret",
+      "attributes",
+      "name_id",
+      "email"
+    ],
+    "plans_returned": [
+      "xml_signature_validation_plan",
+      "assertion_validation_plan",
+      "attribute_mapping_plan",
+      "user_identity_binding_plan",
+      "session_binding_plan"
+    ],
+    "secret_safe": true,
+    "raw_material_returned": false
+  },
+  "enterprise_saml_xml_signature_parser_executor": {
+    "path": "POST /admin/enterprise/identity-connections/saml/xml-signature-parser-executor",
+    "schema": "saml_xml_signature_parser_executor.v1",
+    "required_permission": "key_manage",
+    "runtime_implemented": true,
+    "executor_boundary": "typed_saml_xml_signature_parser_executor",
+    "network_enabled": false,
+    "network_call_performed": false,
+    "raw_xml_accepted": false,
+    "raw_saml_response_accepted": false,
+    "raw_assertion_accepted": false,
+    "accepted_input_fields": [
+      "issuer_present",
+      "issuer_hash",
+      "entity_id_present",
+      "entity_id_hash",
+      "certificate_fingerprint_present",
+      "certificate_fingerprint",
+      "assertion_subject_hash",
+      "audience_present",
+      "audience_hash",
+      "not_before_unix",
+      "not_on_or_after_unix",
+      "signature_algorithm",
+      "signature_verified"
+    ],
+    "rejected_input_fields": [
+      "SAMLResponse",
+      "saml_response",
+      "assertion",
+      "assertion_xml",
+      "raw_xml",
+      "metadata_xml",
+      "SignedInfo",
+      "SignatureValue",
+      "certificate",
+      "certificate_body",
+      "private_key",
+      "Authorization",
+      "claims",
+      "attributes",
+      "name_id",
+      "email"
+    ],
+    "returns": [
+      "parser_input_summary",
+      "signature_result_readback",
+      "blocked_reasons",
+      "network_enabled=false",
+      "raw_xml_accepted=false"
+    ],
+    "blocked_reasons": [
+      "missing_issuer",
+      "missing_entity_id",
+      "missing_certificate_fingerprint",
+      "missing_audience",
+      "missing_assertion_subject_hash",
+      "unsupported_signature_alg",
+      "expired_assertion",
+      "signature_not_verified"
+    ],
+    "secret_safe": true,
+    "raw_material_returned": false
+  },
+  "enterprise_saml_execute_validated_acs": {
+    "path": "POST /admin/enterprise/identity-connections/saml/execute-validated-acs",
+    "schema": "enterprise_saml_execute_validated_acs.v1",
+    "required_permission": "key_manage",
+    "runtime_implemented": true,
+    "mock_executor": true,
+    "network_requests": false,
+    "raw_saml_response_accepted": false,
+    "raw_assertion_accepted": false,
+    "session_created": false,
+    "accepted_input_fields": [
+      "signature_validation_result",
+      "assertion_validation_result",
+      "issuer_validation_result",
+      "audience_validation_result",
+      "time_conditions_validation_result",
+      "assertion_validator_input",
+      "external_subject_hash",
+      "verified_assertion_summary",
+      "fixture_assertion_summary",
+      "saml_xml_signature_parser_executor",
+      "apply"
+    ],
+    "required_success_marker": "signature_validation_result=true",
+    "returns": [
+      "saml_xml_signature_parser_executor",
+      "assertion_validator_result",
+      "role_group_mapping_result",
+      "binding_session_handoff_readiness",
+      "blocked_reasons",
+      "signature_validation",
+      "verified_assertion_summary",
+      "user_identity_binding_readback",
+      "session_binding"
+    ],
+    "binding_lookup": "user_identities(provider, provider_subject, tenant_id)",
+    "session_blocked_reason": "safe_saml_session_creation_path_not_implemented",
+    "rejected_input_fields": [
+      "SAMLResponse",
+      "assertion",
+      "metadata_xml",
+      "certificate",
+      "private_key",
+      "Authorization",
+      "client_secret",
+      "attributes",
+      "name_id",
+      "subject",
+      "email inside verified_assertion_summary",
+      "mapped_groups",
+      "mapped_roles"
+    ],
+    "assertion_validator_input_contract": {
+      "schema": "enterprise_saml_assertion_validator_input.v1",
+      "accepted_only": [
+        "issuer/entity/audience hashes or presence",
+        "nameid hash",
+        "group/role counts",
+        "time window",
+        "signature_verified",
+        "attribute_mapping_summary"
+      ],
+      "raw_saml_response_accepted": false,
+      "raw_xml_accepted": false,
+      "raw_assertion_accepted": false,
+      "raw_attributes_accepted": false,
+      "raw_email_or_nameid_accepted": false
+    },
+    "secret_safe": true,
+    "raw_material_returned": false,
+    "remaining_gaps": [
+      "[!] real XML parser/XML signature cryptographic validator/IdP-backed assertion validator",
+      "[!] reviewed SAML session creation path"
+    ]
+  },
   "oidc": {
     "mapping": {
       "role_claim_names": ["roles", "realm_access.roles"],

@@ -1,0 +1,342 @@
+{
+  "contract": "billing_credit_wallet_productization_contract_v1",
+  "status": "contract_enforced_not_runtime_wired",
+  "controlled_paid_beta_blocker": false,
+  "broader_commercial_distribution_blocker": true,
+  "money_contract": {
+    "format": "decimal_string_with_currency",
+    "float_allowed": false,
+    "scale": 8
+  },
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "provider_key",
+    "virtual_key",
+    "database_url",
+    "postgres://",
+    "password",
+    "raw_secret"
+  ],
+  "allowed_accounting_markers": [
+    "credit_grant_row",
+    "ledger_entry",
+    "admin_adjustment_entry",
+    "opening_entry",
+    "credit_grant_consumption_row"
+  ],
+  "endpoints": [
+    {
+      "name": "credit_grant_create_applied",
+      "method": "POST",
+      "path": "/billing/credit-grants",
+      "write": true,
+      "idempotency_required": true,
+      "audit_required": true,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": ["credit_grant_row", "admin_adjustment_entry"],
+      "request_money_fields": ["amount"],
+      "response_money_fields": ["remaining_amount"],
+      "request": {
+        "idempotency_key": "credit-grant:create:00000000-0000-0000-0000-000000320001",
+        "tenant_id": "00000000-0000-0000-0000-000000320101",
+        "project_id": "00000000-0000-0000-0000-000000320102",
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "currency": "USD",
+        "amount": "25.00000000",
+        "grant_type": "manual_credit",
+        "valid_from": "2026-06-05T00:00:00Z",
+        "expires_at": "2026-09-05T00:00:00Z",
+        "reason": "support_credit",
+        "actor_id": "operator:billing",
+        "actor_type": "operator"
+      },
+      "response": {
+        "credit_grant_id": "00000000-0000-0000-0000-000000320301",
+        "status": "active",
+        "remaining_amount": "25.00000000",
+        "currency": "USD",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000320401",
+        "audit_id": "00000000-0000-0000-0000-000000320501",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "idempotency_cases": [
+        {
+          "name": "same_key_same_body_replays",
+          "same_idempotency_key": true,
+          "same_body": true,
+          "expected": "replay"
+        },
+        {
+          "name": "same_key_different_amount_refuses",
+          "same_idempotency_key": true,
+          "same_body": false,
+          "expected": "conflict_refused"
+        }
+      ]
+    },
+    {
+      "name": "credit_grant_list_read_model",
+      "method": "GET",
+      "path": "/billing/credit-grants",
+      "write": false,
+      "idempotency_required": false,
+      "audit_required": false,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": [],
+      "request_money_fields": [],
+      "response_money_fields": ["original_amount", "remaining_amount"],
+      "request": {
+        "tenant_id": "00000000-0000-0000-0000-000000320101",
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "status": "active",
+        "currency": "USD",
+        "limit": 50
+      },
+      "response": {
+        "items": [
+          {
+            "credit_grant_id": "00000000-0000-0000-0000-000000320301",
+            "wallet_id": "00000000-0000-0000-0000-000000320201",
+            "currency": "USD",
+            "original_amount": "25.00000000",
+            "remaining_amount": "20.00000000",
+            "status": "active",
+            "source": "manual_credit",
+            "last_ledger_entry_id": "00000000-0000-0000-0000-000000320401"
+          }
+        ],
+        "next_cursor": null,
+        "readback": "fresh",
+        "secret_safe": true
+      }
+    },
+    {
+      "name": "credit_grant_expire_applied",
+      "method": "POST",
+      "path": "/billing/credit-grants/{credit_grant_id}/expire",
+      "write": true,
+      "idempotency_required": true,
+      "audit_required": true,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": ["credit_grant_row", "admin_adjustment_entry"],
+      "request_money_fields": [],
+      "response_money_fields": ["remaining_amount_before", "remaining_amount_after"],
+      "request": {
+        "idempotency_key": "credit-grant:expire:00000000-0000-0000-0000-000000320301",
+        "credit_grant_id": "00000000-0000-0000-0000-000000320301",
+        "effective_at": "2026-09-05T00:00:00Z",
+        "reason": "grant_expired",
+        "actor_id": "system:billing",
+        "actor_type": "system"
+      },
+      "response": {
+        "credit_grant_id": "00000000-0000-0000-0000-000000320301",
+        "status": "expired",
+        "remaining_amount_before": "10.00000000",
+        "remaining_amount_after": "0.00000000",
+        "adjustment_entry_id": "00000000-0000-0000-0000-000000320402",
+        "audit_id": "00000000-0000-0000-0000-000000320502",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "idempotency_cases": [
+        {
+          "name": "expire_replay",
+          "same_idempotency_key": true,
+          "same_body": true,
+          "expected": "replay"
+        }
+      ]
+    },
+    {
+      "name": "credit_grant_revoke_applied",
+      "method": "POST",
+      "path": "/billing/credit-grants/{credit_grant_id}/revoke",
+      "write": true,
+      "idempotency_required": true,
+      "audit_required": true,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": ["credit_grant_row", "admin_adjustment_entry"],
+      "request_money_fields": [],
+      "response_money_fields": ["revoked_amount", "remaining_amount_before", "remaining_amount_after"],
+      "request": {
+        "idempotency_key": "credit-grant:revoke:00000000-0000-0000-0000-000000320301",
+        "credit_grant_id": "00000000-0000-0000-0000-000000320301",
+        "reason": "fraud_review",
+        "revoke_remaining_only": true,
+        "actor_id": "operator:risk",
+        "actor_type": "operator"
+      },
+      "response": {
+        "credit_grant_id": "00000000-0000-0000-0000-000000320301",
+        "status": "revoked",
+        "revoked_amount": "5.00000000",
+        "remaining_amount_before": "5.00000000",
+        "remaining_amount_after": "0.00000000",
+        "adjustment_entry_id": "00000000-0000-0000-0000-000000320403",
+        "audit_id": "00000000-0000-0000-0000-000000320503",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "idempotency_cases": [
+        {
+          "name": "revoke_replay",
+          "same_idempotency_key": true,
+          "same_body": true,
+          "expected": "replay"
+        }
+      ]
+    },
+    {
+      "name": "remaining_balance_summary_read_model",
+      "method": "GET",
+      "path": "/billing/wallets/{wallet_id}/remaining-balance",
+      "write": false,
+      "idempotency_required": false,
+      "audit_required": false,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": [],
+      "request_money_fields": [],
+      "response_money_fields": [
+        "wallet_available_balance",
+        "active_credit_grant_total",
+        "pending_reserve_total",
+        "confirmed_ledger_effect",
+        "available_to_spend"
+      ],
+      "request": {
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "tenant_id": "00000000-0000-0000-0000-000000320101",
+        "project_id": "00000000-0000-0000-0000-000000320102",
+        "currency": "USD",
+        "include_grants": true,
+        "include_budgets": true,
+        "include_pending": true
+      },
+      "response": {
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "tenant_id": "00000000-0000-0000-0000-000000320101",
+        "currency": "USD",
+        "wallet_available_balance": "0.00000000",
+        "active_credit_grant_total": "20.00000000",
+        "pending_reserve_total": "2.00000000",
+        "confirmed_ledger_effect": "-3.00000000",
+        "available_to_spend": "15.00000000",
+        "readback": "strongly_consistent",
+        "calculation": "wallet_available_balance + active_credit_grants + pending_or_confirmed_ledger_effect",
+        "last_ledger_entry_id": "00000000-0000-0000-0000-000000320401",
+        "last_credit_grant_id": "00000000-0000-0000-0000-000000320301",
+        "secret_safe": true
+      }
+    },
+    {
+      "name": "opening_balance_import_applied",
+      "method": "POST",
+      "path": "/billing/opening-balance-imports",
+      "write": true,
+      "idempotency_required": true,
+      "audit_required": true,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": ["opening_entry", "admin_adjustment_entry"],
+      "request_money_fields": ["opening_amount"],
+      "response_money_fields": ["amount"],
+      "request": {
+        "idempotency_key": "opening-import:new-api:external-balance-001",
+        "tenant_id": "00000000-0000-0000-0000-000000320101",
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "currency": "USD",
+        "opening_amount": "100.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-001",
+        "effective_at": "2026-06-05T00:00:00Z",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "response": {
+        "opening_import_id": "00000000-0000-0000-0000-000000320601",
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000320404",
+        "amount": "100.00000000",
+        "currency": "USD",
+        "status": "imported",
+        "audit_id": "00000000-0000-0000-0000-000000320504",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "idempotency_cases": [
+        {
+          "name": "same_external_reference_replays",
+          "same_idempotency_key": true,
+          "same_body": true,
+          "expected": "replay"
+        },
+        {
+          "name": "same_external_reference_different_amount_refuses",
+          "same_idempotency_key": true,
+          "same_body": false,
+          "expected": "conflict_refused"
+        }
+      ]
+    },
+    {
+      "name": "admin_adjustment_applied",
+      "method": "POST",
+      "path": "/billing/admin-adjustments",
+      "write": true,
+      "idempotency_required": true,
+      "audit_required": true,
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "accounting_markers": ["ledger_entry", "admin_adjustment_entry"],
+      "request_money_fields": ["amount"],
+      "response_money_fields": ["amount"],
+      "request": {
+        "idempotency_key": "admin-adjustment:00000000-0000-0000-0000-000000320701",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000320701",
+        "tenant_id": "00000000-0000-0000-0000-000000320101",
+        "wallet_id": "00000000-0000-0000-0000-000000320201",
+        "related_ledger_entry_id": null,
+        "amount": "15.00000000",
+        "currency": "USD",
+        "adjustment_kind": "credit",
+        "reason": "operator_credit",
+        "actor_id": "operator:billing",
+        "actor_type": "operator"
+      },
+      "response": {
+        "ledger_entry_id": "00000000-0000-0000-0000-000000320405",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000320701",
+        "status": "applied",
+        "amount": "15.00000000",
+        "currency": "USD",
+        "audit_id": "00000000-0000-0000-0000-000000320505",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "idempotency_cases": [
+        {
+          "name": "admin_adjustment_replay",
+          "same_idempotency_key": true,
+          "same_body": true,
+          "expected": "replay"
+        },
+        {
+          "name": "admin_adjustment_conflict",
+          "same_idempotency_key": true,
+          "same_body": false,
+          "expected": "conflict_refused"
+        }
+      ]
+    }
+  ],
+  "negative_contract_cases": [
+    {
+      "name": "direct_wallet_snapshot_mutation_is_not_accounting_fact",
+      "operation": "opening_balance_import",
+      "direct_wallet_snapshot_mutation_allowed": false,
+      "required_refusal": "direct_wallet_snapshot_mutation_forbidden"
+    }
+  ]
+}

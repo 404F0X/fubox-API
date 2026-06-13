@@ -19,6 +19,7 @@ In scope:
 - `POST /admin/ledger/adjustments/dry-run`
 - `mode=execute` applied/idempotent responses
 - `mode=execute_contract` refusal response
+- `ledger_adjustment_execution_readback` for dry-run, applied/idempotent, and refused responses, with only presence refs, a safe idempotency fingerprint, blocked reasons, and safe next action.
 - `ledger_executor_summary_contract`
 - `ledger_executor_summary`
 - executor refusal and rollback summary contracts
@@ -47,6 +48,7 @@ Expected result:
 
 - Exit code `0`.
 - Output includes `Control Plane ledger adjustment OpenAPI contract validation passed.`
+- The OpenAPI/client response shape must not expose raw SQL, wallet secrets, Authorization/Cookie material, provider keys, raw metadata, or raw idempotency material.
 
 If this fails, do not proceed to semantic validator or client generation until
 the OpenAPI skeleton is fixed.

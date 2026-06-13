@@ -1,0 +1,31 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    profiles:
+      - clickhouse
+    environment:
+      CLICKHOUSE_DB: ai_gateway
+      CLICKHOUSE_USER: ai_gateway
+      CLICKHOUSE_PASSWORD: ai_gateway_dev_only
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:${CLICKHOUSE_HOST_PORT:-8123}:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  worker:
+    depends_on:
+      - clickhouse
+    environment:
+      AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED: "true"
+      AI_GATEWAY_CLICKHOUSE_ENDPOINT: http://clickhouse:8123
+      AI_GATEWAY_CLICKHOUSE_DATABASE: ai_gateway
+      AI_GATEWAY_CLICKHOUSE_TABLE: gateway_events
+      AI_GATEWAY_CLICKHOUSE_USERNAME: ai_gateway
+      AI_GATEWAY_CLICKHOUSE_PASSWORD: ai_gateway_dev_only
+      AI_GATEWAY_CLICKHOUSE_WAL_SERVICE_ENABLED: "true"
+      AI_GATEWAY_CLICKHOUSE_WAL_DIR: /var/lib/ai-gateway/clickhouse-log-store/wal
+      AI_GATEWAY_CLICKHOUSE_PAYLOAD_POLICY: redacted
+
+volumes:
+  clickhouse_data:

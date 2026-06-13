@@ -1,126 +1,167 @@
-# AI Gateway / New API 替代产品开发启动包
+# fubox API
 
-版本：0.1-dev-start  
-日期：2026-06-01  
-用途：交付开发组作为立项、架构设计、任务拆解、测试验收、上线运维的初始基线。
+Self-hosted New API style AI gateway: admin configures upstream providers and models, users redeem credit, create API keys, call an OpenAI-compatible gateway, and inspect usage.
 
-## 1. 产品目标
+Treat this README as the local developer entry point. Historical status notes are preserved under `docs/legacy/`.
 
-我们要建设一个兼容 New API / One API 迁移、同时吸收 AxonHub / LiteLLM / Portkey / GPT-Load / Helicone 等优点的生产级 AI Gateway。
+## Current Product Line
 
-核心定位：
+The active MVP is:
 
-> 面向团队、企业和 API 分发场景的生产级 LLM Gateway / AI Control Plane，提供多模型协议兼容、渠道与 Key 池治理、稳定流式转发、可解释路由、账务级 Ledger、Trace-first 观测、Guardrails、迁移工具和生产运维能力。
+```text
+Admin console -> providers, models, routing, requests, billing, import, users, settings
+User portal   -> register/login, redeem credit, create API key, inspect usage
+Gateway       -> /v1/models and /v1/chat/completions
+Ops view      -> request logs, request detail, trace summary, balance and ledger readback
+```
 
-## 2. 资料包结构
+Deferred until the gateway/user flow is clean:
 
-| 路径 | 作用 |
-|---|---|
-| `README.md` | 开发包索引与启动说明 |
-| `ARCHITECTURE.md` | 总体架构规划，开发必须先读 |
-| `FEATURE_PLAN.md` | 功能规划、P0/P1/P2 版本边界 |
-| `TODO.md` | 可执行任务清单，适合导入项目管理工具 |
-| `TEST_AND_ACCEPTANCE.md` | 测试策略、验收流程、上线门禁 |
-| `docs/17_RUST_IMPLEMENTATION_BASELINE.md` | Rust-first 实施基线：workspace、runtime、TLS、平台与性能约束 |
-| `docs/` | 深度设计文档：数据模型、API、路由流式、账务、安全、运维、迁移等 |
-| `examples/` | 示例配置、SQL 草案、OpenAPI 草案、CI、压测脚本 |
-| `project/` | 任务看板 CSV、验收清单、发布清单、测试用例 CSV |
-| `references/` | 前期调研文档和来源链接 |
+- Real payment, order, invoice runtime.
+- Subscription scheduler/lifecycle.
+- Enterprise OIDC/SAML real IdP runtime. Current SAML has a fixture-safe ACS XML signature parser executor readback only: no raw XML/SAMLResponse, no network, no session creation.
+- Production rollout packs.
+- Agent coordination/TODO evidence churn.
 
-## 3. 推荐开发阅读顺序
+Current local product states such as `pending`, `config-needed`,
+`not_connected`, and `pending_scheduler` are expected when an external
+provider, merchant, scheduler, or production credential has not been connected.
+They should point to the next local configuration step, not block the local MVP
+loop.
 
-1. `ARCHITECTURE.md`：理解控制面、数据面、请求链路和模块边界。
-2. `FEATURE_PLAN.md`：确认 P0/P1/P2 功能范围。
-3. `TODO.md`：按 Epic 分配开发任务。
-4. `TEST_AND_ACCEPTANCE.md`：确认 Definition of Done、CI 门禁和验收标准。
-5. `docs/17_RUST_IMPLEMENTATION_BASELINE.md`：确认 Rust workspace、Tokio/Axum/Hyper/rustls 基线和平台约束。
-6. `docs/04_DATA_MODEL.md`、`docs/05_API_AND_PROTOCOL_SPEC.md`、`docs/06_ROUTING_STREAMING_SPEC.md`、`docs/07_BILLING_LEDGER_SPEC.md`：进入详细设计。
-7. `examples/`：作为初始化仓库的参考样例。
+## Run Locally
 
-## 4. 开发原则
+Prerequisites:
 
-- 不做简单 New API clone；要做生产级 AI Gateway。
-- 协议兼容和原生透传并存，避免强行统一导致字段丢失。
-- 流式稳定性是一等能力，不是边缘功能。
-- 账务必须是 Ledger，不允许只在日志里扣余额。
-- 每次路由、重试、fallback、扣费、错误都必须可解释。
-- 配置必须可校验、可 dry-run、可回滚。
-- Data Plane 热路径必须轻量，日志和账务事件尽量异步化。
-- P0 优先打通可靠主链路，不追求一开始支持所有 provider 和所有运营功能。
+- Docker Desktop with Compose.
+- PowerShell 7+.
+- Rust and Node/npm for contributor checks.
 
-## 5. 本地开发命令
-
-Windows 环境不需要安装 `make`，直接使用 PowerShell 脚本：
+Start the local stack:
 
 ```powershell
-.\scripts\fmt.ps1
-.\scripts\lint.ps1
-.\scripts\test.ps1
-.\scripts\build.ps1
-.\scripts\dev.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_local_mvp.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev_up.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev_login_check.ps1
+```
+
+`setup_local_mvp.ps1` is the local/dev-only seed path. It creates or repairs the
+admin account, mock provider/channel/model setup, provider-key placeholder, and
+test user key needed by the demo flow. `dev_up.ps1` also calls this setup path,
+so running it directly is useful when you want to refresh seed data without
+restarting the full stack.
+
+`dev_login_check.ps1` exercises the local MVP path: admin login, user
+registration, user balance, admin-issued test voucher, user voucher redeem, user
+API key creation, `/v1/models`, mock chat through the gateway, user request log
+readback, and admin request detail readback for non-stream and stream chat. It
+prints the gateway request id and injected trace id for the chat requests. A
+failure means the local stack, seed data, or one of those MVP features needs
+attention; it is not a release blocker.
+
+By default, the local dev scripts keep transient tool state inside the repo:
+`TEMP`/`TMP` use `.tmp`, npm uses `.tool-cache/npm`, and Cargo uses
+`target-codex`. Set those environment variables before running the scripts to
+override the defaults.
+
+If a host port is already used by another local service, set the matching
+environment variable before running `dev_up.ps1`: `POSTGRES_HOST_PORT`,
+`REDIS_HOST_PORT`, `GATEWAY_HOST_PORT`, `CONTROL_PLANE_HOST_PORT`,
+`ADMIN_UI_HOST_PORT`, or `MOCK_PROVIDER_HOST_PORT`. `dev_up.ps1` prints a
+matching `dev_login_check.ps1` command with the resolved URLs after startup.
+
+Default local endpoints:
+
+| Service | URL |
+|---|---|
+| Admin UI | `http://127.0.0.1:5173` |
+| Gateway | `http://127.0.0.1:8080` |
+| Control Plane | `http://127.0.0.1:8081` |
+| Mock Provider | `http://127.0.0.1:18080` |
+
+Quick health checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/readyz
+Invoke-RestMethod http://127.0.0.1:8081/readyz
+Invoke-WebRequest http://127.0.0.1:5173 -UseBasicParsing
+```
+
+Try the gateway:
+
+```powershell
+$headers = @{ Authorization = "Bearer dev_test_key_123456789" }
+Invoke-RestMethod -Headers $headers -Uri http://127.0.0.1:8080/v1/models
+Invoke-RestMethod -Method Post -Headers $headers -ContentType "application/json" `
+  -Uri http://127.0.0.1:8080/v1/chat/completions `
+  -Body '{"model":"mock-gpt-4o-mini","messages":[{"role":"user","content":"ping"}]}'
+```
+
+Minimal Node and Python user examples are in
+`tests/integration/sdk-smoke/README.md`. They use `GATEWAY_API_KEY` from the
+environment, call `/v1/models`, non-stream chat, and stream chat, then print the
+Gateway request id and injected trace id for portal readback.
+
+Network security config examples for `server.trusted_proxy_allowlist`, profile
+IP allowlists, and virtual key IP allowlists can be generated with:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\write_network_security_config_example.ps1
+```
+
+The default output is
+`.tmp/network-security/network_security_config_example.yaml`. Add `-PrintOnly`
+to print the YAML to stdout without creating or overwriting a file. The snippet
+uses documentation CIDRs only and is a Settings UI/local deployment reference,
+not a production gate; do not put production IPs, provider keys, Authorization
+headers, API key secrets, or other secrets into the example.
+
+Current UI paths to verify after login:
+
+- Admin: Dashboard, Providers, Models, Routing, Requests, Billing, Import,
+  Users, Settings.
+- User portal: balance, voucher redeem, API keys, model list, API console,
+  usage and request detail.
+- Gateway: OpenAI-compatible `GET /v1/models` and
+  `POST /v1/chat/completions` against the local mock provider. Chat completion
+  responses expose `x-request-id`; use that id in request logs to inspect the
+  secret-safe OpenAI compatibility handoff (`finish_reason`, provider usage
+  presence, recorded token booleans, and response hash), not raw prompts or
+  provider payloads.
+
+## Common Commands
+
+```powershell
+.\scripts\setup_local_mvp.ps1
+.\scripts\dev_up.ps1 -DryRun
 .\scripts\compose_up.ps1
 .\scripts\verify_compose_smoke.ps1
-.\scripts\verify_db_schema.ps1
-.\scripts\verify_sdk_smoke.ps1
-.\scripts\compose_down.ps1
+.\scripts\test.ps1
 ```
 
-Docker Desktop 如果不在 `PATH` 中，脚本会自动使用默认安装路径 `C:\Program Files\Docker\Docker\resources\bin\docker.exe`。
+Importer and release verifiers are opt-in tools for their specific slices. They
+are not the normal local MVP loop.
 
-Local compose notes:
+## Code Map
 
-- Compose publishes Postgres, Redis, mock-provider, Gateway, Control Plane, and Admin UI on `127.0.0.1` only. This keeps development services off the LAN; change host bindings deliberately if another machine must reach them.
-- The Compose and Helm Admin UI image serves a production build with nginx. Browser API calls stay same-origin under `/api/gateway`, `/api/control-plane`, and `/api/mock-provider`; the container proxies those paths to internal service upstreams.
-- Development seeds use fake local credentials, including `dev_test_key_123456789` and sealed provider keys with master key id `dev-seed-v1`. Compose sets matching dev-only provider-key master key environment variables so the seeded sealed keys can be opened locally. Do not reuse these values outside local development.
-- Production migration pipelines should apply `db/migrations` without applying `db/dev-seeds`.
-- `server.trusted_proxy_allowlist` defaults to empty. With the default, Gateway uses the TCP peer IP for API-key IP allowlist checks and ignores `X-Forwarded-For` and `X-Real-IP`. Add only trusted reverse proxy IPs or CIDRs; when the peer is trusted, Gateway uses the first valid `X-Forwarded-For` IP, or `X-Real-IP` if `X-Forwarded-For` is absent. Malformed forwarded IP headers are rejected during auth.
+| Path | Purpose |
+|---|---|
+| `apps/gateway` | Data plane, OpenAI-compatible routes, provider proxying, routing, billing guard. |
+| `apps/control-plane` | Admin and user APIs. |
+| `apps/worker` | Async jobs and observability workers. |
+| `crates/*` | Shared Rust libraries for adapters, routing, billing, config, db, auth, observability. |
+| `web/admin-ui` | Admin console and user portal. |
+| `db/migrations` | Postgres schema. |
+| `deploy/docker-compose` | Local stack. |
+| `scripts` | Development, smoke, verifier, and release helper scripts. |
+| `docs/legacy` | Previous long-form status/evidence documents retained for reference. |
 
-Additional strict contract checks:
+## Keep It Understandable
 
-```powershell
-.\scripts\verify_compose_smoke.ps1 -StrictGatewayContracts
-.\scripts\verify_gateway_routing_smoke.ps1 -StrictGatewayRouting
-.\scripts\verify_control_plane_crud_smoke.ps1 -StrictFullCrud
-```
+The project should optimize for the shortest path from product intent to running behavior:
 
-Gateway smoke scripts default to `GATEWAY_AUTH_TOKEN=dev_test_key_123456789`. `verify_compose_smoke.ps1 -StrictGatewayContracts` hard-checks gateway `/readyz` `database_gateway_store=connected`, authenticated `GET /v1/models`, unauthenticated chat rejection, and strict streaming status expectations. `verify_gateway_routing_smoke.ps1 -StrictGatewayRouting` hard-checks persisted routing ids, route policy/upstream model log fields, and missing-route rejection. `verify_sdk_smoke.ps1` uses the local Node OpenAI SDK package under `tests/integration/sdk-smoke` for non-stream chat. `verify_control_plane_crud_smoke.ps1` verifies provider/channel/model/model-association create+get contracts, and `-StrictFullCrud` gates list/patch/delete behavior.
+1. Gateway request path first.
+2. Admin/user setup workflow second.
+3. Evidence and release automation third.
 
-Security scan dry-runs:
-
-```powershell
-.\scripts\scan_secrets.ps1
-.\scripts\scan_supply_chain.ps1 -SkipNetwork
-.\scripts\generate_supply_chain_artifacts.ps1 -OutputDirectory .\artifacts\supply-chain
-```
-
-`scan_secrets.ps1` reports only file paths, line numbers, and match types; it does not print matched secret material. `scan_supply_chain.ps1 -SkipNetwork` validates Rust/npm lockfile structure plus Dockerfile/Compose container declarations without requiring network access, Docker, or container scanner tools. `generate_supply_chain_artifacts.ps1` emits a CycloneDX-style SBOM, an in-toto/SLSA provenance statement, a manifest, and SHA256 checksums for CI/release artifacts. When network-backed scanning is enabled, missing optional tools such as `cargo-audit`, `npm audit`, `trivy`, `grype`, or Docker are reported as warnings/skips instead of local dry-run failures.
-
-The generated SBOM/provenance/checksum artifacts are offline build evidence; they do not replace network-backed dependency vulnerability scans, real container image scans, or Docker image digest pinning.
-
-## 6. P0 成功定义
-
-P0 版本不是 demo，而是可灰度上线的生产初版。达到 P0 必须满足：
-
-- 支持 OpenAI Chat / Responses / Embeddings / Models 基础兼容。
-- 支持 Anthropic Messages 和 Gemini GenerateContent 的常用请求转发或透传。
-- 支持 OpenAI-compatible、Anthropic、Gemini、DeepSeek、Qwen/Doubao、OpenRouter、自定义上游。
-- 支持 API Key Profile、Canonical Model、Model Association、Channel Mapping 四层模型治理。
-- 支持权重、优先级、健康分、限流感知、retry-before-first-byte、fallback。
-- 支持统一 SSE stream engine、partial_sent、stream_end_reason、terminal event 校验。
-- 支持 Price Book、Price Version、Reserve/Settle/Refund 账本流水。
-- 支持 Thread/Trace/Request 观测和 Route Trace。
-- 支持 PostgreSQL + Redis 生产部署，SQLite 仅用于本地 demo。
-- 支持 New API / One API 基础配置导入。
-- 通过 `TEST_AND_ACCEPTANCE.md` 定义的 P0 验收门禁。
-
-## 7. 不在 P0 的内容
-
-以下能力重要，但不阻塞 P0：
-
-- 完整支付、发票、工单、多货币运营后台。
-- 完整 MCP Gateway / A2A Gateway。
-- 复杂 Semantic Cache / Semantic Routing。
-- Prompt Registry、Eval Dataset、Shadow Traffic 全链路平台化。
-- 私有推理集群 inference-aware routing。
-
-这些进入 P1/P2。
+Before adding new gates or artifacts, check `docs/PROJECT_FOCUS.md`.

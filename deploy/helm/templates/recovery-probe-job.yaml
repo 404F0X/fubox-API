@@ -1,0 +1,147 @@
+{{- $root := . -}}
+{{- $jobs := .Values.jobs | default dict -}}
+{{- $job := get $jobs "recoveryProbe" | default dict -}}
+{{- $application := $root.Values.application | default dict -}}
+{{- $applicationSecretRef := $application.secretRef | default dict -}}
+{{- $applicationSecretName := $applicationSecretRef.name | default "" -}}
+{{- if $job.enabled }}
+{{- if not $job.applicationSecretRef }}
+{{- fail "jobs.recoveryProbe.applicationSecretRef must be true so provider-key master key is injected from application.secretRef" }}
+{{- end }}
+{{- if not $applicationSecretName }}
+{{- fail "jobs.recoveryProbe requires application.secretRef.name so provider-key master key is injected from a Secret" }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "fubox.componentName" (dict "root" $root "name" "recovery-probe") }}
+  labels:
+    {{- include "fubox.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: recovery-probe
+    app.kubernetes.io/part-of: worker
+    {{- with $root.Values.global.commonLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ default 0 $job.backoffLimit }}
+  {{- with $job.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "fubox.selectorLabels" (dict "root" $root "name" "recovery-probe") | nindent 8 }}
+        app.kubernetes.io/part-of: worker
+        {{- with $root.Values.global.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $job.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or $root.Values.global.podAnnotations $job.podAnnotations }}
+      annotations:
+        {{- with $root.Values.global.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $job.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      restartPolicy: {{ default "Never" $job.restartPolicy }}
+      {{- with $root.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if hasKey $root.Values.global "automountServiceAccountToken" }}
+      automountServiceAccountToken: {{ $root.Values.global.automountServiceAccountToken }}
+      {{- end }}
+      {{- $podSecurityContext := default $root.Values.global.podSecurityContext $job.podSecurityContext }}
+      {{- with $podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: recovery-probe
+          image: {{ include "fubox.image" (dict "root" $root "image" $job.image) | quote }}
+          imagePullPolicy: {{ default "IfNotPresent" $job.image.pullPolicy }}
+          {{- $securityContext := default $root.Values.global.securityContext $job.securityContext }}
+          {{- with $securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $job.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            {{- toYaml (default (list "recovery-probe" "--execute") $job.args) | nindent 12 }}
+          {{- if or $root.Values.global.commonEnv $job.env }}
+          env:
+            {{- range $key, $value := $root.Values.global.commonEnv }}
+            - name: {{ $key }}
+              value: {{ tpl (toString $value) $root | quote }}
+            {{- end }}
+            {{- range $key, $value := $job.env }}
+            - name: {{ $key }}
+              value: {{ tpl (toString $value) $root | quote }}
+            {{- end }}
+          {{- end }}
+          {{- if or $job.extraEnvFrom (and $job.applicationSecretRef $root.Values.application.secretRef.name) (and $job.databaseSecretRef $root.Values.database.secretRef.name) (and $job.redisSecretRef $root.Values.redis.secretRef.name) (and $job.clickhouseSecretRef $root.Values.clickhouse.secretRef.name) (and $job.providerSecretRef $root.Values.provider.secretRef.name) (and $job.paymentSecretRef $root.Values.payment.secretRef.name) }}
+          envFrom:
+            {{- if and $job.applicationSecretRef $root.Values.application.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.application.secretRef.name | quote }}
+                optional: {{ default false $root.Values.application.secretRef.optional }}
+            {{- end }}
+            {{- if and $job.databaseSecretRef $root.Values.database.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.database.secretRef.name | quote }}
+                optional: {{ default false $root.Values.database.secretRef.optional }}
+            {{- end }}
+            {{- if and $job.redisSecretRef $root.Values.redis.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.redis.secretRef.name | quote }}
+                optional: {{ default false $root.Values.redis.secretRef.optional }}
+            {{- end }}
+            {{- if and $job.clickhouseSecretRef $root.Values.clickhouse.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.clickhouse.secretRef.name | quote }}
+                optional: {{ default true $root.Values.clickhouse.secretRef.optional }}
+            {{- end }}
+            {{- if and $job.providerSecretRef $root.Values.provider.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.provider.secretRef.name | quote }}
+                optional: {{ default true $root.Values.provider.secretRef.optional }}
+            {{- end }}
+            {{- if and $job.paymentSecretRef $root.Values.payment.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.payment.secretRef.name | quote }}
+                optional: {{ default true $root.Values.payment.secretRef.optional }}
+            {{- end }}
+            {{- with $job.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with $job.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if and $job.configMapRef $root.Values.global.config.enabled }}
+          volumeMounts:
+            - name: runtime-config
+              mountPath: {{ $root.Values.global.config.mountPath | quote }}
+              subPath: {{ $root.Values.global.config.fileName | quote }}
+              readOnly: true
+          {{- end }}
+      {{- if and $job.configMapRef $root.Values.global.config.enabled }}
+      volumes:
+        - name: runtime-config
+          configMap:
+            name: {{ include "fubox.configMapName" $root | quote }}
+            items:
+              - key: {{ $root.Values.global.config.fileName | quote }}
+                path: {{ $root.Values.global.config.fileName | quote }}
+      {{- end }}
+{{- end }}

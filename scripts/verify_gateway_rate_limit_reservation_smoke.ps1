@@ -7,6 +7,8 @@ param(
   [int]$DbPollSeconds = 12,
   [int]$LockHoldSeconds = 4,
   [int]$LockWarmupMilliseconds = 1000,
+  [string]$ArtifactPath = "",
+  [switch]$ExplainabilitySelfTest,
   [switch]$DryRun,
   [switch]$PreflightOnly,
   [switch]$SkipComposePs
@@ -17,6 +19,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $fixturePath = Join-Path $repoRoot "tests\fixtures\gateway\rate_limit_reservation_live_smoke.json"
+$explainabilityFixturePath = Join-Path $repoRoot "tests\fixtures\observability\e8_rate_limit_explainability_handoff_contract.json"
 $script:Fixture = $null
 $script:Failures = @()
 $script:OriginalProviderKeyStates = @()
@@ -34,12 +37,17 @@ $script:ObservedGatewayLatencyMilliseconds = @()
 $script:ObservedContenderJobs = 0
 $script:ObservedContenderDurationMilliseconds = $null
 $script:ObservedContenderStartedAt = $null
+$script:ObservedRequestHashes = @()
+$script:ObservedRequestIds = @()
+$script:ForcedLimitProviderAttemptRows = $null
+$script:ContenderReadyLockKey = 88004
 
 if ($env:GATEWAY_BASE_URL) { $GatewayBaseUrl = $env:GATEWAY_BASE_URL }
 if ($env:GATEWAY_AUTH_TOKEN) { $GatewayAuthToken = $env:GATEWAY_AUTH_TOKEN }
 if ($env:GATEWAY_PROFILE_REF) { $GatewayProfileRef = $env:GATEWAY_PROFILE_REF }
 if ($env:GATEWAY_AI_PROFILE) { $GatewayProfileRef = $env:GATEWAY_AI_PROFILE }
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
+if ($env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_ARTIFACT_PATH) { $ArtifactPath = $env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_ARTIFACT_PATH }
 if ($env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_DRY_RUN -eq "1") { $DryRun = $true }
 if ($env:GATEWAY_RATE_LIMIT_RESERVATION_SMOKE_SKIP_COMPOSE_PS -eq "1") { $SkipComposePs = $true }
 
@@ -312,12 +320,191 @@ function New-SecretSafeCommandSummary {
     gateway_profile_ref_configured = [bool](-not [string]::IsNullOrWhiteSpace($GatewayProfileRef))
     compose_file_configured = [bool](-not [string]::IsNullOrWhiteSpace($ComposeFile))
     skip_compose_ps = [bool]$SkipComposePs
+    artifact_path_configured = [bool](-not [string]::IsNullOrWhiteSpace($ArtifactPath))
     timeout_seconds = [int]$TimeoutSeconds
     db_poll_seconds = [int]$DbPollSeconds
     lock_hold_seconds = [int]$LockHoldSeconds
     lock_warmup_milliseconds = [int]$LockWarmupMilliseconds
     raw_values_in_output = $false
   }
+}
+
+function Get-RepoRelativePath {
+  param([Parameter(Mandatory = $true)][string]$FullPath)
+
+  $full = [System.IO.Path]::GetFullPath($FullPath)
+  $root = ([System.IO.Path]::GetFullPath([string]$repoRoot)).TrimEnd("\", "/")
+  $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+  if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $full.Substring($prefix.Length).Replace("\", "/")
+  }
+  return $full.Replace("\", "/")
+}
+
+function Resolve-SafeArtifactPath {
+  if ([string]::IsNullOrWhiteSpace($ArtifactPath)) {
+    return $null
+  }
+
+  $candidate = $ArtifactPath.Trim()
+  $combined = if ([System.IO.Path]::IsPathRooted($candidate)) {
+    $candidate
+  } else {
+    Join-Path $repoRoot $candidate
+  }
+  $full = [System.IO.Path]::GetFullPath($combined)
+  $tmpRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot ".tmp"))
+  $artifactsRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "artifacts"))
+
+  $isAllowed = $full.StartsWith($tmpRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $full.StartsWith($artifactsRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+  if (-not $isAllowed) {
+    throw "artifact path must be under .tmp or artifacts"
+  }
+
+  $relative = Get-RepoRelativePath $full
+  if ($DryRun -and $relative.Equals(".tmp/launch/e8_gateway_rate_limit_launch_check.json", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "dry_run_must_not_overwrite_launch_live_rate_limit_artifact; use a sidecar path such as .tmp/launch/e8_gateway_rate_limit_launch_check.dry_run.json"
+  }
+
+  return $full
+}
+
+function Artifact-RelativePath {
+  param([AllowNull()][string]$FullPath)
+
+  if ([string]::IsNullOrWhiteSpace($FullPath)) {
+    return $null
+  }
+  return Get-RepoRelativePath $FullPath
+}
+
+function New-RateLimitExplainabilityHandoff {
+  param(
+    [Parameter(Mandatory = $true)][string]$Status
+  )
+
+  $requestHashes = @($script:ObservedRequestHashes | Select-Object -Unique)
+  $requestIds = @($script:ObservedRequestIds | Select-Object -Unique)
+  return [ordered]@{
+    schema = "gateway_rate_limit_request_trace_usage_handoff_v1"
+    status = $Status
+    smoke_run_id = [string]$script:SmokeSuffix
+    request_trace_lookup_keys = [ordered]@{
+      request_ids = $requestIds
+      request_hashes = $requestHashes
+      request_id_count = [int]$requestIds.Count
+      request_hash_count = [int]$requestHashes.Count
+      lookup_scope = "request_logs_and_provider_attempts"
+      material_in_output = $false
+    }
+    reservation_events = [ordered]@{
+      acquire_applied_count = [int]$script:ObservedAcquireCount
+      release_applied_count = [int]$script:ObservedReleaseCount
+      not_applied_count = [int]$script:ObservedNotAppliedCount
+      fallback_count = [int]$script:ObservedFallbackCount
+      provider_attempt_rows = [int]$script:ObservedProviderAttemptRows
+      forced_limit_provider_attempt_rows = $script:ForcedLimitProviderAttemptRows
+    }
+    estimated_tpm_fallback = [ordered]@{
+      estimated = $true
+      trusted_numeric_source_present = $false
+      evidence_field = "rate_limit_reservation.tpm_estimate.estimated"
+      trusted_numeric_field = "rate_limit_reservation.tpm_estimate.trusted_numeric_source_present"
+      source = "conservative_missing_tokenizer_fallback"
+      paid_billing_settled = $false
+    }
+    admin_readback_expectations = [ordered]@{
+      required_views = @("request_detail", "trace_detail", "provider_attempt_detail")
+      expected_fields = @(
+        "request_id",
+        "request_hash",
+        "route_decision_snapshot.rate_limit_reservation_rejection",
+        "provider_attempts.metadata.rate_limit_reservation",
+        "provider_attempts.fallback_reason"
+      )
+      forced_limit_expected_provider_attempt_rows = 0
+      admin_ui_beta_closure_claimed = $false
+    }
+    usage_cost_expectations = [ordered]@{
+      usage_basis = "rate_limit_reservation_metadata_and_estimated_tpm"
+      cost_basis = "not_paid_billing_settlement"
+      paid_billing_settled = $false
+      estimated_tpm_only = $true
+      acceptable_for_todo14_usage_trace = $true
+    }
+    secret_safe_omission = [ordered]@{
+      auth_material_in_output = $false
+      provider_secret_in_output = $false
+      body_material_in_output = $false
+      header_material_in_output = $false
+      endpoint_material_in_output = $false
+      window_state_material_in_output = $false
+      raw_material_present = $false
+    }
+  }
+}
+
+function Test-RateLimitExplainabilityHandoff {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  if ($Handoff.schema -ne "gateway_rate_limit_request_trace_usage_handoff_v1") {
+    return "invalid_schema"
+  }
+  if (@($Handoff.request_trace_lookup_keys.request_ids).Count -lt 1) {
+    return "missing_request_id"
+  }
+  if ([int]$Handoff.reservation_events.forced_limit_provider_attempt_rows -ne 0) {
+    return "forced_limit_provider_attempt_nonzero"
+  }
+  if ([bool]$Handoff.estimated_tpm_fallback.estimated -ne $true) {
+    return "estimated_tpm_missing"
+  }
+  if ([bool]$Handoff.estimated_tpm_fallback.trusted_numeric_source_present -ne $false) {
+    return "trusted_numeric_misclassified"
+  }
+  if ([bool]$Handoff.secret_safe_omission.raw_material_present -ne $false) {
+    return "raw_or_secret_marker_present"
+  }
+  if ([bool]$Handoff.secret_safe_omission.auth_material_in_output -ne $false) {
+    return "raw_or_secret_marker_present"
+  }
+
+  $text = ($Handoff | ConvertTo-Json -Depth 32 -Compress).ToLowerInvariant()
+  foreach ($marker in @("authorization", "bearer", "sk-live", "request_body", "raw prompt", "raw input", "encrypted_secret", "provider_secret")) {
+    if ($text.Contains($marker)) {
+      return "raw_or_secret_marker_present"
+    }
+  }
+  return "pass"
+}
+
+function Invoke-ExplainabilitySelfTest {
+  if (-not (Test-Path $explainabilityFixturePath)) {
+    throw "missing tests\fixtures\observability\e8_rate_limit_explainability_handoff_contract.json"
+  }
+
+  $fixture = Get-Content -Raw $explainabilityFixturePath | ConvertFrom-Json
+  if ($fixture.schema -ne "gateway_rate_limit_request_trace_usage_handoff_contract_v1") {
+    throw "unexpected E8 explainability fixture schema"
+  }
+
+  foreach ($case in @($fixture.cases)) {
+    $actual = Test-RateLimitExplainabilityHandoff $case.handoff
+    if ($actual -ne $case.expected_result) {
+      throw "E8 explainability selftest case '$($case.name)' expected '$($case.expected_result)', got '$actual'"
+    }
+  }
+
+  $accepted = @($fixture.cases | Where-Object { $_.expected_result -eq "pass" } | Select-Object -First 1)[0]
+  $serialized = ($accepted.handoff | ConvertTo-Json -Depth 32 -Compress).ToLowerInvariant()
+  foreach ($marker in @($fixture.forbidden_output_markers)) {
+    if ($serialized.Contains(([string]$marker).ToLowerInvariant())) {
+      throw "E8 explainability fixture leaked forbidden marker '$marker'"
+    }
+  }
+
+  Write-SafeHost "E8 rate-limit explainability handoff selftest passed."
 }
 
 function New-PerformanceUnavailableMarker {
@@ -381,6 +568,8 @@ function New-PerformanceEvidenceReport {
   $attemptTotal = [Math]::Max(1, $script:ObservedAcquireCount)
   $notAppliedFallbackRate = [double]($notAppliedFallbackTotal / $attemptTotal)
   $closureEligible = [bool]($Status -eq "live_completed" -and $measurementsAvailable)
+  $safeArtifactFullPath = Resolve-SafeArtifactPath
+  $safeArtifactRelativePath = Artifact-RelativePath $safeArtifactFullPath
   return [ordered]@{
     schema = $schema
     mode = Get-SmokeMode
@@ -414,6 +603,7 @@ function New-PerformanceEvidenceReport {
         max_affected_rows_per_acquire = [int]$script:Fixture.postgres_scope.max_affected_rows_per_acquire
         observed_request_log_rows = if ($script:ObservedRequestLogRows -gt 0) { [int]$script:ObservedRequestLogRows } else { $null }
         observed_provider_attempt_rows = if ($script:ObservedProviderAttemptRows -gt 0) { [int]$script:ObservedProviderAttemptRows } else { $null }
+        forced_limit_provider_attempt_rows = $script:ForcedLimitProviderAttemptRows
         unavailable = if ($script:ObservedRequestLogRows -gt 0) { $availableMarker } else { $unavailable }
       }
       not_applied_or_fallback_rate = [ordered]@{
@@ -438,6 +628,9 @@ function New-PerformanceEvidenceReport {
       artifact_write_default = $false
       artifact_path_scope = ".tmp"
       request_path_default_provider_invoked = $false
+      request_path_tpm_estimated_default = $true
+      request_path_estimated_field = "rate_limit_reservation.tpm_estimate.estimated"
+      request_path_trusted_numeric_present_field = "rate_limit_reservation.tpm_estimate.trusted_numeric_source_present"
       closure_requires_live_evidence = $true
       marker_names = [ordered]@{
         availability = "gateway_tpm_trusted_numeric_source_available"
@@ -447,6 +640,29 @@ function New-PerformanceEvidenceReport {
         token_count = "gateway_tpm_trusted_numeric_source_token_count"
       }
     }
+    smoke_run_readback = [ordered]@{
+      schema = "gateway_rate_limit_reservation_smoke_run_readback_v1"
+      smoke_run_id = [string]$script:SmokeSuffix
+      request_hashes = @($script:ObservedRequestHashes | Select-Object -Unique)
+      request_ids = @($script:ObservedRequestIds | Select-Object -Unique)
+      operator_sql = "scripts/operator/e8_rate_limit_db_acquire_readback.sql"
+      operator_sql_parameters = [ordered]@{
+        artifact_path = ".tmp/gateway_tpm_production_backend/e8-rate-limit-live-smoke.json"
+        smoke_run_id = [string]$script:SmokeSuffix
+        request_hashes = (@($script:ObservedRequestHashes | Select-Object -Unique) -join ",")
+        request_ids = (@($script:ObservedRequestIds | Select-Object -Unique) -join ",")
+      }
+      copyable_readback_command = "Get-Content scripts/operator/e8_rate_limit_db_acquire_readback.sql | docker compose -f $ComposeFile exec -T postgres psql -U ai_gateway -d ai_gateway -v ON_ERROR_STOP=1 --set artifact_path=.tmp/gateway_tpm_production_backend/e8-rate-limit-live-smoke.json --set smoke_run_id=$script:SmokeSuffix --set request_hashes='<comma-separated hashes from this report>' --set request_ids='<comma-separated request ids from this report>'"
+      same_smoke_run_request_correlation = $true
+      raw_material_in_output = $false
+    }
+    artifact_write = [ordered]@{
+      configured = [bool](-not [string]::IsNullOrWhiteSpace($ArtifactPath))
+      path = $safeArtifactRelativePath
+      allowed_scope = if ($null -ne $safeArtifactRelativePath) { ".tmp_or_artifacts" } else { $null }
+      secret_safe = $true
+    }
+    request_trace_usage_handoff = New-RateLimitExplainabilityHandoff -Status $Status
     secret_safe_command_summary = New-SecretSafeCommandSummary
     blockers = @($script:Failures | ForEach-Object { Redact-SecretLikeString ([string]$_) })
     blocker_evidence = [ordered]@{
@@ -485,10 +701,19 @@ function Write-PerformanceEvidenceReport {
 
   $report = New-PerformanceEvidenceReport -Status $Status -UnavailableReason $UnavailableReason
   Assert-PerformanceEvidenceSecretSafe $report
+  $reportJson = ($report | ConvertTo-Json -Depth 32 -Compress)
+  $artifactFullPath = Resolve-SafeArtifactPath
+  if ($artifactFullPath) {
+    $artifactDirectory = Split-Path -Parent $artifactFullPath
+    if (-not (Test-Path $artifactDirectory)) {
+      New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+    }
+    Set-Content -LiteralPath $artifactFullPath -Value $reportJson -Encoding UTF8
+  }
   $script:PerformanceEvidenceReportWritten = $true
   Write-SafeHost ""
   Write-SafeHost "Gateway rate-limit reservation performance evidence:"
-  Write-SafeHost ($report | ConvertTo-Json -Depth 32 -Compress)
+  Write-SafeHost $reportJson
 }
 
 function ProviderKeyIdListSql {
@@ -573,6 +798,8 @@ from (
     rpm_limit,
     tpm_limit,
     concurrency_limit,
+    status,
+    cooldown_until,
     current_window_state
   from provider_keys
   where tenant_id = '$tenantId'
@@ -602,12 +829,20 @@ function Restore-OriginalProviderKeyStates {
     $rpm = NullableIntSql $row.rpm_limit
     $tpm = NullableIntSql $row.tpm_limit
     $concurrency = NullableIntSql $row.concurrency_limit
+    $status = Escape-SqlLiteral ([string]$row.status)
+    $cooldownUntil = if ($null -eq $row.cooldown_until -or [string]::IsNullOrWhiteSpace([string]$row.cooldown_until)) {
+      "null"
+    } else {
+      "'" + (Escape-SqlLiteral ([string]$row.cooldown_until)) + "'::timestamptz"
+    }
     $stateJson = Escape-SqlLiteral (($row.current_window_state | ConvertTo-Json -Depth 16 -Compress))
     $sql = @"
 update provider_keys
    set rpm_limit = $rpm,
        tpm_limit = $tpm,
        concurrency_limit = $concurrency,
+       status = '$status',
+       cooldown_until = $cooldownUntil,
        current_window_state = '$stateJson'::jsonb,
        updated_at = now()
  where tenant_id = '$tenantId'
@@ -664,6 +899,22 @@ function Assert-ProviderKeyCounters {
   if ([int]$row.concurrency_used -ne $Concurrency) {
     throw "provider key $ProviderKeyId concurrency used expected $Concurrency, got '$($row.concurrency_used)'"
   }
+}
+
+function Reconcile-LiveSmokeProviderKeys {
+  $tenantId = Escape-SqlLiteral ([string]$script:Fixture.postgres_scope.tenant_id)
+  $idsSql = ProviderKeyIdListSql @($script:Fixture.postgres_scope.bounded_provider_key_ids)
+  $sql = @"
+update provider_keys
+   set status = 'enabled',
+       cooldown_until = null,
+       last_error_code = null,
+       deleted_at = null,
+       updated_at = now()
+ where tenant_id = '$tenantId'
+   and id in ($idsSql);
+"@
+  [void](Invoke-ComposePsql $sql)
 }
 
 function Get-RequestLogRowsByHash {
@@ -757,7 +1008,9 @@ function Record-LiveRows {
   param([Parameter(Mandatory = $true)]$Rows)
 
   $rowsArray = @($Rows)
-  $script:ObservedRequestLogRows += @($rowsArray | Select-Object -ExpandProperty request_id -Unique).Count
+  $requestIds = @($rowsArray | Select-Object -ExpandProperty request_id -Unique)
+  $script:ObservedRequestIds += $requestIds
+  $script:ObservedRequestLogRows += $requestIds.Count
   $script:ObservedProviderAttemptRows += @(Get-AttemptRows $rowsArray).Count
 }
 
@@ -846,7 +1099,9 @@ from (
 
   $rows = @(ConvertFrom-JsonArray (Invoke-ComposePsql $sql))
   if (@($rows | Where-Object { $_.kind -eq "provider_key" -and $_.status -eq "enabled" -and $_.active -eq $true }).Count -ne 3) {
-    throw "expected all three smoke provider keys to be enabled and active"
+    $providerKeyRows = @($rows | Where-Object { $_.kind -eq "provider_key" } | Select-Object kind, id, status, active)
+    $diagnostic = ($providerKeyRows | ConvertTo-Json -Depth 4 -Compress)
+    throw "expected all three smoke provider keys to be enabled and active; observed provider key states: $diagnostic"
   }
   if (@($rows | Where-Object { $_.kind -eq "model" -and $_.status -eq "active" -and $_.active -eq $true }).Count -ne 2) {
     throw "expected default and fallback smoke models to be active"
@@ -902,6 +1157,7 @@ function Assert-FixtureContract {
       "bounded_scope",
       "performance",
       "trusted_numeric_source_handoff",
+      "smoke_run_readback",
       "secret_safe_command_summary",
       "blockers",
       "blocker_evidence",
@@ -957,6 +1213,8 @@ function Assert-ScriptStructure {
   $source = Get-Content -LiteralPath $PSCommandPath -Raw
   foreach ($needle in @(
       "Start-ProviderKeyOverLimitContender",
+      "Wait-ProviderKeyOverLimitContenderReady",
+      "pg_advisory_xact_lock",
       "rate_limit_reservation_rejection",
       "not_applied",
       "release.status",
@@ -974,7 +1232,17 @@ function Assert-ScriptStructure {
       "measurements_available",
       "live_observed",
       "copyable_preflight_command",
-      "secret_safe_command_summary"
+      "secret_safe_command_summary",
+      "artifact_write",
+      "Reconcile-LiveSmokeProviderKeys",
+      "request_trace_usage_handoff",
+      "forced_limit_provider_attempt_rows",
+      "gateway_rate_limit_request_trace_usage_handoff_v1",
+      "request_trace_lookup_keys",
+      "admin_readback_expectations",
+      "usage_cost_expectations",
+      "request_path_tpm_estimated_default",
+      "same_smoke_run_request_correlation"
     )) {
     if (-not $source.Contains($needle)) {
       throw "script source is missing smoke marker '$needle'"
@@ -999,6 +1267,7 @@ select id
    and id in ($idsSql)
  order by id
  for update;
+select pg_advisory_xact_lock($script:ContenderReadyLockKey);
 select pg_sleep($HoldSeconds);
 update provider_keys
    set current_window_state = $stateSql,
@@ -1018,6 +1287,20 @@ commit;
       throw "concurrent psql contender failed with exit code $LASTEXITCODE"
     }
   } -ArgumentList ([string]$repoRoot), $docker, $ComposeFile, $sql
+}
+
+function Wait-ProviderKeyOverLimitContenderReady {
+  $deadline = (Get-Date).AddSeconds([Math]::Max(2, $LockHoldSeconds))
+  while ((Get-Date) -lt $deadline) {
+    $sql = "select case when pg_try_advisory_lock($script:ContenderReadyLockKey) then case when pg_advisory_unlock($script:ContenderReadyLockKey) then 'free' else 'free' end else 'held' end;"
+    $state = Invoke-ComposePsql $sql
+    if ($state.Trim() -eq "held") {
+      return
+    }
+    Start-Sleep -Milliseconds 100
+  }
+
+  throw "concurrent provider-key contender did not signal ready before request"
 }
 
 function Complete-ContenderJob {
@@ -1057,6 +1340,7 @@ function Invoke-TrackedChatRequest {
   $body = New-ChatBody -Model $Model -Content $Content
   $json = ConvertTo-RequestJson $body
   $hash = Get-Sha256Hex $json
+  $script:ObservedRequestHashes += $hash
   $timer = [System.Diagnostics.Stopwatch]::StartNew()
   $response = Invoke-GatewayRequest -JsonBody $json -Headers (New-GatewayHeaders $ProfileRef) -TimeoutSec $TimeoutSec
   $timer.Stop()
@@ -1150,6 +1434,7 @@ function Check-ConcurrentOverLimitNotAppliedFinal429 {
   Set-ProviderKeyRateLimitWindow -ProviderKeyIds $providerKeyIds -RpmLimit 1000 -TpmLimit 100000 -ConcurrencyLimit 1 -RpmUsed 0 -TpmUsed 0 -ConcurrencyUsed 0
 
   $job = Start-ProviderKeyOverLimitContender -ProviderKeyIds $providerKeyIds -HoldSeconds $LockHoldSeconds
+  Wait-ProviderKeyOverLimitContenderReady
   Start-Sleep -Milliseconds $LockWarmupMilliseconds
   try {
     $tracked = Invoke-TrackedChatRequest `
@@ -1167,6 +1452,7 @@ function Check-ConcurrentOverLimitNotAppliedFinal429 {
   $rows = @(Wait-RequestLogRowsByHash $tracked.Hash)
   Record-LiveRows -Rows $rows
   $attempts = @(Get-AttemptRows $rows)
+  $script:ForcedLimitProviderAttemptRows = [int]$attempts.Count
   if ($attempts.Count -ne 0) {
     throw "concurrent over-limit final 429 should not create provider_attempts; got $($attempts.Count)"
   }
@@ -1194,6 +1480,11 @@ function Check-ConcurrentOverLimitNotAppliedFinal429 {
 
 Push-Location $repoRoot
 try {
+  if ($ExplainabilitySelfTest) {
+    Invoke-ExplainabilitySelfTest
+    exit 0
+  }
+
   Check "rate-limit reservation smoke fixture files exist" {
     foreach ($relativePath in @(
         "scripts\verify_gateway_rate_limit_reservation_smoke.ps1",
@@ -1234,6 +1525,12 @@ try {
     Check "docker compose rate-limit reservation services are running" {
       Assert-ComposeServicesRunning
     }
+  }
+
+  Exit-WithFailuresIfAny
+
+  Check "reconcile bounded rate-limit smoke provider keys" {
+    Reconcile-LiveSmokeProviderKeys
   }
 
   Exit-WithFailuresIfAny

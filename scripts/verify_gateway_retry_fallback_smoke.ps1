@@ -248,7 +248,7 @@ function Assert-ExpectedTransportFailure {
       if ($errorText -match "refused|actively refused|No such host|could not be resolved|Name or service") {
         throw "expected connection-closed failure, got: $($_.Exception.Message)"
       }
-      if ($errorText -notmatch "closed|reset|EOF|unexpected|premature|response ended|while sending") {
+      if ($errorText -notmatch "closed|reset|EOF|unexpected|premature|response ended|while sending|error while sending|HttpRequestException") {
         throw "expected connection-closed failure, got: $($_.Exception.Message)"
       }
     }
@@ -317,8 +317,14 @@ function New-GatewayHeaders {
 function Get-GatewayProbeTimeoutSeconds {
   param([Parameter(Mandatory = $true)]$Case)
 
-  if ($StrictGatewayFallback -and [string]$Case.scenario -eq "timeout" -and $TimeoutSeconds -lt 40) {
-    return 40
+  if ($StrictGatewayFallback -and [string]$Case.scenario -eq "timeout") {
+    $caseTimeout = 0
+    if ($null -ne $Case.strict_live_probe_timeout_seconds) {
+      $caseTimeout = [int]$Case.strict_live_probe_timeout_seconds
+    }
+    if ($caseTimeout -gt 0) {
+      return $caseTimeout
+    }
   }
 
   return $TimeoutSeconds
@@ -498,6 +504,7 @@ candidate_rows as (
     ch.id::text as channel_id,
     ch.name as channel_name,
     ch.endpoint,
+    ch.timeout_policy,
     ch.priority as channel_priority,
     ch.weight,
     ch.tags,
@@ -607,6 +614,108 @@ from candidate_rows;
         throw "strict live route config for model '$model' channel '$($row.channel_name)' is missing tag '$($fixture.gateway_fallback_contract.strict_live_channel_tag)'"
       }
     }
+
+    if ($scenario -eq "timeout") {
+      $expectedTimeoutMs = 0
+      if ($null -ne $case.strict_live_timeout_policy -and $null -ne $case.strict_live_timeout_policy.request_timeout_ms) {
+        $expectedTimeoutMs = [int]$case.strict_live_timeout_policy.request_timeout_ms
+      }
+      if ($expectedTimeoutMs -gt 0) {
+        $actualTimeoutMs = 0
+        if ($null -ne $caseRows[0].timeout_policy -and $null -ne $caseRows[0].timeout_policy.request_timeout_ms) {
+          $actualTimeoutMs = [int]$caseRows[0].timeout_policy.request_timeout_ms
+        }
+        if ($actualTimeoutMs -le 0 -or $actualTimeoutMs -gt $expectedTimeoutMs) {
+          throw "strict live route config for model '$model' timeout request_timeout_ms expected <= $expectedTimeoutMs, got $actualTimeoutMs"
+        }
+      }
+    }
+  }
+}
+
+function Reset-StrictGatewayFallbackRuntimeState {
+  $contract = $fixture.gateway_fallback_contract
+  if (-not $contract) {
+    throw "fixture must define gateway_fallback_contract"
+  }
+
+  $channelTag = Escape-SqlLiteral ([string]$contract.strict_live_channel_tag)
+  $successEndpoint = Escape-SqlLiteral ([string]$contract.success_candidate_endpoint)
+  $endpointValues = @("('$successEndpoint')")
+  foreach ($case in @($fixture.failure_scenarios)) {
+    $endpointValues += "('" + (Escape-SqlLiteral (Get-ExpectedFailingEndpoint -Case $case)) + "')"
+  }
+  $endpointValuesSql = $endpointValues -join ",`n    "
+
+  $sql = @"
+with expected(endpoint) as (
+  values
+    $endpointValuesSql
+),
+bounded_channels as (
+  select ch.id, ch.tenant_id
+  from channels ch
+  join expected e on e.endpoint = ch.endpoint
+  where ch.tags ? '$channelTag'
+    and ch.deleted_at is null
+),
+updated as (
+  update provider_keys pk
+     set status = 'enabled',
+         cooldown_until = null,
+         last_error_code = null,
+         health_score = 1.0,
+         deleted_at = null,
+         updated_at = now()
+    from bounded_channels ch
+   where pk.tenant_id = ch.tenant_id
+     and pk.channel_id = ch.id
+  returning pk.id::text
+)
+select coalesce(jsonb_agg(id), '[]'::jsonb)::text from updated;
+"@
+
+  $updated = @(ConvertFrom-JsonArray (Invoke-ComposePsql $sql))
+  if ($updated.Count -lt 5) {
+    throw "strict gateway fallback runtime reset expected at least 5 provider keys, updated $($updated.Count)"
+  }
+}
+
+function Set-StrictGatewayFallbackTimeoutPolicy {
+  $cases = @($fixture.failure_scenarios | Where-Object { [string]$_.scenario -eq "timeout" } | Select-Object -First 1)
+  if ($cases.Count -ne 1) {
+    throw "strict timeout fallback case not found"
+  }
+  $case = $cases[0]
+
+  $requestTimeoutMs = 0
+  if ($null -ne $case.strict_live_timeout_policy -and $null -ne $case.strict_live_timeout_policy.request_timeout_ms) {
+    $requestTimeoutMs = [int]$case.strict_live_timeout_policy.request_timeout_ms
+  }
+  if ($requestTimeoutMs -le 0) {
+    throw "timeout_then_fallback must define strict_live_timeout_policy.request_timeout_ms"
+  }
+
+  $failingEndpoint = Escape-SqlLiteral (Get-ExpectedFailingEndpoint -Case $case)
+  $channelTag = Escape-SqlLiteral ([string]$fixture.gateway_fallback_contract.strict_live_channel_tag)
+  $sql = @"
+update channels
+set timeout_policy = jsonb_set(
+      coalesce(timeout_policy, '{}'::jsonb),
+      '{request_timeout_ms}',
+      to_jsonb(${requestTimeoutMs}::int),
+      true
+    ),
+    updated_at = now()
+where endpoint = '$failingEndpoint'
+  and tags ? '$channelTag'
+  and deleted_at is null
+returning id::text;
+"@
+
+  $updated = Invoke-ComposePsql $sql
+  if ([string]::IsNullOrWhiteSpace($updated)) {
+    throw "strict timeout fallback channel was not updated for endpoint '$failingEndpoint'"
   }
 }
 
@@ -786,6 +895,26 @@ function Assert-RetryFallbackFixtureContract {
     }
     if ($case.expected_request_log.route_decision_snapshot_fallback_schema -ne "gateway_retry_fallback_v1") {
       throw "$($case.name) must require request_logs fallback snapshot schema"
+    }
+
+    if ([string]$case.scenario -eq "timeout") {
+      $requestTimeoutMs = 0
+      if ($null -ne $case.strict_live_timeout_policy -and $null -ne $case.strict_live_timeout_policy.request_timeout_ms) {
+        $requestTimeoutMs = [int]$case.strict_live_timeout_policy.request_timeout_ms
+      }
+      $probeTimeoutSeconds = 0
+      if ($null -ne $case.strict_live_probe_timeout_seconds) {
+        $probeTimeoutSeconds = [int]$case.strict_live_probe_timeout_seconds
+      }
+      if ($requestTimeoutMs -le 0) {
+        throw "$($case.name) must define strict_live_timeout_policy.request_timeout_ms"
+      }
+      if ($probeTimeoutSeconds -le 0) {
+        throw "$($case.name) must define strict_live_probe_timeout_seconds"
+      }
+      if (($requestTimeoutMs / 1000.0) -ge $probeTimeoutSeconds) {
+        throw "$($case.name) strict_live_probe_timeout_seconds must be greater than request_timeout_ms"
+      }
     }
   }
 }
@@ -979,6 +1108,8 @@ try {
     }
 
     Check "strict gateway fallback live route config" {
+      Reset-StrictGatewayFallbackRuntimeState
+      Set-StrictGatewayFallbackTimeoutPolicy
       Assert-StrictGatewayFallbackLiveConfig
     }
   }

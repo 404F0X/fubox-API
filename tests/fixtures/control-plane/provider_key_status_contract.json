@@ -14,7 +14,22 @@
       "encrypted_secret",
       "secret_fingerprint",
       "has_secret_fingerprint",
-      "current_window_state"
+      "current_window_state",
+      "Authorization",
+      "authorization",
+      "raw_endpoint",
+      "endpoint",
+      "raw_payload",
+      "payload",
+      "metadata"
+    ],
+    "required_safe_readback_fields": [
+      "lifecycle_state",
+      "credential_generation",
+      "last_probe_summary",
+      "rotation_needed",
+      "safe_next_action",
+      "omitted_secret_policy"
     ]
   },
   "patch_contract": {
@@ -49,6 +64,64 @@
     "metadata_secret_fields_rejected": true,
     "audit_secret_safe": true
   },
+  "rotation_contract": {
+    "path": "POST /admin/provider-keys/{id}/rotate",
+    "required_permission": "key_manage",
+    "request_secret_field": "secret",
+    "caller_encrypted_secret_rejected": true,
+    "server_seals_secret": true,
+    "encrypted_at_rest_algorithm": "aes-256-gcm",
+    "fingerprint_only_public": true,
+    "old_key_transition": {
+      "from_status": "enabled",
+      "to_status": "manual_disabled",
+      "reason": "rotated"
+    },
+    "new_key_transition": {
+      "from_status": "pending_create",
+      "to_status": "enabled"
+    },
+    "audit_action": "provider_key.rotate",
+    "audit_secret_safe": true,
+    "response_omits": [
+      "secret",
+      "api_key",
+      "encrypted_secret",
+      "secret_fingerprint",
+      "current_window_state",
+      "Authorization",
+      "raw_endpoint",
+      "raw_payload"
+    ],
+    "response_requires": [
+      "lifecycle_state",
+      "credential_generation",
+      "last_probe_summary",
+      "rotation_needed.reason",
+      "safe_next_action",
+      "omitted_secret_policy"
+    ]
+  },
+  "view_audit_contract": {
+    "list_get_never_return_secret": true,
+    "read_audit_action": "provider_key.view",
+    "audit_metadata_allowed_identifiers": [
+      "provider_key_id",
+      "tenant_id",
+      "channel_id",
+      "key_alias"
+    ],
+    "audit_metadata_forbidden_values": [
+      "secret",
+      "api_key",
+      "encrypted_secret",
+      "secret_fingerprint",
+      "authorization",
+      "bearer"
+    ],
+    "fingerprint_never_returned": true,
+    "credential_configured_is_only_public_indicator": true
+  },
   "recovery_contract": {
     "path": "POST /admin/provider-keys/{id}/recovery",
     "required_permission": "key_manage",
@@ -79,6 +152,7 @@
     ],
     "unknown_fields_rejected": true,
     "upstream_probe_executed": false,
+    "recovery_apply_plan_readback": true,
     "billable": false,
     "audit_action": "provider_key.recovery_request",
     "audit_secret_safe": true
@@ -98,15 +172,42 @@
           "channel_id": "00000000-0000-0000-0000-000000000401",
           "key_alias": "primary",
           "credential_configured": true,
+          "credential_generation": {
+            "value": null,
+            "source": "not_recorded",
+            "secret_material_returned": false
+          },
           "status": "manual_disabled",
+          "lifecycle_state": "operator_disabled",
           "health_score": 0.25,
           "cooldown_until": "2026-06-02 12:05:00+00",
           "last_error_code": "provider_auth_failed",
           "rpm_limit": 60,
           "tpm_limit": 100000,
           "concurrency_limit": 8,
-          "metadata": {
-            "owner": "ops"
+          "recovery_probe": {
+            "result": "failure",
+            "error_code": "provider_auth_failed",
+            "last_checked_at": "2026-06-02T12:04:00.000000Z"
+          },
+          "last_probe_summary": {
+            "result": "failure",
+            "error_code": "provider_auth_failed",
+            "last_checked_at": "2026-06-02T12:04:00.000000Z"
+          },
+          "rotation_needed": {
+            "needed": true,
+            "reason": "probe_indicates_credential"
+          },
+          "safe_next_action": "rotate_provider_key_secret_then_request_recovery_probe",
+          "omitted_secret_policy": {
+            "key_secret_returned": false,
+            "authorization_header_returned": false,
+            "raw_endpoint_returned": false,
+            "raw_payload_returned": false,
+            "sealed_secret_returned": false,
+            "fingerprint_returned": false,
+            "public_credential_indicator": "credential_configured"
           },
           "secret_redacted": true
         }
@@ -123,15 +224,42 @@
           "channel_id": "00000000-0000-0000-0000-000000000401",
           "key_alias": "primary",
           "credential_configured": true,
+          "credential_generation": {
+            "value": null,
+            "source": "not_recorded",
+            "secret_material_returned": false
+          },
           "status": "recovery_probe",
+          "lifecycle_state": "recovery_probe",
           "health_score": 0.25,
           "cooldown_until": "2026-06-02 12:05:00+00",
           "last_error_code": "provider_auth_failed",
           "rpm_limit": 60,
           "tpm_limit": 100000,
           "concurrency_limit": 8,
-          "metadata": {
-            "owner": "ops"
+          "recovery_probe": {
+            "result": "failure",
+            "error_code": "provider_auth_failed",
+            "last_checked_at": "2026-06-02T12:04:00.000000Z"
+          },
+          "last_probe_summary": {
+            "result": "failure",
+            "error_code": "provider_auth_failed",
+            "last_checked_at": "2026-06-02T12:04:00.000000Z"
+          },
+          "rotation_needed": {
+            "needed": true,
+            "reason": "probe_indicates_credential"
+          },
+          "safe_next_action": "rotate_provider_key_secret_then_request_recovery_probe",
+          "omitted_secret_policy": {
+            "key_secret_returned": false,
+            "authorization_header_returned": false,
+            "raw_endpoint_returned": false,
+            "raw_payload_returned": false,
+            "sealed_secret_returned": false,
+            "fingerprint_returned": false,
+            "public_credential_indicator": "credential_configured"
           },
           "secret_redacted": true
         }
@@ -167,15 +295,42 @@
             "channel_id": "00000000-0000-0000-0000-000000000401",
             "key_alias": "primary",
             "credential_configured": true,
+            "credential_generation": {
+              "value": null,
+              "source": "not_recorded",
+              "secret_material_returned": false
+            },
             "status": "recovery_probe",
+            "lifecycle_state": "recovery_probe",
             "health_score": 0.25,
             "cooldown_until": "2026-06-02 12:05:00+00",
             "last_error_code": "provider_auth_failed",
             "rpm_limit": 60,
             "tpm_limit": 100000,
             "concurrency_limit": 8,
-            "metadata": {
-              "owner": "ops"
+            "recovery_probe": {
+              "result": "failure",
+              "error_code": "provider_auth_failed",
+              "last_checked_at": "2026-06-02T12:04:00.000000Z"
+            },
+            "last_probe_summary": {
+              "result": "failure",
+              "error_code": "provider_auth_failed",
+              "last_checked_at": "2026-06-02T12:04:00.000000Z"
+            },
+            "rotation_needed": {
+              "needed": true,
+              "reason": "probe_indicates_credential"
+            },
+            "safe_next_action": "rotate_provider_key_secret_then_request_recovery_probe",
+            "omitted_secret_policy": {
+              "key_secret_returned": false,
+              "authorization_header_returned": false,
+              "raw_endpoint_returned": false,
+              "raw_payload_returned": false,
+              "sealed_secret_returned": false,
+              "fingerprint_returned": false,
+              "public_credential_indicator": "credential_configured"
             },
             "secret_redacted": true
           },
@@ -190,8 +345,59 @@
             "ledger_write": false
           },
           "credential_material": {
-            "omitted": true
-          }
+            "omitted": true,
+            "policy": {
+              "key_secret_returned": false,
+              "authorization_header_returned": false,
+              "raw_endpoint_returned": false,
+              "raw_payload_returned": false,
+              "sealed_secret_returned": false,
+              "fingerprint_returned": false,
+              "public_credential_indicator": "credential_configured"
+            }
+          },
+          "recovery_apply_plan_readback": {
+            "schema": "provider_key_recovery_apply_plan_readback.v1",
+            "suggested_action": "rotate_provider_key_secret",
+            "preconditions": [
+              "operator_confirmation_required",
+              "local_status_transition_only",
+              "provider_network_call_forbidden",
+              "live_provider_smoke_forbidden",
+              "credential_configured",
+              "recovery_endpoint_source_status_allowed",
+              "new_secret_material_required_for_rotate_endpoint"
+            ],
+            "would_enable": false,
+            "would_rotate": true,
+            "would_probe": true,
+            "would_refuse": false,
+            "operator_confirmation_required": true,
+            "blocked_reasons": [
+              "cooldown_until_present"
+            ],
+            "safe_next_action": "rotate_provider_key_secret_then_request_recovery_probe",
+            "local_execution_boundary": {
+              "status_write_allowed": true,
+              "secret_write_allowed": true,
+              "provider_network_call": false,
+              "upstream_probe_executed": false,
+              "live_provider_smoke": false,
+              "request_log_write": false,
+              "billing_ledger_write": false
+            },
+            "secret_safe": true,
+            "omitted_secret_policy": {
+              "key_secret_returned": false,
+              "authorization_header_returned": false,
+              "raw_endpoint_returned": false,
+              "raw_payload_returned": false,
+              "sealed_secret_returned": false,
+              "fingerprint_returned": false,
+              "public_credential_indicator": "credential_configured"
+            }
+          },
+          "safe_next_action": "rotate_provider_key_secret_then_request_recovery_probe"
         }
       }
     },
@@ -238,7 +444,51 @@
           "message": "provider key status `auth_failed` is runtime-managed and cannot be entered through admin patch"
         }
       }
+    },
+    "rotate_success": {
+      "request": {
+        "secret": "[REDACTED]",
+        "reason": "scheduled rotation"
+      },
+      "response": {
+        "data": {
+          "old_provider_key": {
+            "id": "00000000-0000-0000-0000-000000000501",
+            "status": "manual_disabled",
+            "secret_redacted": true
+          },
+          "new_provider_key": {
+            "id": "00000000-0000-0000-0000-000000000502",
+            "credential_configured": true,
+            "status": "enabled",
+            "secret_redacted": true
+          },
+          "credential_material": {
+            "omitted": true,
+            "encrypted_at_rest": true,
+            "fingerprint_returned": false,
+            "policy": {
+              "key_secret_returned": false,
+              "authorization_header_returned": false,
+              "raw_endpoint_returned": false,
+              "raw_payload_returned": false,
+              "sealed_secret_returned": false,
+              "fingerprint_returned": false,
+              "public_credential_indicator": "credential_configured"
+            }
+          },
+          "rotation_needed": {
+            "needed": false,
+            "reason": "new_key_created_by_rotation"
+          },
+          "safe_next_action": "run_new_key_traffic_readback_before_retiring_old_key",
+          "audit": {
+            "action": "provider_key.rotate",
+            "secret_safe": true
+          }
+        }
+      }
     }
   },
-  "notes": "Control Plane read/patch contract only. Gateway and worker runtime writers remain responsible for auth_failed, quota_exhausted, and cooldown transitions."
+  "notes": "Control Plane read/patch/rotation/view-audit contract only. Gateway and worker runtime writers remain responsible for auth_failed, quota_exhausted, and cooldown transitions."
 }

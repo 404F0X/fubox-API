@@ -1,4 +1,4 @@
-.PHONY: fmt lint test build dev docker-build scan-secrets frontend-install
+.PHONY: fmt lint test build dev smoke docker-build scan-secrets frontend-install
 
 fmt:
 	cargo fmt --all
@@ -27,6 +27,9 @@ frontend-install:
 
 dev:
 	docker compose -f deploy/docker-compose/docker-compose.yml up --build
+
+smoke:
+	pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/smoke.ps1 -StartCompose
 
 docker-build:
 	docker build -f deploy/docker-compose/Dockerfile --build-arg BIN=ai-gateway .

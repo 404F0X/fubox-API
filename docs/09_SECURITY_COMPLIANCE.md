@@ -32,6 +32,8 @@ P0 必须做到：
 - Provider key 解密只发生在 Data Plane 调用前。
 - 日志中自动 mask API key、Authorization、Cookie。
 
+Request payload preview readback is metadata-only. `GET /admin/request-logs/{id}/payload` returns `payload_preview_policy_readback.v1` with stored/not-stored status, redaction status, click-to-load requirement, forbidden raw fields policy, safe next action, and audit ref presence. It must not return raw prompts, raw bodies, raw provider responses, Authorization headers, provider keys/provider key ids, payload object refs, or raw request/response payloads.
+
 ## 3. RBAC
 
 权限域：
@@ -46,6 +48,14 @@ P0 必须做到：
 - system_config。
 
 P0 必须做后端权限中间件和单元测试。
+
+## 3A. Virtual Key Leak Scanner Adapter
+
+`GET /admin/virtual-keys/leak-candidates` 暴露 external scanner adapter 的 config/readback seam：`provider`、`status`、`endpoint_ref_present`、`secret_ref_present`、`webhook_ref_present`、`sync_direction`、`last_scan_marker`、`marker_counts`、`readiness`、`blocked_reason`。
+
+`POST /admin/virtual-keys/external-scanner/handoff` 是 control-plane 本地 handoff seam，只接受 bounded finding summary：`provider`、`finding_count`、`key_prefix_present`、`key_hash_present`、`repo_ref_hash`、`severity`、`detected_at`、`signature_validated`，以及可选 `virtual_key_id`。带 `virtual_key_id` 且命中时写入 `virtual_keys.metadata.leak_detection` 的 `external_scanner_handoff` marker；不带 id 时只返回 planned marker。该 endpoint 拒绝 raw finding/raw findings、raw token/key、raw secret/hash 值、Authorization、scanner secret、webhook body、request body 或 raw payload。
+
+当前实现只做本地 presence-only readback 和 `virtual_keys.metadata.leak_detection` marker 汇总；不连接真实 scanner、不跑 repo scan、不输出 endpoint/secret/webhook ref 值、Authorization、raw findings、raw leak payload、virtual key secret 或 secret hash。真实 provider、vault/ref resolution、webhook 验签、provider finding parser 和 live evidence 仍是 `[!]` 外部环境缺口。
 
 ## 4. SSO
 

@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$script:AllowedChecks = @("format", "test", "frontend", "build", "security", "backup", "helm", "smoke")
+$script:AllowedChecks = @("format", "test", "frontend", "build", "security", "billing", "launch", "backup", "helm", "smoke")
 
 function Test-TruthyEnv {
   param([AllowNull()][string]$Value)
@@ -458,6 +458,117 @@ function Invoke-SecurityCheck {
   return New-CommandsCheckResult -Id "security" -Title "Secret scan, supply-chain scan, and artifact generation" -Required $true -Commands $commands -Notes $notes -StartedAt $started
 }
 
+function Test-OutputContainsText {
+  param(
+    [object[]]$OutputTail = @(),
+    [Parameter(Mandatory = $true)][string]$Pattern
+  )
+
+  foreach ($line in @($OutputTail)) {
+    if ([string]$line -match $Pattern) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Invoke-BillingBetaModeCheck {
+  $started = Get-Date
+  $commands = New-Object System.Collections.Generic.List[object]
+  $warnings = New-Object System.Collections.Generic.List[string]
+  $notes = New-Object System.Collections.Generic.List[string]
+
+  [void]$notes.Add("billing beta mode gate is offline and DB-free; paid_controlled_beta may be requested, but usage_only_beta remains the fallback until real paid evidence is accepted.")
+  [void]$notes.Add("paid_controlled_beta is expected to be refused unless TODO-30 real evidence is supplied; this release gate does not print env or secret values.")
+
+  $usageCommand = Invoke-RepoScript -RelativePath "scripts/verify_billing_beta_mode_readiness.ps1" -Arguments @("-BillingMode", "usage_only_beta")
+  [void]$commands.Add($usageCommand)
+
+  $paidCommand = Invoke-RepoScript -RelativePath "scripts/verify_billing_beta_mode_readiness.ps1" -Arguments @("-BillingMode", "paid_controlled_beta")
+  [void]$commands.Add($paidCommand)
+
+  $status = "pass"
+  if ([int]$usageCommand.exitCode -ne 0) {
+    $status = "fail"
+    [void]$warnings.Add("usage_only_beta billing gate failed; current Beta mode is not release-safe.")
+  }
+
+  $paidRefused = ([int]$paidCommand.exitCode -ne 0) -and
+    (Test-OutputContainsText -OutputTail $paidCommand.outputTail -Pattern '"actual_exit_code"\s*:\s*2')
+
+  if (-not $paidRefused) {
+    $status = "fail"
+    [void]$warnings.Add("paid_controlled_beta was not refused with missing TODO-30 evidence; release gate must not allow paid mode by default.")
+  }
+
+  return New-CheckResult `
+    -Id "billing" `
+    -Title "Billing beta mode readiness" `
+    -Required $true `
+    -Status $status `
+    -Commands @($commands.ToArray()) `
+    -Warnings @($warnings.ToArray()) `
+    -Notes @($notes.ToArray()) `
+    -StartedAt $started
+}
+
+function Invoke-VoucherBackedLaunchCheck {
+  $started = Get-Date
+  $commands = New-Object System.Collections.Generic.List[object]
+  $warnings = New-Object System.Collections.Generic.List[string]
+  $notes = New-Object System.Collections.Generic.List[string]
+
+  [void]$notes.Add("Voucher-backed API beta gate is offline/read-only and separates trusted-user voucher quota distribution from full payment/order/subscription runtime readiness.")
+  [void]$notes.Add("Payment provider/callback and subscription scheduler/provider runtime are deferred external dependencies; they are not launch blockers for this narrower voucher-backed API distribution gate.")
+
+  $secretCommand = Invoke-RepoScript -RelativePath "scripts/scan_secrets.ps1"
+  [void]$commands.Add($secretCommand)
+
+  $launchOutputRelativePath = ".tmp\launch\voucher_api_distribution_readiness.json"
+  $launchOutputPath = Join-Path $script:RepoRoot $launchOutputRelativePath
+  $launchArgs = @("-OutputPath", $launchOutputRelativePath)
+  if ([int]$secretCommand.exitCode -eq 0) {
+    $launchArgs += "-SecretScanPassed"
+  }
+  $launchCommand = Invoke-RepoScript -RelativePath "scripts/verify_voucher_api_distribution_readiness.ps1" -Arguments $launchArgs
+  [void]$commands.Add($launchCommand)
+
+  $launchOverallStatus = ""
+  if (Test-Path -LiteralPath $launchOutputPath -PathType Leaf) {
+    try {
+      $launchOverallStatus = [string]((Get-Content -Raw -LiteralPath $launchOutputPath | ConvertFrom-Json).overall_status)
+    } catch {
+      $launchOverallStatus = "artifact_parse_failed"
+    }
+  }
+
+  $status = "pass"
+  if ([int]$secretCommand.exitCode -ne 0 -or [int]$launchCommand.exitCode -ne 0) {
+    $status = "fail"
+    [void]$warnings.Add("voucher-backed launch gate command failed.")
+  } elseif ($launchOverallStatus -eq "blocked") {
+    $status = "fail"
+    [void]$warnings.Add("voucher-backed launch gate is blocked; see .tmp/launch/voucher_api_distribution_readiness.json.")
+  } elseif ($launchOverallStatus -eq "pass_with_productization_gaps") {
+    $status = "warn"
+    [void]$warnings.Add("voucher-backed launch gate passed with productization gaps; public recharge/voucher route polish and deferred payment/subscription runtime resume conditions remain.")
+  } elseif ($launchOverallStatus -eq "artifact_parse_failed" -or [string]::IsNullOrWhiteSpace($launchOverallStatus)) {
+    $status = "fail"
+    [void]$warnings.Add("voucher-backed launch gate artifact was missing or unreadable.")
+  }
+
+  return New-CheckResult `
+    -Id "launch" `
+    -Title "Voucher-backed API beta distribution" `
+    -Required $true `
+    -Status $status `
+    -Commands @($commands.ToArray()) `
+    -Warnings @($warnings.ToArray()) `
+    -Notes @($notes.ToArray()) `
+    -StartedAt $started
+}
+
 function Invoke-BackupCheck {
   $started = Get-Date
   $warnings = New-Object System.Collections.Generic.List[string]
@@ -558,6 +669,7 @@ function Invoke-SmokeCheck {
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_openapi_contract.ps1"))
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1" -Arguments @("-ContractOnly")))
   [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_prompt_protection_postgres_proof.ps1" -Arguments @("-ContractOnly")))
+  [void]$commands.Add((Invoke-RepoScript -RelativePath "scripts/verify_release_negative_guards.ps1"))
 
   $missingSdkTools = New-Object System.Collections.Generic.List[string]
   if (-not (Test-ToolAvailable "node")) {
@@ -567,7 +679,7 @@ function Invoke-SmokeCheck {
     [void]$missingSdkTools.Add("npm")
   }
 
-  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks plus Control Plane ledger adjustment execute OpenAPI/contract-only and Prompt Protection Postgres proof contract-only checks; SDK dry-run runs when node and npm are available.")
+  $notes = @("smoke gate always runs compose and gateway rate-limit reservation dry-run checks plus Control Plane ledger adjustment execute OpenAPI/contract-only, Prompt Protection Postgres proof contract-only, and release negative guard checks; SDK dry-run runs when node and npm are available.")
   if ($RunRuntimeSmoke) {
     $notes += "runtime smoke was requested explicitly."
   }
@@ -634,6 +746,8 @@ foreach ($check in $requestedChecks) {
     "frontend" { [void]$results.Add((Invoke-FrontendCheck)) }
     "build" { [void]$results.Add((Invoke-BuildCheck)) }
     "security" { [void]$results.Add((Invoke-SecurityCheck)) }
+    "billing" { [void]$results.Add((Invoke-BillingBetaModeCheck)) }
+    "launch" { [void]$results.Add((Invoke-VoucherBackedLaunchCheck)) }
     "backup" { [void]$results.Add((Invoke-BackupCheck)) }
     "helm" { [void]$results.Add((Invoke-HelmCheck)) }
     "smoke" { [void]$results.Add((Invoke-SmokeCheck)) }

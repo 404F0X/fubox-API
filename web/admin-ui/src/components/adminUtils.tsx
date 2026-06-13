@@ -1,7 +1,8 @@
 import type { JsonObject, JsonValue } from "../api/client";
+import { safeErrorMessage, statusLabel } from "../lib/safeText";
 
 export function StateChip({ status }: { status: string }) {
-  return <span className={`state-chip state-chip--${statusTone(status)}`}>{formatStatus(status)}</span>;
+  return <span className={`state-chip state-chip--${statusTone(status)}`}>{statusLabel(status)}</span>;
 }
 
 export function parseJsonObject(value: string, label: string): JsonObject {
@@ -117,20 +118,7 @@ export function isJsonRecord(value: JsonValue): value is Record<string, JsonValu
 }
 
 export function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : "Request failed.";
-  const redacted = redactSensitiveText(message).trim();
-
-  if (
-    !redacted ||
-    redacted.includes("[redacted]") ||
-    /\bauthorization\b/i.test(message) ||
-    isSensitiveDisplayText(message) ||
-    isSensitiveDisplayText(redacted)
-  ) {
-    return "Request failed.";
-  }
-
-  return redacted;
+  return safeErrorMessage(error);
 }
 
 export function fieldValue(value: unknown): string {

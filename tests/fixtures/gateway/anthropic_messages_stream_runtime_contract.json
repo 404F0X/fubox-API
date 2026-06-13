@@ -24,10 +24,11 @@
     "upstream_call": "send_anthropic_messages_stream_request",
     "upstream_path": "/v1/messages",
     "upstream_model_rewrite": "anthropic_messages_stream_request_for_upstream",
-    "provider_key_header": "x-api-key <redacted>",
-    "anthropic_version_header": "anthropic-version",
+    "provider_key_header_present": true,
+    "provider_key_value_logged": false,
+    "anthropic_version_header_present": true,
     "provider_key_secret_logged": false,
-    "x_api_key_logged": false
+    "api_key_header_value_logged": false
   },
   "stream_contract": {
     "protocol": "anthropic_messages",
@@ -66,7 +67,7 @@
     "plain-provider-secret",
     "provider-secret-value",
     "Authorization: Bearer",
-    "x-api-key: sk",
+    "api-key: sk",
     "payload body secret"
   ],
   "notes": "Dry-run/source contract for the first Gateway Anthropic Messages streaming runtime slice. Live mock-provider scenarios are still pending; this fixture locks no 501, preauth/provider side-effect order, Anthropic stream adapter parser usage, terminal end-reason semantics, and secret-safe output."

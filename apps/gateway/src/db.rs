@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
 use ai_gateway_auth::keys::parse_virtual_key;
+use ai_gateway_billing_ledger::refund_ledger_idempotency_key;
 use ai_gateway_config::AppConfig;
 use ai_gateway_db::{
     DbRepository, ProviderKeyRateLimitReservationExecutionInput,
@@ -31,6 +32,7 @@ pub struct AuthContext {
     pub api_key_profile_id: Option<Uuid>,
     pub payload_policy_id: Option<Uuid>,
     pub payload_policy_mode: Option<String>,
+    pub rate_limit_policy: Value,
     pub key_prefix: String,
 }
 
@@ -61,6 +63,7 @@ pub struct ResolvedChatRoute {
     pub endpoint: String,
     pub protocol_mode: String,
     pub upstream_model: String,
+    pub timeout_policy: Value,
     pub channel_status: String,
     pub fallback_allowed: bool,
     pub association_priority: i32,
@@ -71,6 +74,13 @@ pub struct ResolvedChatRoute {
     pub provider_key_tpm_limit: Option<i32>,
     pub provider_key_concurrency_limit: Option<i32>,
     pub provider_key_current_window_state: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualKeyRateLimitAcquire {
+    pub applied: bool,
+    pub used_after: Option<i64>,
+    pub remaining: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,6 +244,9 @@ fn merge_payload_metadata(mut route_decision_snapshot: Value, payload_metadata: 
 #[derive(Debug, Clone)]
 pub struct RequestRouteLog<'a> {
     pub trace_id: Option<String>,
+    pub inbound_protocol: Option<&'a str>,
+    pub outbound_protocol: Option<&'a str>,
+    pub protocol_mode: Option<&'a str>,
     pub canonical_model_id: Option<Uuid>,
     pub upstream_model: Option<&'a str>,
     pub resolved_provider_id: Option<Uuid>,
@@ -273,6 +286,15 @@ pub struct RequestPayloadLog {
     pub payload_policy_id: Option<Uuid>,
     pub payload_stored: bool,
     pub redaction_status: &'static str,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptProtectionRuntimeAuditLog {
+    pub request_id: Uuid,
+    pub action: String,
+    pub resource_type: String,
+    pub after_snapshot: Value,
     pub metadata: Value,
 }
 
@@ -364,6 +386,41 @@ pub struct LedgerSettleEntry<'a> {
     pub price_version_id: Uuid,
     pub input_tokens: i64,
     pub output_tokens: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaidReserveEntry<'a> {
+    pub request_id: Uuid,
+    pub model: &'a str,
+    pub reserve_amount: &'a str,
+    pub currency: &'a str,
+    pub price_version_id: Uuid,
+}
+
+// Production RC helper for explicit after-settle refund flows; not wired into the default hot path.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct PaidSettledRefundEntry {
+    pub request_id: Uuid,
+    pub settle_ledger_entry_id: Uuid,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaidReserveOutcome {
+    Applied,
+    Idempotent,
+    RejectedInsufficientBalance,
+}
+
+// Kept distinct from reserve release so unsettled requests cannot be mislabeled as refunds.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaidSettledRefundOutcome {
+    Applied,
+    Idempotent,
+    SourceNotSettled,
+    NothingRefundable,
 }
 
 const UPDATE_PROVIDER_KEY_RUNTIME_STATUS_SQL: &str = r#"
@@ -490,7 +547,7 @@ const PRE_AUTHORIZE_WALLET_BALANCE_SQL: &str = r#"
                 and w.currency = $3
                 and w.status = 'active'
                 and w.deleted_at is null
-              order by (w.project_id = $2) desc, w.created_at asc, w.id asc
+              order by (w.project_id = $2) desc nulls last, w.created_at asc, w.id asc
               limit 1
             ),
             credit_balance as (
@@ -612,6 +669,7 @@ impl GatewayRepository {
               vk.id,
               vk.tenant_id,
               vk.project_id,
+              vk.rate_limit_policy,
               vk.ip_allowlist as key_ip_allowlist,
               vkb.profile_id as api_key_profile_id,
               case
@@ -689,6 +747,9 @@ impl GatewayRepository {
         if profile_ref.is_some() && api_key_profile_id.is_none() {
             return Err(GatewayApiError::api_key_profile_forbidden("unbound"));
         }
+        if profile_ref.is_none() && api_key_profile_id.is_none() {
+            return Err(GatewayApiError::api_key_profile_missing_default());
+        }
 
         let profile_status = row
             .try_get::<Option<String>, _>("profile_status")
@@ -728,6 +789,7 @@ impl GatewayRepository {
             api_key_profile_id,
             payload_policy_id: row.try_get("payload_policy_id").ok().flatten(),
             payload_policy_mode: row.try_get("payload_policy_mode").ok().flatten(),
+            rate_limit_policy: row.get::<Json<Value>, _>("rate_limit_policy").0,
             key_prefix: parsed.prefix,
         };
 
@@ -751,12 +813,224 @@ impl GatewayRepository {
         Ok(context)
     }
 
+    pub async fn acquire_virtual_key_concurrency_slot(
+        &self,
+        auth: &AuthContext,
+        limit: i32,
+    ) -> Result<VirtualKeyRateLimitAcquire, GatewayApiError> {
+        let row = sqlx::query(
+            r#"
+            update virtual_keys
+               set rate_limit_current_window_state = jsonb_set(
+                     coalesce(rate_limit_current_window_state, '{}'::jsonb),
+                     '{concurrency_used}',
+                     to_jsonb(
+                       coalesce((rate_limit_current_window_state->>'concurrency_used')::int, 0) + 1
+                     ),
+                     true
+                   ),
+                   updated_at = now()
+             where tenant_id = $1
+               and id = $2
+               and deleted_at is null
+               and status = 'active'
+               and coalesce((rate_limit_current_window_state->>'concurrency_used')::int, 0) < $3
+             returning coalesce((rate_limit_current_window_state->>'concurrency_used')::int, 0)::bigint as used_after
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.virtual_key_id)
+        .bind(limit)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("virtual_key_concurrency_acquire", error)
+        })?;
+
+        let used_after = row.and_then(|row| row.try_get::<i64, _>("used_after").ok());
+        Ok(VirtualKeyRateLimitAcquire {
+            applied: used_after.is_some(),
+            used_after,
+            remaining: used_after.map(|used| i64::from(limit).saturating_sub(used).max(0)),
+        })
+    }
+
+    pub async fn acquire_virtual_key_rpm_slot(
+        &self,
+        auth: &AuthContext,
+        limit: i32,
+    ) -> Result<VirtualKeyRateLimitAcquire, GatewayApiError> {
+        let row = sqlx::query(
+            r#"
+            with current_window as (
+              select floor(extract(epoch from now()) / 60)::bigint as minute_bucket
+            )
+            update virtual_keys
+               set rate_limit_current_window_state = jsonb_set(
+                     jsonb_set(
+                       coalesce(rate_limit_current_window_state, '{}'::jsonb),
+                       '{rpm_window}',
+                       to_jsonb(current_window.minute_bucket),
+                       true
+                     ),
+                     '{rpm_used}',
+                     to_jsonb(
+                       case
+                         when coalesce((rate_limit_current_window_state->>'rpm_window')::bigint, -1) = current_window.minute_bucket
+                           then coalesce((rate_limit_current_window_state->>'rpm_used')::int, 0) + 1
+                         else 1
+                       end
+                     ),
+                     true
+                   ),
+                   updated_at = now()
+              from current_window
+             where tenant_id = $1
+               and id = $2
+               and deleted_at is null
+               and status = 'active'
+               and (
+                 coalesce((rate_limit_current_window_state->>'rpm_window')::bigint, -1) <> current_window.minute_bucket
+                 or coalesce((rate_limit_current_window_state->>'rpm_used')::int, 0) < $3
+               )
+             returning coalesce((rate_limit_current_window_state->>'rpm_used')::int, 0)::bigint as used_after
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.virtual_key_id)
+        .bind(limit)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| GatewayApiError::database_query_failed("virtual_key_rpm_acquire", error))?;
+
+        let used_after = row.and_then(|row| row.try_get::<i64, _>("used_after").ok());
+        Ok(VirtualKeyRateLimitAcquire {
+            applied: used_after.is_some(),
+            used_after,
+            remaining: used_after.map(|used| i64::from(limit).saturating_sub(used).max(0)),
+        })
+    }
+
+    pub async fn acquire_virtual_key_tpm_capacity(
+        &self,
+        auth: &AuthContext,
+        limit: i32,
+        required_tokens: i64,
+    ) -> Result<VirtualKeyRateLimitAcquire, GatewayApiError> {
+        let row = sqlx::query(
+            r#"
+            with current_window as (
+              select floor(extract(epoch from now()) / 60)::bigint as minute_bucket
+            )
+            update virtual_keys
+               set rate_limit_current_window_state = jsonb_set(
+                     jsonb_set(
+                       coalesce(rate_limit_current_window_state, '{}'::jsonb),
+                       '{tpm_window}',
+                       to_jsonb(current_window.minute_bucket),
+                       true
+                     ),
+                     '{tpm_used}',
+                     to_jsonb(
+                       case
+                         when coalesce((rate_limit_current_window_state->>'tpm_window')::bigint, -1) = current_window.minute_bucket
+                           then coalesce((rate_limit_current_window_state->>'tpm_used')::bigint, 0) + $4
+                         else $4
+                       end
+                     ),
+                     true
+                   ),
+                   updated_at = now()
+              from current_window
+             where tenant_id = $1
+               and id = $2
+               and deleted_at is null
+               and status = 'active'
+               and $4 > 0
+               and (
+                 coalesce((rate_limit_current_window_state->>'tpm_window')::bigint, -1) <> current_window.minute_bucket
+                 or coalesce((rate_limit_current_window_state->>'tpm_used')::bigint, 0) + $4 <= $3::bigint
+               )
+               and (
+                 coalesce((rate_limit_current_window_state->>'tpm_window')::bigint, -1) = current_window.minute_bucket
+                 or $4 <= $3::bigint
+               )
+             returning coalesce((rate_limit_current_window_state->>'tpm_used')::bigint, 0) as used_after
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.virtual_key_id)
+        .bind(limit)
+        .bind(required_tokens)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| GatewayApiError::database_query_failed("virtual_key_tpm_acquire", error))?;
+
+        let used_after = row.and_then(|row| row.try_get::<i64, _>("used_after").ok());
+        Ok(VirtualKeyRateLimitAcquire {
+            applied: used_after.is_some(),
+            used_after,
+            remaining: used_after.map(|used| i64::from(limit).saturating_sub(used).max(0)),
+        })
+    }
+
+    pub async fn release_virtual_key_concurrency_slot(
+        &self,
+        auth: &AuthContext,
+    ) -> Result<(), GatewayApiError> {
+        sqlx::query(
+            r#"
+            update virtual_keys
+               set rate_limit_current_window_state = jsonb_set(
+                     coalesce(rate_limit_current_window_state, '{}'::jsonb),
+                     '{concurrency_used}',
+                     to_jsonb(
+                       greatest(
+                         coalesce((rate_limit_current_window_state->>'concurrency_used')::int, 0) - 1,
+                         0
+                       )
+                     ),
+                     true
+                   ),
+                   updated_at = now()
+             where tenant_id = $1
+               and id = $2
+               and deleted_at is null
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.virtual_key_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("virtual_key_concurrency_release", error)
+        })?;
+
+        Ok(())
+    }
+
     pub async fn list_visible_models(
         &self,
         auth: &AuthContext,
     ) -> Result<Vec<VisibleModel>, GatewayApiError> {
         let rows = sqlx::query(
             r#"
+            with active_profile as (
+              select
+                p.id,
+                p.allowed_models,
+                p.denied_models,
+                p.model_aliases,
+                p.allowed_channel_tags,
+                p.blocked_provider_ids
+              from api_key_profiles p
+              where p.tenant_id = $1
+                and p.project_id = $3
+                and p.id = $2
+                and p.status = 'active'
+                and p.deleted_at is null
+              limit 1
+            )
             select
               cm.model_key,
               cm.capabilities,
@@ -765,23 +1039,72 @@ impl GatewayRepository {
               cm.supports_vision,
               cm.supports_audio,
               cm.supports_reasoning
-            from canonical_models cm
-            left join api_key_profiles p
-              on p.tenant_id = cm.tenant_id
-             and p.project_id = $3
-             and p.id = $2
-             and p.deleted_at is null
+            from active_profile p
+            join canonical_models cm
+              on cm.tenant_id = $1
             where cm.tenant_id = $1
               and cm.status = 'active'
               and cm.deleted_at is null
               and cm.visibility in ('public', 'internal')
-              and ($2::uuid is null or p.id is not null)
               and (
-                $2::uuid is null
-                or coalesce(jsonb_array_length(p.allowed_models), 0) = 0
+                coalesce(jsonb_array_length(p.allowed_models), 0) = 0
                 or p.allowed_models ? cm.model_key
               )
               and not (coalesce(p.denied_models, '[]'::jsonb) ? cm.model_key)
+              and not exists (
+                select 1
+                from jsonb_each_text(coalesce(p.model_aliases, '{}'::jsonb)) as alias(alias_key, canonical_key)
+                where alias.alias_key = cm.model_key
+                  and coalesce(alias.canonical_key, '') <> cm.model_key
+              )
+              and exists (
+                select 1
+                from model_associations ma
+                join channels c
+                  on c.tenant_id = ma.tenant_id
+                 and c.deleted_at is null
+                 and c.status <> 'deleted'
+                 and c.protocol_mode in ('openai_compatible', 'gemini_generate_content', 'gemini', 'anthropic', 'anthropic_messages', 'claude_compatible')
+                 and (
+                   (ma.association_type = 'explicit_channel' and c.id = ma.channel_id)
+                   or (ma.association_type = 'channel_tag' and ma.channel_tag is not null and c.tags ? ma.channel_tag)
+                   or ma.association_type = 'global'
+                   or (ma.association_type = 'model_pattern' and ma.model_pattern is not null and cm.model_key ~ ma.model_pattern)
+                 )
+                join providers pr
+                  on pr.tenant_id = c.tenant_id
+                 and pr.id = c.provider_id
+                 and pr.status = 'enabled'
+                 and pr.deleted_at is null
+                join provider_keys pk
+                  on pk.tenant_id = c.tenant_id
+                 and pk.channel_id = c.id
+                 and pk.deleted_at is null
+                 and (
+                   (
+                     pk.status in ('enabled', 'degraded', 'recovery_probe')
+                     and (pk.cooldown_until is null or pk.cooldown_until <= now())
+                   )
+                   or (
+                     pk.status = 'cooldown'
+                     and pk.cooldown_until is not null
+                     and pk.cooldown_until <= now()
+                   )
+                 )
+                where ma.tenant_id = cm.tenant_id
+                  and ma.canonical_model_id = cm.id
+                  and ma.status = 'enabled'
+                  and ma.deleted_at is null
+                  and (
+                    coalesce(jsonb_array_length(p.allowed_channel_tags), 0) = 0
+                    or exists (
+                      select 1
+                      from jsonb_array_elements_text(p.allowed_channel_tags) allowed(tag)
+                      where c.tags ? allowed.tag
+                    )
+                  )
+                  and not (coalesce(p.blocked_provider_ids, '[]'::jsonb) ? c.provider_id::text)
+              )
             order by cm.model_key asc
             "#,
         )
@@ -879,6 +1202,7 @@ impl GatewayRepository {
               c.name as channel_name,
               c.endpoint,
               c.protocol_mode,
+              c.timeout_policy,
               c.status as channel_status,
               c.model_mappings as channel_model_mappings,
               c.provider_id,
@@ -895,7 +1219,7 @@ impl GatewayRepository {
               on c.tenant_id = ma.tenant_id
              and c.deleted_at is null
              and c.status <> 'deleted'
-             and c.protocol_mode = 'openai_compatible'
+             and c.protocol_mode in ('openai_compatible', 'gemini_generate_content', 'gemini', 'anthropic', 'anthropic_messages', 'claude_compatible')
              and (
                (ma.association_type = 'explicit_channel' and c.id = ma.channel_id)
                or (ma.association_type = 'channel_tag' and ma.channel_tag is not null and c.tags ? ma.channel_tag)
@@ -918,14 +1242,24 @@ impl GatewayRepository {
               from provider_keys pk
               where pk.tenant_id = c.tenant_id
                 and pk.channel_id = c.id
-                and pk.status in ('enabled', 'degraded', 'recovery_probe')
                 and pk.deleted_at is null
-                and (pk.cooldown_until is null or pk.cooldown_until <= now())
+                and (
+                  (
+                    pk.status in ('enabled', 'degraded', 'recovery_probe')
+                    and (pk.cooldown_until is null or pk.cooldown_until <= now())
+                  )
+                  or (
+                    pk.status = 'cooldown'
+                    and pk.cooldown_until is not null
+                    and pk.cooldown_until <= now()
+                  )
+                )
               order by
                 case pk.status
                   when 'enabled' then 0
                   when 'recovery_probe' then 1
-                  when 'degraded' then 2
+                  when 'cooldown' then 2
+                  when 'degraded' then 3
                   else 3
                 end asc,
                 pk.health_score desc,
@@ -1009,6 +1343,10 @@ impl GatewayRepository {
                     endpoint: row.get("endpoint"),
                     protocol_mode: row.get("protocol_mode"),
                     upstream_model,
+                    timeout_policy: row
+                        .try_get::<Json<Value>, _>("timeout_policy")
+                        .map(|json| json.0)
+                        .unwrap_or_else(|_| json!({})),
                     channel_status: row.get("channel_status"),
                     fallback_allowed: row.get("association_fallback_allowed"),
                     association_priority: row.get("association_priority"),
@@ -1100,7 +1438,7 @@ impl GatewayRepository {
               route_decision_snapshot
             )
             values (
-              $1, $2, $3, $4, $5, 'openai', 'openai', 'openai_compatible',
+              $1, $2, $3, $4, $5, $18, $19, $20,
               $6, $7, $8, $9, $10, $11, $12, 'started', $13, $14, $15, $16, $17
             )
             returning id
@@ -1126,6 +1464,9 @@ impl GatewayRepository {
             route.route_decision_snapshot,
             payload_log.metadata,
         )))
+        .bind(route.inbound_protocol.unwrap_or("openai"))
+        .bind(route.outbound_protocol.unwrap_or("openai"))
+        .bind(route.protocol_mode.unwrap_or("openai_compatible"))
         .fetch_one(&self.pool)
         .await
         .map_err(|error| GatewayApiError::database_query_failed("request_log_start", error))?;
@@ -1234,6 +1575,48 @@ impl GatewayRepository {
         Ok(())
     }
 
+    pub async fn insert_prompt_protection_runtime_audit_log(
+        &self,
+        auth: &AuthContext,
+        audit: PromptProtectionRuntimeAuditLog,
+    ) -> Result<(), GatewayApiError> {
+        sqlx::query(
+            r#"
+            insert into audit_logs (
+              tenant_id,
+              actor_user_id,
+              request_id,
+              action,
+              resource_type,
+              resource_id,
+              resource_tenant_id,
+              before_snapshot,
+              after_snapshot,
+              metadata
+            )
+            values (
+              $1, null, $2, $3, $4, null, $1, null, $5, $6
+            )
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(audit.request_id)
+        .bind(audit.action)
+        .bind(audit.resource_type)
+        .bind(Json(audit.after_snapshot))
+        .bind(Json(audit.metadata))
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed(
+                "prompt_protection_runtime_audit_log_insert",
+                error,
+            )
+        })?;
+
+        Ok(())
+    }
+
     pub async fn finish_stream_request(
         &self,
         auth: &AuthContext,
@@ -1284,6 +1667,32 @@ impl GatewayRepository {
         .await
         .map_err(|error| {
             GatewayApiError::database_query_failed("request_log_finish_stream", error)
+        })?;
+
+        Ok(())
+    }
+
+    pub async fn merge_request_route_metadata(
+        &self,
+        auth: &AuthContext,
+        request_id: Uuid,
+        metadata: Value,
+    ) -> Result<(), GatewayApiError> {
+        sqlx::query(
+            r#"
+            update request_logs
+               set route_decision_snapshot = route_decision_snapshot || $3::jsonb
+             where tenant_id = $1
+               and id = $2
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(request_id)
+        .bind(Json(metadata))
+        .execute(&self.pool)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("request_log_route_metadata_merge", error)
         })?;
 
         Ok(())
@@ -1353,6 +1762,327 @@ impl GatewayRepository {
         Ok(PreAuthorizeReadModel { wallet, budgets })
     }
 
+    pub async fn virtual_key_paid_hot_path_beta_enabled(
+        &self,
+        auth: &AuthContext,
+    ) -> Result<bool, GatewayApiError> {
+        let row = sqlx::query(
+            r#"
+            select
+              coalesce(vk.metadata->>'billing_mode', '') = 'paid_controlled_beta'
+              or lower(coalesce(vk.metadata->>'paid_hot_path_beta', '')) in ('1', 'true', 'yes', 'on', 'enabled')
+                as enabled
+            from virtual_keys vk
+            where vk.tenant_id = $1
+              and vk.id = $2
+              and vk.status = 'active'
+              and vk.deleted_at is null
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.virtual_key_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_hot_path_beta_virtual_key_opt_in", error)
+        })?;
+
+        Ok(row.is_some_and(|row| row.get("enabled")))
+    }
+
+    pub async fn insert_pending_paid_reserve_ledger_entry(
+        &self,
+        auth: &AuthContext,
+        entry: PaidReserveEntry<'_>,
+    ) -> Result<PaidReserveOutcome, GatewayApiError> {
+        let idempotency_key = paid_reserve_ledger_idempotency_key(entry.request_id);
+        let release_idempotency_key = paid_reserve_release_idempotency_key(entry.request_id);
+
+        let mut tx =
+            self.pool.begin().await.map_err(|error| {
+                GatewayApiError::database_query_failed("paid_reserve_begin", error)
+            })?;
+
+        sqlx::query("set transaction isolation level serializable")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                GatewayApiError::database_query_failed("paid_reserve_isolation", error)
+            })?;
+
+        let wallet_row = sqlx::query(
+            r#"
+            select id
+            from wallets
+            where tenant_id = $1
+              and (project_id = $2 or project_id is null)
+              and currency = $3
+              and status = 'active'
+              and deleted_at is null
+            order by (project_id = $2) desc nulls last, created_at asc, id asc
+            limit 1
+            for update
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.project_id)
+        .bind(entry.currency)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_reserve_wallet_lock", error)
+        })?;
+
+        if wallet_row.is_none() {
+            let _ = tx.rollback().await;
+            return Ok(PaidReserveOutcome::RejectedInsufficientBalance);
+        }
+
+        sqlx::query(
+            r#"
+            select cg.id
+            from credit_grants cg
+            where cg.tenant_id = $1
+              and cg.currency = $2
+              and cg.status = 'active'
+              and cg.valid_from <= now()
+              and (cg.valid_until is null or cg.valid_until > now())
+              and cg.wallet_id = (
+                select w.id
+                from wallets w
+                where w.tenant_id = $1
+                  and (w.project_id = $3 or w.project_id is null)
+                  and w.currency = $2
+                  and w.status = 'active'
+                  and w.deleted_at is null
+                order by (w.project_id = $3) desc nulls last, w.created_at asc, w.id asc
+                limit 1
+              )
+            order by cg.id
+            for update
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.currency)
+        .bind(auth.project_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_reserve_credit_lock", error)
+        })?;
+
+        sqlx::query(
+            r#"
+            select le.id
+            from ledger_entries le
+            where le.tenant_id = $1
+              and le.currency = $2
+              and le.status in ('pending', 'confirmed')
+              and (
+                le.wallet_id = (
+                  select w.id
+                  from wallets w
+                  where w.tenant_id = $1
+                    and (w.project_id = $3 or w.project_id is null)
+                    and w.currency = $2
+                    and w.status = 'active'
+                    and w.deleted_at is null
+                  order by (w.project_id = $3) desc nulls last, w.created_at asc, w.id asc
+                  limit 1
+                )
+                or (le.wallet_id is null and le.project_id = $3)
+                or le.request_id = $4
+                or le.idempotency_key = $5
+              )
+            order by le.created_at, le.id
+            for update
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.currency)
+        .bind(auth.project_id)
+        .bind(entry.request_id)
+        .bind(&idempotency_key)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_reserve_ledger_lock", error)
+        })?;
+
+        let inserted = sqlx::query(
+            r#"
+            with selected_wallet as (
+              select w.id, w.balance_floor
+              from wallets w
+              where w.tenant_id = $1
+                and (w.project_id = $2 or w.project_id is null)
+                and w.currency = $3
+                and w.status = 'active'
+                and w.deleted_at is null
+              order by (w.project_id = $2) desc nulls last, w.created_at asc, w.id asc
+              limit 1
+            ),
+            credit_balance as (
+              select coalesce(sum(cg.remaining_amount), 0::numeric) as amount
+              from credit_grants cg
+              join selected_wallet w on w.id = cg.wallet_id
+              where cg.tenant_id = $1
+                and cg.currency = $3
+                and cg.status = 'active'
+                and cg.valid_from <= now()
+                and (cg.valid_until is null or cg.valid_until > now())
+            ),
+            ledger_balance as (
+              select coalesce(sum(le.amount), 0::numeric) as amount
+              from ledger_entries le
+              join selected_wallet w
+                on w.id = le.wallet_id
+                or (le.wallet_id is null and le.project_id = $2)
+              where le.tenant_id = $1
+                and le.currency = $3
+                and le.status in ('pending', 'confirmed')
+            ),
+            balance_window as (
+              select
+                w.id as wallet_id,
+                credit_balance.amount + ledger_balance.amount - w.balance_floor as available_balance
+              from selected_wallet w
+              cross join credit_balance
+              cross join ledger_balance
+            )
+            insert into ledger_entries (
+              tenant_id,
+              project_id,
+              wallet_id,
+              request_id,
+              virtual_key_id,
+              entry_type,
+              amount,
+              currency,
+              status,
+              idempotency_key,
+              price_version_id,
+              metadata
+            )
+            select
+              $1,
+              $2,
+              balance_window.wallet_id,
+              $4,
+              $5,
+              'reserve',
+              -($6::text)::numeric,
+              $3,
+              'pending',
+              $7,
+              $8,
+              jsonb_build_object(
+                'schema', 'gateway_paid_hot_path_reserve_v1',
+                'billing_mode', 'paid_controlled_beta',
+                'request_id', $4::text,
+                'model', $9::text,
+                'reserve_amount', $6::text,
+                'price_version_id', $8::text,
+                'reserve_idempotency_key', $7::text,
+                'release_idempotency_key', $10::text,
+                'provider_side_effect_allowed_after_reserve', true
+              )
+            from balance_window
+            where balance_window.available_balance >= ($6::text)::numeric
+            on conflict do nothing
+            returning id
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.project_id)
+        .bind(entry.currency)
+        .bind(entry.request_id)
+        .bind(auth.virtual_key_id)
+        .bind(entry.reserve_amount)
+        .bind(&idempotency_key)
+        .bind(entry.price_version_id)
+        .bind(entry.model)
+        .bind(&release_idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| GatewayApiError::database_query_failed("paid_reserve_insert", error))?;
+
+        if inserted.is_some() {
+            tx.commit().await.map_err(|error| {
+                GatewayApiError::database_query_failed("paid_reserve_commit", error)
+            })?;
+            return Ok(PaidReserveOutcome::Applied);
+        }
+
+        let existing = sqlx::query(
+            r#"
+            select id
+            from ledger_entries
+            where tenant_id = $1
+              and request_id = $2
+              and idempotency_key = $3
+              and entry_type = 'reserve'
+              and status in ('pending', 'confirmed')
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.request_id)
+        .bind(&idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_reserve_idempotency_readback", error)
+        })?;
+
+        tx.commit().await.map_err(|error| {
+            GatewayApiError::database_query_failed("paid_reserve_readback_commit", error)
+        })?;
+
+        if existing.is_some() {
+            Ok(PaidReserveOutcome::Idempotent)
+        } else {
+            Ok(PaidReserveOutcome::RejectedInsufficientBalance)
+        }
+    }
+
+    pub async fn release_pending_paid_reserve(
+        &self,
+        auth: &AuthContext,
+        request_id: Uuid,
+        reason: &'static str,
+    ) -> Result<bool, GatewayApiError> {
+        let release_idempotency_key = paid_reserve_release_idempotency_key(request_id);
+        let result = sqlx::query(
+            r#"
+            update ledger_entries
+               set status = 'reversed',
+                   metadata = metadata || jsonb_build_object(
+                     'release', jsonb_build_object(
+                       'schema', 'gateway_paid_hot_path_release_v1',
+                       'reason', $4::text,
+                       'release_idempotency_key', $5::text
+                     )
+                   )
+             where tenant_id = $1
+               and request_id = $2
+               and virtual_key_id = $3
+               and entry_type = 'reserve'
+               and status = 'pending'
+               and metadata->>'billing_mode' = 'paid_controlled_beta'
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(request_id)
+        .bind(auth.virtual_key_id)
+        .bind(reason)
+        .bind(release_idempotency_key)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| GatewayApiError::database_query_failed("paid_reserve_release", error))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn insert_confirmed_settle_ledger_entry(
         &self,
         auth: &AuthContext,
@@ -1364,6 +2094,10 @@ impl GatewayRepository {
         let idempotency_key = settle_ledger_idempotency_key(entry.request_id);
         let usage_snapshot = confirmed_settle_ledger_usage_snapshot(&entry);
         let metadata = confirmed_settle_ledger_metadata(&entry);
+
+        let mut tx = self.pool.begin().await.map_err(|error| {
+            GatewayApiError::database_query_failed("ledger_settle_begin", error)
+        })?;
 
         let result = sqlx::query(
             r#"
@@ -1394,15 +2128,244 @@ impl GatewayRepository {
         .bind(auth.virtual_key_id)
         .bind(amount)
         .bind(entry.currency)
-        .bind(idempotency_key)
+        .bind(&idempotency_key)
         .bind(entry.price_version_id)
         .bind(Json(usage_snapshot))
         .bind(Json(metadata))
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|error| GatewayApiError::database_query_failed("ledger_settle_insert", error))?;
 
+        sqlx::query(
+            r#"
+            update ledger_entries
+               set status = 'reversed',
+                   metadata = metadata || jsonb_build_object(
+                     'settled_by', jsonb_build_object(
+                       'schema', 'gateway_paid_hot_path_reserve_settle_v1',
+                       'settle_idempotency_key', $4::text
+                     )
+                   )
+             where tenant_id = $1
+               and request_id = $2
+               and virtual_key_id = $3
+               and entry_type = 'reserve'
+               and status = 'pending'
+               and metadata->>'billing_mode' = 'paid_controlled_beta'
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.request_id)
+        .bind(auth.virtual_key_id)
+        .bind(&idempotency_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("ledger_reserve_settle_update", error)
+        })?;
+
+        tx.commit().await.map_err(|error| {
+            GatewayApiError::database_query_failed("ledger_settle_commit", error)
+        })?;
+
         Ok(result.rows_affected() > 0)
+    }
+
+    #[allow(dead_code)]
+    pub async fn insert_full_paid_refund_after_settle_ledger_entry(
+        &self,
+        auth: &AuthContext,
+        entry: PaidSettledRefundEntry,
+    ) -> Result<PaidSettledRefundOutcome, GatewayApiError> {
+        let refund_idempotency_key =
+            paid_settled_refund_idempotency_key(entry.settle_ledger_entry_id);
+
+        let mut tx = self.pool.begin().await.map_err(|error| {
+            GatewayApiError::database_query_failed("paid_refund_after_settle_begin", error)
+        })?;
+
+        sqlx::query("set transaction isolation level serializable")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| {
+                GatewayApiError::database_query_failed("paid_refund_after_settle_isolation", error)
+            })?;
+
+        let source = sqlx::query(
+            r#"
+            select id
+            from ledger_entries
+            where tenant_id = $1
+              and request_id = $2
+              and virtual_key_id = $3
+              and id = $4
+              and entry_type = 'settle'
+              and status = 'confirmed'
+              and amount < 0
+            for update
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.request_id)
+        .bind(auth.virtual_key_id)
+        .bind(entry.settle_ledger_entry_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_refund_after_settle_source_lock", error)
+        })?;
+
+        if source.is_none() {
+            let _ = tx.rollback().await;
+            return Ok(PaidSettledRefundOutcome::SourceNotSettled);
+        }
+
+        sqlx::query(
+            r#"
+            select id
+            from ledger_entries
+            where tenant_id = $1
+              and (
+                related_ledger_entry_id = $2
+                or idempotency_key = $3
+              )
+            order by created_at, id
+            for update
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.settle_ledger_entry_id)
+        .bind(&refund_idempotency_key)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_refund_after_settle_refund_lock", error)
+        })?;
+
+        let inserted = sqlx::query(
+            r#"
+            with source as (
+              select
+                le.id,
+                le.wallet_id,
+                le.request_id,
+                le.currency,
+                le.price_version_id,
+                (-le.amount - coalesce((
+                  select sum(refund.amount)
+                  from ledger_entries refund
+                  where refund.tenant_id = le.tenant_id
+                    and refund.related_ledger_entry_id = le.id
+                    and refund.entry_type = 'refund'
+                    and refund.status = 'confirmed'
+                ), 0::numeric)) as remaining_amount
+              from ledger_entries le
+              where le.tenant_id = $1
+                and le.request_id = $3
+                and le.virtual_key_id = $4
+                and le.id = $5
+                and le.entry_type = 'settle'
+                and le.status = 'confirmed'
+                and le.amount < 0
+            )
+            insert into ledger_entries (
+              tenant_id,
+              project_id,
+              wallet_id,
+              request_id,
+              virtual_key_id,
+              entry_type,
+              amount,
+              currency,
+              status,
+              idempotency_key,
+              price_version_id,
+              related_ledger_entry_id,
+              metadata
+            )
+            select
+              $1,
+              $2,
+              source.wallet_id,
+              source.request_id,
+              $4,
+              'refund',
+              source.remaining_amount,
+              source.currency,
+              'confirmed',
+              $6,
+              source.price_version_id,
+              source.id,
+              jsonb_build_object(
+                'schema', 'gateway_paid_hot_path_refund_after_settle_v1',
+                'billing_mode', 'paid_controlled_beta',
+                'request_id', source.request_id::text,
+                'source_settle_ledger_entry_id', source.id::text,
+                'refund_kind', 'full',
+                'refund_idempotency_key', $6::text,
+                'reason', $7::text
+              )
+            from source
+            where source.remaining_amount > 0
+            on conflict do nothing
+            returning id
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(auth.project_id)
+        .bind(entry.request_id)
+        .bind(auth.virtual_key_id)
+        .bind(entry.settle_ledger_entry_id)
+        .bind(&refund_idempotency_key)
+        .bind(entry.reason)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed("paid_refund_after_settle_insert", error)
+        })?;
+
+        if inserted.is_some() {
+            tx.commit().await.map_err(|error| {
+                GatewayApiError::database_query_failed("paid_refund_after_settle_commit", error)
+            })?;
+            return Ok(PaidSettledRefundOutcome::Applied);
+        }
+
+        let existing = sqlx::query(
+            r#"
+            select id
+            from ledger_entries
+            where tenant_id = $1
+              and related_ledger_entry_id = $2
+              and idempotency_key = $3
+              and entry_type = 'refund'
+              and status = 'confirmed'
+            "#,
+        )
+        .bind(auth.tenant_id)
+        .bind(entry.settle_ledger_entry_id)
+        .bind(&refund_idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| {
+            GatewayApiError::database_query_failed(
+                "paid_refund_after_settle_idempotency_readback",
+                error,
+            )
+        })?;
+
+        tx.commit().await.map_err(|error| {
+            GatewayApiError::database_query_failed(
+                "paid_refund_after_settle_readback_commit",
+                error,
+            )
+        })?;
+
+        if existing.is_some() {
+            Ok(PaidSettledRefundOutcome::Idempotent)
+        } else {
+            Ok(PaidSettledRefundOutcome::NothingRefundable)
+        }
     }
 
     pub async fn get_provider_key_for_attempt(
@@ -1426,9 +2389,18 @@ impl GatewayRepository {
             where pk.tenant_id = $1
               and pk.id = $2
               and pk.channel_id = $4
-              and pk.status in ('enabled', 'degraded', 'recovery_probe')
               and pk.deleted_at is null
-              and (pk.cooldown_until is null or pk.cooldown_until <= now())
+              and (
+                (
+                  pk.status in ('enabled', 'degraded', 'recovery_probe')
+                  and (pk.cooldown_until is null or pk.cooldown_until <= now())
+                )
+                or (
+                  pk.status = 'cooldown'
+                  and pk.cooldown_until is not null
+                  and pk.cooldown_until <= now()
+                )
+              )
             limit 1
             "#,
         )
@@ -1632,6 +2604,18 @@ fn model_owner_from_capabilities(capabilities: &Value) -> String {
 
 pub(crate) fn settle_ledger_idempotency_key(request_id: Uuid) -> String {
     format!("settle:{request_id}")
+}
+
+pub(crate) fn paid_reserve_ledger_idempotency_key(request_id: Uuid) -> String {
+    format!("reserve:{request_id}")
+}
+
+pub(crate) fn paid_reserve_release_idempotency_key(request_id: Uuid) -> String {
+    format!("release:{request_id}")
+}
+
+pub(crate) fn paid_settled_refund_idempotency_key(settle_ledger_entry_id: Uuid) -> String {
+    refund_ledger_idempotency_key(settle_ledger_entry_id)
 }
 
 pub(crate) fn settle_ledger_amount(final_cost: &str) -> Option<String> {
@@ -1854,6 +2838,40 @@ mod tests {
         assert!(UPDATE_PROVIDER_KEY_RUNTIME_STATUS_SQL.contains("when $6::bigint is null"));
     }
 
+    #[test]
+    fn provider_key_expired_cooldown_remains_route_eligible_for_recovery() {
+        let source = normalized_sql(include_str!("db.rs"));
+        let route_candidates = source
+            .find("resolve_chat_route_candidates")
+            .expect("route candidate function should exist");
+        let provider_lookup = source
+            .find("get_provider_key_for_attempt")
+            .expect("provider key lookup function should exist");
+        let expired_cooldown_marker = "pk.status = 'cooldown' and pk.cooldown_until is not null and pk.cooldown_until <= now()";
+        let enabled_marker = "pk.status in ('enabled', 'degraded', 'recovery_probe')";
+
+        assert!(source[route_candidates..provider_lookup].contains(expired_cooldown_marker));
+        assert!(source[route_candidates..provider_lookup].contains(enabled_marker));
+        assert!(source[provider_lookup..].contains(expired_cooldown_marker));
+        assert!(source[provider_lookup..].contains(enabled_marker));
+    }
+
+    #[test]
+    fn route_candidates_include_native_anthropic_messages_protocols() {
+        let source = normalized_sql(include_str!("db.rs"));
+        let route_candidates = source
+            .find("resolve_chat_route_candidates")
+            .expect("route candidate function should exist");
+        let route_section = &source[route_candidates..];
+
+        for protocol in ["anthropic", "anthropic_messages", "claude_compatible"] {
+            assert!(
+                route_section.contains(protocol),
+                "route candidates should include native Anthropic protocol: {protocol}"
+            );
+        }
+    }
+
     fn test_resolved_route(upstream_model: String) -> ResolvedChatRoute {
         ResolvedChatRoute {
             canonical_model_id: Uuid::from_u128(10),
@@ -1867,6 +2885,7 @@ mod tests {
             endpoint: "https://provider.example.test/v1".to_string(),
             protocol_mode: "openai_compatible".to_string(),
             upstream_model,
+            timeout_policy: json!({}),
             channel_status: "enabled".to_string(),
             fallback_allowed: true,
             association_priority: 1,
@@ -1893,6 +2912,9 @@ mod tests {
         let route = test_resolved_route(upstream_model);
         let request_log = RequestRouteLog {
             trace_id: None,
+            inbound_protocol: None,
+            outbound_protocol: None,
+            protocol_mode: None,
             canonical_model_id: Some(route.canonical_model_id),
             upstream_model: Some(route.upstream_model.as_str()),
             resolved_provider_id: Some(route.provider_id),
@@ -2036,16 +3058,57 @@ mod tests {
 
         assert!(sql.contains("from wallets w"));
         assert!(sql.contains("and (w.project_id = $2 or w.project_id is null)"));
-        assert!(sql.contains("order by (w.project_id = $2) desc"));
+        assert!(sql.contains("order by (w.project_id = $2) desc nulls last"));
         assert!(sql.contains("and w.currency = $3"));
         assert!(sql.contains("and w.status = 'active'"));
         assert!(sql.contains("from credit_grants cg"));
+        assert!(sql.contains("join selected_wallet w on w.id = cg.wallet_id"));
+        assert!(sql.contains("w.currency = cg.currency"));
+        assert!(sql.contains("cg.status = 'active'"));
         assert!(sql.contains("cg.valid_from <= now()"));
+        assert!(sql.contains("cg.valid_until is null or cg.valid_until > now()"));
         assert!(sql.contains("from ledger_entries le"));
         assert!(sql.contains("le.wallet_id = w.id"));
         assert!(sql.contains("le.wallet_id is null and le.project_id = $2"));
         assert!(sql.contains("le.status in ('pending', 'confirmed')"));
         assert!(sql.contains("credit_balance.amount + ledger_balance.amount - w.balance_floor"));
+    }
+
+    #[test]
+    fn paid_reserve_sql_locks_active_credit_grants_before_ledger_window() {
+        let source = normalized_sql(include_str!("db.rs"));
+        let wallet_lock = source
+            .find("paid_reserve_wallet_lock")
+            .expect("wallet lock error label should exist");
+        let credit_lock = source
+            .find("paid_reserve_credit_lock")
+            .expect("credit-grant lock error label should exist");
+        let ledger_lock = source
+            .find("paid_reserve_ledger_lock")
+            .expect("ledger lock error label should exist");
+        let insert = source
+            .find("paid_reserve_insert")
+            .expect("reserve insert error label should exist");
+
+        assert!(source.contains("set transaction isolation level serializable"));
+        assert!(wallet_lock < credit_lock);
+        assert!(credit_lock < ledger_lock);
+        assert!(ledger_lock < insert);
+        assert!(source.contains("from credit_grants cg"));
+        assert!(source.contains("cg.status = 'active'"));
+        assert!(source.contains("cg.valid_from <= now()"));
+        assert!(source.contains("cg.valid_until is null or cg.valid_until > now()"));
+        assert!(source.contains("and cg.wallet_id = ( select w.id from wallets w"));
+        assert!(source.contains("and (w.project_id = $3 or w.project_id is null)"));
+        assert!(source.contains("join selected_wallet w on w.id = cg.wallet_id"));
+        assert!(source.contains("from ledger_entries le"));
+        assert!(source.contains("le.status in ('pending', 'confirmed')"));
+        assert!(source.contains("or (le.wallet_id is null and le.project_id = $3)"));
+        assert!(source.contains("or (le.wallet_id is null and le.project_id = $2)"));
+        assert!(source.contains(
+            "credit_balance.amount + ledger_balance.amount - w.balance_floor as available_balance"
+        ));
+        assert!(source.contains("where balance_window.available_balance >= ($6::text)::numeric"));
     }
 
     #[test]
@@ -2069,6 +3132,121 @@ mod tests {
         assert_eq!(
             settle_ledger_idempotency_key(request_id),
             format!("settle:{request_id}")
+        );
+    }
+
+    #[test]
+    fn paid_reserve_and_release_idempotency_keys_are_request_scoped() {
+        let request_id = Uuid::from_u128(45);
+
+        assert_eq!(
+            paid_reserve_ledger_idempotency_key(request_id),
+            format!("reserve:{request_id}")
+        );
+        assert_eq!(
+            paid_reserve_release_idempotency_key(request_id),
+            format!("release:{request_id}")
+        );
+    }
+
+    #[test]
+    fn paid_refund_after_settle_uses_settle_entry_scoped_idempotency_key() {
+        let settle_ledger_entry_id = Uuid::from_u128(46);
+
+        assert_eq!(
+            paid_settled_refund_idempotency_key(settle_ledger_entry_id),
+            format!("refund:{settle_ledger_entry_id}")
+        );
+    }
+
+    #[test]
+    fn paid_refund_after_settle_replay_is_idempotent_and_requires_settle_source() {
+        use ai_gateway_billing_ledger::{
+            FixedDecimal, LedgerContractError, LedgerEntryRecord, LedgerEntryStatus,
+            LedgerEntryType, LedgerOperationKind, LedgerOperationOutcome, RefundLedgerRequest,
+            plan_ledger_refund,
+        };
+
+        fn money(value: &str) -> FixedDecimal {
+            FixedDecimal::parse(value, 8).expect("valid money")
+        }
+
+        let request_id = Uuid::from_u128(47);
+        let settle_ledger_entry_id = Uuid::from_u128(48);
+        let refund_ledger_entry_id = Uuid::from_u128(49);
+        let settle_record = LedgerEntryRecord {
+            id: settle_ledger_entry_id,
+            request_id: Some(request_id),
+            related_ledger_entry_id: None,
+            entry_type: LedgerEntryType::Settle,
+            amount: money("-0.00012345"),
+            currency: "USD".to_string(),
+            status: LedgerEntryStatus::Confirmed,
+            idempotency_key: settle_ledger_idempotency_key(request_id),
+        };
+
+        let refund_request = RefundLedgerRequest::Full {
+            related_ledger_entry_id: settle_ledger_entry_id,
+            currency: "USD".to_string(),
+            amount: None,
+        };
+        let plan = plan_ledger_refund(refund_request.clone(), std::slice::from_ref(&settle_record))
+            .expect("settled debit should be fully refundable");
+
+        assert_eq!(plan.operation, LedgerOperationKind::Refund);
+        assert_eq!(
+            plan.idempotency_key,
+            paid_settled_refund_idempotency_key(settle_ledger_entry_id)
+        );
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(plan.entries[0].amount, money("0.00012345"));
+
+        let refund_record = LedgerEntryRecord {
+            id: refund_ledger_entry_id,
+            request_id: Some(request_id),
+            related_ledger_entry_id: Some(settle_ledger_entry_id),
+            entry_type: LedgerEntryType::Refund,
+            amount: money("0.00012345"),
+            currency: "USD".to_string(),
+            status: LedgerEntryStatus::Confirmed,
+            idempotency_key: plan.idempotency_key.clone(),
+        };
+        let replay = plan_ledger_refund(refund_request, &[settle_record.clone(), refund_record])
+            .expect("duplicate refund key should be idempotent");
+
+        assert_eq!(replay.entries.len(), 0);
+        assert_eq!(
+            replay.outcome,
+            LedgerOperationOutcome::Idempotent {
+                existing_entry_id: refund_ledger_entry_id
+            }
+        );
+
+        let pending_reserve_record = LedgerEntryRecord {
+            id: Uuid::from_u128(50),
+            request_id: Some(request_id),
+            related_ledger_entry_id: None,
+            entry_type: LedgerEntryType::Reserve,
+            amount: money("-0.00012345"),
+            currency: "USD".to_string(),
+            status: LedgerEntryStatus::Pending,
+            idempotency_key: paid_reserve_ledger_idempotency_key(request_id),
+        };
+        let error = plan_ledger_refund(
+            RefundLedgerRequest::Full {
+                related_ledger_entry_id: pending_reserve_record.id,
+                currency: "USD".to_string(),
+                amount: None,
+            },
+            &[pending_reserve_record],
+        )
+        .expect_err("unsettled reserve must stay on release/rollback path");
+
+        assert_eq!(
+            error,
+            LedgerContractError::RefundSourceNotConfirmedSettleDebit {
+                ledger_entry_id: Uuid::from_u128(50)
+            }
         );
     }
 

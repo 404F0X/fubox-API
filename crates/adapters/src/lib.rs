@@ -12,7 +12,7 @@ mod conformance;
 
 pub use anthropic::{
     AnthropicAdapter, AnthropicAdapterError, AnthropicMessage, AnthropicMessagesRequest,
-    AnthropicMessagesStreamEvent, AnthropicStreamTerminalKind,
+    AnthropicMessagesStreamEvent, AnthropicStreamTerminalKind, ClaudeCompatibleAdapter,
 };
 
 pub use gemini::{
@@ -34,6 +34,7 @@ pub use openai::{
 pub enum ProtocolMode {
     OpenAiCompatible,
     Anthropic,
+    ClaudeCompatible,
     Gemini,
     Mcp,
     NativePassthrough,

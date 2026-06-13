@@ -1,42 +1,82 @@
-# P0 验收清单
+# P0 / Beta 验收清单
 
-## 功能
+同步日期：2026-06-07
+权威 TODO 来源：`TODO/`
 
-- [ ] OpenAI Chat non-stream 通过。
-- [ ] OpenAI Chat stream 通过。
-- [ ] Responses 基础 stream terminal event 通过。
-- [ ] Anthropic Messages 基础通过。
-- [ ] Gemini GenerateContent 基础通过。
-- [ ] `/v1/models` 按 Key/Profile 过滤。
-- [ ] Provider/Channel/Key Pool 可配置。
-- [ ] Model Association dry-run 可解释候选渠道。
-- [ ] Retry/Fallback 矩阵测试通过。
-- [ ] Unified SSE parser 大 chunk 测试通过。
-- [ ] Ledger reserve/settle/refund 幂等测试通过。
-- [ ] Thread/Trace/Request 可查询。
-- [ ] New API/One API dry-run 导入通过。
+2026-06-07 口径更新：公司资金约束下切换为单人 CTO/Codex 开发维护，不再按 5 个子 Agent 并行调度。当前验收以本地 code-first Open-source Alpha/API distribution gate 为主：API 分发主路径已通过；payment/order/invoice、subscription lifecycle、外部 Auth/OIDC 客户端等需要真实外部能力的事项继续留档为 `deferred_runtime_external_dependency`，不作为当前单人主线 blocker。
 
-## 安全
+## Distribution-ready API Beta
 
-- [ ] Virtual Key 不明文存储。
-- [ ] Provider Key 加密存储。
-- [ ] 日志不泄漏 Authorization/API key/Cookie。
-- [ ] RBAC 后端强校验。
-- [ ] Audit log 覆盖关键管理操作。
-- [ ] Payload policy 生效。
+| Item | 状态 | Owner | Evidence / blocker |
+|---|---|---|---|
+| Repository truth reset / CI workflow 可 Review | [x] | Agent-Repo | `TODO-00`；`.github/workflows/ci.yml` 已确认存在并覆盖 Rust/PowerShell smoke/Admin UI/secret/supply-chain gates；modified/untracked 分类已写入 `docs/P0_BETA_STATUS.md`。2026-06-07 scoped E0-002 reverify passed Rust fmt/check, Gateway protocol contracts, secret scan, Admin UI test, and Admin UI bundle gate. Earlier full wrapper failure at `cargo test --workspace --all-targets --all-features` exit 101 is closed; current `cargo test --workspace --all-targets --all-features` and full `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1` both exit 0. Board `E0-002` is `Done`; evidence `.tmp/launch/full_wrapper_rerun_20260607_143200_pass.json`. |
+| 文档状态统一，不再以 99.x% 作为验收 | [x] | Agent-PM | 当前权威来源改为 `TODO/`；本文件只作为验收清单视图。 |
+| OpenAI Chat non-stream 基础调用 | [x] | Gateway | Board `E5-002` 已记录 SDK 基础请求成功；provider key live strict smoke 仍属 hardening。 |
+| OpenAI Chat stream 基础调用 | [x] | Gateway | 2026-06-07 live compose pass: `scripts/verify_gateway_streaming_smoke.ps1` exit 0 and SDK smoke with `SDK_SMOKE_INCLUDE_STREAMING=1` passed against Gateway `:8080`. |
+| Responses 基础 stream terminal event | [x] | Gateway | 2026-06-07 live compose pass: SDK protocol coverage observed 8 Responses stream events and terminal `response.completed`; mock-provider Responses SSE now terminates at `response.completed` without Chat-style `[DONE]`. |
+| Anthropic Messages 基础调用 | [x] | Gateway | 2026-06-07 live compose pass: SDK protocol coverage returned Anthropic message shape through Gateway `:8080`. |
+| Gemini GenerateContent 基础调用 | [x] | Gateway | 2026-06-07 live compose pass: SDK protocol coverage returned Gemini `candidates` shape through Gateway `:8080`. |
+| `/v1/models` 按 Key/Profile 过滤 | [x] | Gateway / Control Plane | status: pass for Gateway-only contract；Current evidence: Gateway source `/v1/models -> authenticate_virtual_key(profile_ref) -> list_visible_models(&auth)` filters by `api_key_profiles.allowed_models/denied_models`; Control Plane source exposes canonical models, key profiles, and model-association dry-run. Contract artifacts: `tests/fixtures/gateway/api_distribution_protocol_contract.json`, `tests/fixtures/gateway/v1_models_profile_visibility_contract.json`, `tests/fixtures/gateway/profile_switching.json`, `tests/fixtures/control-plane/model_profile_visibility_contract.json`, `tests/fixtures/control-plane/model_association_dry_run_contract.json`. Dry-run verifier: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_gateway_profile_smoke.ps1 -DryRun -SkipNetwork`; protocol audit: `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_sdk_smoke.ps1 -ContractOnly`; SDK opt-in coverage added behind `SDK_SMOKE_INCLUDE_PROTOCOL_COVERAGE=1`. Live smoke still requires preseeded multi-profile virtual key. |
+| Provider / Channel / Key Pool 可配置 | [x] | Control Plane / Solo Dev | Board `E3-001` done；2026-06-07 Control Plane management parity smoke 已覆盖 provider/channel/provider-key/canonical-model/profile/model-association live CRUD/dry-run；同 channel 多 key 轮换策略和 production key rotation runbook 仍属 hardening。 |
+| Provider Key 不泄漏并仅在 Data Plane 必要位置解密 | [x] | Solo Dev / Security | 2026-06-07 provider key runtime live smoke 已通过，覆盖 Compose master key 一致、dev seed sealed payload 可打开、Gateway 解密注入上游 Authorization、provider error redaction、artifact secret-safe；route-level live proof 与 Control Plane parity smoke 也验证 provider-key secret redaction。剩余密钥查看审计完整 readback、真实轮换流程、master key rotation runbook 是 P1 security hardening，不阻塞当前 API 分发。 |
+| E8 Gateway distribution proof | [x] | Agent-E8 | Current API distribution proof is accepted for the trusted-user voucher-backed Beta scope: `.tmp/launch/e8_gateway_paid_hot_path_launch_check.json` is `passed`, Gateway voucher readiness is `pass`, and insufficient balance remains 402/no-provider-call. Deeper production tokenizer/read-model work remains Production RC. |
+| E9 voucher accounting / paid posture | [x] | Agent-E9 / Product | Current API distribution uses voucher/redeem-code quota plus virtual key. Controlled paid beta evidence has been accepted as bounded evidence; `usage_only_beta` is only fallback/safe-mode copy. TODO-32J payment/order/invoice and TODO-32K subscription/package remain deferred productization dependencies, not current distribution blockers. |
+| E11 operator voucher / virtual-key route evidence | [x] | Agent-E11 | For current trusted-user Beta, route/virtual-key evidence is `pass` with public routes wired behind `BillingAdjust`; live public/self-serve route invocation proof and Product UX remain follow-up. Old Billing/Price mutation readback is regression context, not the current API distribution gate. |
+| E13 Prompt Protection report + runtime-owned audit | [x] | Agent-E13 | Prompt Protection Beta evidence has passed and is regression-watch only for this API distribution scope. Browser/detail polish and accepted redeploy evidence remain RC/hardening, not per-user API handoff blockers. |
+| Request log / trace / request detail 可解释 | [x] | Agent-OBS | `TODO-14` / Dispatch 5；E8/E11/E13 smoke request id 已完成 live Admin/API metadata-only readback。Artifact `.tmp/launch/request_trace_usage_live_admin_api_readback.json` 为 `overall_status=pass`：11 个 request ids、5 个 trace、1 个 remaining-balance wallet surface 可读；request detail、trace summary、request-filtered ledger entries、audit list、remaining balance 均走 secret-safe metadata-only 路径，未调用 `/payload`，`api_distribution_blocker=false`。Admin UI contract/UI 仍保持 request detail、trace summary、audit detail、latest-detail race guard 覆盖；后续只剩 UI/browser polish 与更深审计 hardening。 |
+| Audit log 覆盖关键管理操作 | [ ] | Control Plane / Agent-OBS | E11/E13 Beta blockers 关闭后复验。 |
+| Docker Compose / local gate 可启动 | [x] | Solo Dev / QA-Ops | 2026-06-07 本机 Compose 栈运行中：Gateway `http://127.0.0.1:8080`、Control Plane `http://127.0.0.1:8081`、Admin UI `http://127.0.0.1:5173`、Postgres host port `15432`、Redis host port `16380`；Gateway/Control Plane readyz 均 connected；Open-source Alpha gate 已通过。公开 release 仍需 clean-clone/CI 复跑。 |
+| Admin UI 依赖可复现 | [x] | Agent-Frontend-Build | ToD-03；2026-06-07 scoped rerun: `scripts/test.ps1 -AdminUiTestOnly` passed with `vitest` 2 files / 96 tests, and `scripts/test.ps1 -AdminUiBundleGateOnly` passed with initial JS 226.0 KiB / 250.0 KiB and total JS 389.9 KiB. |
+| Admin UI 默认 price book 浏览器链路 | [x] | Agent-E4 / Frontend | 2026-06-07 main-thread Playwright/Chromium evidence passed after rebuilding the Admin UI container from current source. Artifact `.tmp/control-plane/model_default_price_admin_ui_browser_evidence.json` reports `status=pass`, login/navigation/selector/PATCH/API readback/restore all true, patch body fields limited to `default_price_book_id`, and no session/cookie/auth/provider/virtual-key secret echo. |
+| Secret scan | [x] | Agent-QA | 2026-06-07 scoped rerun: `scripts/scan_secrets.ps1` pass, hits=0, warnings=0. |
+| Supply-chain scan / SBOM contract | [x] | Agent-QA | 2026-06-06 QA-CI: `scripts/scan_supply_chain.ps1 -SkipNetwork` pass with warnings; network vulnerability audits skipped by request, trivy/grype absent, container images are tag-pinned but not digest-pinned. |
+| Full local gate 一键跑通 | [x] | Agent-QA | `TODO-20`；Full local wrapper/full CI is green. This is distinct from `scripts/test.ps1 -FullDistributionGateOnly`, which passed the API distribution launch gate. 2026-06-07 scoped component reruns passed `cargo fmt --check`, `cargo check --workspace --all-targets`, Gateway protocol contracts, secret scan, Admin UI test, and Admin UI bundle gate. After fixing `admin::tests::ledger_adjustment_runtime_writer_cutover_blocks_local_execute_commit_until_runtime_branch_ready`, `cargo test --workspace --all-targets --all-features` exit 0 and full `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1` exit 0 end-to-end. Evidence: `.tmp/launch/full_wrapper_rerun_20260607_143200_pass.json`. |
+| Trusted user Beta release prep | [ ] | Agent-Release / DevRel Ops | Current next action for future users: fill the selected user's per-user handoff packet and quota/rate/budget record, then rerun manifest verifier, quota verifier, full distribution gate, and secret scan before sending the API packet. For `internal-trusted-beta-001`, post-gate refresh is current: handoff summary ready, manifest verifier pass, quota verifier pass, secret scan pass, and `.tmp/launch/post_gate_target_handoff_refresh_summary.internal-beta-001.json` records `actual_key_handoff_blocked_by_stale_manifest=false` plus `final_gate_request_trace_live_admin_api_readback=pass`. Generic user-facing docs/runbooks remain polish, but future-user handoff blockers are concrete external per-user inputs. |
+| Voucher-backed trusted-user API distribution | [x] | Release / Ops / QA | `DOC-LAUNCH-08`；可进行 trusted-user voucher-backed Beta API 分发。Current artifacts: release check `overallStatus=warn`, readiness `pass_with_productization_gaps`, accounting `launch_ready_with_productization_gaps`, guardrails `pass`, voucher route/virtual-key evidence `pass` with public route invocation/readback verified, E8 current Gateway paid-balance launch check `passed`, TODO-14 live Admin/API metadata-only readback `pass`. This is not full commercial readiness: public/self-serve Product UX, payment/order/invoice runtime, and subscription/package runtime remain deferred/resume-condition work. |
+| Open-source Alpha / New API replacement readiness | [x] | Solo Dev / QA-Ops | `TODO/OPEN_SOURCE_ALPHA_PRIORITY_2026-06-06.md`；本地 code-first P0 gate 已通过：Alpha smoke、route-level live proof、Control Plane management parity、Gateway serial matrix、README contract、secret safety 和 trusted-beta scope guard 聚合到 `.tmp/open-source-alpha/open_source_alpha_gate.json`，`status=pass`。管理面 parity artifact `.tmp/control-plane/control_plane_management_parity_smoke.json` 为 `status=pass`、`strict_full_crud=true`、`secret_safe=true`。公开 tag/对外发布前仍建议 clean-clone/CI 复跑。P1 parity 和 P2 commercial productization 仍分开；payment/order/invoice 与 subscription runtime 保持 deferred，不被 Alpha gate 静默满足。 |
 
-## 性能和稳定性
+### Voucher-backed API Beta distribution acceptance
 
-- [ ] 非流式额外 P95 延迟 < 50ms。
-- [ ] 流式 TTFT 额外 P95 < 100ms。
-- [ ] 1,000 并发 stream 压测内存稳定。
-- [ ] provider 500/429/timeout/EOF 故障注入通过。
-- [ ] billing worker crash/restart 后可恢复结算。
+This is a trusted-user/operator-mediated API Beta path, not full self-serve commercial launch.
+It is also not an open-source Alpha acceptance: do not claim a public New API replacement until the `TODO/OPEN_SOURCE_ALPHA_PRIORITY_2026-06-06.md` P0 artifacts pass without internal-only context.
 
-## 运维
+- Issue or assign a virtual key for the trusted user and record only bounded identifiers.
+- Provide or redeem voucher quota through the accepted operator/internal voucher flow; raw voucher/redeem code must not appear in logs or tickets after issuance.
+- Verify remaining balance with accepted user/API remaining-balance readback before traffic.
+- Send Gateway traffic through the assigned virtual key and capture bounded request ids, rate/budget state, provider-attempt summary, ledger/readback status, and audit/support owner.
+- Roll back by revoking or disabling the virtual key, revoking/expiring voucher or credit quota, and verifying remaining-balance and audit/readback state.
+- Current evidence: `recharge_voucher_runtime_verified=true` internally; `user_remaining_balance_runtime_verified=true`; `payment_order_invoice_runtime_verified=false`; `subscription_package_lifecycle_runtime_verified=false`.
+- QA-LAUNCH current artifact: `.tmp/launch/voucher_api_distribution_readiness.json` reports `overall_status=pass_with_productization_gaps`, `gateway_current_launch_hot_path_verified=true`, and `production_distribution_ready=true`; `artifacts/launch_voucher_api_distribution_release_check_20260606.json` reports `overallStatus=warn`.
+- Per-user handoff packet: the default `.tmp/launch/trusted_user_distribution_review_packet.json` may still report `ready_to_send=false` until release owner/support contact/bounded tenant/project/user/wallet ids or `trusted_user_id_or_owner_ref`, voucher quota, rate/budget guardrails, rollback owner, bounded evidence links, and `real_user_values_present=true` are filled for a specific trusted user; do not send that default missing-fields artifact to users. For handoff, run `scripts/prepare_trusted_user_api_distribution_packet.ps1` with real target-user values and archive `.tmp/launch/trusted_user_api_distribution_handoff_summary.<trusted-user-id>.json` with its `evidence_manifest`. If the selected user id is `internal-trusted-beta-001`, describe it only as a CTO-designated internal trusted Beta user, not as external customer delivery, public self-serve access, full commercial launch, or public payment/subscription readiness.
+- Synthetic handoff rehearsal: run `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/prepare_trusted_user_api_distribution_packet.ps1 -SyntheticHandoffSelfTest`; require `overall_status=pass`, manifest verifier exit 0, quota verifier exit 0, and synthetic artifacts marked `synthetic=true`/`not_real_user=true`. Synthetic artifacts prove the command chain only. They must not be edited into real handoff artifacts or sent to users; rerun the non-synthetic handoff command with real target-user fields.
+- Per-user handoff archive: run `scripts/prepare_trusted_user_api_distribution_packet.ps1` and archive `.tmp/launch/trusted_user_api_distribution_handoff_summary.<trusted-user-id>.json`. Its `evidence_manifest` must include repo-bounded paths and SHA256 hashes for packet, release, quota, accounting, Gateway, guardrail, voucher route, operator, remaining-balance, and voucher runtime evidence; it must not include raw voucher codes, full virtual keys, auth/cookie headers, provider keys, DB URLs, raw request bodies, or raw provider payloads.
+- Manifest guard: run `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_trusted_user_api_distribution_evidence_manifest.ps1 -SummaryPath .tmp/launch/trusted_user_api_distribution_handoff_summary.<trusted-user-id>.json` against the target-user handoff summary and require exit 0 before handoff.
+- Full distribution gate: rerun `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1 -FullDistributionGateOnly`; `.tmp/launch/final_launch_gate_summary.json` must report `ready_to_distribute_api=true`, `production_distribution_ready=true`, `production_distribution_full_ready=false`, and no `global_blockers`. This API distribution pass is not a full CI/full local wrapper pass. The gate separates `global_blockers` from `per_user_external_inputs`, runs TODO-14 live Admin/API metadata-only readback, runs the synthetic handoff rehearsal, runs manifest and quota/rate/budget verifier selftests, records default missing quota-record input as `per_user_quota_rate_budget_record_missing`, and recalculates current SHA256/size for each manifest entry to catch stale evidence before distribution.
+- Quota/rate/budget guard: run `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_trusted_user_quota_rate_budget_record.ps1 -RecordPath .tmp/launch/trusted_user_quota_rate_budget_record.<trusted-user-id>.json -EvidenceManifestPath .tmp/launch/trusted_user_api_distribution_handoff_summary.<trusted-user-id>.json -OutputPath .tmp/launch/trusted_user_quota_rate_budget_record_verification.<trusted-user-id>.json` and require exit 0 before handoff. Exit 2 is acceptable only for dry-run/default missing-field review, never for actual user distribution.
+- Operator-mediated Beta path: accepted only for selected trusted-user voucher-backed API handoff after real per-user packet, quota/rate/budget record, manifest verification, and secret scan pass. This is not a public voucher route invocation pass. Do not describe `.tmp/launch/voucher_operator_only_exception.json` as approved unless the artifact itself reports `approved=true` and `route_substitution_allowed=true`.
+- Current remaining gaps: public/self-serve Product UX, payment/order/invoice runtime, subscription/package runtime, production provider-key rotation/KMS custody, real clean-clone/CI transcript for public tag, and broader Admin UI parity/trace polish. These are deferred/resume-condition items and do not block the selected trusted-user voucher-backed Beta operator-mediated scope.
+- Open-source Alpha current posture: local code-first P0 gate passes and may be described as an Alpha preview candidate. Current gate includes Control Plane API management parity for provider/channel/provider-key/model/profile/association, but clean external clone/CI rerun, richer Admin UI parity, New API/One API apply/rollback, public self-serve billing, payment/order/invoice, subscription runtime, and production RC hardening remain follow-up work before broader release claims.
+- Artifact map for reviewer packet: launch gate `.tmp/launch/voucher_api_distribution_readiness.json` is `pass_with_productization_gaps`; accounting gate `.tmp/launch/voucher_backed_api_distribution_accounting_gate.json` is `launch_ready_with_productization_gaps`; E8 launch check `.tmp/launch/e8_gateway_paid_hot_path_launch_check.json` is `passed`; Gateway readiness `.tmp/launch/gateway_voucher_distribution_readiness.json` is `pass`; voucher route/virtual-key evidence `.tmp/launch/voucher_public_route_and_virtual_key_evidence.json` is `pass` with public routes wired and live route invocation/readback verified; Admin UI default price selector browser evidence `.tmp/control-plane/model_default_price_admin_ui_browser_evidence.json` is `pass`; operator-only exception `.tmp/launch/voucher_operator_only_exception.json` remains governed by its own `approved` / `route_substitution_allowed` fields and is not public/self-serve readiness; guardrails `.tmp/launch/voucher_quota_pricing_guardrails.json` are `pass`; release summary `artifacts/launch_voucher_api_distribution_release_check_20260606.json` is `warn`.
+- Docs index: developer quickstart contract `.tmp/launch/developer_api_distribution_quickstart_contract.json`, operator packet `.tmp/launch/api_distribution_operator_packet.json`, trusted-user packet `.tmp/launch/trusted_user_distribution_review_packet.json`, waiver policy `.tmp/launch/voucher_operator_only_exception.json`, Gateway diagnostics `.tmp/launch/gateway_distribution_diagnostics_bundle.json` plus `.tmp/launch/gateway_distribution_operator_smoke_plan.json`, and launch summary `.tmp/launch/voucher_api_distribution_readiness.json` plus `artifacts/launch_voucher_api_distribution_release_check_20260606.json` are the current reviewer materials for this Beta distribution path.
+- Do not expose raw voucher/redeem code, full virtual key, `Authorization`, `Cookie`, provider key, DB URL, raw provider payload, raw request body, raw idempotency key, or unredacted secret material.
 
-- [ ] Docker Compose 可启动。
-- [ ] Helm staging 部署通过。
-- [ ] Metrics 可 scrape。
-- [ ] Dashboard 可查看核心 SLO。
-- [ ] Backup/restore 在 staging 演练通过。
+## Paid Beta
+
+| Item | 状态 | Owner | Evidence / blocker |
+|---|---|---|---|
+| reserve/settle/refund 真实事务 writer | [ ] | Agent-E9 | 若选择 `paid_controlled_beta`，必须 minimal real writer commit/readback/reconciliation pass。 |
+| 幂等 settle/refund | [ ] | Agent-E9 | Paid Beta blocker。 |
+| 余额不足阻止 provider call | [ ] | Agent-E9 | Paid Beta blocker。 |
+| 对账与 crash/restart 恢复 | [ ] | Agent-E9 / Worker | Paid Beta blocker。 |
+| E9 real reserve/settle/refund 接入 Gateway 热路径 | [ ] | Agent-E9 + Agent-Gateway | `TODO-30`；并发超卖、crash/restart、reconciliation、price_version/billing_policy_version 可追溯。 |
+| 预算、限流、密钥健康保守保护 | [ ] | Agent-Routing / Agent-Security | `TODO-31`；budget hard limit、统一错误 shape、429 cooldown、状态拆分、audit。 |
+
+## Production RC
+
+| Item | 状态 | Owner | Evidence / blocker |
+|---|---|---|---|
+| E8 production tokenizer/read-model runner | [ ] | Agent-E8 | 真实 non-local runner provenance 与 production DB readback artifact。 |
+| E15 ClickHouse production smoke / writer | [ ] | Agent-E15 | 真实 writer/cursor/WAL/dedup/load-retention 和 non-simulated production smoke。 |
+| E8 production tokenizer/read-model backend runner | [ ] | Agent-E8 | `TODO-40`；真实 tokenizer/read-model backend、opt-in env、Gateway smoke、DB readback、prompt 不泄露。 |
+| E15 ClickHouse Log Store production smoke | [ ] | Agent-E15 | `TODO-41`；same-session env/live opt-in、real artifact、final audit、writer/readback/WAL/dedup/load-retention。 |
+| Staging / Helm / load / chaos / security gate | [ ] | Agent-Ops / Security | `TODO-42`；Helm staging、backup/restore、1,000 stream load、provider chaos、SBOM/image/dependency/secret scan。 |

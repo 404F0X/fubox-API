@@ -6,6 +6,9 @@
     "database",
     "redis",
     "application",
+    "clickhouse",
+    "provider",
+    "payment",
     "ingress",
     "services"
   ],
@@ -63,6 +66,18 @@
     },
     "application": {
       "$ref": "#/definitions/secretOwner"
+    },
+    "clickhouse": {
+      "$ref": "#/definitions/secretOwner"
+    },
+    "provider": {
+      "$ref": "#/definitions/secretOwner"
+    },
+    "payment": {
+      "$ref": "#/definitions/secretOwner"
+    },
+    "stagingPlan": {
+      "$ref": "#/definitions/stagingPlan"
     },
     "ingress": {
       "type": "object",
@@ -487,6 +502,81 @@
       },
       "additionalProperties": false
     },
+    "stagingPlan": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "schemaVersion",
+        "smokeOrder",
+        "securityChecks",
+        "securityReviewChecklist",
+        "targetServices",
+        "trafficModels",
+        "resourceGuards",
+        "rollbackCriteria",
+        "loadPlaceholders",
+        "chaosPlaceholders",
+        "chaosExperiments",
+        "expectedSafeOutputs",
+        "expectedOutputs"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "type": "string",
+          "enum": [
+            "staging-smoke-security-plan/v1"
+          ]
+        },
+        "smokeOrder": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "securityChecks": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "securityReviewChecklist": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "targetServices": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "trafficModels": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "resourceGuards": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "rollbackCriteria": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "loadPlaceholders": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "chaosPlaceholders": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "chaosExperiments": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "expectedOutputs": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        },
+        "expectedSafeOutputs": {
+          "$ref": "#/definitions/nonEmptyStringList"
+        }
+      },
+      "additionalProperties": false
+    },
+    "nonEmptyStringList": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "service": {
       "type": "object",
       "required": [
@@ -529,6 +619,15 @@
           "type": "boolean"
         },
         "redisSecretRef": {
+          "type": "boolean"
+        },
+        "clickhouseSecretRef": {
+          "type": "boolean"
+        },
+        "providerSecretRef": {
+          "type": "boolean"
+        },
+        "paymentSecretRef": {
           "type": "boolean"
         },
         "configMapRef": {

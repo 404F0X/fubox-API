@@ -1,0 +1,76 @@
+{
+  "importer": "internal-mapping-report-dryrun",
+  "dry_run": true,
+  "generated_at": "2026-06-06T00:00:00Z",
+  "input_files": [
+    "tests/fixtures/importers/apply_plan_model_association_bound.sample.json"
+  ],
+  "source_reports": [
+    {
+      "input_file": "tests/fixtures/importers/apply_plan_model_association_bound.sample.json",
+      "importer": "fixture-internal-mapping-report",
+      "dry_run": true,
+      "counts": {
+        "providers": 1,
+        "channels": 1,
+        "provider_keys": 0,
+        "models": 0,
+        "associations": 1,
+        "warnings": 0,
+        "unsupported_fields": 0
+      }
+    }
+  ],
+  "counts": {
+    "input_reports": 1,
+    "source_providers": 1,
+    "source_channels": 1,
+    "source_provider_keys": 0,
+    "source_models": 0,
+    "source_associations": 1,
+    "canonical_models": 0,
+    "model_associations": 1,
+    "channel_mappings": 1,
+    "channel_mapping_entries": 0,
+    "conflicts": 0,
+    "manual_review_items": 0
+  },
+  "canonical_models": [],
+  "model_associations": [
+    {
+      "canonical_model_key": "fixture-gpt-4o",
+      "requested_model": "fixture-gpt-4o",
+      "association_type": "explicit_channel",
+      "channel_source_id": "fixture:channel:openai-primary",
+      "upstream_model_name": "openai/gpt-4o-2024-08-06",
+      "priority": 10,
+      "enabled": true,
+      "fallback_allowed": false,
+      "conditions": {
+        "source": "fixture_model_association_bound"
+      },
+      "source_reports": [
+        "apply_plan_model_association_bound.sample.json:fixture-internal-mapping-report"
+      ],
+      "planned_action": "bind_or_create_model_association"
+    }
+  ],
+  "channel_mappings": [
+    {
+      "channel_source_id": "fixture:channel:openai-primary",
+      "channel_present": true,
+      "provider_code": "openai",
+      "internal_provider_id": "11111111-1111-4111-8111-111111111111",
+      "internal_channel_id": "22222222-2222-4222-8222-222222222222",
+      "channel_name": "fixture-openai-primary",
+      "protocol_mode": "openai_compatible",
+      "mapping_entries": [],
+      "planned_action": "bind_existing_channel"
+    }
+  ],
+  "conflicts": [],
+  "manual_review_items": [],
+  "next_steps": [
+    "Use this fixture to verify the model_association SQL-plan executor slice with an already-bound internal channel id and preexisting canonical model."
+  ]
+}

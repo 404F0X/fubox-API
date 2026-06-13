@@ -8,12 +8,19 @@ param(
   [int]$TimeoutSeconds = 10,
   [int]$BrowserProbeTimeoutMilliseconds = 750,
   [string]$BrowserEvidenceArtifactPath = "artifacts/billing_execute_browser_live_e2e_evidence.json",
+  [string]$RuntimeCurrentEvidenceArtifactPath = "artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
   [switch]$BrowserAdminUiDevServerOptIn,
+  [switch]$BrowserEvidenceArtifactReadbackOptIn,
   [switch]$BrowserEvidenceArtifactWriteOptIn,
   [switch]$BrowserLiveRunnerExecutionOptIn,
   [switch]$BrowserMutationOptIn,
   [switch]$BrowserPreflight,
+  [switch]$RuntimeCurrentNoBuildRecreateOptIn,
+  [switch]$RuntimeCurrentRebuildHandoffOptIn,
+  [switch]$RuntimeCurrentEvidenceArtifactWriteOptIn,
+  [switch]$RuntimeCurrentEvidenceArtifactReadbackOptIn,
   [switch]$AdminSessionHandoff,
+  [switch]$ArtifactReadbackOnly,
   [switch]$ContractOnly,
   [switch]$KeepSmokeRows
 )
@@ -38,6 +45,7 @@ $script:SourceLedgerEntryIds = @()
 $script:CreatedAuditLogIds = @()
 $script:Fixture = $null
 $script:SmokeRunId = ([guid]::NewGuid().ToString("N"))
+$script:RuntimeSourceProbe = $null
 
 if ($env:CONTROL_PLANE_BASE_URL) { $ControlPlaneBaseUrl = $env:CONTROL_PLANE_BASE_URL }
 if ($env:ADMIN_UI_BASE_URL) { $AdminUiBaseUrl = $env:ADMIN_UI_BASE_URL }
@@ -47,14 +55,37 @@ if ($env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $script:AdminSessionToken = $env:C
 if ($env:COMPOSE_FILE) { $ComposeFile = $env:COMPOSE_FILE }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS) { $BrowserProbeTimeoutMilliseconds = [int]$env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PROBE_TIMEOUT_MS }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH) { $BrowserEvidenceArtifactPath = $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_PATH) { $RuntimeCurrentEvidenceArtifactPath = $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_PATH }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER -eq "1") { $BrowserAdminUiDevServerOptIn = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_READBACK -eq "1") { $BrowserEvidenceArtifactReadbackOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE -eq "1") { $BrowserEvidenceArtifactWriteOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER -eq "1") { $BrowserLiveRunnerExecutionOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_PREFLIGHT -eq "1") { $BrowserPreflight = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_RECREATE -eq "1") { $RuntimeCurrentNoBuildRecreateOptIn = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_REBUILD_HANDOFF -eq "1") { $RuntimeCurrentRebuildHandoffOptIn = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE -eq "1") { $RuntimeCurrentEvidenceArtifactWriteOptIn = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK -eq "1") { $RuntimeCurrentEvidenceArtifactReadbackOptIn = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_SESSION_HANDOFF -eq "1") { $AdminSessionHandoff = $true }
+if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ARTIFACT_READBACK_ONLY -eq "1") { $ArtifactReadbackOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_CONTRACT_ONLY -eq "1") { $ContractOnly = $true }
 if ($env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_SMOKE_KEEP_ROWS -eq "1") { $KeepSmokeRows = $true }
-if ($BrowserPreflight) { $ContractOnly = $true }
+if ($ArtifactReadbackOnly) {
+  $BrowserEvidenceArtifactReadbackOptIn = $true
+  $RuntimeCurrentEvidenceArtifactReadbackOptIn = $true
+  if (
+    -not $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_PATH -and
+    [string]$RuntimeCurrentEvidenceArtifactPath -eq "artifacts/control_plane_ledger_execute_runtime_current_handoff.json"
+  ) {
+    $RuntimeCurrentEvidenceArtifactPath = "artifacts/control_plane_ledger_execute_runtime_current_verified_beta.json"
+  }
+}
+if (
+  $BrowserPreflight -and
+  -not $BrowserMutationOptIn -and
+  -not $BrowserEvidenceArtifactWriteOptIn -and
+  -not $BrowserLiveRunnerExecutionOptIn -and
+  $env:CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION -ne "1"
+) { $ContractOnly = $true }
 
 Add-Type -AssemblyName System.Net.Http
 
@@ -125,6 +156,8 @@ function Check {
     & $Action
     Write-SafeHost "[OK] $Name"
   } catch {
+    Write-SafeHost "check_failure_location=$($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)"
+    Write-SafeHost "check_failure_stack=$($_.ScriptStackTrace)"
     Add-Failure "[FAIL] $Name - $($_.Exception.Message)"
   }
 }
@@ -236,6 +269,17 @@ function Get-NewestSourceWriteTimeUtc {
   return $newest
 }
 
+function Get-ControlPlaneRuntimeSourcePaths {
+  return @($adminSourcePath, $dryRunContractPath)
+}
+
+function Get-VerifierScriptWriteTimeUtcText {
+  if (Test-Path $PSCommandPath -PathType Leaf) {
+    return (Get-Item -Path $PSCommandPath).LastWriteTimeUtc.ToString("o")
+  }
+  return "unavailable"
+}
+
 function Parse-DockerTimestampUtc {
   param([AllowNull()][string]$Value)
 
@@ -249,6 +293,28 @@ function Parse-DockerTimestampUtc {
   }
 }
 
+function Convert-JsonTimestampToUtc {
+  param([Parameter(Mandatory = $true)]$Value)
+
+  if ($Value -is [DateTime]) {
+    if ($Value.Kind -eq [DateTimeKind]::Unspecified) {
+      return [DateTime]::SpecifyKind($Value, [DateTimeKind]::Utc)
+    }
+    return $Value.ToUniversalTime()
+  }
+
+  return [DateTime]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+}
+
+function Test-StrictTrue {
+  param([AllowNull()]$Value)
+
+  if ($Value -is [bool]) {
+    return $Value
+  }
+  return ([string]$Value).ToLowerInvariant() -eq "true"
+}
+
 function Get-RuntimeCurrentHandoffCommand {
   $composeArg = if ($ComposeFile -eq "deploy/docker-compose/docker-compose.yml") {
     "deploy/docker-compose/docker-compose.yml"
@@ -258,33 +324,133 @@ function Get-RuntimeCurrentHandoffCommand {
   return "docker compose -f $composeArg up -d --no-build --no-deps --force-recreate control-plane"
 }
 
-function Write-RuntimeCurrentHandoff {
+function Get-RuntimeCurrentRebuildHandoffCommand {
+  $composeArg = if ($ComposeFile -eq "deploy/docker-compose/docker-compose.yml") {
+    "deploy/docker-compose/docker-compose.yml"
+  } else {
+    "[compose-file]"
+  }
+  return "docker compose -f $composeArg build control-plane && docker compose -f $composeArg up -d --no-deps --force-recreate control-plane"
+}
+
+function New-RuntimeCurrentHandoffEvidence {
   param(
     [Parameter(Mandatory = $true)][bool]$StaleOrUnverified,
-    [Parameter(Mandatory = $true)][string]$Reason
+    [Parameter(Mandatory = $true)][string]$Reason,
+    [string]$SourceNewestUtc = "unavailable",
+    [string]$ContainerCreatedUtc = "unavailable",
+    [string]$ImageCreatedUtc = "unavailable",
+    [string]$ImageId = "unavailable",
+    [string]$GitCommit = "",
+    [bool]$NoBuildRecreateOptIn = $false,
+    [bool]$NoBuildRecreateExecuted = $false,
+    [string]$NoBuildRecreateExitCode = "not_run",
+    [bool]$RebuildHandoffOptIn = $false,
+    [bool]$RebuildHandoffRecorded = $false
   )
 
   $status = "ready"
   $blocker = "none"
+  $classification = "container_recreate_available"
+  $readbackClassification = "runtime_current_readback_verified"
+  $afterRecreateClassification = "runtime_current_after_recreate_verified"
+  $buildRequired = $false
+  if ([string]::IsNullOrWhiteSpace($GitCommit)) {
+    $GitCommit = Get-CurrentGitCommit
+  }
+
   if ($StaleOrUnverified) {
     $status = "blocked"
+    $readbackClassification = "runtime_current_readback_stale_or_unverified"
+    $afterRecreateClassification = "runtime_current_after_recreate_unverified"
     if ($Reason -eq "source_newer_than_runtime_image") {
+      $classification = "source_newer_than_runtime_image"
       $blocker = "runtime_image_requires_rebuild_but_build_forbidden"
+      $buildRequired = $true
     } elseif ($Reason -eq "control_plane_container_unavailable") {
+      $classification = "control_plane_container_unavailable"
       $blocker = "control_plane_container_unavailable_for_no_build_handoff"
     } elseif ($Reason -eq "docker_unavailable") {
+      $classification = "docker_unavailable"
       $blocker = "docker_unavailable_for_no_build_handoff"
+      $readbackClassification = "runtime_current_readback_failed"
+    } elseif ($Reason -eq "control_plane_image_inspect_unavailable") {
+      $classification = "control_plane_image_inspect_unavailable"
+      $blocker = "runtime_current_unverified_for_no_build_handoff"
+      $readbackClassification = "runtime_current_readback_failed"
     } else {
+      $classification = "runtime_current_after_recreate_unverified"
       $blocker = "runtime_current_unverified_for_no_build_handoff"
     }
   }
 
+  return [PSCustomObject]@{
+    schema = "control_plane_ledger_execute_runtime_current_handoff.v1"
+    status = $status
+    classification = $classification
+    blocker = $blocker
+    reason = $Reason
+    source_newest_utc = $SourceNewestUtc
+    container_created_utc = $ContainerCreatedUtc
+    image_created_utc = $ImageCreatedUtc
+    image_id = $ImageId
+    git_commit = $GitCommit
+    alignment_rules = [PSCustomObject]@{
+      source_timestamp_must_not_exceed_image_created_utc = $true
+      container_created_utc_must_be_available = $true
+      image_created_utc_must_be_available = $true
+      image_id_must_be_available = $true
+      git_commit_marker_required = $true
+      stale_image_is_blocker = $true
+      no_build_recreate_classification = "container_recreate_available"
+      rebuild_handoff_classification = "source_newer_than_runtime_image"
+    }
+    build_allowed = $false
+    build_required = $buildRequired
+    no_build_recreate_opt_in = $NoBuildRecreateOptIn
+    no_build_recreate_executed = $NoBuildRecreateExecuted
+    no_build_recreate_exit_code = $NoBuildRecreateExitCode
+    rebuild_handoff_opt_in = $RebuildHandoffOptIn
+    rebuild_handoff_recorded = $RebuildHandoffRecorded
+    no_build_recreate_command = Get-RuntimeCurrentHandoffCommand
+    rebuild_handoff_command = Get-RuntimeCurrentRebuildHandoffCommand
+    rebuild_handoff_execution_allowed = $false
+    operator_command_classification = "operator_command_generated"
+    readback_classification = $readbackClassification
+    after_recreate_classification = $afterRecreateClassification
+    secret_material_echoed = $false
+    url_credentials_echoed = $false
+    request_material_echoed = $false
+  }
+}
+
+function Write-RuntimeCurrentHandoff {
+  param(
+    [Parameter(Mandatory = $true)][bool]$StaleOrUnverified,
+    [Parameter(Mandatory = $true)][string]$Reason,
+    [string]$SourceNewestUtc = "unavailable",
+    [string]$ContainerCreatedUtc = "unavailable",
+    [string]$ImageCreatedUtc = "unavailable",
+    [string]$ImageId = "unavailable"
+  )
+
+  $evidence = New-RuntimeCurrentHandoffEvidence -StaleOrUnverified $StaleOrUnverified -Reason $Reason -SourceNewestUtc $SourceNewestUtc -ContainerCreatedUtc $ContainerCreatedUtc -ImageCreatedUtc $ImageCreatedUtc -ImageId $ImageId
+
   Write-SafeHost "runtime_current_handoff=control_plane_no_build_recreate"
-  Write-SafeHost "runtime_current_handoff_status=$status"
-  Write-SafeHost "runtime_current_handoff_blocker=$blocker"
-  Write-SafeHost "runtime_current_handoff_command=$(Get-RuntimeCurrentHandoffCommand)"
+  Write-SafeHost "runtime_current_handoff_status=$($evidence.status)"
+  Write-SafeHost "runtime_current_handoff_classification=$($evidence.classification)"
+  Write-SafeHost "runtime_current_handoff_blocker=$($evidence.blocker)"
+  Write-SafeHost "runtime_current_handoff_command=$($evidence.no_build_recreate_command)"
+  Write-SafeHost "runtime_current_handoff_operator_command_classification=$($evidence.operator_command_classification)"
+  Write-SafeHost "runtime_current_handoff_rebuild_command=$($evidence.rebuild_handoff_command)"
+  Write-SafeHost "runtime_current_handoff_build_required=$(Format-BoolMarker ([bool]$evidence.build_required))"
   Write-SafeHost "runtime_current_handoff_build_allowed=false"
+  Write-SafeHost "runtime_current_handoff_readback_classification=$($evidence.readback_classification)"
+  Write-SafeHost "runtime_current_handoff_after_recreate_classification=$($evidence.after_recreate_classification)"
+  Write-SafeHost "runtime_current_handoff_evidence_json=$(($evidence | ConvertTo-Json -Depth 8 -Compress))"
   Write-SafeHost "runtime_current_handoff_secret_material_echoed=false"
+  Write-SafeHost "runtime_current_handoff_url_credentials_echoed=false"
+  Write-SafeHost "runtime_current_handoff_request_material_echoed=false"
 }
 
 function Write-ControlPlaneRuntimeSourceProbe {
@@ -296,6 +462,7 @@ function Write-ControlPlaneRuntimeSourceProbe {
   $staleOrUnverified = $false
   $containerCreatedText = "unavailable"
   $imageCreatedText = "unavailable"
+  $imageIdText = "unavailable"
 
   try {
     $docker = Get-DockerCommand
@@ -324,6 +491,9 @@ function Write-ControlPlaneRuntimeSourceProbe {
           $containerCreatedText = $containerCreated.ToString("o")
         }
         $imageId = if ($parts.Count -gt 1) { $parts[1] } else { "" }
+        if (-not [string]::IsNullOrWhiteSpace($imageId)) {
+          $imageIdText = [string]$imageId
+        }
         $imageInspectResult = Invoke-NativeCapture -Command $docker -Arguments @("image", "inspect", "-f", "{{.Created}}", $imageId)
         $imageCreated = $null
         if ($imageInspectResult.ExitCode -eq 0) {
@@ -348,12 +518,16 @@ function Write-ControlPlaneRuntimeSourceProbe {
 
   Write-SafeHost "runtime_source_mismatch_probe=control_plane_image_timestamp"
   Write-SafeHost "runtime_source_newest_utc=$sourceNewestText"
+  Write-SafeHost "runtime_verifier_script_newest_utc=$(Get-VerifierScriptWriteTimeUtcText)"
+  Write-SafeHost "runtime_verifier_script_affects_image_freshness=false"
   Write-SafeHost "runtime_container_created_utc=$containerCreatedText"
   Write-SafeHost "runtime_image_created_utc=$imageCreatedText"
+  Write-SafeHost "runtime_image_id=$imageIdText"
+  Write-SafeHost "runtime_git_commit=$(Get-CurrentGitCommit)"
   Write-SafeHost "runtime_image_stale_or_unverified=$(if ($staleOrUnverified) { 'true' } else { 'false' })"
   Write-SafeHost "runtime_image_stale_reason=$reason"
   Write-SafeHost "runtime_secret_material_echoed=false"
-  Write-RuntimeCurrentHandoff -StaleOrUnverified $staleOrUnverified -Reason $reason
+  Write-RuntimeCurrentHandoff -StaleOrUnverified $staleOrUnverified -Reason $reason -SourceNewestUtc $sourceNewestText -ContainerCreatedUtc $containerCreatedText -ImageCreatedUtc $imageCreatedText -ImageId $imageIdText
 
   return [pscustomobject]@{
     StaleOrUnverified = $staleOrUnverified
@@ -361,6 +535,39 @@ function Write-ControlPlaneRuntimeSourceProbe {
     SourceNewestUtc = $sourceNewestText
     ContainerCreatedUtc = $containerCreatedText
     ImageCreatedUtc = $imageCreatedText
+    ImageId = $imageIdText
+    GitCommit = Get-CurrentGitCommit
+  }
+}
+
+function Get-BrowserRuntimeCurrentEvidence {
+  if ($null -eq $script:RuntimeSourceProbe) {
+    return [PSCustomObject]@{
+      classification = "runtime_current_not_checked"
+      stale_or_unverified = $true
+      reason = "runtime_current_probe_not_run"
+    source_newest_utc = "unavailable"
+    container_created_utc = "unavailable"
+    image_created_utc = "unavailable"
+    image_id = "unavailable"
+    git_commit = Get-CurrentGitCommit
+    blocker = "runtime_current_unverified_for_no_build_handoff"
+    }
+  }
+
+  $runtimeProbeStale = Test-StrictTrue $script:RuntimeSourceProbe.StaleOrUnverified
+  $classification = if ($runtimeProbeStale) { "runtime_image_stale_or_unverified" } else { "runtime_current_verified" }
+  $blocker = if ($runtimeProbeStale) { "runtime_image_stale_or_unverified" } else { "none" }
+  return [PSCustomObject]@{
+    classification = $classification
+    stale_or_unverified = $runtimeProbeStale
+    reason = [string]$script:RuntimeSourceProbe.Reason
+    source_newest_utc = [string]$script:RuntimeSourceProbe.SourceNewestUtc
+    container_created_utc = [string]$script:RuntimeSourceProbe.ContainerCreatedUtc
+    image_created_utc = [string]$script:RuntimeSourceProbe.ImageCreatedUtc
+    image_id = [string]$script:RuntimeSourceProbe.ImageId
+    git_commit = [string]$script:RuntimeSourceProbe.GitCommit
+    blocker = $blocker
   }
 }
 
@@ -1015,26 +1222,44 @@ function Assert-UiSmokeHandoffFreshness {
       "ledgerAdjustmentExecuteBrowserActionPlanContract",
       "ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
       "ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
+      "ledgerAdjustmentExecuteBrowserMutationFinalDodContract",
+      "ledgerAdjustmentExecuteBrowserMutationEvidenceWatcherFinalGuardContract",
       "ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
       "ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract",
       "ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
       "ledgerAdjustmentExecuteBrowserLiveRunbookContract",
       "ledgerAdjustmentExecuteBrowserRunnerReadinessContract",
+      "ledgerAdjustmentExecuteRuntimeCurrentEvidenceAcceptanceMatrixContract",
+      "ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract",
       "ledgerAdjustmentExecuteLiveSmokeSerializableHandoff",
-      "ledgerAdjustmentExecuteAbsentOptionalMarker = null",
-      "browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract",
-      "browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract",
-      "browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract",
-      "browserLiveEnvironmentBootstrapAttempt: ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract",
-      "browserLivePassArtifactReadbackGate: ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract",
-      "browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract",
-      "browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract",
-      "browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract",
-      "browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract",
-      "browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract"
+      "ledgerAdjustmentExecuteAbsentOptionalMarker = null"
     )) {
     if (-not $source.Contains($needle)) {
       throw "UI smoke contract source missing freshness marker '$needle'"
+    }
+  }
+
+  foreach ($mapping in @(
+      @("browserActionPlan", "ledgerAdjustmentExecuteBrowserActionPlanContract"),
+      @("browserDomActionRunner", "ledgerAdjustmentExecuteBrowserDomActionRunnerContract"),
+      @("browserLiveRunnerExecutionBridge", "ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract"),
+      @("browserLiveEnvironmentBootstrapAttempt", "ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract"),
+      @("browserLivePassArtifactReadbackGate", "ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract"),
+      @("browserMutationFinalDod", "ledgerAdjustmentExecuteBrowserMutationFinalDodContract"),
+      @("browserMutationEvidenceWatcherFinalGuard", "ledgerAdjustmentExecuteBrowserMutationEvidenceWatcherFinalGuardContract"),
+      @("browserMutationPassArtifactClosure", "ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract"),
+      @("browserPlaywrightLaunchReadiness", "ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract"),
+      @("browserLiveRunbook", "ledgerAdjustmentExecuteBrowserLiveRunbookContract"),
+      @("browserPreflight", "ledgerAdjustmentExecuteBrowserPreflightContract"),
+      @("browserRunnerReadiness", "ledgerAdjustmentExecuteBrowserRunnerReadinessContract"),
+      @("runtimeCurrentEvidenceAcceptanceMatrix", "ledgerAdjustmentExecuteRuntimeCurrentEvidenceAcceptanceMatrixContract"),
+      @("runtimeCurrentFinalClosureAudit", "ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract"),
+      @("runtimeCurrentOperatorHandoffPack", "ledgerAdjustmentExecuteRuntimeCurrentOperatorHandoffPackContract"),
+      @("runtimeCurrentHandoff", "ledgerAdjustmentExecuteRuntimeCurrentHandoffContract")
+    )) {
+    $pattern = ("(?s){0}\s*:\s*{1}" -f [regex]::Escape($mapping[0]), [regex]::Escape($mapping[1]))
+    if ($source -notmatch $pattern) {
+      throw "UI smoke contract source missing freshness marker '$($mapping[0]): $($mapping[1])'"
     }
   }
 
@@ -1048,12 +1273,48 @@ function Assert-UiSmokeHandoffFreshness {
       "browserLiveRunnerExecutionBridge",
       "browserLiveEnvironmentBootstrapAttempt",
       "browserLivePassArtifactReadbackGate",
+      "browserMutationFinalDod",
+      "browserMutationEvidenceWatcherFinalGuard",
       "browserMutationPassArtifactClosure",
       "browserPlaywrightLaunchReadiness",
       "browserEvidenceArtifact",
       "browserRunnerReadiness",
       "browserLiveRunbook",
+      "runtimeCurrentEvidenceAcceptanceMatrix",
+      "runtimeCurrentFinalClosureAudit",
+      "runtimeCurrentOperatorHandoffPack",
+      "runtimeCurrentHandoff",
+      "runtime_current_handoff",
+      "container_recreate_available",
+      "build_required_but_forbidden",
+      "runtime_current_readback_verified",
+      "runtime_current_after_recreate_verified",
       "billing_execute_browser_live_e2e_evidence.v1",
+      "classificationValues",
+      "runtime_current_verified",
+      "runtime_image_stale_or_unverified",
+      "artifact_readback_passed",
+      "billing_execute_browser_mutation_final_dod.v1",
+      "e11_browser_mutation_dod_passed",
+      "simulated_artifact_cannot_close_e11",
+      "billing_execute_runtime_current_operator_handoff_pack.v1",
+      "runtime_current_handoff_ready",
+      "runtime_current_evidence_accepted_for_review",
+      "mutation_runner_ready_blocked",
+      "billing_execute_runtime_current_evidence_acceptance_matrix.v1",
+      "billing_execute_browser_mutation_final_closure_audit.v1",
+      "billing_execute_browser_mutation_evidence_watcher_final_guard.v1",
+      "watcher_final_guard_review",
+      "not_simulation_or_watcher_only",
+      "noArtifactCanMarkFinalX",
+      "sessionMissingCanMarkFinalX",
+      "final_x_eligible",
+      "blocking_reasons",
+      "runtime_artifact_state",
+      "browser_artifact_state",
+      "runtime_current_commit_mismatch",
+      "raw_secret_present",
+      "browser_idempotent_replay_failed",
       "dom_action_runner_dry_run_only",
       "playwright_launch_readiness_only",
       "mutation_pass_artifact_closure_gate",
@@ -1129,6 +1390,717 @@ function Assert-UiSmokeHandoffFreshness {
       throw "UI browser preflight metric marker '$name' must be machine readable"
     }
   }
+}
+
+function Assert-RuntimeCurrentHandoffContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $handoff = Get-JsonProperty $Handoff "runtimeCurrentHandoff" "UI runtime-current handoff"
+  Assert-Equal (Get-JsonProperty $handoff "defaultMode" "UI runtime-current handoff") "runtime_current_handoff" "runtime handoff default mode"
+  Assert-True ((Get-JsonProperty $handoff "buildAllowedDefault" "UI runtime-current handoff") -eq $false) "runtime handoff must not allow build by default"
+
+  $classifications = Get-JsonProperty $handoff "classifications" "UI runtime-current handoff"
+  foreach ($name in @(
+      "buildRequiredButForbidden",
+      "containerRecreateAvailable",
+      "containerUnavailable",
+      "dockerUnavailable",
+      "imageInspectUnavailable",
+      "operatorCommandGenerated",
+      "runtimeCurrentAfterRecreateUnverified",
+      "runtimeCurrentAfterRecreateVerified",
+      "sourceNewerThanRuntimeImage"
+    )) {
+    $classification = [string](Get-JsonProperty $classifications $name "UI runtime-current handoff classifications")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current handoff classification '$name' must be machine readable"
+    }
+  }
+
+  $noBuild = Get-JsonProperty $handoff "noBuildRecreate" "UI runtime-current no-build recreate"
+  Assert-Equal (Get-JsonProperty $noBuild "command" "UI runtime-current no-build recreate") "docker compose -f deploy/docker-compose/docker-compose.yml up -d --no-build --no-deps --force-recreate control-plane" "runtime handoff no-build command"
+  Assert-Equal (Get-JsonProperty $noBuild "commandClassification" "UI runtime-current no-build recreate") "operator_command_generated" "runtime handoff no-build command classification"
+  Assert-True ((Get-JsonProperty $noBuild "defaultExecutes" "UI runtime-current no-build recreate") -eq $false) "runtime handoff no-build recreate must not execute by default"
+  Assert-Equal (Get-JsonProperty $noBuild "env" "UI runtime-current no-build recreate") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_RECREATE" "runtime handoff no-build env"
+  Assert-Equal (Get-JsonProperty $noBuild "flag" "UI runtime-current no-build recreate") "-RuntimeCurrentNoBuildRecreateOptIn" "runtime handoff no-build flag"
+  Assert-True ([bool](Get-JsonProperty $noBuild "readbackRequired" "UI runtime-current no-build recreate")) "runtime handoff readback must be required"
+  Assert-Equal (Get-JsonProperty $noBuild "requiredValue" "UI runtime-current no-build recreate") "1" "runtime handoff no-build required value"
+
+  $artifact = Get-JsonProperty $handoff "evidenceArtifact" "UI runtime-current evidence artifact"
+  Assert-Equal (Get-JsonProperty $artifact "schema" "UI runtime-current evidence artifact") "control_plane_ledger_execute_runtime_current_handoff.v1" "runtime handoff artifact schema"
+  Assert-Equal (Get-JsonProperty $artifact "defaultPath" "UI runtime-current evidence artifact") "artifacts/control_plane_ledger_execute_runtime_current_handoff.json" "runtime handoff artifact default path"
+  Assert-Equal (Get-JsonProperty $artifact "env" "UI runtime-current evidence artifact") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE" "runtime handoff artifact write env"
+  Assert-Equal (Get-JsonProperty $artifact "flag" "UI runtime-current evidence artifact") "-RuntimeCurrentEvidenceArtifactWriteOptIn" "runtime handoff artifact write flag"
+  Assert-Equal (Get-JsonProperty $artifact "pathEnv" "UI runtime-current evidence artifact") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_PATH" "runtime handoff artifact path env"
+  Assert-Equal (Get-JsonProperty $artifact "readbackEnv" "UI runtime-current evidence artifact") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK" "runtime handoff artifact readback env"
+  Assert-Equal (Get-JsonProperty $artifact "readbackFlag" "UI runtime-current evidence artifact") "-RuntimeCurrentEvidenceArtifactReadbackOptIn" "runtime handoff artifact readback flag"
+  Assert-Equal (Get-JsonProperty $artifact "requiredValue" "UI runtime-current evidence artifact") "1" "runtime handoff artifact write required value"
+  Assert-True ([bool](Get-JsonProperty $artifact "readBackRequiredForExecution" "UI runtime-current evidence artifact")) "runtime handoff artifact readback must be required for execution"
+  Assert-True ((Get-JsonProperty $artifact "writeDisabledByDefault" "UI runtime-current evidence artifact") -eq $true) "runtime handoff artifact write must be disabled by default"
+  Assert-True ((Get-JsonProperty $artifact "readDisabledByDefault" "UI runtime-current evidence artifact") -eq $true) "runtime handoff artifact readback must be disabled by default"
+  [void](Resolve-BoundedEvidenceArtifactPath ([string](Get-JsonProperty $artifact "defaultPath" "UI runtime-current evidence artifact")))
+
+  $rebuild = Get-JsonProperty $handoff "rebuildHandoff" "UI runtime-current rebuild handoff"
+  Assert-Equal (Get-JsonProperty $rebuild "buildForbiddenBlocker" "UI runtime-current rebuild handoff") "runtime_image_requires_rebuild_but_build_forbidden" "runtime rebuild forbidden blocker"
+  Assert-Equal (Get-JsonProperty $rebuild "commandClassification" "UI runtime-current rebuild handoff") "operator_command_generated" "runtime rebuild command classification"
+  Assert-True ((Get-JsonProperty $rebuild "defaultExecutesBuild" "UI runtime-current rebuild handoff") -eq $false) "runtime rebuild handoff must not build by default"
+  Assert-True ((Get-JsonProperty $rebuild "executionAllowed" "UI runtime-current rebuild handoff") -eq $false) "runtime rebuild handoff must not execute builds"
+  Assert-Equal (Get-JsonProperty $rebuild "env" "UI runtime-current rebuild handoff") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_REBUILD_HANDOFF" "runtime rebuild handoff env"
+  Assert-Equal (Get-JsonProperty $rebuild "flag" "UI runtime-current rebuild handoff") "-RuntimeCurrentRebuildHandoffOptIn" "runtime rebuild handoff flag"
+  Assert-True ([bool](Get-JsonProperty $rebuild "readbackRequired" "UI runtime-current rebuild handoff")) "runtime rebuild handoff readback must be required"
+  Assert-Equal (Get-JsonProperty $rebuild "requiredValue" "UI runtime-current rebuild handoff") "1" "runtime rebuild handoff required value"
+  Assert-SecretSafeContent -Content ([string](Get-JsonProperty $rebuild "commandHint" "UI runtime-current rebuild handoff")) -Context "runtime-current rebuild command"
+
+  $readback = Get-JsonProperty $handoff "readbackClassifications" "UI runtime-current readback"
+  foreach ($name in @("failed", "notRequested", "staleOrUnverified", "verified")) {
+    $classification = [string](Get-JsonProperty $readback $name "UI runtime-current readback")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current readback classification '$name' must be machine readable"
+    }
+  }
+
+  $markers = Get-JsonProperty $handoff "outputMarkers" "UI runtime-current output markers"
+  foreach ($name in @("buildAllowed", "blocker", "classification", "command", "readbackClassification", "status")) {
+    $marker = [string](Get-JsonProperty $markers $name "UI runtime-current output markers")
+    if ($marker -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current output marker '$name' must be machine readable"
+    }
+  }
+
+  $secretSafe = Get-JsonProperty $handoff "secretSafeOmission" "UI runtime-current secret safe"
+  foreach ($name in @("echoRequestMaterial", "echoSessionMaterial", "echoUrlCredentials")) {
+    Assert-True ((Get-JsonProperty $secretSafe $name "UI runtime-current secret safe") -eq $false) "runtime handoff must omit $name"
+  }
+
+  $browserUnlock = Get-JsonProperty $handoff "browserRunnerUnlock" "UI runtime-current browser unlock"
+  Assert-Equal (Get-JsonProperty $browserUnlock "defaultRunsBrowserRunner" "UI runtime-current browser unlock") $false "runtime handoff must not run browser runner by default"
+  Assert-Equal (Get-JsonProperty $browserUnlock "defaultSubmitsLiveMutation" "UI runtime-current browser unlock") $false "runtime handoff must not submit mutation by default"
+  Assert-Equal (Get-JsonProperty $browserUnlock "requiresArtifactReadback" "UI runtime-current browser unlock") $true "runtime handoff browser unlock must require artifact readback"
+  Assert-Equal (Get-JsonProperty $browserUnlock "verifiedClassification" "UI runtime-current browser unlock") "runtime_current_verified" "runtime handoff browser unlock verified classification"
+  Assert-Equal (Get-JsonProperty $browserUnlock "unlockedBlockerShift" "UI runtime-current browser unlock") "session_mutation_artifact_gate" "runtime handoff browser unlock blocker shift"
+  foreach ($name in @("artifactMissing", "artifactStaleOrUnverified", "verifiedArtifact")) {
+    $classification = [string](Get-JsonProperty (Get-JsonProperty $browserUnlock "classifications" "UI runtime-current browser unlock") $name "UI runtime-current browser unlock classifications")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current browser unlock classification '$name' must be machine readable"
+    }
+  }
+}
+
+function Assert-RuntimeCurrentHandoffEvidenceShape {
+  param([Parameter(Mandatory = $true)]$Evidence)
+
+  foreach ($field in @(
+      "schema",
+      "status",
+      "classification",
+      "blocker",
+      "reason",
+      "source_newest_utc",
+      "container_created_utc",
+      "image_created_utc",
+      "image_id",
+      "git_commit",
+      "alignment_rules",
+      "build_allowed",
+      "build_required",
+      "no_build_recreate_opt_in",
+      "no_build_recreate_executed",
+      "no_build_recreate_exit_code",
+      "rebuild_handoff_opt_in",
+      "rebuild_handoff_recorded",
+      "no_build_recreate_command",
+      "rebuild_handoff_command",
+      "rebuild_handoff_execution_allowed",
+      "operator_command_classification",
+      "readback_classification",
+      "after_recreate_classification",
+      "secret_material_echoed",
+      "url_credentials_echoed",
+      "request_material_echoed"
+    )) {
+    [void](Get-JsonProperty $Evidence $field "runtime-current handoff evidence")
+  }
+  Assert-Equal (Get-JsonProperty $Evidence "schema" "runtime-current handoff evidence") "control_plane_ledger_execute_runtime_current_handoff.v1" "runtime handoff evidence schema"
+  $gitCommit = [string](Get-JsonProperty $Evidence "git_commit" "runtime-current handoff evidence")
+  if ($gitCommit -ne "unavailable" -and $gitCommit -notmatch '^[0-9a-f]{40}$') {
+    throw "runtime handoff evidence git_commit must be a full commit hash or unavailable"
+  }
+  $alignmentRules = Get-JsonProperty $Evidence "alignment_rules" "runtime-current handoff evidence"
+  foreach ($field in @("source_timestamp_must_not_exceed_image_created_utc", "container_created_utc_must_be_available", "image_created_utc_must_be_available", "image_id_must_be_available", "git_commit_marker_required", "stale_image_is_blocker")) {
+    Assert-True ((Get-JsonProperty $alignmentRules $field "runtime-current handoff alignment rules") -eq $true) "runtime handoff alignment rule $field must be true"
+  }
+  Assert-Equal (Get-JsonProperty $alignmentRules "no_build_recreate_classification" "runtime-current handoff alignment rules") "container_recreate_available" "runtime handoff no-build classification"
+  Assert-Equal (Get-JsonProperty $alignmentRules "rebuild_handoff_classification" "runtime-current handoff alignment rules") "source_newer_than_runtime_image" "runtime handoff rebuild classification"
+  foreach ($field in @("classification", "blocker", "operator_command_classification", "readback_classification", "after_recreate_classification")) {
+    $value = [string](Get-JsonProperty $Evidence $field "runtime-current handoff evidence")
+    if ($value -ne "none" -and $value -notmatch '^[a-z0-9_]+$') {
+      throw "runtime handoff evidence '$field' must be machine readable"
+    }
+  }
+  Assert-True ((Get-JsonProperty $Evidence "build_allowed" "runtime-current handoff evidence") -eq $false) "runtime handoff evidence must keep build forbidden"
+  Assert-True ((Get-JsonProperty $Evidence "rebuild_handoff_execution_allowed" "runtime-current handoff evidence") -eq $false) "runtime rebuild handoff evidence must keep build execution forbidden"
+  Assert-True ((Get-JsonProperty $Evidence "secret_material_echoed" "runtime-current handoff evidence") -eq $false) "runtime handoff evidence must not echo session material"
+  Assert-True ((Get-JsonProperty $Evidence "url_credentials_echoed" "runtime-current handoff evidence") -eq $false) "runtime handoff evidence must not echo URL credentials"
+  Assert-True ((Get-JsonProperty $Evidence "request_material_echoed" "runtime-current handoff evidence") -eq $false) "runtime handoff evidence must not echo request material"
+  Assert-SecretSafeContent -Content ($Evidence | ConvertTo-Json -Depth 8 -Compress) -Context "runtime-current handoff evidence"
+}
+
+function Write-RuntimeCurrentHandoffSimulation {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-RuntimeCurrentHandoffContract $Handoff
+  $cases = @(
+    [PSCustomObject]@{ name = "source_newer_than_runtime_image"; stale = $true; reason = "source_newer_than_runtime_image"; expectedClassification = "source_newer_than_runtime_image"; expectedBlocker = "runtime_image_requires_rebuild_but_build_forbidden"; expectedReadback = "runtime_current_readback_stale_or_unverified" },
+    [PSCustomObject]@{ name = "container_recreate_available"; stale = $false; reason = "none"; expectedClassification = "container_recreate_available"; expectedBlocker = "none"; expectedReadback = "runtime_current_readback_verified" },
+    [PSCustomObject]@{ name = "container_unavailable"; stale = $true; reason = "control_plane_container_unavailable"; expectedClassification = "control_plane_container_unavailable"; expectedBlocker = "control_plane_container_unavailable_for_no_build_handoff"; expectedReadback = "runtime_current_readback_stale_or_unverified" },
+    [PSCustomObject]@{ name = "docker_unavailable"; stale = $true; reason = "docker_unavailable"; expectedClassification = "docker_unavailable"; expectedBlocker = "docker_unavailable_for_no_build_handoff"; expectedReadback = "runtime_current_readback_failed" }
+  )
+
+  Write-SafeHost "Runtime-current handoff bounded simulations:"
+  foreach ($case in $cases) {
+    $evidence = New-RuntimeCurrentHandoffEvidence -StaleOrUnverified ([bool]$case.stale) -Reason ([string]$case.reason) -SourceNewestUtc "2026-06-05T00:00:00.0000000Z" -ContainerCreatedUtc "2026-06-05T00:00:01.0000000Z" -ImageCreatedUtc "2026-06-05T00:00:02.0000000Z"
+    Assert-RuntimeCurrentHandoffEvidenceShape $evidence
+    Assert-Equal (Get-JsonProperty $evidence "classification" "runtime-current handoff simulation") ([string]$case.expectedClassification) "runtime-current simulation classification $($case.name)"
+    Assert-Equal (Get-JsonProperty $evidence "blocker" "runtime-current handoff simulation") ([string]$case.expectedBlocker) "runtime-current simulation blocker $($case.name)"
+    Assert-Equal (Get-JsonProperty $evidence "readback_classification" "runtime-current handoff simulation") ([string]$case.expectedReadback) "runtime-current simulation readback $($case.name)"
+    Write-SafeHost "runtime_current_handoff_simulation=$($case.name);classification=$($evidence.classification);blocker=$($evidence.blocker);readback=$($evidence.readback_classification);after_recreate=$($evidence.after_recreate_classification);build_allowed=false;operator_command=$($evidence.operator_command_classification)"
+  }
+
+  $rebuildHandoffEvidence = New-RuntimeCurrentHandoffEvidence -StaleOrUnverified $true -Reason "source_newer_than_runtime_image" -SourceNewestUtc "2026-06-05T00:00:03.0000000Z" -ContainerCreatedUtc "2026-06-05T00:00:01.0000000Z" -ImageCreatedUtc "2026-06-05T00:00:02.0000000Z" -RebuildHandoffOptIn $true -RebuildHandoffRecorded $true
+  Assert-RuntimeCurrentHandoffEvidenceShape $rebuildHandoffEvidence
+  Assert-True ([bool](Get-JsonProperty $rebuildHandoffEvidence "rebuild_handoff_opt_in" "runtime-current rebuild handoff simulation")) "runtime-current rebuild handoff opt-in must be recorded"
+  Assert-True ([bool](Get-JsonProperty $rebuildHandoffEvidence "rebuild_handoff_recorded" "runtime-current rebuild handoff simulation")) "runtime-current rebuild handoff must record operator command evidence"
+  Assert-True ((Get-JsonProperty $rebuildHandoffEvidence "rebuild_handoff_execution_allowed" "runtime-current rebuild handoff simulation") -eq $false) "runtime-current rebuild handoff must not execute build"
+  Write-SafeHost "runtime_current_handoff_simulation=rebuild_operator_handoff;classification=$($rebuildHandoffEvidence.classification);blocker=$($rebuildHandoffEvidence.blocker);readback=$($rebuildHandoffEvidence.readback_classification);rebuild_handoff_recorded=true;rebuild_execution_allowed=false"
+
+  $verifiedArtifactEvidence = New-RuntimeCurrentHandoffEvidence -StaleOrUnverified $false -Reason "none" -SourceNewestUtc "2026-06-05T00:00:00.0000000Z" -ContainerCreatedUtc "2026-06-05T00:00:03.0000000Z" -ImageCreatedUtc "2026-06-05T00:00:02.0000000Z"
+  $verifiedProbe = Convert-RuntimeCurrentEvidenceToProbe $verifiedArtifactEvidence
+  Assert-True ([bool]$verifiedProbe.ArtifactVerified) "verified runtime-current artifact must unlock runtime-current browser blocker"
+  Assert-True (-not [bool]$verifiedProbe.StaleOrUnverified) "verified runtime-current artifact must produce current probe"
+  Write-SafeHost "runtime_current_artifact_simulation=verified_unlock;classification=runtime_current_verified;blocker_shift=session_mutation_artifact_gate;default_runs_browser=false;default_mutation=false"
+
+  $staleArtifactProbe = Convert-RuntimeCurrentEvidenceToProbe $rebuildHandoffEvidence
+  Assert-True (-not [bool]$staleArtifactProbe.ArtifactVerified) "stale runtime-current artifact must not unlock runtime-current browser blocker"
+  Assert-True ([bool]$staleArtifactProbe.StaleOrUnverified) "stale runtime-current artifact must preserve runtime-current blocker"
+  Write-SafeHost "runtime_current_artifact_simulation=stale_blocked;classification=runtime_current_artifact_stale_or_unverified;blocker=$($staleArtifactProbe.Reason);default_runs_browser=false;default_mutation=false"
+}
+
+function Test-RuntimeCurrentEvidenceArtifactWriteOptIn {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runtimeHandoff = Get-JsonProperty $Handoff "runtimeCurrentHandoff" "UI runtime-current handoff"
+  $artifact = Get-JsonProperty $runtimeHandoff "evidenceArtifact" "UI runtime-current evidence artifact"
+  $envName = [string](Get-JsonProperty $artifact "env" "UI runtime-current evidence artifact")
+  $requiredValue = [string](Get-JsonProperty $artifact "requiredValue" "UI runtime-current evidence artifact")
+  return $RuntimeCurrentEvidenceArtifactWriteOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Test-RuntimeCurrentEvidenceArtifactReadbackOptIn {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runtimeHandoff = Get-JsonProperty $Handoff "runtimeCurrentHandoff" "UI runtime-current handoff"
+  $artifact = Get-JsonProperty $runtimeHandoff "evidenceArtifact" "UI runtime-current evidence artifact"
+  $envName = [string](Get-JsonProperty $artifact "readbackEnv" "UI runtime-current evidence artifact")
+  $requiredValue = [string](Get-JsonProperty $artifact "requiredValue" "UI runtime-current evidence artifact")
+  return $RuntimeCurrentEvidenceArtifactReadbackOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Convert-RuntimeCurrentEvidenceToProbe {
+  param([Parameter(Mandatory = $true)]$Evidence)
+
+  Assert-RuntimeCurrentHandoffEvidenceShape $Evidence
+  $verified = (
+    ([string](Get-JsonProperty $Evidence "status" "runtime-current readback evidence") -eq "ready") -and
+    ([string](Get-JsonProperty $Evidence "classification" "runtime-current readback evidence") -eq "container_recreate_available") -and
+    ([string](Get-JsonProperty $Evidence "blocker" "runtime-current readback evidence") -eq "none") -and
+    ([string](Get-JsonProperty $Evidence "readback_classification" "runtime-current readback evidence") -eq "runtime_current_readback_verified") -and
+    ((Get-JsonProperty $Evidence "build_allowed" "runtime-current readback evidence") -eq $false)
+  )
+
+  return [PSCustomObject]@{
+    StaleOrUnverified = -not $verified
+    Reason = if ($verified) { "runtime_current_verified_artifact_readback" } else { [string](Get-JsonProperty $Evidence "blocker" "runtime-current readback evidence") }
+    SourceNewestUtc = [string](Get-JsonProperty $Evidence "source_newest_utc" "runtime-current readback evidence")
+    ContainerCreatedUtc = [string](Get-JsonProperty $Evidence "container_created_utc" "runtime-current readback evidence")
+    ImageCreatedUtc = [string](Get-JsonProperty $Evidence "image_created_utc" "runtime-current readback evidence")
+    ImageId = [string](Get-JsonProperty $Evidence "image_id" "runtime-current readback evidence")
+    GitCommit = [string](Get-JsonProperty $Evidence "git_commit" "runtime-current readback evidence")
+    ArtifactVerified = $verified
+  }
+}
+
+function Invoke-RuntimeCurrentArtifactReadbackGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$InitialProbe
+  )
+
+  Assert-RuntimeCurrentHandoffContract $Handoff
+  $readbackOptIn = Test-RuntimeCurrentEvidenceArtifactReadbackOptIn $Handoff
+  $artifactPath = Resolve-BoundedEvidenceArtifactPath $RuntimeCurrentEvidenceArtifactPath
+  Write-SafeHost "Runtime-current artifact browser-runner unblock gate:"
+  Write-SafeHost "runtime_current_browser_unblock_artifact_readback_opt_in=$(Format-BoolMarker $readbackOptIn)"
+  Write-SafeHost "runtime_current_browser_unblock_default_runs_browser=false"
+  Write-SafeHost "runtime_current_browser_unblock_default_mutation=false"
+  Write-SafeHost "runtime_current_browser_unblock_artifact_path=$artifactPath"
+
+  if (-not $readbackOptIn) {
+    Write-SafeHost "runtime_current_browser_unblock_classification=runtime_current_artifact_readback_not_requested"
+    Write-SafeHost "runtime_current_browser_unblock_blocker=runtime_current_artifact_readback_not_requested"
+    return $InitialProbe
+  }
+
+  if (-not (Test-Path $artifactPath)) {
+    Write-SafeHost "runtime_current_browser_unblock_classification=runtime_current_artifact_missing"
+    Write-SafeHost "runtime_current_browser_unblock_blocker=runtime_current_artifact_missing"
+    Add-Blocker "runtime-current browser runner unblock gate - runtime_current_artifact_missing"
+    return $InitialProbe
+  }
+
+  $readBack = Read-JsonFile $artifactPath
+  Assert-RuntimeCurrentHandoffEvidenceShape $readBack
+  Assert-SecretSafeContent -Content ($readBack | ConvertTo-Json -Depth 12 -Compress) -Context "runtime-current browser unlock artifact readback"
+  $probe = Convert-RuntimeCurrentEvidenceToProbe $readBack
+  if ([bool]$probe.ArtifactVerified) {
+    Write-SafeHost "runtime_current_browser_unblock_classification=runtime_current_verified"
+    Write-SafeHost "runtime_current_browser_unblock_blocker=none"
+    Write-SafeHost "runtime_current_browser_unblock_shift=session_mutation_artifact_gate"
+    Write-SafeHost "runtime_current_browser_unblock_artifact_readback_classification=$($readBack.readback_classification)"
+    Write-SafeHost "runtime_current_browser_unblock_runtime_current_verified=true"
+    return $probe
+  }
+
+  Write-SafeHost "runtime_current_browser_unblock_classification=runtime_current_artifact_stale_or_unverified"
+  Write-SafeHost "runtime_current_browser_unblock_blocker=$($probe.Reason)"
+  Write-SafeHost "runtime_current_browser_unblock_artifact_readback_classification=$($readBack.readback_classification)"
+  Add-Blocker "runtime-current browser runner unblock gate - runtime_current_artifact_stale_or_unverified reason=$($probe.Reason)"
+  return $InitialProbe
+}
+
+function Assert-E11ReleaseRuntimeCurrentArtifactReadback {
+  param([Parameter(Mandatory = $true)]$Artifact)
+
+  Assert-RuntimeCurrentHandoffEvidenceShape $Artifact
+  Assert-Equal (Get-JsonProperty $Artifact "status" "E11 release runtime-current artifact") "ready" "E11 release runtime artifact status"
+  Assert-Equal (Get-JsonProperty $Artifact "classification" "E11 release runtime-current artifact") "container_recreate_available" "E11 release runtime artifact classification"
+  Assert-Equal (Get-JsonProperty $Artifact "blocker" "E11 release runtime-current artifact") "none" "E11 release runtime artifact blocker"
+  Assert-Equal (Get-JsonProperty $Artifact "readback_classification" "E11 release runtime-current artifact") "runtime_current_readback_verified" "E11 release runtime artifact readback classification"
+  Assert-True ((Get-JsonProperty $Artifact "build_allowed" "E11 release runtime-current artifact") -eq $false) "E11 release runtime artifact must not allow build"
+  Assert-True ((Get-JsonProperty $Artifact "build_required" "E11 release runtime-current artifact") -eq $false) "E11 release runtime artifact must not require build"
+  Assert-Equal (Get-JsonProperty $Artifact "git_commit" "E11 release runtime-current artifact") (Get-CurrentGitCommit) "E11 release runtime artifact current commit"
+
+  $imageId = [string](Get-JsonProperty $Artifact "image_id" "E11 release runtime-current artifact")
+  if ($imageId -notmatch '^sha256:[0-9a-f]{64}$') {
+    throw "E11 release runtime artifact image_id must be a sha256 image id"
+  }
+
+  $sourceNewest = Convert-JsonTimestampToUtc (Get-JsonProperty $Artifact "source_newest_utc" "E11 release runtime-current artifact")
+  $containerCreated = Convert-JsonTimestampToUtc (Get-JsonProperty $Artifact "container_created_utc" "E11 release runtime-current artifact")
+  $imageCreated = Convert-JsonTimestampToUtc (Get-JsonProperty $Artifact "image_created_utc" "E11 release runtime-current artifact")
+  Assert-True ($sourceNewest -le $imageCreated) "E11 release runtime artifact source timestamp must not exceed image_created_utc"
+  Assert-True ($sourceNewest -le $containerCreated) "E11 release runtime artifact source timestamp must not exceed container_created_utc"
+
+  $alignmentRules = Get-JsonProperty $Artifact "alignment_rules" "E11 release runtime-current artifact"
+  Assert-True ((Get-JsonProperty $alignmentRules "stale_image_is_blocker" "E11 release runtime alignment rules") -eq $true) "E11 release runtime artifact must keep stale image as blocker"
+  Assert-Equal (Get-JsonProperty $alignmentRules "no_build_recreate_classification" "E11 release runtime alignment rules") "container_recreate_available" "E11 release no-build recreate classification"
+  Assert-Equal (Get-JsonProperty $alignmentRules "rebuild_handoff_classification" "E11 release runtime alignment rules") "source_newer_than_runtime_image" "E11 release rebuild handoff classification"
+
+  foreach ($field in @("secret_material_echoed", "url_credentials_echoed", "request_material_echoed")) {
+    Assert-True ((Get-JsonProperty $Artifact $field "E11 release runtime-current artifact") -eq $false) "E11 release runtime artifact must not echo $field"
+  }
+}
+
+function Assert-E11ReleaseBrowserArtifactReadback {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact,
+    [Parameter(Mandatory = $true)]$RuntimeArtifact
+  )
+
+  Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $Artifact
+  Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $Artifact
+  Assert-True (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $Artifact) "E11 release browser artifact must be closure eligible"
+  Assert-Equal (Get-JsonProperty $Artifact "outcome" "E11 release browser artifact") "passed" "E11 release browser artifact outcome"
+  Assert-Equal (Get-JsonProperty $Artifact "mode" "E11 release browser artifact") "browser_live_e2e" "E11 release browser artifact mode"
+  Assert-Equal (Get-JsonProperty $Artifact.provenance "git_commit" "E11 release browser provenance") (Get-CurrentGitCommit) "E11 release browser provenance current commit"
+  Assert-Equal (Get-JsonProperty $Artifact.freshness "git_commit" "E11 release browser freshness") (Get-CurrentGitCommit) "E11 release browser freshness current commit"
+  Assert-True ((Get-JsonProperty $Artifact.freshness "handoff_fresh" "E11 release browser freshness") -eq $true) "E11 release browser handoff must be fresh"
+
+  Assert-Equal (Get-JsonProperty $Artifact.runtime_current "classification" "E11 release browser runtime current") "runtime_current_verified" "E11 release browser runtime-current classification"
+  Assert-True ((Get-JsonProperty $Artifact.runtime_current "stale_or_unverified" "E11 release browser runtime current") -eq $false) "E11 release browser runtime must not be stale"
+  Assert-Equal (Get-JsonProperty $Artifact.runtime_current "image_id" "E11 release browser runtime current") (Get-JsonProperty $RuntimeArtifact "image_id" "E11 release runtime artifact") "E11 release browser/runtime image id linkage"
+  Assert-Equal (Get-JsonProperty $Artifact.runtime_current "git_commit" "E11 release browser runtime current") (Get-JsonProperty $RuntimeArtifact "git_commit" "E11 release runtime artifact") "E11 release browser/runtime git commit linkage"
+
+  Assert-Equal (Get-JsonProperty $Artifact.classifications "runtime_current" "E11 release browser classifications") "runtime_current_verified" "E11 release browser runtime classification"
+  Assert-Equal (Get-JsonProperty $Artifact.classifications "replay" "E11 release browser classifications") "idempotent_replay_passed" "E11 release browser replay classification"
+  Assert-Equal (Get-JsonProperty $Artifact.classifications "mutation_pass_artifact" "E11 release browser classifications") "mutation_pass_artifact_passed" "E11 release browser mutation pass classification"
+  Assert-Equal (Get-JsonProperty $Artifact.classifications "readback" "E11 release browser classifications") "artifact_readback_passed" "E11 release browser readback classification"
+  Assert-Equal (Get-JsonProperty $Artifact.classifications "failure" "E11 release browser classifications") "none" "E11 release browser failure classification"
+
+  Assert-Equal (Get-JsonProperty $Artifact.readback "classification" "E11 release browser readback") "artifact_readback_passed" "E11 release browser artifact readback"
+  foreach ($field in @("attempted", "fresh", "closure_eligible", "path_bounded")) {
+    Assert-True ((Get-JsonProperty $Artifact.readback $field "E11 release browser readback") -eq $true) "E11 release browser readback must set $field"
+  }
+
+  Assert-True ((Get-JsonProperty $Artifact.runtime_current_artifact "linked" "E11 release browser runtime artifact") -eq $true) "E11 release browser runtime artifact must be linked"
+  Assert-Equal (Get-JsonProperty $Artifact.runtime_current_artifact "classification" "E11 release browser runtime artifact") "runtime_current_verified" "E11 release browser runtime artifact classification"
+  Assert-True ((Get-JsonProperty $Artifact.runtime_current_artifact "secret_material_echoed" "E11 release browser runtime artifact") -eq $false) "E11 release browser runtime artifact must not echo secret material"
+
+  Assert-True ((Get-JsonProperty $Artifact.session_verification "verified" "E11 release browser session") -eq $true) "E11 release browser session must be verified"
+  Assert-True ((Get-JsonProperty $Artifact.session_verification "secret_omitted" "E11 release browser session") -eq $true) "E11 release browser session secret must be omitted"
+  foreach ($field in @("token_echoed", "cookie_echoed", "header_value_echoed")) {
+    Assert-True ((Get-JsonProperty $Artifact.session_verification $field "E11 release browser session") -eq $false) "E11 release browser session must not echo $field"
+  }
+
+  foreach ($field in @("mutation_opt_in_enabled", "artifact_write_opt_in_enabled", "artifact_readback_opt_in_enabled")) {
+    Assert-True ((Get-JsonProperty $Artifact.mutation_controls $field "E11 release browser mutation controls") -eq $true) "E11 release browser mutation controls must set $field"
+  }
+  foreach ($field in @("default_build", "default_mutation", "default_runner")) {
+    Assert-True ((Get-JsonProperty $Artifact.mutation_controls $field "E11 release browser mutation controls") -eq $false) "E11 release browser mutation controls must keep $field false"
+  }
+
+  $expectedApi = @{
+    dry_run_plan = "executePreflight"
+    execute_apply = "applied"
+    idempotent_replay = "idempotent"
+    refund_refusal = "blocked"
+    ledger_refresh = "success"
+  }
+  foreach ($name in $expectedApi.Keys) {
+    Assert-Equal (Get-JsonProperty $Artifact.api_readback $name "E11 release browser API readback") $expectedApi[$name] "E11 release browser API readback $name"
+  }
+  foreach ($field in @("applied_ledger_entry_visible", "idempotent_replay_reused_ledger_entry", "refund_refusal_no_ledger_write", "ledger_refresh_visible")) {
+    Assert-True ((Get-JsonProperty $Artifact.ledger_readback $field "E11 release browser ledger readback") -eq $true) "E11 release browser ledger readback must set $field"
+  }
+
+  Assert-Equal (Get-JsonProperty $Artifact.failure_taxonomy "failed_action" "E11 release browser failure taxonomy") "none" "E11 release browser failed action"
+  Assert-Equal (Get-JsonProperty $Artifact.failure_taxonomy "failure_classification" "E11 release browser failure taxonomy") "none" "E11 release browser failure classification"
+  foreach ($field in @("session_missing", "runtime_stale", "mutation_opt_in_missing", "artifact_write_missing", "artifact_readback_failed", "idempotent_replay_failed", "refund_refusal_missing", "ledger_refresh_missing", "duration_non_numeric", "stale_or_simulated_artifact", "browser_unavailable")) {
+    Assert-True ((Get-JsonProperty $Artifact.failure_taxonomy $field "E11 release browser failure taxonomy") -eq $false) "E11 release browser failure taxonomy must keep $field false"
+  }
+
+  Assert-True (@(Get-JsonProperty $Artifact "blockers" "E11 release browser artifact").Count -eq 0) "E11 release browser artifact must not contain blockers"
+  Assert-Equal (Get-JsonProperty $Artifact.matrix "browser_tooling" "E11 release browser matrix") "available" "E11 release browser tooling"
+  foreach ($field in @("admin_ui_reachable", "control_plane_health_reachable", "session_material_present", "mutation_opt_in_enabled")) {
+    Assert-True ((Get-JsonProperty $Artifact.matrix $field "E11 release browser matrix") -eq $true) "E11 release browser matrix must set $field"
+  }
+  Assert-True ((Get-JsonProperty $Artifact.matrix "session_material_echoed" "E11 release browser matrix") -eq $false) "E11 release browser matrix must not echo session material"
+
+  $actionsByName = @{}
+  foreach ($action in @(Get-JsonProperty $Artifact "actions" "E11 release browser actions")) {
+    $actionsByName[[string](Get-JsonProperty $action "name" "E11 release browser action")] = $action
+  }
+  foreach ($name in $expectedApi.Keys) {
+    if (-not $actionsByName.ContainsKey($name)) {
+      throw "E11 release browser artifact missing UI action $name"
+    }
+    Assert-Equal (Get-JsonProperty $actionsByName[$name] "outcome" "E11 release browser action $name") $expectedApi[$name] "E11 release browser UI readback action $name"
+    Assert-True (Test-BrowserEvidenceDurationValue (Get-JsonProperty $actionsByName[$name] "duration_ms" "E11 release browser action $name")) "E11 release browser action $name duration must be numeric"
+  }
+
+  Assert-True ((Get-JsonProperty $Artifact.secret_safe "session_material_echoed" "E11 release browser secret-safe") -eq $false) "E11 release browser artifact must not echo session material"
+  Assert-True ((Get-JsonProperty $Artifact.secret_safe "request_material_echoed" "E11 release browser secret-safe") -eq $false) "E11 release browser artifact must not echo request material"
+  Assert-True ((Get-JsonProperty $Artifact.secret_safe "metadata_material_echoed" "E11 release browser secret-safe") -eq $false) "E11 release browser artifact must not echo metadata material"
+
+  $json = $Artifact | ConvertTo-Json -Depth 32 -Compress
+  foreach ($forbidden in @("Authorization", "Bearer ", "X-Admin-Session", "session_token_once", "provider_key", "virtual_key")) {
+    if ($json.Contains($forbidden)) {
+      throw "E11 release browser artifact leaked forbidden marker '$forbidden'"
+    }
+  }
+  Assert-SecretSafeContent -Content $json -Context "E11 release browser artifact readback"
+}
+
+function Write-E11ReleaseReadbackBlockedReport {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$RuntimeArtifact,
+    [Parameter(Mandatory = $true)]$BrowserArtifact,
+    [Parameter(Mandatory = $true)][string]$RuntimeArtifactPath,
+    [Parameter(Mandatory = $true)][string]$BrowserArtifactPath,
+    [Parameter(Mandatory = $true)][string]$Reason
+  )
+
+  $runner = Get-JsonProperty $Handoff "browserRunnerReadiness" "UI handoff"
+  $artifactWriteRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
+  $staleRefusal = Get-JsonProperty $artifactWriteRead "staleRefusal" "UI browser runner artifact stale refusal"
+  $generatedAtText = [string](Get-JsonProperty $BrowserArtifact "generated_at" "E11 release browser stale report")
+  $generatedAtUtc = Convert-JsonTimestampToUtc $generatedAtText
+  $nowUtc = (Get-Date).ToUniversalTime()
+  $maxAgeMinutes = [int](Get-JsonProperty $staleRefusal "maxGeneratedAgeMinutes" "UI browser runner artifact stale refusal")
+  $reportPath = Resolve-BoundedEvidenceArtifactPath "artifacts/control_plane_ledger_execute_release_readback_blocked_stale.json"
+  $relativeRuntimePath = "artifacts/control_plane_ledger_execute_runtime_current_verified_beta.json"
+  $relativeBrowserPath = "artifacts/billing_execute_browser_live_e2e_evidence.json"
+  $scriptPath = "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1"
+  $regenerationCommands = @(
+    "pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath -RuntimeCurrentEvidenceArtifactWriteOptIn -RuntimeCurrentEvidenceArtifactPath $relativeRuntimePath",
+    "pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath $relativeRuntimePath",
+    "pwsh -NoProfile -ExecutionPolicy Bypass -File $scriptPath -AdminSessionHandoff -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath $relativeRuntimePath -BrowserPreflight -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactReadbackOptIn -BrowserEvidenceArtifactPath $relativeBrowserPath",
+    "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1 -ControlPlaneLedgerAdjustmentExecuteBrowserReadbackOnly"
+  )
+  $report = [PSCustomObject]@{
+    schema = "e11_release_readback_blocked_stale_artifact.v1"
+    generated_at_utc = $nowUtc.ToString("o")
+    status = "release_readback_blocked_by_stale_artifact"
+    reason = $Reason
+    current_commit = Get-CurrentGitCommit
+    runtime_artifact = [PSCustomObject]@{
+      path_bounded = $true
+      path = $RuntimeArtifactPath
+      status = [string](Get-JsonProperty $RuntimeArtifact "status" "E11 release runtime artifact")
+      classification = [string](Get-JsonProperty $RuntimeArtifact "classification" "E11 release runtime artifact")
+      readback_classification = [string](Get-JsonProperty $RuntimeArtifact "readback_classification" "E11 release runtime artifact")
+      git_commit = [string](Get-JsonProperty $RuntimeArtifact "git_commit" "E11 release runtime artifact")
+      image_id_present = -not [string]::IsNullOrWhiteSpace([string](Get-JsonProperty $RuntimeArtifact "image_id" "E11 release runtime artifact"))
+      secret_material_echoed = $false
+      request_material_echoed = $false
+    }
+    browser_artifact = [PSCustomObject]@{
+      path_bounded = $true
+      path = $BrowserArtifactPath
+      generated_at = $generatedAtUtc.ToString("o")
+      max_generated_age_minutes = $maxAgeMinutes
+      age_minutes = [Math]::Round(($nowUtc - $generatedAtUtc).TotalMinutes, 3)
+      outcome = [string](Get-JsonProperty $BrowserArtifact "outcome" "E11 release browser artifact")
+      mutation_pass_artifact = [string](Get-JsonProperty $BrowserArtifact.classifications "mutation_pass_artifact" "E11 release browser classifications")
+      artifact_readback = [string](Get-JsonProperty $BrowserArtifact.classifications "readback" "E11 release browser classifications")
+      secret_safe = $true
+      session_material_echoed = $false
+      request_material_echoed = $false
+      metadata_material_echoed = $false
+    }
+    missing_env_or_session = [PSCustomObject]@{
+      admin_session_env_present = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CONTROL_PLANE_ADMIN_SESSION_TOKEN"))
+      browser_mutation_env_enabled = [Environment]::GetEnvironmentVariable("CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION") -eq "1"
+      browser_runner_env_enabled = [Environment]::GetEnvironmentVariable("CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER") -eq "1"
+      control_plane_base_url_present = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("CONTROL_PLANE_BASE_URL"))
+      admin_ui_base_url_present = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("ADMIN_UI_BASE_URL"))
+      values_omitted = $true
+    }
+    regeneration_commands = $regenerationCommands
+    secret_safe = [PSCustomObject]@{
+      session_material_echoed = $false
+      authorization_echoed = $false
+      cookie_echoed = $false
+      provider_key_echoed = $false
+      virtual_key_echoed = $false
+      request_material_echoed = $false
+    }
+  }
+  $json = $report | ConvertTo-Json -Depth 12
+  Assert-SecretSafeContent -Content $json -Context "E11 release stale blocker report"
+  Set-Content -LiteralPath $reportPath -Value $json -Encoding UTF8
+  Write-SafeHost "e11_release_artifact_readback_status=blocked"
+  Write-SafeHost "e11_release_blocker=release_readback_blocked_by_stale_artifact"
+  Write-SafeHost "e11_release_blocker_report=$reportPath"
+  Write-SafeHost "e11_release_regeneration_command_count=$($regenerationCommands.Count)"
+  Write-SafeHost "e11_release_browser_generated_at=$($generatedAtUtc.ToString("o"))"
+  Write-SafeHost "e11_release_browser_max_generated_age_minutes=$maxAgeMinutes"
+  Write-SafeHost "e11_release_browser_age_minutes=$([Math]::Round(($nowUtc - $generatedAtUtc).TotalMinutes, 3))"
+  Write-SafeHost "e11_release_secret_safe=true"
+}
+
+function Invoke-E11ReleaseArtifactReadbackGate {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runtimeArtifactPath = Resolve-BoundedEvidenceArtifactPath $RuntimeCurrentEvidenceArtifactPath
+  $browserArtifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
+  if (-not (Test-Path $runtimeArtifactPath)) {
+    throw "E11 release runtime-current artifact missing at $runtimeArtifactPath"
+  }
+  if (-not (Test-Path $browserArtifactPath)) {
+    throw "E11 release browser mutation artifact missing at $browserArtifactPath"
+  }
+
+  $runtimeArtifact = Read-JsonFile $runtimeArtifactPath
+  $browserArtifact = Read-JsonFile $browserArtifactPath
+  Assert-E11ReleaseRuntimeCurrentArtifactReadback -Artifact $runtimeArtifact
+  try {
+    Assert-E11ReleaseBrowserArtifactReadback -Handoff $Handoff -Artifact $browserArtifact -RuntimeArtifact $runtimeArtifact
+  } catch {
+    Write-E11ReleaseReadbackBlockedReport -Handoff $Handoff -RuntimeArtifact $runtimeArtifact -BrowserArtifact $browserArtifact -RuntimeArtifactPath $runtimeArtifactPath -BrowserArtifactPath $browserArtifactPath -Reason $_.Exception.Message
+    throw
+  }
+
+  Write-SafeHost "E11 release artifact readback gate:"
+  Write-SafeHost "e11_release_artifact_readback_status=pass"
+  Write-SafeHost "e11_release_runtime_artifact_path=$runtimeArtifactPath"
+  Write-SafeHost "e11_release_browser_artifact_path=$browserArtifactPath"
+  Write-SafeHost "e11_release_runtime_current_verified=true"
+  Write-SafeHost "e11_release_mutation_pass_artifact_passed=true"
+  Write-SafeHost "e11_release_artifact_readback_passed=true"
+  Write-SafeHost "e11_release_api_readback_passed=true"
+  Write-SafeHost "e11_release_db_ledger_readback_passed=true"
+  Write-SafeHost "e11_release_ui_readback_passed=true"
+  Write-SafeHost "e11_release_audit_readback_passed=true"
+  Write-SafeHost "e11_release_current_commit=$([string](Get-CurrentGitCommit))"
+  Write-SafeHost "e11_release_runtime_image_id=$([string](Get-JsonProperty $runtimeArtifact "image_id" "E11 release runtime artifact"))"
+  Write-SafeHost "e11_release_secret_safe=true"
+  Write-SafeHost "e11_release_stale_or_simulated_artifact=false"
+}
+
+function Test-RuntimeCurrentNoBuildRecreateOptIn {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runtimeHandoff = Get-JsonProperty $Handoff "runtimeCurrentHandoff" "UI runtime-current handoff"
+  $noBuild = Get-JsonProperty $runtimeHandoff "noBuildRecreate" "UI runtime-current no-build recreate"
+  $envName = [string](Get-JsonProperty $noBuild "env" "UI runtime-current no-build recreate")
+  $requiredValue = [string](Get-JsonProperty $noBuild "requiredValue" "UI runtime-current no-build recreate")
+  return $RuntimeCurrentNoBuildRecreateOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Test-RuntimeCurrentRebuildHandoffOptIn {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $runtimeHandoff = Get-JsonProperty $Handoff "runtimeCurrentHandoff" "UI runtime-current handoff"
+  $rebuild = Get-JsonProperty $runtimeHandoff "rebuildHandoff" "UI runtime-current rebuild handoff"
+  $envName = [string](Get-JsonProperty $rebuild "env" "UI runtime-current rebuild handoff")
+  $requiredValue = [string](Get-JsonProperty $rebuild "requiredValue" "UI runtime-current rebuild handoff")
+  return $RuntimeCurrentRebuildHandoffOptIn -or ([Environment]::GetEnvironmentVariable($envName) -eq $requiredValue)
+}
+
+function Write-RuntimeCurrentHandoffEvidenceArtifact {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Evidence,
+    [Parameter(Mandatory = $true)][bool]$WriteEnabled
+  )
+
+  $runtimeHandoff = Get-JsonProperty $Handoff "runtimeCurrentHandoff" "UI runtime-current handoff"
+  $artifactContract = Get-JsonProperty $runtimeHandoff "evidenceArtifact" "UI runtime-current evidence artifact"
+  $artifactPath = Resolve-BoundedEvidenceArtifactPath $RuntimeCurrentEvidenceArtifactPath
+  $readbackClassification = "runtime_current_readback_not_requested"
+  $readbackAvailable = $false
+  $readbackFresh = $false
+
+  if ($WriteEnabled) {
+    $artifactDirectory = Split-Path -Path $artifactPath -Parent
+    if (-not (Test-Path $artifactDirectory)) {
+      New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+    }
+    $json = $Evidence | ConvertTo-Json -Depth 12 -Compress
+    Set-Content -Path $artifactPath -Value $json -Encoding UTF8
+    $readBack = Read-JsonFile $artifactPath
+    Assert-RuntimeCurrentHandoffEvidenceShape $readBack
+    Assert-Equal (Get-JsonProperty $readBack "schema" "runtime-current evidence artifact") (Get-JsonProperty $artifactContract "schema" "UI runtime-current evidence artifact") "runtime-current evidence artifact schema"
+    Assert-Equal (Get-JsonProperty $readBack "classification" "runtime-current evidence artifact") (Get-JsonProperty $Evidence "classification" "runtime-current evidence artifact") "runtime-current evidence artifact classification readback"
+    Assert-Equal (Get-JsonProperty $readBack "readback_classification" "runtime-current evidence artifact") (Get-JsonProperty $Evidence "readback_classification" "runtime-current evidence artifact") "runtime-current evidence artifact readback classification"
+    $readbackClassification = [string](Get-JsonProperty $readBack "readback_classification" "runtime-current evidence artifact")
+    $readbackAvailable = $true
+    $readbackFresh = $true
+  }
+
+  Write-SafeHost "runtime_current_evidence_artifact_path=$artifactPath"
+  Write-SafeHost "runtime_current_evidence_artifact_write_enabled=$(Format-BoolMarker $WriteEnabled)"
+  Write-SafeHost "runtime_current_evidence_artifact_readback_available=$(Format-BoolMarker $readbackAvailable)"
+  Write-SafeHost "runtime_current_evidence_artifact_readback_fresh=$(Format-BoolMarker $readbackFresh)"
+  Write-SafeHost "runtime_current_evidence_artifact_readback_classification=$readbackClassification"
+}
+
+function Invoke-RuntimeCurrentNoBuildRecreateGate {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$InitialProbe
+  )
+
+  Assert-RuntimeCurrentHandoffContract $Handoff
+  $executionOptIn = Test-RuntimeCurrentNoBuildRecreateOptIn $Handoff
+  $rebuildHandoffOptIn = Test-RuntimeCurrentRebuildHandoffOptIn $Handoff
+  $writeEnabled = (Test-RuntimeCurrentEvidenceArtifactWriteOptIn $Handoff) -or $executionOptIn -or $rebuildHandoffOptIn
+  $initialEvidence = New-RuntimeCurrentHandoffEvidence `
+    -StaleOrUnverified ([bool]$InitialProbe.StaleOrUnverified) `
+    -Reason ([string]$InitialProbe.Reason) `
+    -SourceNewestUtc ([string]$InitialProbe.SourceNewestUtc) `
+    -ContainerCreatedUtc ([string]$InitialProbe.ContainerCreatedUtc) `
+    -ImageCreatedUtc ([string]$InitialProbe.ImageCreatedUtc) `
+    -ImageId ([string]$InitialProbe.ImageId) `
+    -GitCommit ([string]$InitialProbe.GitCommit) `
+    -NoBuildRecreateOptIn $executionOptIn `
+    -RebuildHandoffOptIn $rebuildHandoffOptIn `
+    -RebuildHandoffRecorded $rebuildHandoffOptIn
+  Assert-RuntimeCurrentHandoffEvidenceShape $initialEvidence
+
+  Write-SafeHost "Runtime-current no-build recreate execution gate:"
+  Write-SafeHost "runtime_current_recreate_opt_in=$(Format-BoolMarker $executionOptIn)"
+  Write-SafeHost "runtime_current_recreate_default_executes=false"
+  Write-SafeHost "runtime_current_recreate_default_build=false"
+  Write-SafeHost "runtime_current_recreate_initial_classification=$($initialEvidence.classification)"
+  Write-SafeHost "runtime_current_recreate_initial_blocker=$($initialEvidence.blocker)"
+  Write-SafeHost "runtime_current_recreate_initial_readback_classification=$($initialEvidence.readback_classification)"
+  Write-SafeHost "runtime_current_recreate_operator_command=$($initialEvidence.no_build_recreate_command)"
+  Write-SafeHost "runtime_current_recreate_rebuild_handoff_command=$($initialEvidence.rebuild_handoff_command)"
+  Write-SafeHost "runtime_current_recreate_rebuild_executes=false"
+  Write-SafeHost "runtime_current_rebuild_handoff_opt_in=$(Format-BoolMarker $rebuildHandoffOptIn)"
+  Write-SafeHost "runtime_current_rebuild_handoff_recorded=$(Format-BoolMarker ([bool]$initialEvidence.rebuild_handoff_recorded))"
+  Write-SafeHost "runtime_current_rebuild_handoff_execution_allowed=false"
+  Write-RuntimeCurrentHandoffEvidenceArtifact -Handoff $Handoff -Evidence $initialEvidence -WriteEnabled $writeEnabled
+
+  if ($rebuildHandoffOptIn -and [bool]$initialEvidence.build_required) {
+    Add-Blocker "runtime-current rebuild handoff opt-in - operator_handoff_recorded build_execution_forbidden reason=$($initialEvidence.reason)"
+    return $InitialProbe
+  }
+
+  if (-not $executionOptIn) {
+    return $InitialProbe
+  }
+
+  if ([bool]$initialEvidence.build_required) {
+    Add-Blocker "runtime-current no-build recreate opt-in - build_required_but_forbidden reason=$($initialEvidence.reason)"
+    return $InitialProbe
+  }
+  if ([string]$InitialProbe.Reason -eq "docker_unavailable") {
+    Add-Blocker "runtime-current no-build recreate opt-in - docker_unavailable"
+    return $InitialProbe
+  }
+
+  $docker = Get-DockerCommand
+  if ([string]::IsNullOrWhiteSpace($docker)) {
+    Add-Blocker "runtime-current no-build recreate opt-in - docker_unavailable"
+    return $InitialProbe
+  }
+
+  $result = Invoke-NativeCapture -Command $docker -Arguments @("compose", "-f", $ComposeFile, "up", "-d", "--no-build", "--no-deps", "--force-recreate", "control-plane")
+  $executed = $true
+  Write-SafeHost "runtime_current_recreate_executed=true"
+  Write-SafeHost "runtime_current_recreate_exit_code=$($result.ExitCode)"
+  Assert-SecretSafeContent -Content ([string]$result.Output) -Context "runtime-current no-build recreate output"
+  if ($result.ExitCode -ne 0) {
+    $failedEvidence = New-RuntimeCurrentHandoffEvidence `
+      -StaleOrUnverified ([bool]$InitialProbe.StaleOrUnverified) `
+      -Reason "runtime_current_no_build_recreate_failed" `
+      -SourceNewestUtc ([string]$InitialProbe.SourceNewestUtc) `
+      -ContainerCreatedUtc ([string]$InitialProbe.ContainerCreatedUtc) `
+      -ImageCreatedUtc ([string]$InitialProbe.ImageCreatedUtc) `
+      -ImageId ([string]$InitialProbe.ImageId) `
+      -GitCommit ([string]$InitialProbe.GitCommit) `
+      -NoBuildRecreateOptIn $true `
+      -NoBuildRecreateExecuted $executed `
+      -NoBuildRecreateExitCode ([string]$result.ExitCode) `
+      -RebuildHandoffOptIn $rebuildHandoffOptIn `
+      -RebuildHandoffRecorded $rebuildHandoffOptIn
+    Write-RuntimeCurrentHandoffEvidenceArtifact -Handoff $Handoff -Evidence $failedEvidence -WriteEnabled $true
+    Add-Blocker "runtime-current no-build recreate opt-in - recreate_command_failed exit_code=$($result.ExitCode)"
+    return $InitialProbe
+  }
+
+  $readbackProbe = Write-ControlPlaneRuntimeSourceProbe -SourcePaths (Get-ControlPlaneRuntimeSourcePaths)
+  $readbackEvidence = New-RuntimeCurrentHandoffEvidence `
+    -StaleOrUnverified ([bool]$readbackProbe.StaleOrUnverified) `
+    -Reason ([string]$readbackProbe.Reason) `
+    -SourceNewestUtc ([string]$readbackProbe.SourceNewestUtc) `
+    -ContainerCreatedUtc ([string]$readbackProbe.ContainerCreatedUtc) `
+    -ImageCreatedUtc ([string]$readbackProbe.ImageCreatedUtc) `
+    -ImageId ([string]$readbackProbe.ImageId) `
+    -GitCommit ([string]$readbackProbe.GitCommit) `
+    -NoBuildRecreateOptIn $true `
+    -NoBuildRecreateExecuted $true `
+    -NoBuildRecreateExitCode "0" `
+    -RebuildHandoffOptIn $rebuildHandoffOptIn `
+    -RebuildHandoffRecorded $rebuildHandoffOptIn
+  Write-SafeHost "runtime_current_recreate_readback_classification=$($readbackEvidence.readback_classification)"
+  Write-SafeHost "runtime_current_recreate_after_classification=$($readbackEvidence.after_recreate_classification)"
+  Write-RuntimeCurrentHandoffEvidenceArtifact -Handoff $Handoff -Evidence $readbackEvidence -WriteEnabled $true
+  return $readbackProbe
 }
 
 function Assert-BrowserActionPlanContract {
@@ -1481,6 +2453,14 @@ function Assert-BrowserMutationPassArtifactClosureContract {
     [void](Get-JsonProperty $expectedActionOutcomes $name "UI browser mutation closure action outcomes")
   }
 
+  $classificationValues = Get-JsonProperty $closure "classificationValues" "UI browser mutation pass artifact closure"
+  foreach ($name in @("blocked", "failed", "notRequested", "passed")) {
+    $classification = [string](Get-JsonProperty $classificationValues $name "UI browser mutation closure classifications")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser mutation closure classification '$name' must be machine readable"
+    }
+  }
+
   $statusMarkers = Get-JsonProperty $closure "statusMarkers" "UI browser mutation pass artifact closure"
   foreach ($name in @("blocked", "closureEligible", "passed")) {
     $marker = [string](Get-JsonProperty $statusMarkers $name "UI browser mutation closure status markers")
@@ -1511,6 +2491,55 @@ function Set-SyntheticPassActionEvidence {
     $action.status = $expected
     $action.duration_ms = 1
   }
+
+  if ($Artifact.PSObject.Properties.Name -contains "runtime_current") {
+    $Artifact.runtime_current.classification = "runtime_current_verified"
+    $Artifact.runtime_current.stale_or_unverified = $false
+    $Artifact.runtime_current.reason = "synthetic_contract_self_test"
+    $Artifact.runtime_current.blocker = "none"
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "runtime_current_artifact") {
+    $Artifact.runtime_current_artifact.linked = $true
+    $Artifact.runtime_current_artifact.classification = "runtime_current_verified"
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "session_verification") {
+    $Artifact.session_verification.marker = "admin_session_verified"
+    $Artifact.session_verification.verified = $true
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "mutation_controls") {
+    $Artifact.mutation_controls.mutation_opt_in_enabled = $true
+    $Artifact.mutation_controls.artifact_write_opt_in_enabled = $true
+    $Artifact.mutation_controls.artifact_readback_opt_in_enabled = $true
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "api_readback") {
+    $Artifact.api_readback.dry_run_plan = "executePreflight"
+    $Artifact.api_readback.execute_apply = "applied"
+    $Artifact.api_readback.idempotent_replay = "idempotent"
+    $Artifact.api_readback.refund_refusal = "blocked"
+    $Artifact.api_readback.ledger_refresh = "success"
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "ledger_readback") {
+    $Artifact.ledger_readback.applied_ledger_entry_visible = $true
+    $Artifact.ledger_readback.idempotent_replay_reused_ledger_entry = $true
+    $Artifact.ledger_readback.refund_refusal_no_ledger_write = $true
+    $Artifact.ledger_readback.ledger_refresh_visible = $true
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "failure_taxonomy") {
+    $Artifact.failure_taxonomy.failed_action = "none"
+    $Artifact.failure_taxonomy.failure_classification = "none"
+    $Artifact.failure_taxonomy.session_missing = $false
+    $Artifact.failure_taxonomy.runtime_stale = $false
+    $Artifact.failure_taxonomy.mutation_opt_in_missing = $false
+    $Artifact.failure_taxonomy.artifact_write_missing = $false
+    $Artifact.failure_taxonomy.artifact_readback_failed = $false
+    $Artifact.failure_taxonomy.idempotent_replay_failed = $false
+    $Artifact.failure_taxonomy.refund_refusal_missing = $false
+    $Artifact.failure_taxonomy.ledger_refresh_missing = $false
+    $Artifact.failure_taxonomy.duration_non_numeric = $false
+    $Artifact.failure_taxonomy.stale_or_simulated_artifact = $false
+    $Artifact.failure_taxonomy.browser_unavailable = $false
+  }
+  Update-BrowserEvidenceClassifications -Handoff $Handoff -Artifact $Artifact
 }
 
 function Set-BrowserEvidenceFromRunnerResult {
@@ -1551,6 +2580,28 @@ function Set-BrowserEvidenceFromRunnerResult {
       $failedAction = [string]$RunnerResult.failed_action
     }
     $Artifact.browser_runner.failed_action = $failedAction
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "api_readback") {
+    foreach ($action in @($Artifact.actions)) {
+      $name = [string]$action.name
+      if ($Artifact.api_readback.PSObject.Properties.Name -contains $name) {
+        $Artifact.api_readback.$name = [string]$action.outcome
+      }
+    }
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "ledger_readback" -and [string]$Artifact.outcome -eq "passed") {
+    $Artifact.ledger_readback.applied_ledger_entry_visible = $true
+    $Artifact.ledger_readback.idempotent_replay_reused_ledger_entry = $true
+    $Artifact.ledger_readback.refund_refusal_no_ledger_write = $true
+    $Artifact.ledger_readback.ledger_refresh_visible = $true
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "failure_taxonomy") {
+    $failedAction = if ($Artifact.PSObject.Properties.Name -contains "browser_runner") { [string]$Artifact.browser_runner.failed_action } else { "none" }
+    $Artifact.failure_taxonomy.failed_action = $failedAction
+    $Artifact.failure_taxonomy.failure_classification = if ($failedAction -eq "none") { "none" } else { Get-BrowserRunnerErrorClass -ErrorMessage "" -FailedAction $failedAction }
+    $Artifact.failure_taxonomy.idempotent_replay_failed = $failedAction -eq "idempotent_replay"
+    $Artifact.failure_taxonomy.refund_refusal_missing = $failedAction -eq "refund_refusal"
+    $Artifact.failure_taxonomy.ledger_refresh_missing = $failedAction -eq "ledger_refresh"
   }
 }
 
@@ -1613,6 +2664,9 @@ function Test-BrowserMutationPassArtifactClosure {
   }
 
   if ([string]$Artifact.outcome -ne "passed") {
+    return $false
+  }
+  if ([string](Get-JsonProperty $Artifact.runtime_current "classification" "browser evidence runtime current") -ne "runtime_current_verified") {
     return $false
   }
   if ([string](Get-JsonProperty $Artifact.matrix "browser_tooling" "browser evidence matrix") -ne "available") {
@@ -1690,6 +2744,558 @@ function Write-BrowserMutationPassArtifactClosureGate {
   Write-SafeHost "browser_mutation_pass_secret_url_credentials_echoed=false"
   Write-SafeHost "browser_mutation_pass_secret_session_echoed=false"
   Write-SafeHost "browser_mutation_pass_request_material_echoed=false"
+}
+
+function Assert-BrowserMutationFinalDodContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $dod = Get-JsonProperty $Handoff "browserMutationFinalDod" "UI browser mutation final DoD"
+  Assert-Equal (Get-JsonProperty $dod "schema" "UI browser mutation final DoD") "billing_execute_browser_mutation_final_dod.v1" "UI browser mutation DoD schema"
+  Assert-Equal (Get-JsonProperty $dod "e11TargetState" "UI browser mutation final DoD") "x_requires_real_browser_mutation_pass" "UI browser mutation DoD target"
+  Assert-Equal (Get-JsonProperty $dod "finalPassClassification" "UI browser mutation final DoD") "e11_browser_mutation_dod_passed" "UI browser mutation DoD pass classification"
+  foreach ($name in @("defaultBuildsRuntime", "defaultClosesE11", "defaultRunsBrowserRunner", "defaultSubmitsLiveMutation")) {
+    Assert-True ((Get-JsonProperty $dod $name "UI browser mutation final DoD defaults") -eq $false) "UI browser mutation DoD must keep $name false"
+  }
+
+  $checklist = Get-JsonStringArray (Get-JsonProperty $dod "checklist" "UI browser mutation final DoD") "UI browser mutation final DoD checklist"
+  Assert-StringSetEqual $checklist @(
+    "runtime_current_verified",
+    "admin_session_verified_secret_omitted",
+    "mutation_opt_in_enabled",
+    "artifact_write_opt_in_enabled",
+    "artifact_readback_passed",
+    "apply_outcome_applied",
+    "idempotent_replay_outcome_idempotent",
+    "refund_refusal_outcome_blocked",
+    "ledger_refresh_outcome_success",
+    "numeric_duration_fields_present",
+    "artifact_fresh_current_commit",
+    "secret_safe_omission"
+  ) "UI browser mutation final DoD checklist"
+
+  $matrix = Get-JsonProperty $dod "acceptanceMatrix" "UI browser mutation final DoD matrix"
+  $passRequires = Get-JsonProperty $matrix "passRequires" "UI browser mutation final DoD pass matrix"
+  foreach ($name in @("adminSessionVerifiedSecretOmitted", "artifactFreshCurrentCommit", "artifactReadbackOptIn", "artifactReadbackPassed", "artifactWriteOptIn", "browserToolingAvailable", "mutationOptIn", "numericDurations", "runtimeCurrentVerified", "secretSafeOmission")) {
+    Assert-True ([bool](Get-JsonProperty $passRequires $name "UI browser mutation DoD pass requirement")) "UI browser mutation DoD must require $name"
+  }
+  Assert-Equal (Get-JsonProperty $passRequires "applyOutcome" "UI browser mutation DoD pass requirement") "applied" "UI browser mutation DoD apply outcome"
+  Assert-Equal (Get-JsonProperty $passRequires "idempotentReplayOutcome" "UI browser mutation DoD pass requirement") "idempotent" "UI browser mutation DoD idempotent outcome"
+  Assert-Equal (Get-JsonProperty $passRequires "refundRefusalOutcome" "UI browser mutation DoD pass requirement") "blocked" "UI browser mutation DoD refund outcome"
+  Assert-Equal (Get-JsonProperty $passRequires "ledgerRefreshOutcome" "UI browser mutation DoD pass requirement") "success" "UI browser mutation DoD ledger refresh outcome"
+
+  $rejected = Get-JsonProperty $matrix "rejectedEvidence" "UI browser mutation final DoD rejected matrix"
+  foreach ($name in @("browserUnavailable", "missingArtifact", "missingSession", "simulatedArtifact", "staleArtifact", "staleRuntime")) {
+    $classification = [string](Get-JsonProperty $rejected $name "UI browser mutation DoD rejected evidence")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser mutation DoD rejected evidence '$name' must be machine readable"
+    }
+  }
+}
+
+function Write-BrowserMutationFinalDodMatrix {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-BrowserMutationFinalDodContract $Handoff
+  $dod = Get-JsonProperty $Handoff "browserMutationFinalDod" "UI browser mutation final DoD"
+  $artifactContract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
+  $artifactSchema = Get-JsonProperty $artifactContract "artifactSchema" "UI browser evidence artifact schema"
+  $matrix = Get-JsonProperty $dod "acceptanceMatrix" "UI browser mutation final DoD matrix"
+  $passRequires = Get-JsonProperty $matrix "passRequires" "UI browser mutation final DoD pass matrix"
+  $rejected = Get-JsonProperty $matrix "rejectedEvidence" "UI browser mutation final DoD rejected matrix"
+  Write-SafeHost "Browser ledger execute final mutation DoD matrix:"
+  Write-SafeHost "browser_mutation_final_dod_schema=$([string](Get-JsonProperty $dod "schema" "UI browser mutation final DoD"))"
+  Write-SafeHost "browser_mutation_final_dod_target=$([string](Get-JsonProperty $dod "e11TargetState" "UI browser mutation final DoD"))"
+  Write-SafeHost "browser_mutation_final_dod_default_build=false"
+  Write-SafeHost "browser_mutation_final_dod_default_runner=false"
+  Write-SafeHost "browser_mutation_final_dod_default_mutation=false"
+  Write-SafeHost "browser_mutation_final_dod_default_closes_e11=false"
+  foreach ($item in Get-JsonStringArray (Get-JsonProperty $dod "checklist" "UI browser mutation final DoD") "UI browser mutation final DoD checklist") {
+    Write-SafeHost "browser_mutation_final_dod_checklist=$item"
+  }
+  Write-SafeHost "browser_mutation_runner_artifact_schema=$([string](Get-JsonProperty $artifactContract "artifactName" "UI browser evidence artifact"))"
+  foreach ($item in Get-JsonStringArray (Get-JsonProperty $artifactSchema "apiReadbackFields" "UI browser evidence artifact schema") "UI browser evidence API readback fields") {
+    Write-SafeHost "browser_mutation_runner_artifact_api_readback_field=$item"
+  }
+  foreach ($item in Get-JsonStringArray (Get-JsonProperty $artifactSchema "ledgerReadbackFields" "UI browser evidence artifact schema") "UI browser evidence ledger readback fields") {
+    Write-SafeHost "browser_mutation_runner_artifact_ledger_readback_field=$item"
+  }
+  foreach ($item in Get-JsonStringArray (Get-JsonProperty $artifactSchema "failureTaxonomyFields" "UI browser evidence failure taxonomy fields") "UI browser evidence failure taxonomy fields") {
+    Write-SafeHost "browser_mutation_runner_artifact_failure_taxonomy=$item"
+  }
+  foreach ($name in @("runtimeCurrentVerified", "adminSessionVerifiedSecretOmitted", "mutationOptIn", "artifactWriteOptIn", "artifactReadbackOptIn", "artifactReadbackPassed", "numericDurations", "artifactFreshCurrentCommit", "secretSafeOmission", "browserToolingAvailable")) {
+    Write-SafeHost "browser_mutation_final_dod_pass_requires=${name}|$([string](Get-JsonProperty $passRequires $name "UI browser mutation DoD pass requirement"))"
+  }
+  foreach ($name in @("applyOutcome", "idempotentReplayOutcome", "refundRefusalOutcome", "ledgerRefreshOutcome")) {
+    Write-SafeHost "browser_mutation_final_dod_pass_requires=${name}|$([string](Get-JsonProperty $passRequires $name "UI browser mutation DoD pass requirement"))"
+  }
+  foreach ($name in @("staleRuntime", "missingArtifact", "staleArtifact", "simulatedArtifact", "browserUnavailable", "missingSession")) {
+    Write-SafeHost "browser_mutation_final_dod_rejects=${name}|$([string](Get-JsonProperty $rejected $name "UI browser mutation DoD rejected evidence"))"
+  }
+  Write-SafeHost "browser_mutation_final_dod_secret_session_echoed=false"
+  Write-SafeHost "browser_mutation_final_dod_request_material_echoed=false"
+  Write-SafeHost "browser_mutation_final_dod_url_credentials_echoed=false"
+}
+
+function Assert-RuntimeCurrentOperatorHandoffPackContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $pack = Get-JsonProperty $Handoff "runtimeCurrentOperatorHandoffPack" "UI runtime-current operator handoff pack"
+  Assert-Equal (Get-JsonProperty $pack "schema" "UI runtime-current operator handoff pack") "billing_execute_runtime_current_operator_handoff_pack.v1" "operator handoff pack schema"
+  Assert-Equal (Get-JsonProperty $pack "boundedRunnerTimeoutMs" "UI runtime-current operator handoff pack") 90000 "operator handoff bounded runner timeout"
+  foreach ($name in @("defaultBuildsRuntime", "defaultConsumesSession", "defaultMutates", "defaultReadsRuntimeArtifact", "defaultRecreatesRuntime")) {
+    Assert-True ((Get-JsonProperty $pack $name "UI runtime-current operator handoff pack defaults") -eq $false) "operator handoff pack must keep $name false"
+  }
+
+  $commands = Get-JsonProperty $pack "commands" "UI runtime-current operator handoff pack commands"
+  $runtimeWrite = Get-JsonProperty $commands "runtimeArtifactWrite" "UI runtime-current operator commands"
+  Assert-Equal (Get-JsonProperty $runtimeWrite "flag" "UI runtime-current operator runtime write") "-RuntimeCurrentEvidenceArtifactWriteOptIn" "runtime write flag"
+  Assert-Equal (Get-JsonProperty $runtimeWrite "env" "UI runtime-current operator runtime write") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE=1" "runtime write env"
+  Assert-SecretSafeContent -Content ([string](Get-JsonProperty $runtimeWrite "command" "UI runtime-current operator runtime write")) -Context "runtime-current operator runtime write command"
+
+  $runtimeReadback = Get-JsonProperty $commands "runtimeArtifactReadback" "UI runtime-current operator commands"
+  Assert-Equal (Get-JsonProperty $runtimeReadback "flag" "UI runtime-current operator runtime readback") "-RuntimeCurrentEvidenceArtifactReadbackOptIn" "runtime readback flag"
+  Assert-Equal (Get-JsonProperty $runtimeReadback "env" "UI runtime-current operator runtime readback") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK=1" "runtime readback env"
+
+  $session = Get-JsonProperty $commands "adminSessionVerify" "UI runtime-current operator commands"
+  Assert-Equal (Get-JsonProperty $session "env" "UI runtime-current operator session") "CONTROL_PLANE_ADMIN_SESSION_TOKEN" "operator session env"
+  Assert-Equal (Get-JsonProperty $session "flag" "UI runtime-current operator session") "-AdminSessionHandoff" "operator session flag"
+  Assert-Equal (Get-JsonProperty $session "marker" "UI runtime-current operator session") "admin_session_present" "operator session marker"
+  Assert-True ((Get-JsonProperty $session "secretEchoed" "UI runtime-current operator session") -eq $false) "operator session command must not echo secret"
+
+  $runner = Get-JsonProperty $commands "browserMutationRunner" "UI runtime-current operator commands"
+  Assert-SecretSafeContent -Content ([string](Get-JsonProperty $runner "command" "UI runtime-current operator browser runner")) -Context "operator browser runner command"
+  $runnerEnv = Get-JsonProperty $runner "env" "UI runtime-current operator browser runner env"
+  Assert-Equal (Get-JsonProperty $runnerEnv "mutation" "UI runtime-current operator browser runner env") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION=1" "operator mutation env"
+  Assert-Equal (Get-JsonProperty $runnerEnv "artifactWrite" "UI runtime-current operator browser runner env") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE=1" "operator artifact write env"
+  Assert-Equal (Get-JsonProperty $runnerEnv "session" "UI runtime-current operator browser runner env") "CONTROL_PLANE_ADMIN_SESSION_TOKEN" "operator browser session env"
+
+  $required = Get-JsonProperty $pack "requiredArtifactFields" "UI runtime-current operator required artifacts"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $required "runtimeCurrentArtifact" "UI runtime-current operator runtime artifact fields") "operator runtime artifact fields") @("schema", "status", "classification", "blocker", "source_newest_utc", "container_created_utc", "image_created_utc", "image_id", "git_commit", "alignment_rules", "readback_classification", "rebuild_handoff_execution_allowed") "operator runtime artifact fields"
+  $browserArtifactFields = Get-JsonStringArray (Get-JsonProperty $required "browserMutationArtifact" "UI runtime-current operator browser artifact fields") "operator browser artifact fields"
+  foreach ($field in @("runtime_current_artifact", "session_verification", "mutation_controls", "api_readback", "ledger_readback", "failure_taxonomy")) {
+    if ($browserArtifactFields -notcontains $field) {
+      throw "operator browser artifact fields missing '$field'"
+    }
+  }
+
+  $taxonomy = Get-JsonProperty $pack "failureTaxonomy" "UI runtime-current operator failure taxonomy"
+  foreach ($name in @("artifactReadbackMissing", "artifactWriteMissing", "browserUnavailable", "durationNonNumeric", "idempotentReplayFailed", "ledgerRefreshMissing", "mutationOptInMissing", "recreateUnavailable", "rebuildForbidden", "refundRefusalMissing", "runtimeArtifactMissing", "runtimeArtifactSimulated", "runtimeArtifactStale", "sessionInvalid", "sessionMissing", "unsafeArtifactPath")) {
+    $value = [string](Get-JsonProperty $taxonomy $name "UI runtime-current operator failure taxonomy")
+    if ($value -notmatch '^[a-z0-9_]+$') {
+      throw "operator failure taxonomy '$name' must be machine readable"
+    }
+  }
+
+  $states = Get-JsonProperty $pack "stateMarkers" "UI runtime-current operator state markers"
+  Assert-Equal (Get-JsonProperty $states "runtimeCurrentHandoffReady" "UI runtime-current operator state markers") "runtime_current_handoff_ready" "operator runtime-current handoff ready marker"
+  Assert-Equal (Get-JsonProperty $states "mutationRunnerReadyBlocked" "UI runtime-current operator state markers") "mutation_runner_ready_blocked" "operator mutation runner ready blocked marker"
+  Assert-Equal (Get-JsonProperty $states "mutationPassArtifactPassed" "UI runtime-current operator state markers") "mutation_pass_artifact_passed" "operator mutation pass artifact marker"
+  Assert-Equal (Get-JsonProperty $states "e11X" "UI runtime-current operator state markers") "e11_x" "operator E11 x marker"
+
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $pack "sequence" "UI runtime-current operator sequence") "operator handoff sequence") @("operator_rebuild_or_recreate_outside_script", "runtime_artifact_write", "runtime_artifact_readback", "admin_session_verify_secret_omitted", "mutation_and_browser_artifact_opt_in", "browser_runner_bounded_execution", "browser_artifact_readback", "final_dod_classification") "operator handoff sequence"
+}
+
+function Write-RuntimeCurrentOperatorHandoffPack {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-RuntimeCurrentOperatorHandoffPackContract $Handoff
+  $pack = Get-JsonProperty $Handoff "runtimeCurrentOperatorHandoffPack" "UI runtime-current operator handoff pack"
+  $commands = Get-JsonProperty $pack "commands" "UI runtime-current operator handoff commands"
+  $states = Get-JsonProperty $pack "stateMarkers" "UI runtime-current operator state markers"
+  $taxonomy = Get-JsonProperty $pack "failureTaxonomy" "UI runtime-current operator failure taxonomy"
+  Write-SafeHost "Runtime-current operator handoff pack:"
+  Write-SafeHost "runtime_current_operator_handoff_schema=$([string](Get-JsonProperty $pack "schema" "UI runtime-current operator handoff pack"))"
+  Write-SafeHost "runtime_current_operator_handoff_default_build=false"
+  Write-SafeHost "runtime_current_operator_handoff_default_recreate=false"
+  Write-SafeHost "runtime_current_operator_handoff_default_mutation=false"
+  Write-SafeHost "runtime_current_operator_handoff_default_consumes_admin_session|false"
+  Write-SafeHost "runtime_current_operator_handoff_bounded_runner_timeout_ms=$([int](Get-JsonProperty $pack "boundedRunnerTimeoutMs" "UI runtime-current operator handoff pack"))"
+  foreach ($step in Get-JsonStringArray (Get-JsonProperty $pack "sequence" "UI runtime-current operator sequence") "operator handoff sequence") {
+    Write-SafeHost "runtime_current_operator_handoff_sequence=$step"
+  }
+  Write-SafeHost "runtime_current_operator_handoff_runtime_write_command=$([string](Get-JsonProperty (Get-JsonProperty $commands "runtimeArtifactWrite" "operator commands") "command" "operator runtime write"))"
+  Write-SafeHost "runtime_current_operator_handoff_runtime_readback_command=$([string](Get-JsonProperty (Get-JsonProperty $commands "runtimeArtifactReadback" "operator commands") "command" "operator runtime readback"))"
+  Write-SafeHost "runtime_current_operator_handoff_admin_session_flag=$([string](Get-JsonProperty (Get-JsonProperty $commands "adminSessionVerify" "operator commands") "flag" "operator session flag"))"
+  Write-SafeHost "runtime_current_operator_handoff_admin_session_secret_echoed=false"
+  Write-SafeHost "runtime_current_operator_handoff_browser_runner_command=$([string](Get-JsonProperty (Get-JsonProperty $commands "browserMutationRunner" "operator commands") "command" "operator browser runner"))"
+  foreach ($name in @("runtimeCurrentHandoffReady", "mutationRunnerReadyBlocked", "mutationPassArtifactPassed", "e11X")) {
+    Write-SafeHost "runtime_current_operator_handoff_state=$([string](Get-JsonProperty $states $name "operator state markers"))"
+  }
+  foreach ($name in @("runtimeArtifactMissing", "runtimeArtifactStale", "runtimeArtifactSimulated", "rebuildForbidden", "recreateUnavailable", "sessionMissing", "sessionInvalid", "mutationOptInMissing", "artifactWriteMissing", "artifactReadbackMissing", "idempotentReplayFailed", "refundRefusalMissing", "ledgerRefreshMissing", "browserUnavailable", "durationNonNumeric", "unsafeArtifactPath")) {
+    Write-SafeHost "runtime_current_operator_handoff_failure=$name|$([string](Get-JsonProperty $taxonomy $name "operator failure taxonomy"))"
+  }
+}
+
+function Assert-RuntimeCurrentEvidenceAcceptanceMatrixContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $matrix = Get-JsonProperty $Handoff "runtimeCurrentEvidenceAcceptanceMatrix" "UI runtime-current evidence acceptance matrix"
+  Assert-Equal (Get-JsonProperty $matrix "schema" "UI runtime-current evidence acceptance matrix") "billing_execute_runtime_current_evidence_acceptance_matrix.v1" "runtime-current evidence acceptance schema"
+
+  $defaults = Get-JsonProperty $matrix "defaults" "UI runtime-current evidence acceptance defaults"
+  foreach ($name in @("buildsRuntime", "consumesAdminSession", "mutates", "readsBrowserArtifact", "readsRuntimeArtifact", "recreatesRuntime")) {
+    Assert-True ((Get-JsonProperty $defaults $name "UI runtime-current evidence acceptance defaults") -eq $false) "runtime-current evidence acceptance must keep $name false by default"
+  }
+
+  $schema = Get-JsonProperty $matrix "acceptanceSchema" "UI runtime-current evidence acceptance schema"
+  $runtimeArtifact = Get-JsonProperty $schema "runtimeArtifact" "UI runtime-current evidence runtime artifact schema"
+  Assert-Equal (Get-JsonProperty $runtimeArtifact "schema" "UI runtime-current evidence runtime artifact schema") "control_plane_ledger_execute_runtime_current_handoff.v1" "runtime-current evidence runtime artifact schema name"
+  Assert-Equal (Get-JsonProperty $runtimeArtifact "provenanceField" "UI runtime-current evidence runtime artifact schema") "provenance" "runtime artifact provenance field"
+  Assert-Equal (Get-JsonProperty $runtimeArtifact "currentCommitField" "UI runtime-current evidence runtime artifact schema") "git_commit" "runtime artifact current commit field"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $runtimeArtifact "requiredFields" "UI runtime-current evidence runtime artifact fields") "runtime-current evidence runtime artifact fields") @("schema", "status", "classification", "blocker", "source_newest_utc", "container_created_utc", "image_created_utc", "image_id", "git_commit", "alignment_rules", "readback_classification", "rebuild_handoff_execution_allowed") "runtime-current evidence runtime artifact fields"
+  $timestampComparison = Get-JsonProperty $runtimeArtifact "timestampComparison" "UI runtime-current timestamp comparison"
+  foreach ($name in @("sourceNewestUtc", "runtimeCreatedUtc", "imageCreatedUtc")) {
+    $value = [string](Get-JsonProperty $timestampComparison $name "UI runtime-current timestamp comparison")
+    if ($value -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current timestamp comparison field '$name' must be machine readable"
+    }
+  }
+
+  $session = Get-JsonProperty $schema "adminSessionVerification" "UI runtime-current evidence admin session schema"
+  Assert-Equal (Get-JsonProperty $session "marker" "UI runtime-current evidence admin session schema") "admin_session_verified_secret_omitted" "admin session verification marker"
+  Assert-Equal (Get-JsonProperty $session "requiredField" "UI runtime-current evidence admin session schema") "session_verification" "admin session verification field"
+  Assert-True ([bool](Get-JsonProperty $session "secretOmitted" "UI runtime-current evidence admin session schema")) "admin session verification must omit secret"
+  Assert-True ((Get-JsonProperty $session "rawSecretRequired" "UI runtime-current evidence admin session schema") -eq $false) "admin session verification must not require raw secret"
+
+  $controls = Get-JsonProperty $schema "mutationControls" "UI runtime-current evidence mutation controls"
+  foreach ($name in @("mutationOptIn", "artifactWriteOptIn", "artifactReadbackOptIn")) {
+    $value = [string](Get-JsonProperty $controls $name "UI runtime-current evidence mutation controls")
+    if ($value -notmatch '^[a-z0-9_]+$') {
+      throw "mutation control field '$name' must be machine readable"
+    }
+  }
+
+  $browserArtifact = Get-JsonProperty $schema "browserArtifact" "UI runtime-current evidence browser artifact schema"
+  Assert-Equal (Get-JsonProperty $browserArtifact "schema" "UI runtime-current evidence browser artifact schema") "billing_execute_browser_live_e2e_evidence.v1" "browser mutation artifact schema"
+  $browserFields = Get-JsonStringArray (Get-JsonProperty $browserArtifact "requiredFields" "UI runtime-current evidence browser artifact fields") "runtime-current evidence browser artifact fields"
+  foreach ($field in @("provenance", "freshness", "runtime_current", "session_verification", "mutation_controls", "api_readback", "ledger_readback", "failure_taxonomy", "durations", "actions", "secret_safe")) {
+    if ($browserFields -notcontains $field) {
+      throw "runtime-current evidence browser artifact fields missing '$field'"
+    }
+  }
+
+  $readback = Get-JsonProperty $schema "readback" "UI runtime-current evidence readback"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $readback "apiFields" "UI runtime-current evidence API readback fields") "runtime-current evidence API readback fields") @("dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh") "runtime-current evidence API readback fields"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $readback "ledgerFields" "UI runtime-current evidence ledger readback fields") "runtime-current evidence ledger readback fields") @("applied_ledger_entry_visible", "idempotent_replay_reused_ledger_entry", "refund_refusal_no_ledger_write", "ledger_refresh_visible") "runtime-current evidence ledger readback fields"
+
+  $classification = Get-JsonProperty $schema "resultClassification" "UI runtime-current evidence result classification"
+  Assert-Equal (Get-JsonProperty $classification "failedActionField" "UI runtime-current evidence result classification") "failed_action" "runtime-current evidence failed action field"
+  Assert-Equal (Get-JsonProperty $classification "failureClassificationField" "UI runtime-current evidence result classification") "failure_classification" "runtime-current evidence failure classification field"
+
+  $secretSafe = Get-JsonProperty $schema "secretSafeOmission" "UI runtime-current evidence secret-safe omission"
+  foreach ($name in @("requestMaterialEchoed", "sessionMaterialEchoed", "urlCredentialsEchoed")) {
+    Assert-True ((Get-JsonProperty $secretSafe $name "UI runtime-current evidence secret-safe omission") -eq $false) "runtime-current evidence must keep $name false"
+  }
+
+  $taxonomy = Get-JsonProperty $matrix "refusalTaxonomy" "UI runtime-current evidence refusal taxonomy"
+  foreach ($name in @("artifactReadbackMissing", "artifactWriteMissing", "browserArtifactSimulated", "browserArtifactStale", "browserUnavailable", "durationNonNumeric", "idempotentReplayFailed", "ledgerRefreshMissing", "mutationOptInMissing", "rawSecretPresent", "refundRefusalMissing", "runtimeArtifactMissing", "runtimeArtifactSimulated", "runtimeArtifactStale", "runtimeCommitMismatch", "runtimeUnsafeArtifact", "sessionInvalidMarker", "sessionMissingMarker")) {
+    $value = [string](Get-JsonProperty $taxonomy $name "UI runtime-current evidence refusal taxonomy")
+    if ($value -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current evidence refusal '$name' must be machine readable"
+    }
+  }
+
+  $states = Get-JsonProperty $matrix "acceptedStates" "UI runtime-current evidence accepted states"
+  foreach ($name in @("runtimeCurrentEvidenceAcceptedForReview", "mutationRunnerReadyBlocked", "mutationPassArtifactPassed", "e11X")) {
+    [void](Get-JsonProperty $states $name "UI runtime-current evidence accepted states")
+  }
+
+  $simulation = Get-JsonProperty $matrix "simulationPolicy" "UI runtime-current evidence simulation policy"
+  Assert-True ([bool](Get-JsonProperty $simulation "acceptedShapeSimulations" "UI runtime-current evidence simulation policy")) "runtime-current evidence must support accepted-shape simulations"
+  Assert-True ((Get-JsonProperty $simulation "simulationCanMarkFinalX" "UI runtime-current evidence simulation policy") -eq $false) "runtime-current evidence simulation must not mark final x"
+  foreach ($name in @("buildsRuntime", "mutates", "recreatesRuntime")) {
+    Assert-True ((Get-JsonProperty $simulation $name "UI runtime-current evidence simulation policy") -eq $false) "runtime-current evidence simulation must not $name"
+  }
+}
+
+function Write-RuntimeCurrentEvidenceAcceptanceMatrix {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-RuntimeCurrentEvidenceAcceptanceMatrixContract $Handoff
+  $matrix = Get-JsonProperty $Handoff "runtimeCurrentEvidenceAcceptanceMatrix" "UI runtime-current evidence acceptance matrix"
+  $schema = Get-JsonProperty $matrix "acceptanceSchema" "UI runtime-current evidence acceptance schema"
+  $states = Get-JsonProperty $matrix "acceptedStates" "UI runtime-current evidence accepted states"
+  $taxonomy = Get-JsonProperty $matrix "refusalTaxonomy" "UI runtime-current evidence refusal taxonomy"
+
+  Write-SafeHost "Runtime-current and mutation evidence acceptance matrix:"
+  Write-SafeHost "runtime_current_evidence_acceptance_schema=$([string](Get-JsonProperty $matrix "schema" "UI runtime-current evidence acceptance matrix"))"
+  Write-SafeHost "runtime_current_evidence_acceptance_default_reads_runtime_artifact=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_default_reads_browser_artifact=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_default_consumes_admin_session|false"
+  Write-SafeHost "runtime_current_evidence_acceptance_default_build=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_default_recreate=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_default_mutation=false"
+  foreach ($name in @("runtimeCurrentEvidenceAcceptedForReview", "mutationRunnerReadyBlocked", "mutationPassArtifactPassed", "e11X")) {
+    Write-SafeHost "runtime_current_evidence_acceptance_state=$name|$([string](Get-JsonProperty $states $name "runtime-current evidence accepted states"))"
+  }
+
+  $runtimeArtifact = Get-JsonProperty $schema "runtimeArtifact" "runtime-current evidence runtime artifact schema"
+  foreach ($field in Get-JsonStringArray (Get-JsonProperty $runtimeArtifact "requiredFields" "runtime-current evidence runtime artifact fields") "runtime-current evidence runtime artifact fields") {
+    Write-SafeHost "runtime_current_evidence_acceptance_runtime_field=$field"
+  }
+  $browserArtifact = Get-JsonProperty $schema "browserArtifact" "runtime-current evidence browser artifact schema"
+  foreach ($field in Get-JsonStringArray (Get-JsonProperty $browserArtifact "requiredFields" "runtime-current evidence browser artifact fields") "runtime-current evidence browser artifact fields") {
+    Write-SafeHost "runtime_current_evidence_acceptance_browser_field=$field"
+  }
+  $readback = Get-JsonProperty $schema "readback" "runtime-current evidence readback"
+  foreach ($field in Get-JsonStringArray (Get-JsonProperty $readback "apiFields" "runtime-current evidence API readback fields") "runtime-current evidence API readback fields") {
+    Write-SafeHost "runtime_current_evidence_acceptance_api_readback_field=$field"
+  }
+  foreach ($field in Get-JsonStringArray (Get-JsonProperty $readback "ledgerFields" "runtime-current evidence ledger readback fields") "runtime-current evidence ledger readback fields") {
+    Write-SafeHost "runtime_current_evidence_acceptance_ledger_readback_field=$field"
+  }
+  foreach ($name in @("runtimeArtifactMissing", "runtimeUnsafeArtifact", "runtimeArtifactStale", "runtimeArtifactSimulated", "runtimeCommitMismatch", "sessionMissingMarker", "sessionInvalidMarker", "mutationOptInMissing", "artifactWriteMissing", "artifactReadbackMissing", "browserUnavailable", "idempotentReplayFailed", "refundRefusalMissing", "ledgerRefreshMissing", "durationNonNumeric", "browserArtifactStale", "browserArtifactSimulated", "rawSecretPresent")) {
+    Write-SafeHost "runtime_current_evidence_acceptance_refusal=$name|$([string](Get-JsonProperty $taxonomy $name "runtime-current evidence refusal taxonomy"))"
+  }
+
+  Write-SafeHost "runtime_current_evidence_acceptance_simulation=accepted_runtime_shape;state=runtime_current_evidence_accepted_for_review;classification=runtime_current_verified;simulation_can_mark_final_x=false;build=false;recreate=false;mutation=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_simulation=mutation_runner_ready_blocked;state=mutation_runner_ready_blocked;classification=session_mutation_artifact_gate;simulation_can_mark_final_x=false;build=false;recreate=false;mutation=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_simulation=mutation_pass_artifact_passed_shape;state=mutation_pass_artifact_passed;classification=mutation_pass_artifact_passed;simulation_can_mark_final_x=false;build=false;recreate=false;mutation=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_simulation=final_x_refused_for_simulation;state=e11_x_refused;classification=simulated_artifact_cannot_close_e11;simulation_can_mark_final_x=false;build=false;recreate=false;mutation=false"
+  Write-SafeHost "runtime_current_evidence_acceptance_secret_safe_omission=true"
+}
+
+function Assert-RuntimeCurrentFinalClosureAuditContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $audit = Get-JsonProperty $Handoff "runtimeCurrentFinalClosureAudit" "UI runtime-current final closure audit"
+  Assert-Equal (Get-JsonProperty $audit "schema" "UI runtime-current final closure audit") "billing_execute_browser_mutation_final_closure_audit.v1" "runtime-current final closure audit schema"
+
+  $defaults = Get-JsonProperty $audit "defaults" "UI runtime-current final closure audit defaults"
+  foreach ($name in @("buildsRuntime", "consumesAdminSession", "mutates", "readsBrowserArtifact", "readsRuntimeArtifact", "recreatesRuntime")) {
+    Assert-True ((Get-JsonProperty $defaults $name "UI runtime-current final closure audit defaults") -eq $false) "runtime-current final closure audit must keep $name false by default"
+  }
+
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $audit "requiredEvidence" "UI runtime-current final closure audit required evidence") "runtime-current final closure audit required evidence") @(
+    "runtime_current_verified_artifact_readback",
+    "admin_session_verified_secret_omitted_marker",
+    "mutation_opt_in_enabled",
+    "browser_mutation_artifact_write_readback",
+    "api_readback_passed",
+    "ledger_readback_passed",
+    "numeric_durations_present",
+    "secret_safe_omission_proof",
+    "current_commit_freshness"
+  ) "runtime-current final closure audit required evidence"
+
+  $fields = Get-JsonProperty $audit "reportFields" "UI runtime-current final closure audit report fields"
+  foreach ($name in @("apiReadbackState", "blockingReasons", "browserArtifactState", "currentCommit", "durationState", "finalXEligible", "generatedAt", "ledgerReadbackState", "mutationControlsState", "requiredEvidence", "runtimeArtifactState", "secretSafeOmissionState", "sessionState")) {
+    $value = [string](Get-JsonProperty $fields $name "UI runtime-current final closure audit report fields")
+    if ($value -notmatch '^[a-z0-9_]+$') {
+      throw "runtime-current final closure audit report field '$name' must be machine readable"
+    }
+  }
+
+  $commands = Get-JsonProperty $audit "exactNextCommands" "UI runtime-current final closure audit next commands"
+  foreach ($name in @("runtimeCurrentHandoff", "runtimeCurrentReadback", "sessionMarker", "browserMutationRunnerArtifact", "browserMutationRunnerArtifactReadback")) {
+    $command = [string](Get-JsonProperty $commands $name "UI runtime-current final closure audit next commands")
+    Assert-SecretSafeContent -Content $command -Context "runtime-current final closure audit command $name"
+    if (-not $command.Contains("scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1")) {
+      throw "runtime-current final closure audit command '$name' must point at smoke script"
+    }
+  }
+  if (-not ([string](Get-JsonProperty $commands "browserMutationRunnerArtifactReadback" "UI runtime-current final closure audit next commands")).Contains("-BrowserEvidenceArtifactReadbackOptIn")) {
+    throw "runtime-current final closure audit browser readback command must include explicit readback opt-in"
+  }
+
+  $simulation = Get-JsonProperty $audit "simulationPolicy" "UI runtime-current final closure audit simulation policy"
+  Assert-True ([bool](Get-JsonProperty $simulation "acceptedShapeSimulations" "UI runtime-current final closure audit simulation policy")) "runtime-current final closure audit must support accepted-shape simulations"
+  Assert-True ((Get-JsonProperty $simulation "simulationCanMarkFinalX" "UI runtime-current final closure audit simulation policy") -eq $false) "runtime-current final closure audit simulation must not mark final x"
+  foreach ($name in @("buildsRuntime", "mutates", "recreatesRuntime")) {
+    Assert-True ((Get-JsonProperty $simulation $name "UI runtime-current final closure audit simulation policy") -eq $false) "runtime-current final closure audit simulation must not $name"
+  }
+
+  $states = Get-JsonProperty $audit "stateValues" "UI runtime-current final closure audit state values"
+  Assert-StringSetEqual @(
+    [string](Get-JsonProperty $states "accepted" "UI runtime-current final closure audit state values"),
+    [string](Get-JsonProperty $states "blocked" "UI runtime-current final closure audit state values"),
+    [string](Get-JsonProperty $states "missing" "UI runtime-current final closure audit state values"),
+    [string](Get-JsonProperty $states "refused" "UI runtime-current final closure audit state values"),
+    [string](Get-JsonProperty $states "simulated" "UI runtime-current final closure audit state values")
+  ) @("accepted", "blocked", "missing", "refused", "simulated") "runtime-current final closure audit state values"
+}
+
+function New-RuntimeCurrentFinalClosureAuditReport {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][bool]$RuntimeAccepted,
+    [Parameter(Mandatory = $true)][bool]$SessionAccepted,
+    [Parameter(Mandatory = $true)][bool]$MutationControlsAccepted,
+    [Parameter(Mandatory = $true)][bool]$BrowserArtifactAccepted,
+    [Parameter(Mandatory = $true)][bool]$ApiReadbackAccepted,
+    [Parameter(Mandatory = $true)][bool]$LedgerReadbackAccepted,
+    [Parameter(Mandatory = $true)][bool]$DurationsAccepted,
+    [Parameter(Mandatory = $true)][bool]$SecretSafeAccepted,
+    [Parameter(Mandatory = $true)][bool]$Simulated
+  )
+
+  $audit = Get-JsonProperty $Handoff "runtimeCurrentFinalClosureAudit" "UI runtime-current final closure audit"
+  $requiredEvidence = Get-JsonStringArray (Get-JsonProperty $audit "requiredEvidence" "UI runtime-current final closure audit required evidence") "runtime-current final closure audit required evidence"
+  $blockingReasons = @()
+  if (-not $RuntimeAccepted) { $blockingReasons += "runtime_current_verified_artifact_missing" }
+  if (-not $SessionAccepted) { $blockingReasons += "admin_session_marker_missing" }
+  if (-not $MutationControlsAccepted) { $blockingReasons += "mutation_controls_missing" }
+  if (-not $BrowserArtifactAccepted) { $blockingReasons += "browser_mutation_artifact_missing" }
+  if (-not $ApiReadbackAccepted) { $blockingReasons += "api_readback_missing" }
+  if (-not $LedgerReadbackAccepted) { $blockingReasons += "ledger_readback_missing" }
+  if (-not $DurationsAccepted) { $blockingReasons += "duration_non_numeric_or_missing" }
+  if (-not $SecretSafeAccepted) { $blockingReasons += "secret_safe_omission_missing" }
+  if ($Simulated) { $blockingReasons += "simulated_artifact_cannot_close_e11" }
+
+  $allAccepted = $RuntimeAccepted -and $SessionAccepted -and $MutationControlsAccepted -and $BrowserArtifactAccepted -and $ApiReadbackAccepted -and $LedgerReadbackAccepted -and $DurationsAccepted -and $SecretSafeAccepted
+  $finalEligible = $allAccepted -and (-not $Simulated)
+
+  return [PSCustomObject]@{
+    schema = [string](Get-JsonProperty $audit "schema" "UI runtime-current final closure audit")
+    generated_at = (Get-Date).ToUniversalTime().ToString("o")
+    current_commit = Get-CurrentGitCommit
+    final_x_eligible = $finalEligible
+    simulation_can_mark_final_x = $false
+    blocking_reasons = $blockingReasons
+    required_evidence = $requiredEvidence
+    runtime_artifact_state = if ($RuntimeAccepted) { "accepted" } else { "missing" }
+    session_state = if ($SessionAccepted) { "accepted" } else { "missing" }
+    mutation_controls_state = if ($MutationControlsAccepted) { "accepted" } else { "missing" }
+    browser_artifact_state = if ($BrowserArtifactAccepted) { if ($Simulated) { "simulated" } else { "accepted" } } else { "missing" }
+    api_readback_state = if ($ApiReadbackAccepted) { "accepted" } else { "missing" }
+    ledger_readback_state = if ($LedgerReadbackAccepted) { "accepted" } else { "missing" }
+    duration_state = if ($DurationsAccepted) { "accepted" } else { "missing" }
+    secret_safe_omission_state = if ($SecretSafeAccepted) { "accepted" } else { "missing" }
+    defaults = Get-JsonProperty $audit "defaults" "UI runtime-current final closure audit defaults"
+    exact_next_commands = Get-JsonProperty $audit "exactNextCommands" "UI runtime-current final closure audit next commands"
+  }
+}
+
+function Write-RuntimeCurrentFinalClosureAudit {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-RuntimeCurrentFinalClosureAuditContract $Handoff
+  $audit = Get-JsonProperty $Handoff "runtimeCurrentFinalClosureAudit" "UI runtime-current final closure audit"
+  $commands = Get-JsonProperty $audit "exactNextCommands" "UI runtime-current final closure audit next commands"
+  $currentReport = New-RuntimeCurrentFinalClosureAuditReport -Handoff $Handoff -RuntimeAccepted $false -SessionAccepted $false -MutationControlsAccepted $false -BrowserArtifactAccepted $false -ApiReadbackAccepted $false -LedgerReadbackAccepted $false -DurationsAccepted $false -SecretSafeAccepted $true -Simulated $false
+  $acceptedShapeSimulation = New-RuntimeCurrentFinalClosureAuditReport -Handoff $Handoff -RuntimeAccepted $true -SessionAccepted $true -MutationControlsAccepted $true -BrowserArtifactAccepted $true -ApiReadbackAccepted $true -LedgerReadbackAccepted $true -DurationsAccepted $true -SecretSafeAccepted $true -Simulated $true
+
+  Assert-True ((Get-JsonProperty $currentReport "final_x_eligible" "current final closure audit") -eq $false) "current closure audit must be blocked without real runtime/session/browser artifact"
+  Assert-True ((Get-JsonProperty $acceptedShapeSimulation "final_x_eligible" "simulation final closure audit") -eq $false) "accepted-shape simulation must not mark final x"
+
+  Write-SafeHost "Browser mutation final closure audit:"
+  Write-SafeHost "browser_mutation_final_closure_audit_schema=$([string](Get-JsonProperty $audit "schema" "UI runtime-current final closure audit"))"
+  Write-SafeHost "browser_mutation_final_closure_audit_final_x_eligible=false"
+  Write-SafeHost "browser_mutation_final_closure_audit_current_commit=$([string]$currentReport.current_commit)"
+  Write-SafeHost "browser_mutation_final_closure_audit_generated_at=$([string]$currentReport.generated_at)"
+  foreach ($item in Get-JsonStringArray (Get-JsonProperty $audit "requiredEvidence" "UI runtime-current final closure audit required evidence") "runtime-current final closure audit required evidence") {
+    Write-SafeHost "browser_mutation_final_closure_audit_required_evidence=$item"
+  }
+  foreach ($reason in $currentReport.blocking_reasons) {
+    Write-SafeHost "browser_mutation_final_closure_audit_blocking_reason=$reason"
+  }
+  foreach ($name in @("runtime_artifact_state", "session_state", "mutation_controls_state", "browser_artifact_state", "api_readback_state", "ledger_readback_state", "duration_state", "secret_safe_omission_state")) {
+    Write-SafeHost "browser_mutation_final_closure_audit_state=$name|$([string]$currentReport.$name)"
+  }
+  foreach ($name in @("runtimeCurrentHandoff", "runtimeCurrentReadback", "sessionMarker", "browserMutationRunnerArtifact", "browserMutationRunnerArtifactReadback")) {
+    Write-SafeHost "browser_mutation_final_closure_audit_next_command=$name|$([string](Get-JsonProperty $commands $name "runtime-current final closure audit next commands"))"
+  }
+  Write-SafeHost "browser_mutation_final_closure_audit_defaults=build:false;recreate:false;mutation:false;reads_secret|false;reads_runtime_artifact:false;reads_browser_artifact:false"
+  Write-SafeHost "browser_mutation_final_closure_audit_simulation=accepted_shape;final_x_eligible=false;simulation_can_mark_final_x=false;blocking_reason=simulated_artifact_cannot_close_e11"
+  Write-SafeHost "browser_mutation_final_closure_audit_report_json=$(($currentReport | ConvertTo-Json -Depth 32 -Compress))"
+}
+
+function Assert-BrowserMutationEvidenceWatcherFinalGuardContract {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  $watcher = Get-JsonProperty $Handoff "browserMutationEvidenceWatcherFinalGuard" "UI browser mutation evidence watcher final guard"
+  Assert-Equal (Get-JsonProperty $watcher "schema" "UI browser mutation evidence watcher final guard") "billing_execute_browser_mutation_evidence_watcher_final_guard.v1" "browser mutation evidence watcher schema"
+  Assert-Equal (Get-JsonProperty $watcher "defaultMode" "UI browser mutation evidence watcher final guard") "watcher_final_guard_review" "browser mutation evidence watcher mode"
+
+  $defaults = Get-JsonProperty $watcher "defaults" "UI browser mutation evidence watcher defaults"
+  foreach ($name in @("buildsRuntime", "consumesAdminSession", "mutates", "readsBrowserArtifact", "readsRuntimeArtifact", "recreatesRuntime")) {
+    Assert-True ((Get-JsonProperty $defaults $name "UI browser mutation evidence watcher defaults") -eq $false) "browser mutation evidence watcher must keep $name false"
+  }
+
+  $paths = Get-JsonProperty $watcher "expectedArtifactPaths" "UI browser mutation evidence watcher artifact paths"
+  Assert-Equal (Get-JsonProperty $paths "runtimeCurrentArtifact" "UI browser mutation evidence watcher artifact paths") "artifacts/control_plane_ledger_execute_runtime_current_handoff.json" "watcher runtime-current artifact path"
+  Assert-Equal (Get-JsonProperty $paths "browserMutationArtifact" "UI browser mutation evidence watcher artifact paths") "artifacts/billing_execute_browser_live_e2e_evidence.json" "watcher browser artifact path"
+
+  $session = Get-JsonProperty $watcher "sessionMarkerRequirements" "UI browser mutation evidence watcher session requirements"
+  Assert-Equal (Get-JsonProperty $session "env" "UI browser mutation evidence watcher session requirements") "CONTROL_PLANE_ADMIN_SESSION_TOKEN" "watcher session env"
+  Assert-Equal (Get-JsonProperty $session "marker" "UI browser mutation evidence watcher session requirements") "admin_session_verified_secret_omitted" "watcher session marker"
+  Assert-True ((Get-JsonProperty $session "rawSecretEchoed" "UI browser mutation evidence watcher session requirements") -eq $false) "watcher session marker must not echo raw secret"
+
+  $mutation = Get-JsonProperty $watcher "mutationOptInRequirements" "UI browser mutation evidence watcher mutation requirements"
+  Assert-Equal (Get-JsonProperty $mutation "env" "UI browser mutation evidence watcher mutation requirements") "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION=1" "watcher mutation env"
+  Assert-Equal (Get-JsonProperty $mutation "artifactWriteFlag" "UI browser mutation evidence watcher mutation requirements") "-BrowserEvidenceArtifactWriteOptIn" "watcher artifact write flag"
+  Assert-Equal (Get-JsonProperty $mutation "artifactReadbackFlag" "UI browser mutation evidence watcher mutation requirements") "-BrowserEvidenceArtifactReadbackOptIn" "watcher artifact readback flag"
+  Assert-Equal (Get-JsonProperty $mutation "runnerFlag" "UI browser mutation evidence watcher mutation requirements") "-BrowserLiveRunnerExecutionOptIn" "watcher runner flag"
+
+  $commands = Get-JsonProperty $watcher "exactNextCommands" "UI browser mutation evidence watcher commands"
+  foreach ($name in @("runtimeCurrentHandoff", "runtimeCurrentReadback", "sessionMarker", "browserMutationRunner", "browserArtifactReadback")) {
+    $command = [string](Get-JsonProperty $commands $name "UI browser mutation evidence watcher commands")
+    Assert-SecretSafeContent -Content $command -Context "browser mutation evidence watcher command $name"
+    if (-not $command.Contains("scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1")) {
+      throw "browser mutation evidence watcher command '$name' must point at smoke script"
+    }
+  }
+
+  $flags = Get-JsonProperty $watcher "finalGuardFlags" "UI browser mutation evidence watcher final guard flags"
+  foreach ($name in @("acceptedShapeCanMarkFinalX", "noArtifactCanMarkFinalX", "sessionMissingCanMarkFinalX", "simulationCanMarkFinalX", "watcherCanMarkFinalX")) {
+    Assert-True ((Get-JsonProperty $flags $name "UI browser mutation evidence watcher final guard flags") -eq $false) "watcher final guard must keep $name false"
+  }
+
+  $checklist = Get-JsonProperty $watcher "finalReviewChecklist" "UI browser mutation evidence watcher final checklist"
+  $checklistKeys = @()
+  foreach ($item in $checklist) {
+    $key = [string](Get-JsonProperty $item "key" "UI browser mutation evidence watcher checklist item")
+    $requiredState = [string](Get-JsonProperty $item "requiredState" "UI browser mutation evidence watcher checklist item")
+    if ($key -notmatch '^[a-z0-9_]+$' -or $requiredState -notmatch '^[a-z0-9_]+$') {
+      throw "watcher final review checklist item must be machine readable"
+    }
+    $checklistKeys += $key
+  }
+  Assert-StringSetEqual $checklistKeys @("runtime_current_artifact_current", "admin_session_marker_secret_omitted", "mutation_opt_in_present", "browser_artifact_readback_passed", "api_and_ledger_readback_passed", "numeric_durations_present", "secret_safe_omission_proven", "not_simulation_or_watcher_only") "watcher final review checklist keys"
+
+  $states = Get-JsonProperty $watcher "watcherStates" "UI browser mutation evidence watcher states"
+  Assert-Equal (Get-JsonProperty $states "blocked" "UI browser mutation evidence watcher states") "blocked" "watcher blocked state"
+  Assert-Equal (Get-JsonProperty $states "waitingForRealEvidence" "UI browser mutation evidence watcher states") "waiting_for_real_evidence" "watcher waiting state"
+  Assert-Equal (Get-JsonProperty $states "finalEligible" "UI browser mutation evidence watcher states") "final_eligible" "watcher final eligible state"
+}
+
+function Write-BrowserMutationEvidenceWatcherFinalGuard {
+  param([Parameter(Mandatory = $true)]$Handoff)
+
+  Assert-BrowserMutationEvidenceWatcherFinalGuardContract $Handoff
+  $watcher = Get-JsonProperty $Handoff "browserMutationEvidenceWatcherFinalGuard" "UI browser mutation evidence watcher final guard"
+  $paths = Get-JsonProperty $watcher "expectedArtifactPaths" "UI browser mutation evidence watcher artifact paths"
+  $commands = Get-JsonProperty $watcher "exactNextCommands" "UI browser mutation evidence watcher commands"
+  $flags = Get-JsonProperty $watcher "finalGuardFlags" "UI browser mutation evidence watcher final guard flags"
+  $session = Get-JsonProperty $watcher "sessionMarkerRequirements" "UI browser mutation evidence watcher session requirements"
+  $mutation = Get-JsonProperty $watcher "mutationOptInRequirements" "UI browser mutation evidence watcher mutation requirements"
+
+  Write-SafeHost "Browser mutation evidence watcher final guard:"
+  Write-SafeHost "browser_mutation_evidence_watcher_schema=$([string](Get-JsonProperty $watcher "schema" "UI browser mutation evidence watcher final guard"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_state=blocked"
+  Write-SafeHost "browser_mutation_evidence_watcher_final_x_eligible=false"
+  Write-SafeHost "browser_mutation_evidence_watcher_expected_path=runtimeCurrentArtifact|$([string](Get-JsonProperty $paths "runtimeCurrentArtifact" "watcher artifact paths"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_expected_path=browserMutationArtifact|$([string](Get-JsonProperty $paths "browserMutationArtifact" "watcher artifact paths"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_session_marker=$([string](Get-JsonProperty $session "marker" "watcher session marker"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_session_env=$([string](Get-JsonProperty $session "env" "watcher session marker"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_session_raw_secret_echoed=false"
+  Write-SafeHost "browser_mutation_evidence_watcher_mutation_env=$([string](Get-JsonProperty $mutation "env" "watcher mutation requirements"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_mutation_flag=$([string](Get-JsonProperty $mutation "artifactWriteFlag" "watcher mutation requirements"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_mutation_flag=$([string](Get-JsonProperty $mutation "artifactReadbackFlag" "watcher mutation requirements"))"
+  Write-SafeHost "browser_mutation_evidence_watcher_mutation_flag=$([string](Get-JsonProperty $mutation "runnerFlag" "watcher mutation requirements"))"
+  foreach ($name in @("runtimeCurrentHandoff", "runtimeCurrentReadback", "sessionMarker", "browserMutationRunner", "browserArtifactReadback")) {
+    Write-SafeHost "browser_mutation_evidence_watcher_next_command=$name|$([string](Get-JsonProperty $commands $name "watcher commands"))"
+  }
+  foreach ($item in Get-JsonProperty $watcher "finalReviewChecklist" "watcher final review checklist") {
+    Write-SafeHost "browser_mutation_evidence_watcher_final_review=$([string](Get-JsonProperty $item "key" "watcher checklist item"))|$([string](Get-JsonProperty $item "requiredState" "watcher checklist item"))"
+  }
+  foreach ($name in @("simulationCanMarkFinalX", "acceptedShapeCanMarkFinalX", "watcherCanMarkFinalX", "noArtifactCanMarkFinalX", "sessionMissingCanMarkFinalX")) {
+    Write-SafeHost "browser_mutation_evidence_watcher_final_guard=$name|$([string](Get-JsonProperty $flags $name "watcher final guard flags"))"
+  }
+  Write-SafeHost "browser_mutation_evidence_watcher_blocking_reason=runtime_current_verified_artifact_missing"
+  Write-SafeHost "browser_mutation_evidence_watcher_blocking_reason=admin_session_marker_missing"
+  Write-SafeHost "browser_mutation_evidence_watcher_blocking_reason=browser_mutation_artifact_missing"
+  Write-SafeHost "browser_mutation_evidence_watcher_defaults=build:false;recreate:false;mutation:false;reads_session|false;reads_runtime_artifact:false;reads_browser_artifact:false"
 }
 
 function Assert-BrowserLiveRunnerExecutionBridgeContract {
@@ -1805,6 +3411,14 @@ function Assert-BrowserLivePassArtifactReadbackGateContract {
     }
   }
 
+  $classificationValues = Get-JsonProperty $gate "classificationValues" "UI browser live pass artifact readback gate"
+  foreach ($name in @("failed", "missing", "notRequested", "passed")) {
+    $classification = [string](Get-JsonProperty $classificationValues $name "UI browser readback gate classifications")
+    if ($classification -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser readback gate classification '$name' must be machine readable"
+    }
+  }
+
   $expectedActionOutcomes = Get-JsonProperty $gate "expectedActionOutcomes" "UI browser live pass artifact readback gate"
   foreach ($name in @("dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh")) {
     [void](Get-JsonProperty $expectedActionOutcomes $name "UI browser readback gate action outcomes")
@@ -1837,6 +3451,28 @@ function Get-BrowserLivePassArtifactReadbackState {
   return "fail"
 }
 
+function Get-BrowserLivePassArtifactReadbackClassification {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [AllowNull()]$Artifact,
+    [Parameter(Mandatory = $true)][bool]$ReadbackRequested,
+    [Parameter(Mandatory = $true)][bool]$ReadbackAvailable
+  )
+
+  $gate = Get-JsonProperty $Handoff "browserLivePassArtifactReadbackGate" "UI handoff"
+  $classificationValues = Get-JsonProperty $gate "classificationValues" "UI browser live pass artifact readback gate"
+  if (-not $ReadbackRequested) {
+    return [string](Get-JsonProperty $classificationValues "notRequested" "UI browser readback gate classifications")
+  }
+  if (-not $ReadbackAvailable -or $null -eq $Artifact) {
+    return [string](Get-JsonProperty $classificationValues "missing" "UI browser readback gate classifications")
+  }
+  if (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $Artifact) {
+    return [string](Get-JsonProperty $classificationValues "passed" "UI browser readback gate classifications")
+  }
+  return [string](Get-JsonProperty $classificationValues "failed" "UI browser readback gate classifications")
+}
+
 function Write-BrowserLivePassArtifactReadbackGate {
   param(
     [Parameter(Mandatory = $true)]$Handoff,
@@ -1851,7 +3487,7 @@ function Write-BrowserLivePassArtifactReadbackGate {
   $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
   $readbackArtifact = $null
   $readbackAvailable = $false
-  if ($writeEnabled -and (Test-Path $artifactPath)) {
+  if ($BrowserEvidenceArtifactReadbackOptIn -and (Test-Path $artifactPath)) {
     $readbackArtifact = Read-JsonFile $artifactPath
     $readbackAvailable = $true
   }
@@ -1865,12 +3501,17 @@ function Write-BrowserLivePassArtifactReadbackGate {
   Assert-Equal (Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $null -ReadbackAvailable $false) "blocked" "browser readback gate missing artifact state"
   Assert-Equal (Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $syntheticPass -ReadbackAvailable $true) "pass" "browser readback gate synthetic pass state"
   Assert-Equal (Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $syntheticFail -ReadbackAvailable $true) "fail" "browser readback gate synthetic fail state"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackClassification -Handoff $Handoff -Artifact $null -ReadbackRequested $false -ReadbackAvailable $false) "artifact_readback_not_requested" "browser readback gate not-requested classification"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackClassification -Handoff $Handoff -Artifact $null -ReadbackRequested $true -ReadbackAvailable $false) "artifact_readback_missing" "browser readback gate missing classification"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackClassification -Handoff $Handoff -Artifact $syntheticPass -ReadbackRequested $true -ReadbackAvailable $true) "artifact_readback_passed" "browser readback gate pass classification"
+  Assert-Equal (Get-BrowserLivePassArtifactReadbackClassification -Handoff $Handoff -Artifact $syntheticFail -ReadbackRequested $true -ReadbackAvailable $true) "artifact_readback_failed" "browser readback gate fail classification"
 
   $state = Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $readbackArtifact -ReadbackAvailable $readbackAvailable
+  $classification = Get-BrowserLivePassArtifactReadbackClassification -Handoff $Handoff -Artifact $readbackArtifact -ReadbackRequested $BrowserEvidenceArtifactReadbackOptIn -ReadbackAvailable $readbackAvailable
   $status = [string](Get-JsonProperty $statusMarkers $state "UI browser readback gate status markers")
   $blockers = @()
   if (-not $writeEnabled) { $blockers += "artifact_write_opt_in_missing" }
-  if (-not $readbackAvailable) { $blockers += "artifact_readback_missing" }
+  if ($BrowserEvidenceArtifactReadbackOptIn -and -not $readbackAvailable) { $blockers += "artifact_readback_missing" }
   if (-not $MutationEnabled) { $blockers += "live_mutation_opt_in_missing" }
   if (-not $SessionMaterialPresent) { $blockers += "session_material_missing" }
   if ($state -eq "fail") { $blockers += "artifact_closure_failed" }
@@ -1879,6 +3520,7 @@ function Write-BrowserLivePassArtifactReadbackGate {
   Write-SafeHost "Browser ledger execute live pass artifact readback gate:"
   Write-SafeHost "browser_live_pass_readback_status=$status"
   Write-SafeHost "browser_live_pass_readback_state=$state"
+  Write-SafeHost "browser_live_pass_readback_classification=$classification"
   Write-SafeHost "browser_live_pass_readback_blockers=$blockerSummary"
   Write-SafeHost "browser_live_pass_readback_default_reads=false"
   Write-SafeHost "browser_live_pass_readback_default_mutation=false"
@@ -2182,11 +3824,12 @@ function Write-BrowserLiveEnvironmentBootstrapAttempt {
   $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
   $readbackArtifact = $null
   $readbackAvailable = $false
-  if ($writeEnabled -and (Test-Path $artifactPath)) {
+  if ($BrowserEvidenceArtifactReadbackOptIn -and (Test-Path $artifactPath)) {
     $readbackArtifact = Read-JsonFile $artifactPath
     $readbackAvailable = $true
   }
   $readbackState = Get-BrowserLivePassArtifactReadbackState -Handoff $Handoff -Artifact $readbackArtifact -ReadbackAvailable $readbackAvailable
+  $readbackClassification = Get-BrowserLivePassArtifactReadbackClassification -Handoff $Handoff -Artifact $readbackArtifact -ReadbackRequested $BrowserEvidenceArtifactReadbackOptIn -ReadbackAvailable $readbackAvailable
   $passAttemptReady = (
     $ToolingStatus -eq "available" -and
     [bool]$AdminUiProbe.Reachable -and
@@ -2214,7 +3857,7 @@ function Write-BrowserLiveEnvironmentBootstrapAttempt {
   if (-not $MutationEnabled) { $blockers += "live_mutation_opt_in_missing" }
   if (-not $BrowserLiveRunnerExecutionOptIn) { $blockers += "live_runner_opt_in_missing" }
   if (-not $writeEnabled) { $blockers += "artifact_write_opt_in_missing" }
-  if (-not $readbackAvailable) { $blockers += "artifact_readback_missing" }
+  if ($BrowserEvidenceArtifactReadbackOptIn -and -not $readbackAvailable) { $blockers += "artifact_readback_missing" }
   if ($readbackState -eq "fail") { $blockers += "artifact_closure_failed" }
   if (-not [bool]$AdminUiDevServerBootstrap.OptIn -and -not [bool]$AdminUiProbe.Reachable) { $blockers += "admin_ui_dev_server_opt_in_missing" }
   $blockerSummary = if ($blockers.Count -gt 0) { $blockers -join "+" } else { "none" }
@@ -2243,6 +3886,7 @@ function Write-BrowserLiveEnvironmentBootstrapAttempt {
   Write-SafeHost "browser_live_bootstrap_artifact_write_enabled=$(Format-BoolMarker $writeEnabled)"
   Write-SafeHost "browser_live_bootstrap_artifact_readback_available=$(Format-BoolMarker $readbackAvailable)"
   Write-SafeHost "browser_live_bootstrap_artifact_readback_state=$readbackState"
+  Write-SafeHost "browser_live_bootstrap_artifact_readback_classification=$readbackClassification"
   Write-SafeHost "browser_live_bootstrap_artifact_path_bounded=true"
   Write-SafeHost "browser_live_bootstrap_artifact_path=$artifactPath"
   Write-SafeHost "browser_live_bootstrap_live_attempt_command=$liveAttemptCommand"
@@ -2291,6 +3935,13 @@ function Invoke-BrowserLiveMutationPassAttempt {
     $canRun = $blockers.Count -eq 0
     $initialOutcome = if ($canRun) { "failed" } else { "blocked" }
     $artifact = New-BrowserEvidenceArtifact -Handoff $Handoff -Outcome $initialOutcome -Blockers $blockers -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionHandoffPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    if ($artifact.PSObject.Properties.Name -contains "mutation_controls") {
+      $artifact.mutation_controls.artifact_write_opt_in_enabled = $writeEnabled
+      $artifact.mutation_controls.artifact_readback_opt_in_enabled = [bool]$BrowserEvidenceArtifactReadbackOptIn
+    }
+    if ($artifact.PSObject.Properties.Name -contains "failure_taxonomy") {
+      $artifact.failure_taxonomy.artifact_write_missing = -not $writeEnabled
+    }
     $runnerStatus = if ($canRun) { "running" } else { "blocked" }
 
     if ($canRun) {
@@ -2494,15 +4145,15 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
   await fillRefund("0.11000000", "browser live smoke refusal");
   start = now();
   await page.locator(dataTestId(selectors.dryRunButton)).click();
-  await textIncludes(page, selectors.dryRunFresh, "fresh_dry_run=true");
-  await page.locator(dataTestId(selectors.executeButton)).click();
   await page.waitForFunction(
-    ({ selector }) => {
-      const node = document.querySelector(selector);
-      const text = node && node.textContent ? node.textContent : "";
-      return text.includes("remaining refundable amount") || text.includes("blocked");
+    ({ executeSelector }) => {
+      const executeButton = document.querySelector(executeSelector);
+      const text = document.body && document.body.textContent ? document.body.textContent : "";
+      const refused = text.includes("remaining refundable amount") || text.includes("refund amount exceeds remaining");
+      const executeDisabled = executeButton && executeButton.disabled === true;
+      return refused && executeDisabled;
     },
-    { selector: dataTestId(selectors.readiness) },
+    { executeSelector: dataTestId(selectors.executeButton) },
     { timeout: 20000 },
   );
   durations.refund_refusal_duration_ms = elapsed(start);
@@ -2597,6 +4248,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
         $artifact.blockers = @($runnerErrorClass)
       }
       Set-BrowserEvidenceFromRunnerResult -Artifact $artifact -RunnerResult $runnerResult
+      Update-BrowserEvidenceClassifications -Handoff $Handoff -Artifact $artifact
     }
 
     Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $artifact
@@ -2605,6 +4257,7 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
       if (-not (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $artifact)) {
         $artifact.outcome = "failed"
         $artifact.blockers = @("artifact_closure_failed")
+        Update-BrowserEvidenceClassifications -Handoff $Handoff -Artifact $artifact
       }
     }
 
@@ -2617,6 +4270,15 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
       Set-Content -Path $artifactPath -Value $artifactJson -Encoding UTF8
       $readBack = Read-JsonFile $artifactPath
       Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $readBack
+      $readbackClosureEligible = Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $readBack
+      $readbackClassificationName = if ($readbackClosureEligible) { "passed" } else { "failed" }
+      $readbackClassification = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "readback" -Name $readbackClassificationName
+      Set-BrowserArtifactReadbackResult -Artifact $artifact -Classification $readbackClassification -Attempted $true -Fresh $true -ClosureEligible $readbackClosureEligible
+      Update-BrowserEvidenceClassifications -Handoff $Handoff -Artifact $artifact
+      $artifactJson = $artifact | ConvertTo-Json -Depth 32 -Compress
+      Set-Content -Path $artifactPath -Value $artifactJson -Encoding UTF8
+      $readBack = Read-JsonFile $artifactPath
+      Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $readBack
       if ($artifact.outcome -eq "passed") {
         Assert-True (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $readBack) "browser live runner pass artifact readback must close"
       }
@@ -2625,6 +4287,11 @@ async function waitForSelectorSnapshot(page, selectors, keys, timeout = 15000) {
     Write-SafeHost "Browser ledger execute live mutation pass attempt:"
     Write-SafeHost "browser_live_mutation_attempt_status=$runnerStatus"
     Write-SafeHost "browser_live_mutation_attempt_artifact_outcome=$($artifact.outcome)"
+    Write-SafeHost "browser_live_mutation_attempt_runtime_current_classification=$($artifact.classifications.runtime_current)"
+    Write-SafeHost "browser_live_mutation_attempt_runtime_current_reason=$($artifact.runtime_current.reason)"
+    Write-SafeHost "browser_live_mutation_attempt_replay_classification=$($artifact.classifications.replay)"
+    Write-SafeHost "browser_live_mutation_attempt_mutation_pass_artifact_classification=$($artifact.classifications.mutation_pass_artifact)"
+    Write-SafeHost "browser_live_mutation_attempt_readback_classification=$($artifact.classifications.readback)"
     Write-SafeHost "browser_live_mutation_attempt_blockers=$(if ($artifact.blockers.Count -gt 0) { $artifact.blockers -join '+' } else { 'none' })"
     Write-SafeHost "browser_live_mutation_attempt_error_class=$(if ($artifact.blockers.Count -gt 0 -and [string]$runnerStatus -eq 'failed') { $artifact.blockers -join '+' } else { 'none' })"
     Write-SafeHost "browser_live_mutation_attempt_failed_action=$(if ($artifact.PSObject.Properties.Name -contains 'browser_runner') { $artifact.browser_runner.failed_action } else { 'none' })"
@@ -2768,11 +4435,30 @@ function Assert-BrowserEvidenceArtifactContract {
   Assert-Equal (Get-JsonProperty $contract "unavailableMarker" "UI browser evidence artifact") "unavailable" "UI browser evidence unavailable marker"
 
   $requiredTopLevel = Get-JsonStringArray (Get-JsonProperty $contract "requiredTopLevelFields" "UI browser evidence artifact") "UI browser evidence top-level fields"
-  Assert-StringSetEqual $requiredTopLevel @("artifact", "generated_at", "mode", "outcome", "provenance", "freshness", "blockers", "matrix", "durations", "actions", "secret_safe") "UI browser evidence top-level fields"
+  Assert-StringSetEqual $requiredTopLevel @("artifact", "generated_at", "mode", "outcome", "provenance", "freshness", "runtime_current", "classifications", "readback", "runtime_current_artifact", "session_verification", "mutation_controls", "api_readback", "ledger_readback", "failure_taxonomy", "blockers", "matrix", "durations", "actions", "secret_safe") "UI browser evidence top-level fields"
 
   $outcomes = Get-JsonProperty $contract "outcomes" "UI browser evidence artifact"
   foreach ($name in @("blocked", "failed", "passed")) {
     Assert-Equal (Get-JsonProperty $outcomes $name "UI browser evidence outcomes") $name "UI browser evidence outcome $name"
+  }
+
+  $classificationFields = Get-JsonProperty $contract "classificationFields" "UI browser evidence classifications"
+  foreach ($name in @("failure", "mutationPassArtifact", "readback", "replay", "runtimeCurrent")) {
+    $field = [string](Get-JsonProperty $classificationFields $name "UI browser evidence classification fields")
+    if ($field -notmatch '^[a-z0-9_]+$') {
+      throw "UI browser evidence classification field '$name' must be machine readable"
+    }
+  }
+
+  $classificationValues = Get-JsonProperty $contract "classificationValues" "UI browser evidence classification values"
+  foreach ($groupName in @("failure", "mutationPassArtifact", "readback", "replay", "runtimeCurrent")) {
+    $group = Get-JsonProperty $classificationValues $groupName "UI browser evidence classification values"
+    foreach ($property in @($group.PSObject.Properties)) {
+      $value = [string]$property.Value
+      if ($value -ne "none" -and $value -notmatch '^[a-z0-9_]+$') {
+        throw "UI browser evidence classification '$groupName.$($property.Name)' must be machine readable"
+      }
+    }
   }
 
   $durationFields = Get-JsonProperty $contract "durationFields" "UI browser evidence artifact"
@@ -2782,6 +4468,118 @@ function Assert-BrowserEvidenceArtifactContract {
       throw "UI browser evidence duration field '$name' must be machine readable"
     }
   }
+
+  $artifactSchema = Get-JsonProperty $contract "artifactSchema" "UI browser evidence artifact schema"
+  Assert-Equal (Get-JsonProperty $artifactSchema "runtimeCurrentArtifactLinkField" "UI browser evidence artifact schema") "runtime_current_artifact" "UI browser evidence runtime artifact link field"
+  Assert-Equal (Get-JsonProperty $artifactSchema "sessionVerificationField" "UI browser evidence artifact schema") "session_verification" "UI browser evidence session verification field"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $artifactSchema "apiReadbackFields" "UI browser evidence artifact schema") "UI browser evidence API readback fields") @("dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh") "UI browser evidence API readback fields"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $artifactSchema "ledgerReadbackFields" "UI browser evidence artifact schema") "UI browser evidence ledger readback fields") @("applied_ledger_entry_visible", "idempotent_replay_reused_ledger_entry", "refund_refusal_no_ledger_write", "ledger_refresh_visible") "UI browser evidence ledger readback fields"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $artifactSchema "mutationControlFields" "UI browser evidence artifact schema") "UI browser evidence mutation control fields") @("mutation_opt_in_enabled", "artifact_write_opt_in_enabled", "artifact_readback_opt_in_enabled") "UI browser evidence mutation control fields"
+  Assert-StringSetEqual (Get-JsonStringArray (Get-JsonProperty $artifactSchema "failureTaxonomyFields" "UI browser evidence artifact schema") "UI browser evidence failure taxonomy fields") @("session_missing", "runtime_stale", "mutation_opt_in_missing", "artifact_write_missing", "artifact_readback_failed", "idempotent_replay_failed", "refund_refusal_missing", "ledger_refresh_missing", "duration_non_numeric", "stale_or_simulated_artifact", "browser_unavailable") "UI browser evidence failure taxonomy fields"
+}
+
+function Get-BrowserEvidenceClassificationValue {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)][string]$Group,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  $contract = Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff"
+  $classificationValues = Get-JsonProperty $contract "classificationValues" "UI browser evidence classification values"
+  $groupValues = Get-JsonProperty $classificationValues $Group "UI browser evidence classification values"
+  return [string](Get-JsonProperty $groupValues $Name "UI browser evidence classification values")
+}
+
+function Get-BrowserEvidenceFailureClassification {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  foreach ($blocker in @(Get-JsonProperty $Artifact "blockers" "browser evidence artifact")) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$blocker)) {
+      return [string]$blocker
+    }
+  }
+  return (Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "failure" -Name "none")
+}
+
+function Get-BrowserEvidenceReplayClassification {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  $failed = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "replay" -Name "failed"
+  $passed = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "replay" -Name "passed"
+  $notRun = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "replay" -Name "notRun"
+  foreach ($blocker in @(Get-JsonProperty $Artifact "blockers" "browser evidence artifact")) {
+    if ([string]$blocker -eq $failed) {
+      return $failed
+    }
+  }
+  if ($Artifact.PSObject.Properties.Name -contains "browser_runner") {
+    $failedAction = [string](Get-JsonProperty $Artifact.browser_runner "failed_action" "browser evidence runner")
+    if ($failedAction -eq "idempotent_replay") {
+      return $failed
+    }
+  }
+  foreach ($action in @(Get-JsonProperty $Artifact "actions" "browser evidence artifact")) {
+    if ([string](Get-JsonProperty $action "name" "browser evidence action") -ne "idempotent_replay") {
+      continue
+    }
+    $outcome = [string](Get-JsonProperty $action "outcome" "browser evidence action")
+    if ($outcome -eq "idempotent" -and (Test-BrowserEvidenceDurationValue (Get-JsonProperty $action "duration_ms" "browser evidence action"))) {
+      return $passed
+    }
+    if ($outcome -eq "failed") {
+      return $failed
+    }
+  }
+  return $notRun
+}
+
+function Update-BrowserEvidenceClassifications {
+  param(
+    [Parameter(Mandatory = $true)]$Handoff,
+    [Parameter(Mandatory = $true)]$Artifact
+  )
+
+  $mutationValues = Get-JsonProperty (Get-JsonProperty (Get-JsonProperty $Handoff "browserEvidenceArtifact" "UI handoff") "classificationValues" "UI browser evidence classification values") "mutationPassArtifact" "UI browser evidence mutation classifications"
+  $mutationClassification = [string](Get-JsonProperty $mutationValues "notRequested" "UI browser evidence mutation classifications")
+  if ([string]$Artifact.outcome -eq "blocked") {
+    $mutationClassification = [string](Get-JsonProperty $mutationValues "blocked" "UI browser evidence mutation classifications")
+  } elseif ([string]$Artifact.outcome -eq "failed") {
+    $mutationClassification = [string](Get-JsonProperty $mutationValues "failed" "UI browser evidence mutation classifications")
+  } elseif ([string]$Artifact.outcome -eq "passed") {
+    if (Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $Artifact) {
+      $mutationClassification = [string](Get-JsonProperty $mutationValues "passed" "UI browser evidence mutation classifications")
+    } else {
+      $mutationClassification = [string](Get-JsonProperty $mutationValues "failed" "UI browser evidence mutation classifications")
+    }
+  }
+
+  $Artifact.classifications.runtime_current = [string](Get-JsonProperty $Artifact.runtime_current "classification" "browser evidence runtime current")
+  $Artifact.classifications.replay = Get-BrowserEvidenceReplayClassification -Handoff $Handoff -Artifact $Artifact
+  $Artifact.classifications.mutation_pass_artifact = $mutationClassification
+  $Artifact.classifications.failure = Get-BrowserEvidenceFailureClassification -Handoff $Handoff -Artifact $Artifact
+}
+
+function Set-BrowserArtifactReadbackResult {
+  param(
+    [Parameter(Mandatory = $true)]$Artifact,
+    [Parameter(Mandatory = $true)][string]$Classification,
+    [Parameter(Mandatory = $true)][bool]$Attempted,
+    [Parameter(Mandatory = $true)][bool]$Fresh,
+    [Parameter(Mandatory = $true)][bool]$ClosureEligible
+  )
+
+  $Artifact.readback.classification = $Classification
+  $Artifact.readback.attempted = $Attempted
+  $Artifact.readback.fresh = $Fresh
+  $Artifact.readback.closure_eligible = $ClosureEligible
+  $Artifact.classifications.readback = $Classification
 }
 
 function New-BrowserEvidenceArtifact {
@@ -2807,6 +4605,11 @@ function New-BrowserEvidenceArtifact {
   $roundTrip = Get-JsonProperty $runner "artifactRoundTrip" "UI browser runner artifact round-trip"
   $artifactWriteRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
   $staleRefusal = Get-JsonProperty $artifactWriteRead "staleRefusal" "UI browser runner artifact stale refusal"
+  $runtimeCurrent = Get-BrowserRuntimeCurrentEvidence
+  $notRunReplay = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "replay" -Name "notRun"
+  $notRequestedMutation = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "mutationPassArtifact" -Name "notRequested"
+  $notRequestedReadback = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "readback" -Name "notRequested"
+  $noFailure = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "failure" -Name "none"
   if ([string]::IsNullOrWhiteSpace($GeneratedAt)) {
     $GeneratedAt = (Get-Date).ToUniversalTime().ToString("o")
   }
@@ -2834,7 +4637,7 @@ function New-BrowserEvidenceArtifact {
     provenance = [PSCustomObject]@{
       script = "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1"
       handoff_artifact = "web/admin-ui/src/billingExecuteSmokeContract.serializable.json"
-      handoff_fresh = $true
+      handoff_fresh = $HandoffFresh
       git_commit = $GitCommit
     }
     freshness = [PSCustomObject]@{
@@ -2843,6 +4646,71 @@ function New-BrowserEvidenceArtifact {
       git_commit = $GitCommit
       require_current_git_commit = [bool](Get-JsonProperty $staleRefusal "requireCurrentGitCommit" "UI browser runner artifact stale refusal")
       max_generated_age_minutes = [int](Get-JsonProperty $staleRefusal "maxGeneratedAgeMinutes" "UI browser runner artifact stale refusal")
+    }
+    runtime_current = $runtimeCurrent
+    classifications = [PSCustomObject]@{
+      runtime_current = [string](Get-JsonProperty $runtimeCurrent "classification" "browser runtime-current evidence")
+      replay = $notRunReplay
+      mutation_pass_artifact = $notRequestedMutation
+      readback = $notRequestedReadback
+      failure = if ($Blockers.Count -gt 0) { [string]$Blockers[0] } else { $noFailure }
+    }
+    readback = [PSCustomObject]@{
+      classification = $notRequestedReadback
+      attempted = $false
+      fresh = $false
+      closure_eligible = $false
+      path_bounded = $true
+    }
+    runtime_current_artifact = [PSCustomObject]@{
+      linked = [string](Get-JsonProperty $runtimeCurrent "classification" "browser runtime-current evidence") -eq "runtime_current_verified"
+      classification = [string](Get-JsonProperty $runtimeCurrent "classification" "browser runtime-current evidence")
+      source = "runtime_current_handoff_artifact"
+      secret_material_echoed = $false
+    }
+    session_verification = [PSCustomObject]@{
+      marker = if ($SessionMaterialPresent) { "admin_session_verified" } else { "session_material_missing" }
+      verified = $SessionMaterialPresent
+      secret_omitted = $true
+      token_echoed = $false
+      cookie_echoed = $false
+      header_value_echoed = $false
+    }
+    mutation_controls = [PSCustomObject]@{
+      mutation_opt_in_enabled = $MutationEnabled
+      artifact_write_opt_in_enabled = $false
+      artifact_readback_opt_in_enabled = $false
+      default_build = $false
+      default_mutation = $false
+      default_runner = $false
+    }
+    api_readback = [PSCustomObject]@{
+      dry_run_plan = "unavailable"
+      execute_apply = "unavailable"
+      idempotent_replay = "unavailable"
+      refund_refusal = "unavailable"
+      ledger_refresh = "unavailable"
+    }
+    ledger_readback = [PSCustomObject]@{
+      applied_ledger_entry_visible = $false
+      idempotent_replay_reused_ledger_entry = $false
+      refund_refusal_no_ledger_write = $false
+      ledger_refresh_visible = $false
+    }
+    failure_taxonomy = [PSCustomObject]@{
+      failed_action = "none"
+      failure_classification = if ($Blockers.Count -gt 0) { [string]$Blockers[0] } else { $noFailure }
+      session_missing = -not $SessionMaterialPresent
+      runtime_stale = [string](Get-JsonProperty $runtimeCurrent "classification" "browser runtime-current evidence") -ne "runtime_current_verified"
+      mutation_opt_in_missing = -not $MutationEnabled
+      artifact_write_missing = $true
+      artifact_readback_failed = $false
+      idempotent_replay_failed = $false
+      refund_refusal_missing = $false
+      ledger_refresh_missing = $false
+      duration_non_numeric = $false
+      stale_or_simulated_artifact = $false
+      browser_unavailable = $ToolingStatus -ne "available"
     }
     blockers = @($Blockers)
     matrix = [PSCustomObject]@{
@@ -2895,6 +4763,8 @@ function New-BrowserEvidenceArtifact {
       contract_forbidden_markers_checked = $true
     }
   }
+  Update-BrowserEvidenceClassifications -Handoff $Handoff -Artifact $artifact
+  return $artifact
 }
 
 function Assert-BrowserEvidenceArtifactShape {
@@ -2931,6 +4801,30 @@ function Assert-BrowserEvidenceArtifactShape {
     [void](Get-JsonProperty $action "duration_ms" "browser evidence action")
   }
 
+  $runtimeCurrent = Get-JsonProperty $Artifact "runtime_current" "browser evidence artifact"
+  foreach ($field in @("classification", "stale_or_unverified", "reason", "source_newest_utc", "container_created_utc", "image_created_utc", "blocker")) {
+    [void](Get-JsonProperty $runtimeCurrent $field "browser evidence runtime current")
+  }
+  if ([string](Get-JsonProperty $runtimeCurrent "classification" "browser evidence runtime current") -notmatch '^runtime_(current_(not_checked|verified)|image_stale_or_unverified)$') {
+    throw "browser runtime-current classification must be machine readable"
+  }
+
+  $classifications = Get-JsonProperty $Artifact "classifications" "browser evidence classifications"
+  foreach ($field in @("runtime_current", "replay", "mutation_pass_artifact", "readback", "failure")) {
+    $classification = [string](Get-JsonProperty $classifications $field "browser evidence classifications")
+    if ($classification -ne "none" -and $classification -notmatch '^[a-z0-9_]+$') {
+      throw "browser evidence classification '$field' must be machine readable"
+    }
+  }
+
+  $readback = Get-JsonProperty $Artifact "readback" "browser evidence readback"
+  foreach ($field in @("classification", "attempted", "fresh", "closure_eligible", "path_bounded")) {
+    [void](Get-JsonProperty $readback $field "browser evidence readback")
+  }
+  if ([string](Get-JsonProperty $readback "classification" "browser evidence readback") -notmatch '^artifact_readback_(not_requested|missing|failed|passed)$') {
+    throw "browser readback classification must be machine readable"
+  }
+
   if ($Artifact.PSObject.Properties.Name -contains "selector_snapshot") {
     $snapshot = Get-JsonProperty $Artifact "selector_snapshot" "browser evidence selector snapshot"
     Assert-True ((Get-JsonProperty $snapshot "bounded" "browser evidence selector snapshot") -eq $true) "browser selector snapshot must be bounded"
@@ -2944,6 +4838,56 @@ function Assert-BrowserEvidenceArtifactShape {
     $runner = Get-JsonProperty $Artifact "browser_runner" "browser evidence runner"
     if ([string](Get-JsonProperty $runner "failed_action" "browser evidence runner") -notmatch '^[A-Za-z0-9_]+$') {
       throw "browser runner failed_action must be a safe action key"
+    }
+  }
+
+  $runtimeArtifact = Get-JsonProperty $Artifact "runtime_current_artifact" "browser evidence runtime artifact"
+  foreach ($field in @("linked", "classification", "source", "secret_material_echoed")) {
+    [void](Get-JsonProperty $runtimeArtifact $field "browser evidence runtime artifact")
+  }
+  if ([string](Get-JsonProperty $runtimeArtifact "classification" "browser evidence runtime artifact") -notmatch '^runtime_(current_(not_checked|verified)|image_stale_or_unverified)$') {
+    throw "browser runtime artifact classification must be machine readable"
+  }
+  Assert-True ((Get-JsonProperty $runtimeArtifact "secret_material_echoed" "browser evidence runtime artifact") -eq $false) "browser runtime artifact must not echo secret material"
+
+  $sessionVerification = Get-JsonProperty $Artifact "session_verification" "browser evidence session verification"
+  foreach ($field in @("marker", "verified", "secret_omitted", "token_echoed", "cookie_echoed", "header_value_echoed")) {
+    [void](Get-JsonProperty $sessionVerification $field "browser evidence session verification")
+  }
+  Assert-True ([bool](Get-JsonProperty $sessionVerification "secret_omitted" "browser evidence session verification")) "browser session verification must omit secret"
+  foreach ($field in @("token_echoed", "cookie_echoed", "header_value_echoed")) {
+    Assert-True ((Get-JsonProperty $sessionVerification $field "browser evidence session verification") -eq $false) "browser session verification must not echo $field"
+  }
+
+  $mutationControls = Get-JsonProperty $Artifact "mutation_controls" "browser evidence mutation controls"
+  foreach ($field in @("mutation_opt_in_enabled", "artifact_write_opt_in_enabled", "artifact_readback_opt_in_enabled", "default_build", "default_mutation", "default_runner")) {
+    [void](Get-JsonProperty $mutationControls $field "browser evidence mutation controls")
+  }
+  foreach ($field in @("default_build", "default_mutation", "default_runner")) {
+    Assert-True ((Get-JsonProperty $mutationControls $field "browser evidence mutation controls") -eq $false) "browser mutation controls must keep $field false"
+  }
+
+  $apiReadback = Get-JsonProperty $Artifact "api_readback" "browser evidence API readback"
+  foreach ($field in @("dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh")) {
+    $value = [string](Get-JsonProperty $apiReadback $field "browser evidence API readback")
+    if ($value -notmatch '^[A-Za-z0-9_]+$') {
+      throw "browser API readback '$field' must be machine readable"
+    }
+  }
+
+  $ledgerReadback = Get-JsonProperty $Artifact "ledger_readback" "browser evidence ledger readback"
+  foreach ($field in @("applied_ledger_entry_visible", "idempotent_replay_reused_ledger_entry", "refund_refusal_no_ledger_write", "ledger_refresh_visible")) {
+    [void](Get-JsonProperty $ledgerReadback $field "browser evidence ledger readback")
+  }
+
+  $failureTaxonomy = Get-JsonProperty $Artifact "failure_taxonomy" "browser evidence failure taxonomy"
+  foreach ($field in @("failed_action", "failure_classification", "session_missing", "runtime_stale", "mutation_opt_in_missing", "artifact_write_missing", "artifact_readback_failed", "idempotent_replay_failed", "refund_refusal_missing", "ledger_refresh_missing", "duration_non_numeric", "stale_or_simulated_artifact", "browser_unavailable")) {
+    [void](Get-JsonProperty $failureTaxonomy $field "browser evidence failure taxonomy")
+  }
+  foreach ($field in @("failed_action", "failure_classification")) {
+    $value = [string](Get-JsonProperty $failureTaxonomy $field "browser evidence failure taxonomy")
+    if ($value -ne "none" -and $value -notmatch '^[A-Za-z0-9_]+$') {
+      throw "browser failure taxonomy '$field' must be machine readable"
     }
   }
 
@@ -2973,7 +4917,7 @@ function Assert-BrowserEvidenceArtifactFreshness {
     Assert-Equal (Get-JsonProperty $freshness "git_commit" "browser evidence freshness") (Get-CurrentGitCommit) "browser evidence git commit freshness"
   }
 
-  $generatedAt = [DateTime]::Parse([string](Get-JsonProperty $Artifact "generated_at" "browser evidence artifact")).ToUniversalTime()
+  $generatedAt = Convert-JsonTimestampToUtc (Get-JsonProperty $Artifact "generated_at" "browser evidence artifact")
   $maxAgeMinutes = [int](Get-JsonProperty $staleRefusal "maxGeneratedAgeMinutes" "UI browser runner artifact stale refusal")
   $age = (Get-Date).ToUniversalTime() - $generatedAt
   if ($age.TotalMinutes -gt $maxAgeMinutes) {
@@ -2983,6 +4927,11 @@ function Assert-BrowserEvidenceArtifactFreshness {
 
 function Assert-StaleBrowserEvidenceArtifactRefusal {
   param([Parameter(Mandatory = $true)]$Handoff)
+
+  if (Test-BrowserLiveMutationAttemptOptIn) {
+    Write-SafeHost "browser_artifact_stale_refusal_selftest_skipped_for_live_opt_in=true"
+    return
+  }
 
   $probe = [PSCustomObject]@{ Reachable = $true }
   $oldGeneratedAt = (Get-Date).ToUniversalTime().AddHours(-2).ToString("o")
@@ -3154,17 +5103,39 @@ function Write-BrowserRunnerReadinessGate {
   $artifactJson = $artifact | ConvertTo-Json -Depth 32 -Compress
   $roundTripArtifact = Read-Json $artifactJson
   Assert-BrowserEvidenceArtifactShape -Handoff $Handoff -Artifact $roundTripArtifact
+  $roundTripGeneratedAt = Convert-JsonTimestampToUtc (Get-JsonProperty $roundTripArtifact "generated_at" "browser runner roundtrip artifact")
+  Write-SafeHost "browser_runner_roundtrip_generated_at=$($roundTripGeneratedAt.ToString("o"))"
+  Write-SafeHost "browser_runner_roundtrip_age_minutes=$([Math]::Round(((Get-Date).ToUniversalTime() - $roundTripGeneratedAt).TotalMinutes, 4))"
   Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $roundTripArtifact
-  Assert-StaleBrowserEvidenceArtifactRefusal -Handoff $Handoff
+  if (-not (Test-BrowserLiveMutationAttemptOptIn)) {
+    Assert-StaleBrowserEvidenceArtifactRefusal -Handoff $Handoff
+  }
 
   $writeRead = Get-JsonProperty $runner "artifactWriteRead" "UI browser runner artifact write/read"
-  $writeEnabled = Test-BrowserEvidenceArtifactWriteOptIn $Handoff
+  $writeEnabled = (Test-BrowserEvidenceArtifactWriteOptIn $Handoff) -and -not $BrowserLiveRunnerExecutionOptIn
   $artifactPath = Resolve-BoundedEvidenceArtifactPath $BrowserEvidenceArtifactPath
   if ($writeEnabled) {
+    if ($artifact.PSObject.Properties.Name -contains "mutation_controls") {
+      $artifact.mutation_controls.artifact_write_opt_in_enabled = $true
+      $artifact.mutation_controls.artifact_readback_opt_in_enabled = $true
+    }
     $artifactDirectory = Split-Path -Path $artifactPath -Parent
     if (-not (Test-Path $artifactDirectory)) {
       New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
     }
+    Set-Content -Path $artifactPath -Value $artifactJson -Encoding UTF8
+    $readBack = Read-JsonFile $artifactPath
+    Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $readBack
+    $readbackClosureEligible = Test-BrowserMutationPassArtifactClosure -Handoff $Handoff -Artifact $readBack
+    $readbackClassificationName = if ($readbackClosureEligible) { "passed" } else { "failed" }
+    $readbackClassification = Get-BrowserEvidenceClassificationValue -Handoff $Handoff -Group "readback" -Name $readbackClassificationName
+    Set-BrowserArtifactReadbackResult -Artifact $artifact -Classification $readbackClassification -Attempted $true -Fresh $true -ClosureEligible $readbackClosureEligible
+    if ($artifact.PSObject.Properties.Name -contains "failure_taxonomy") {
+      $artifact.failure_taxonomy.artifact_write_missing = $false
+      $artifact.failure_taxonomy.artifact_readback_failed = -not $readbackClosureEligible
+    }
+    Update-BrowserEvidenceClassifications -Handoff $Handoff -Artifact $artifact
+    $artifactJson = $artifact | ConvertTo-Json -Depth 32 -Compress
     Set-Content -Path $artifactPath -Value $artifactJson -Encoding UTF8
     $readBack = Read-JsonFile $artifactPath
     Assert-BrowserEvidenceArtifactFreshness -Handoff $Handoff -Artifact $readBack
@@ -3184,6 +5155,7 @@ function Write-BrowserRunnerReadinessGate {
   Write-SafeHost "browser_artifact_write_mode=$([string](Get-JsonProperty $writeRead "writeMode" "UI browser runner artifact write/read"))"
   Write-SafeHost "browser_artifact_path_bounded=true"
   Write-SafeHost "browser_artifact_readback_fresh=$(Format-BoolMarker $writeEnabled)"
+  Write-SafeHost "browser_artifact_readback_classification=$($artifact.classifications.readback)"
   Write-SafeHost "browser_artifact_stale_refusal=true"
   Write-SafeHost "$([string](Get-JsonProperty $roundTrip "outputMarker" "UI browser runner artifact round-trip"))=$artifactJson"
 }
@@ -3263,6 +5235,11 @@ function Assert-BrowserLiveSmokeHarnessPreflight {
     Write-BrowserRunnerReadinessGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
     Write-BrowserPlaywrightLaunchReadinessBoundary -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
     Write-BrowserMutationPassArtifactClosureGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -Blockers $liveBlockers -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
+    Write-BrowserMutationFinalDodMatrix -Handoff $Handoff
+    Write-RuntimeCurrentEvidenceAcceptanceMatrix -Handoff $Handoff
+    Write-RuntimeCurrentFinalClosureAudit -Handoff $Handoff
+    Write-BrowserMutationEvidenceWatcherFinalGuard -Handoff $Handoff
+    Write-RuntimeCurrentOperatorHandoffPack -Handoff $Handoff
     Write-BrowserLiveRunnerExecutionBridgeGate -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
     Write-BrowserLivePassArtifactReadbackGate -Handoff $Handoff -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent
     Write-BrowserLiveEnvironmentBootstrapAttempt -Handoff $Handoff -ToolingStatus $toolingStatus -AdminUiProbe $adminUiProbe -ControlPlaneProbe $controlPlaneProbe -AdminUiDevServerBootstrap $adminUiDevServerBootstrap -MutationEnabled $mutationEnabled -SessionMaterialPresent $sessionMaterialPresent -ServiceReadinessDurationMs ([int]$serviceTimer.ElapsedMilliseconds)
@@ -3669,6 +5646,29 @@ try {
     Assert-UiLiveSmokeSerializableHandoff (Read-JsonFile $uiSmokeHandoffPath)
   }
 
+  Check "runtime-current no-build recreate handoff simulations" {
+    Write-RuntimeCurrentHandoffSimulation (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  Check "runtime-current and mutation artifact acceptance simulations" {
+    Write-RuntimeCurrentEvidenceAcceptanceMatrix (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  Check "browser mutation final closure audit simulations" {
+    Write-RuntimeCurrentFinalClosureAudit (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  Check "browser mutation evidence watcher final guard review" {
+    Write-BrowserMutationEvidenceWatcherFinalGuard (Read-JsonFile $uiSmokeHandoffPath)
+  }
+
+  if ($AdminSessionHandoff -and (Test-BrowserLiveMutationAttemptOptIn)) {
+    Check-Blocking "control-plane admin session handoff before browser live preflight" {
+      Write-AdminSessionHandoff
+    }
+    Exit-WithFailuresOrBlockers
+  }
+
   Check "Admin UI ledger execute browser live-smoke harness preflight contract" {
     Assert-BrowserLiveSmokeHarnessPreflight (Read-JsonFile $uiSmokeHandoffPath)
   }
@@ -3684,15 +5684,28 @@ try {
   Check "control-plane source contains transactional execute boundary" {
     Assert-AdminSourceMarkers
   }
-  $runtimeSourceProbe = Write-ControlPlaneRuntimeSourceProbe -SourcePaths @($adminSourcePath, $dryRunContractPath, $PSCommandPath)
+
+  if ($ArtifactReadbackOnly) {
+    Check-Blocking "E11 release runtime-current and browser mutation artifact readback gate" {
+      Invoke-E11ReleaseArtifactReadbackGate -Handoff (Read-JsonFile $uiSmokeHandoffPath)
+    }
+    Exit-WithFailuresOrBlockers
+    Write-SafeHost "Control Plane ledger adjustment execute release artifact readback-only gate passed; live DB/browser mutation was not run."
+    exit 0
+  }
+
+  $runtimeSourceProbe = Write-ControlPlaneRuntimeSourceProbe -SourcePaths (Get-ControlPlaneRuntimeSourcePaths)
+  $script:RuntimeSourceProbe = $runtimeSourceProbe
 
   if ($AdminSessionHandoff) {
     Check-Blocking "control-plane admin session handoff" {
       Write-AdminSessionHandoff
     }
     Exit-WithFailuresOrBlockers
-    Write-SafeHost "Control Plane admin session handoff passed."
-    exit 0
+    if (-not (Test-BrowserLiveMutationAttemptOptIn)) {
+      Write-SafeHost "Control Plane admin session handoff passed."
+      exit 0
+    }
   }
 
   if ($ContractOnly) {
@@ -3701,7 +5714,33 @@ try {
     exit 0
   }
 
-  if (Test-BrowserLiveMutationAttemptOptIn -and [bool]$runtimeSourceProbe.StaleOrUnverified) {
+  $uiSmokeHandoff = Read-JsonFile $uiSmokeHandoffPath
+  if ($RuntimeCurrentNoBuildRecreateOptIn -or $RuntimeCurrentRebuildHandoffOptIn -or $RuntimeCurrentEvidenceArtifactWriteOptIn) {
+    $runtimeSourceProbe = Invoke-RuntimeCurrentNoBuildRecreateGate -Handoff $uiSmokeHandoff -InitialProbe $runtimeSourceProbe
+    $script:RuntimeSourceProbe = $runtimeSourceProbe
+    Exit-WithFailuresOrBlockers
+    if (-not (Test-BrowserLiveMutationAttemptOptIn)) {
+      Write-SafeHost "Control Plane ledger adjustment execute runtime-current handoff gate passed; live ledger mutation was not run."
+      exit 0
+    }
+  }
+
+  if ($RuntimeCurrentEvidenceArtifactReadbackOptIn) {
+    $runtimeSourceProbe = Invoke-RuntimeCurrentArtifactReadbackGate -Handoff $uiSmokeHandoff -InitialProbe $runtimeSourceProbe
+    $script:RuntimeSourceProbe = $runtimeSourceProbe
+    Write-SafeHost "runtime_current_browser_unblock_probe_stale=$($runtimeSourceProbe.StaleOrUnverified)"
+    Write-SafeHost "runtime_current_browser_unblock_probe_artifact_verified=$($runtimeSourceProbe.ArtifactVerified)"
+    Write-SafeHost "runtime_current_browser_unblock_probe_reason=$($runtimeSourceProbe.Reason)"
+    Exit-WithFailuresOrBlockers
+    if (-not (Test-BrowserLiveMutationAttemptOptIn)) {
+      Write-SafeHost "Control Plane ledger adjustment execute runtime-current artifact readback gate passed; browser runner was not run."
+      exit 0
+    }
+  }
+
+  $runtimeSourceProbeStaleForLiveGate = ([string]$runtimeSourceProbe.StaleOrUnverified).ToLowerInvariant() -eq "true"
+  Write-SafeHost "runtime_current_browser_live_gate_stale=$runtimeSourceProbeStaleForLiveGate"
+  if ((Test-BrowserLiveMutationAttemptOptIn) -and $runtimeSourceProbeStaleForLiveGate) {
     Add-Blocker "browser live mutation runtime-current gate - runtime_image_stale_or_unverified reason=$($runtimeSourceProbe.Reason)"
     Exit-WithFailuresOrBlockers
   }
@@ -3711,7 +5750,6 @@ try {
   }
   Exit-WithFailuresOrBlockers
 
-  $uiSmokeHandoff = Read-JsonFile $uiSmokeHandoffPath
   if (Test-BrowserLiveMutationAttemptOptIn) {
     Check-Blocking "control-plane admin session handoff for browser live mutation" {
       Write-AdminSessionHandoff

@@ -1,0 +1,93 @@
+{
+  "schema_version": "gateway_paid_hot_path_evidence.v1",
+  "artifact_id": "gateway-paid-hot-path-real-shape-selftest",
+  "generated_at_utc": "2026-06-05T21:00:00Z",
+  "generated_by": "synthetic_selftest_fixture",
+  "environment_scope": "synthetic_selftest",
+  "status": "passed",
+  "production_hot_path_claim": true,
+  "contract_shape_only": false,
+  "synthetic_selftest": true,
+  "selftest_fixture": true,
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "provider_key_echoed": false,
+    "virtual_key_echoed": false
+  },
+  "gateway_hot_path_reserve_settle_refund": {
+    "status": "passed",
+    "passed": true,
+    "reserve_before_provider_side_effect": true,
+    "successful_request_settled": true,
+    "refund_rows": 1
+  },
+  "insufficient_balance_prevents_provider_call": {
+    "status": "passed",
+    "passed": true,
+    "provider_attempt_rows": 0
+  },
+  "settle_idempotency": {
+    "status": "passed",
+    "passed": true,
+    "expected_idempotency_key": "settle:00000000-0000-0000-0000-000000060003"
+  },
+  "refund_idempotency": {
+    "status": "passed",
+    "passed": true,
+    "duplicate_refund_idempotent": true,
+    "refund_idempotency_key": "refund:00000000-0000-0000-0000-000000060004"
+  },
+  "evidence": [
+    {
+      "evidence_key": "gateway_hot_path_reserve_settle_refund",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060001",
+      "operation_id": "00000000-0000-0000-0000-000000060001",
+      "operation": "reserve_settle_refund",
+      "scenario": "reserve_before_provider_settle_then_refund",
+      "generated_at_utc": "2026-06-05T21:00:01Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "insufficient_balance_prevents_provider_call",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060002",
+      "operation_id": "00000000-0000-0000-0000-000000060002",
+      "operation": "reserve_pre_authorize",
+      "scenario": "insufficient_balance_no_provider_call",
+      "provider_call_expected": false,
+      "generated_at_utc": "2026-06-05T21:00:02Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "settle_idempotency",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060003",
+      "operation_id": "00000000-0000-0000-0000-000000060003",
+      "operation": "settle",
+      "scenario": "duplicate_settle_idempotent",
+      "expected_idempotency_key": "settle:00000000-0000-0000-0000-000000060003",
+      "generated_at_utc": "2026-06-05T21:00:03Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "refund_idempotency",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060004",
+      "operation_id": "00000000-0000-0000-0000-000000060014",
+      "refund_operation_id": "00000000-0000-0000-0000-000000060014",
+      "related_settle_ledger_entry_id": "00000000-0000-0000-0000-000000060024",
+      "refund_idempotency_key": "refund:00000000-0000-0000-0000-000000060004",
+      "operation": "refund_partial",
+      "scenario": "refund_after_settle_duplicate_idempotent",
+      "generated_at_utc": "2026-06-05T21:00:04Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    }
+  ]
+}

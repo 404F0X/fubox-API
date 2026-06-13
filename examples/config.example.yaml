@@ -3,6 +3,11 @@ server:
   public_base_url: "http://localhost:8080"
   max_request_body_bytes: 10485760
   graceful_shutdown_seconds: 30
+  # Empty by default: Gateway uses the TCP peer IP and ignores forwarded headers.
+  # Add only trusted load balancer/proxy source IPs or CIDRs to enable X-Forwarded-For/X-Real-IP.
+  # Generate a documentation-only example with:
+  #   pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/write_network_security_config_example.ps1
+  trusted_proxy_allowlist: []
 
 database:
   driver: "postgres"
@@ -38,6 +43,27 @@ routing:
   retry_before_first_byte_only_for_stream: true
   default_timeout_seconds: 120
   stream_idle_timeout_seconds: 60
+
+# Provider/channel records are stored in the control-plane database, not in this
+# runtime config file. Secret-safe Gemini onboarding example:
+#
+# provider:
+#   name: "google-gemini"
+#   kind: "gemini"
+#   status: "enabled"
+# channel:
+#   provider: "google-gemini"
+#   name: "gemini-generate-content"
+#   protocol_mode: "gemini_generate_content"
+#   endpoint: "https://generativelanguage.googleapis.com"
+#   model_mappings:
+#     "gemini-2.5-flash": "gemini-2.5-flash"
+# provider_key:
+#   channel: "gemini-generate-content"
+#   status: "enabled"
+#   secret_source: "operator_entered"
+#   secret_example: "${GEMINI_API_KEY}"
+#   note: "Do not store real provider keys in config.example.yaml."
 
 observability:
   metrics_enabled: true

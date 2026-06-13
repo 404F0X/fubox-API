@@ -1,0 +1,95 @@
+{
+  "type": "sub2api-data",
+  "version": 1,
+  "exported_at": "2026-06-11T00:00:00Z",
+  "proxies": [
+    {
+      "proxy_key": "proxy-primary",
+      "name": "Primary proxy",
+      "protocol": "http",
+      "host": "proxy.example.invalid",
+      "port": 8080,
+      "password": "${SUB2API_PROXY_PASSWORD}",
+      "status": "enabled"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "acct-openai-1",
+      "name": "OpenAI paid account",
+      "platform": "openai",
+      "type": "api_key",
+      "credentials": {
+        "api_key": "${SUB2API_OPENAI_KEY}"
+      },
+      "extra": {
+        "base_url": "https://api.openai.example/v1",
+        "note": "primary paid route"
+      },
+      "proxy_key": "proxy-primary",
+      "groups": ["paid"],
+      "concurrency": 4,
+      "priority": 10,
+      "rate_multiplier": 1.25,
+      "auto_pause_on_expired": true,
+      "unknown_account_field": "manual-review"
+    }
+  ],
+  "groups": [
+    {
+      "id": "paid",
+      "name": "Paid",
+      "platform": "openai",
+      "subscription_type": "monthly",
+      "rate_multiplier": 1.25,
+      "daily_limit_usd": 20,
+      "weekly_limit_usd": 100,
+      "monthly_limit_usd": 300,
+      "supported_model_scopes": ["gpt-4o", "gpt-4o-mini"],
+      "rpm_limit": 60,
+      "status": "enabled"
+    }
+  ],
+  "users": [
+    {
+      "id": "user-1",
+      "email": "alice@example.invalid",
+      "username": "alice",
+      "role": "user",
+      "status": "enabled",
+      "balance": 100,
+      "concurrency": 2,
+      "rpm_limit": 30
+    }
+  ],
+  "api_keys": [
+    {
+      "id": "key-1",
+      "name": "alice-cli",
+      "user_id": "user-1",
+      "email": "alice@example.invalid",
+      "group_id": "paid",
+      "status": "enabled",
+      "quota": 1000,
+      "quota_used": 25,
+      "expires_at": "2026-12-31T00:00:00Z",
+      "rpm_limit": 30,
+      "key": "sk-sub2api-example-user-key"
+    }
+  ],
+  "subscriptions": [
+    {
+      "id": "sub-1",
+      "user_id": "user-1",
+      "group_id": "paid",
+      "plan": "monthly-paid",
+      "starts_at": "2026-06-01T00:00:00Z",
+      "expires_at": "2026-07-01T00:00:00Z",
+      "quota": 1000
+    }
+  ],
+  "settings": {
+    "site_name": "Sub2API",
+    "payment_provider_secret": "${SUB2API_PAYMENT_SECRET}"
+  }
+}

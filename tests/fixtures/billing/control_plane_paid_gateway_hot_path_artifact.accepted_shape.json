@@ -1,0 +1,87 @@
+{
+  "schema_version": "gateway_paid_hot_path_evidence.v1",
+  "artifact_id": "gateway-paid-hot-path-accepted-shape-fixture",
+  "generated_at_utc": "2026-06-05T20:00:00Z",
+  "generated_by": "fixture_contract_only",
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "provider_key_echoed": false,
+    "virtual_key_echoed": false
+  },
+  "evidence": [
+    {
+      "evidence_key": "gateway_hot_path_reserve_settle_refund",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030001",
+      "operation": "reserve_settle_refund",
+      "operation_id": "00000000-0000-0000-0000-000000030001",
+      "reserve_operation_id": "00000000-0000-0000-0000-000000030001",
+      "settle_operation_id": "00000000-0000-0000-0000-000000030001",
+      "expected_ledger_entry_types": ["reserve", "settle", "refund"],
+      "provider_call_expected": true,
+      "source": "fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "insufficient_balance_prevents_provider_call",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030002",
+      "operation": "reserve_pre_authorize",
+      "operation_id": "00000000-0000-0000-0000-000000030002",
+      "provider_call_expected": false,
+      "source": "fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "settle_idempotency",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030003",
+      "operation": "settle",
+      "operation_id": "00000000-0000-0000-0000-000000030003",
+      "expected_idempotency_key": "settle:00000000-0000-0000-0000-000000030003",
+      "source": "fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "refund_idempotency",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030004",
+      "operation": "refund_partial",
+      "operation_id": "00000000-0000-0000-0000-000000030104",
+      "related_ledger_entry_id": "00000000-0000-0000-0000-000000030204",
+      "refund_operation_id": "00000000-0000-0000-0000-000000030104",
+      "expected_idempotency_key": "refund_partial:00000000-0000-0000-0000-000000030204:00000000-0000-0000-0000-000000030104",
+      "source": "fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "post_commit_readback",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030005",
+      "operation": "readback",
+      "operation_id": "00000000-0000-0000-0000-000000030005",
+      "source": "fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "rollback_proof",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030006",
+      "operation": "rollback",
+      "operation_id": "00000000-0000-0000-0000-000000030006",
+      "source": "fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "reconciliation_report",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000030007",
+      "operation": "reconciliation",
+      "operation_id": "00000000-0000-0000-0000-000000030007",
+      "source": "fixture_no_db_no_network"
+    }
+  ]
+}

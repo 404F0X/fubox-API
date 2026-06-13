@@ -255,6 +255,105 @@ def validate_runtime_config(global_values: dict[str, Any], errors: list[str]) ->
         errors.append("global.config.content is required when global.config.enabled=true")
 
 
+def validate_staging_plan(root: dict[str, Any], errors: list[str]) -> None:
+    plan = root.get("stagingPlan")
+    if plan is None:
+        errors.append("stagingPlan is required for the default staging smoke/security seam")
+        return
+
+    plan = as_dict(plan, "stagingPlan", errors)
+    if plan.get("enabled") is not True:
+        errors.append("stagingPlan.enabled should default to true")
+    if plan.get("schemaVersion") != "staging-smoke-security-plan/v1":
+        errors.append("stagingPlan.schemaVersion must be staging-smoke-security-plan/v1")
+
+    required_lists = {
+        "smokeOrder": (
+            "render_chart",
+            "gateway_models",
+            "mock_chat_completion",
+            "admin_request_trace_readback",
+        ),
+        "securityChecks": (
+            "secret_refs_present",
+            "admin_ui_has_no_secret_env",
+            "provider_payment_secret_values_omitted",
+        ),
+        "securityReviewChecklist": (
+            "cors_origins",
+            "ip_allowlist",
+            "trusted_proxy",
+            "secret_refs",
+            "rate_limit",
+            "payload_policy",
+            "provider_config",
+            "payment_config",
+            "clickhouse_config",
+        ),
+        "targetServices": (
+            "gateway",
+            "control-plane",
+            "admin-ui",
+            "worker",
+            "mock-provider",
+            "redis",
+            "postgres",
+            "clickhouse",
+        ),
+        "trafficModels": (
+            "gateway_latency_baseline",
+            "streaming_idle_timeout_baseline",
+            "rate_limit_reservation_baseline",
+            "request_log_ingest_baseline",
+        ),
+        "resourceGuards": (
+            "operator_window",
+            "bounded_rate",
+            "staging_only",
+            "secret_safe_logs",
+            "no_release_gate",
+        ),
+        "rollbackCriteria": (
+            "readiness_degraded",
+            "error_rate_spike",
+            "rate_limit_fail_open",
+            "billing_mismatch",
+            "secret_or_payload_leak",
+        ),
+        "loadPlaceholders": ("gateway_latency_baseline",),
+        "chaosPlaceholders": ("provider_5xx_fallback_drill",),
+        "chaosExperiments": (
+            "provider_5xx_fallback_drill",
+            "redis_unavailable_readiness_drill",
+            "postgres_failover_readiness_drill",
+            "worker_restart_recovery_drill",
+        ),
+        "expectedOutputs": (
+            "staging_smoke_summary_json",
+            "staging_security_review_readback_json",
+            "staging_load_plan_readback_json",
+            "staging_chaos_plan_readback_json",
+        ),
+        "expectedSafeOutputs": (
+            "staging_smoke_summary_json",
+            "staging_security_review_readback_json",
+            "staging_load_plan_readback_json",
+            "staging_chaos_plan_readback_json",
+        ),
+    }
+    for field, required_items in required_lists.items():
+        items = as_list(plan.get(field), f"stagingPlan.{field}", errors)
+        if not items:
+            errors.append(f"stagingPlan.{field} must not be empty")
+            continue
+        for item in items:
+            if not non_empty_string(item):
+                errors.append(f"stagingPlan.{field} entries must be non-empty strings")
+        for required_item in required_items:
+            if required_item not in items:
+                errors.append(f"stagingPlan.{field} must include {required_item}")
+
+
 def validate_service(
     root: dict[str, Any], name: str, service: dict[str, Any], errors: list[str]
 ) -> None:
@@ -280,6 +379,9 @@ def validate_service(
         "applicationSecretRef": get_path(root, "application.secretRef.name"),
         "databaseSecretRef": get_path(root, "database.secretRef.name"),
         "redisSecretRef": get_path(root, "redis.secretRef.name"),
+        "clickhouseSecretRef": get_path(root, "clickhouse.secretRef.name"),
+        "providerSecretRef": get_path(root, "provider.secretRef.name"),
+        "paymentSecretRef": get_path(root, "payment.secretRef.name"),
     }
     for flag, secret_name in secret_names.items():
         if service.get(flag) is True and not non_empty_string(secret_name):
@@ -448,9 +550,10 @@ def validate_values(root: dict[str, Any]) -> list[str]:
     if global_values.get("automountServiceAccountToken") is not False:
         errors.append("global.automountServiceAccountToken should default to false")
     validate_runtime_config(global_values, errors)
+    validate_staging_plan(root, errors)
 
     services = as_dict(root.get("services"), "services", errors)
-    for required_service in ("gateway", "control-plane", "admin-ui", "mock-provider"):
+    for required_service in ("gateway", "control-plane", "worker", "admin-ui", "mock-provider"):
         if required_service not in services:
             errors.append(f"services.{required_service} is required for the default slice")
 
@@ -564,6 +667,23 @@ def run_self_tests(chart_dir: Path) -> list[str]:
             "secretRef name is required for backend secret mounts",
             lambda data: data["application"]["secretRef"].__setitem__("name", ""),
             "services.gateway.applicationSecretRef requires application.secretRef.name",
+        ),
+        (
+            "ClickHouse secretRef name is required when mounted",
+            lambda data: data["clickhouse"]["secretRef"].__setitem__("name", ""),
+            "services.gateway.clickhouseSecretRef requires clickhouse.secretRef.name",
+        ),
+        (
+            "staging smoke plan must include gateway models check",
+            lambda data: data["stagingPlan"].__setitem__(
+                "smokeOrder",
+                [
+                    item
+                    for item in data["stagingPlan"]["smokeOrder"]
+                    if item != "gateway_models"
+                ],
+            ),
+            "stagingPlan.smokeOrder must include gateway_models",
         ),
     ]
 

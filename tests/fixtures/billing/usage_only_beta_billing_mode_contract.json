@@ -1,0 +1,47 @@
+{
+  "contract": "billing_ledger_beta_billing_mode_contract.v1",
+  "billing_mode": "usage_only_beta",
+  "status": "selected",
+  "beta_user_message": "Beta billing is usage-only: no real-money charges are made, usage and cost are visibility estimates, and ledger rows are not settled billing source-of-truth.",
+  "api_response_contract": {
+    "required_fields": {
+      "billing_mode": "usage_only_beta",
+      "billing_settlement_status": "not_settled",
+      "real_money_charges_enabled": false,
+      "paid_beta_sales_enabled": false,
+      "balance_strong_consistency_commitment": false,
+      "ledger_source_of_truth": "not_settled_source_of_truth",
+      "usage_cost_visibility": "estimate_only",
+      "budget_hard_limit_policy": "conservative_deny_only_until_strong_consistency"
+    },
+    "must_not_claim": [
+      "paid_controlled_beta",
+      "settled_billing_source_of_truth",
+      "real_money_charge_committed",
+      "strongly_consistent_balance_debit",
+      "provider_call_allowed_after_insufficient_balance"
+    ]
+  },
+  "usage_cost_display": {
+    "allowed": true,
+    "settled_billing": false,
+    "copy": "Usage and cost may be displayed for visibility only; they do not represent settled charges or guaranteed balance debits."
+  },
+  "ledger_policy": {
+    "settled_source_of_truth": false,
+    "source_of_truth_label": "usage_visibility_only",
+    "dashboard_aggregate_is_accounting_truth": false,
+    "double_write_allowed": false,
+    "idempotency_key_required_for_future_paid_writer": true
+  },
+  "budget_policy": {
+    "hard_limit_strongly_consistent": false,
+    "allowed_until_paid_writer": "conservative_deny_only",
+    "oversell_copy_allowed": false
+  },
+  "paid_beta_blockers": [
+    "gateway_hot_path_reserve_settle_refund_not_complete",
+    "reserve_insufficient_balance_provider_block_not_proven",
+    "paid_readback_rollback_reconciliation_bundle_not_proven_in_this_slice"
+  ]
+}

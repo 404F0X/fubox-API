@@ -1,0 +1,75 @@
+{
+  "type": "sub2api-data",
+  "version": 1,
+  "exported_at": "2026-06-11T00:00:00Z",
+  "proxies": [
+    {
+      "proxy_key": "proxy-fixture",
+      "name": "Fixture proxy",
+      "protocol": "http",
+      "host": "proxy.fixture.invalid",
+      "port": 8080,
+      "password": "${SUB2API_PROXY_PASSWORD}"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "acct-fixture",
+      "name": "Fixture upstream",
+      "platform": "openai",
+      "type": "api_key",
+      "credentials": {
+        "api_key": "${SUB2API_UPSTREAM_KEY}"
+      },
+      "extra": {
+        "base_url": "https://api.fixture.example/v1"
+      },
+      "groups": ["fixture-paid"],
+      "priority": 5,
+      "rate_multiplier": 1.1
+    }
+  ],
+  "groups": [
+    {
+      "id": "fixture-paid",
+      "name": "Fixture paid",
+      "subscription_type": "monthly",
+      "rate_multiplier": 1.1,
+      "monthly_limit_usd": 200,
+      "supported_model_scopes": ["gpt-4o-mini"],
+      "rpm_limit": 60
+    }
+  ],
+  "users": [
+    {
+      "id": "fixture-user",
+      "email": "fixture@example.invalid",
+      "username": "fixture",
+      "balance": 100
+    }
+  ],
+  "api_keys": [
+    {
+      "id": "fixture-key",
+      "name": "fixture-cli",
+      "user_id": "fixture-user",
+      "email": "fixture@example.invalid",
+      "group_id": "fixture-paid",
+      "quota": 1000,
+      "quota_used": 10,
+      "key": "sk-sub2api-fixture-key"
+    }
+  ],
+  "subscriptions": [
+    {
+      "id": "fixture-subscription",
+      "user_id": "fixture-user",
+      "group_id": "fixture-paid",
+      "plan": "monthly",
+      "quota": 1000
+    }
+  ],
+  "settings": {
+    "payment_provider_secret": "${SUB2API_PAYMENT_SECRET}"
+  }
+}

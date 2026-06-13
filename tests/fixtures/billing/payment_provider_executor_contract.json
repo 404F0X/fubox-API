@@ -1,0 +1,81 @@
+{
+  "contract": "payment_provider_executor_contract.v1",
+  "status": "crate_contract_only",
+  "actions": [
+    "callback",
+    "capture",
+    "refund",
+    "chargeback_ack"
+  ],
+  "request_shape": {
+    "provider": "string",
+    "action": "callback|capture|refund|chargeback_ack",
+    "amount": "fixed_decimal_string",
+    "currency": "ISO-4217 uppercase string",
+    "reason": "non_empty_string",
+    "idempotency": {
+      "present": true,
+      "key_hash": "sha256_hex_optional",
+      "fingerprint": "public_fingerprint_optional"
+    },
+    "provider_refs": {
+      "provider_event_ref": "presence_hash_or_fingerprint",
+      "provider_object_ref": "presence_hash_or_fingerprint",
+      "dispute_ref": "presence_hash_or_fingerprint",
+      "charge_ref": "presence_hash_or_fingerprint",
+      "refund_ref": "presence_hash_or_fingerprint"
+    },
+    "local_refs": "PaymentProviderRefs",
+    "gate": {
+      "adapter_enabled": true,
+      "merchant_connected": true,
+      "credential_present": true,
+      "credential_fingerprint_present": true,
+      "signature_verified": true
+    }
+  },
+  "gate_readback": {
+    "network_call_enabled": false,
+    "production_payment_evidence": false,
+    "blocked_reasons": [
+      "adapter_disabled",
+      "merchant_not_connected",
+      "credential_missing",
+      "credential_fingerprint_missing",
+      "signature_not_verified"
+    ]
+  },
+  "secret_safety": {
+    "raw_provider_payload_allowed": false,
+    "raw_webhook_body_allowed": false,
+    "authorization_allowed": false,
+    "secret_allowed": false,
+    "raw_invoice_metadata_allowed": false,
+    "raw_idempotency_allowed": false,
+    "provider_refs_policy": "presence_hash_or_fingerprint_only",
+    "raw_provider_ref_prefixes_refused": [
+      "evt_",
+      "pi_",
+      "ch_",
+      "re_",
+      "dp_",
+      "du_"
+    ]
+  },
+  "result_invariants": {
+    "normalized_executor_result_readback": true,
+    "callback_capture_refund_chargeback_readback": true,
+    "idempotency_status_mapping_present": true,
+    "refusal_code_mapping_present": true,
+    "refund_and_chargeback_handoff": "ledger_reversal_handoff_only_no_direct_merchant_success",
+    "ledger_write_performed_by_executor": false,
+    "raw_invoice_metadata_echoed": false,
+    "raw_provider_payload_echoed": false,
+    "raw_webhook_body_echoed": false,
+    "raw_idempotency_key_echoed": false,
+    "authorization_echoed": false,
+    "provider_secret_echoed": false,
+    "provider_ref_raw_echoed": false,
+    "db_or_network_side_effects": false
+  }
+}

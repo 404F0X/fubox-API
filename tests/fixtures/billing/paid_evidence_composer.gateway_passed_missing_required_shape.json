@@ -1,0 +1,37 @@
+{
+  "schema": "gateway_paid_hot_path_smoke_v1",
+  "status": "passed",
+  "generated_by": "synthetic_selftest_fixture",
+  "synthetic_selftest": true,
+  "selftest_fixture": true,
+  "gateway_hot_path_reserve_settle_refund": {
+    "reserve_before_provider_side_effect": true,
+    "successful_request_settled": true,
+    "failure_request_released": true
+  },
+  "insufficient_balance_prevents_provider_call": {
+    "passed": true,
+    "provider_attempt_rows": 0
+  },
+  "settle_idempotency": {
+    "passed": true,
+    "key_shape": "settle:{request_id}"
+  },
+  "refund_idempotency": {
+    "status": "pending_marker",
+    "release_idempotency_seen": true
+  },
+  "request_trace": {
+    "request_ids": [
+      "00000000-0000-0000-0000-000000070001"
+    ],
+    "raw_request_body_omitted": true
+  },
+  "secret_safe": {
+    "auth_token_omitted": true,
+    "provider_secret_omitted": true,
+    "database_url_omitted": true,
+    "raw_request_body_omitted": true,
+    "raw_or_secret_marker_present": false
+  }
+}

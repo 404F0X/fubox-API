@@ -1,0 +1,102 @@
+{
+  "scenario": "control_plane_model_profile_visibility_contract",
+  "scope": "Control Plane model/profile state supports Gateway /v1/models visibility filtering",
+  "implementation_evidence": {
+    "admin_model_routes": "apps/control-plane/src/admin.rs:230",
+    "admin_profile_routes": "apps/control-plane/src/admin.rs:208",
+    "admin_model_association_dry_run_route": "apps/control-plane/src/admin.rs:235",
+    "dry_run_handler": "apps/control-plane/src/admin.rs:2001",
+    "profile_project_guard": "apps/control-plane/src/admin.rs:2029",
+    "repository_visible_models_for_profile": "crates/db/src/repository.rs:929",
+    "repository_route_candidates_for_model": "crates/db/src/repository.rs:984",
+    "openapi_profile_schema": "examples/openapi_admin_skeleton.yaml:3517",
+    "openapi_dry_run_path": "examples/openapi_admin_skeleton.yaml:1021"
+  },
+  "canonical_model_contract": {
+    "admin_endpoints": [
+      "GET /admin/models",
+      "POST /admin/models",
+      "GET /admin/models/{id}",
+      "PATCH /admin/models/{id}",
+      "DELETE /admin/models/{id}"
+    ],
+    "visibility_values_relevant_to_gateway": [
+      "public",
+      "internal"
+    ],
+    "gateway_excludes_private_models": true,
+    "active_and_not_deleted_required": true
+  },
+  "api_key_profile_contract": {
+    "admin_endpoints": [
+      "GET /admin/api-key-profiles",
+      "POST /admin/api-key-profiles",
+      "GET /admin/api-key-profiles/{id}",
+      "PATCH /admin/api-key-profiles/{id}",
+      "DELETE /admin/api-key-profiles/{id}"
+    ],
+    "fields_used_by_gateway_model_filter": [
+      "project_id",
+      "model_aliases",
+      "allowed_models",
+      "denied_models",
+      "status",
+      "deleted_at"
+    ],
+    "empty_allowed_models_semantics": "all active public/internal canonical models are eligible unless denied",
+    "denied_models_precedence": "denylist excludes a model even if it also appears in allowed_models",
+    "profile_must_belong_to_requested_project": true
+  },
+  "model_association_contract": {
+    "admin_endpoints": [
+      "GET /admin/model-associations",
+      "POST /admin/model-associations",
+      "POST /admin/model-associations/dry-run",
+      "GET /admin/model-associations/{id}",
+      "PATCH /admin/model-associations/{id}",
+      "DELETE /admin/model-associations/{id}"
+    ],
+    "dry_run_required_fields": [
+      "project_id",
+      "profile_id"
+    ],
+    "dry_run_model_selector_any_of": [
+      "requested_model",
+      "canonical_model_id",
+      "canonical_model_key"
+    ],
+    "dry_run_no_upstream_provider_call": true,
+    "dry_run_credential_material_omitted": true,
+    "dry_run_admin_readback": {
+      "schema": "model_profile_visibility_diagnostics_readback.v1",
+      "shows_allowed_models": true,
+      "shows_denied_models": true,
+      "shows_blocked_provider_channel_reasons": true,
+      "shows_price_config_presence": true,
+      "shows_protocol_endpoint_capability_readiness": true,
+      "shows_safe_next_action": true,
+      "provider_key_material_returned": false,
+      "authorization_returned": false,
+      "raw_upstream_model_payload_returned": false
+    }
+  },
+  "gateway_visibility_link": {
+    "gateway_fixture": "tests/fixtures/gateway/v1_models_profile_visibility_contract.json",
+    "profile_switching_fixture": "tests/fixtures/gateway/profile_switching.json",
+    "expected_runtime_path": "virtual_key -> virtual_key_profile_bindings/default_profile -> api_key_profiles.allowed_models/denied_models -> canonical_models.model_key"
+  },
+  "acceptance_evidence": {
+    "contract_artifact_present": true,
+    "source_backed": true,
+    "live_db_readback_required_for_distribution_candidate": false,
+    "live_db_readback_required_for_production_rc": true
+  },
+  "secret_safety": {
+    "raw_virtual_key_required": false,
+    "authorization_or_cookie_echoed": false,
+    "provider_key_echoed": false,
+    "db_url_echoed": false,
+    "raw_request_body_echoed": false
+  },
+  "notes": "Control Plane exposes the canonical model/profile/model-association surfaces needed to seed and explain Gateway /v1/models profile visibility. Runtime Gateway filtering is asserted in the companion gateway fixture and profile smoke verifier."
+}

@@ -1,0 +1,110 @@
+{
+  "schema_version": "billing_paid_evidence_composer_required_shape_contract.v1",
+  "description": "Minimum E8/E11 input shape required by scripts/compose_billing_paid_evidence_bundle.ps1 before it may compose a production-ready paid evidence bundle.",
+  "required_input_roots": [
+    ".tmp/**",
+    "artifacts/**"
+  ],
+  "gateway_paid_hot_path_artifact": {
+    "required_schema_examples": [
+      "gateway_paid_hot_path_evidence.v1"
+    ],
+    "required_evidence_mapping": [
+      {
+        "bundle_evidence_key": "gateway_hot_path_reserve_settle_refund",
+        "input_location": "evidence[]",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      },
+      {
+        "bundle_evidence_key": "insufficient_balance_prevents_provider_call",
+        "input_location": "evidence[]",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      },
+      {
+        "bundle_evidence_key": "settle_idempotency",
+        "input_location": "evidence[]",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      },
+      {
+        "bundle_evidence_key": "refund_idempotency",
+        "input_location": "evidence[]",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      }
+    ],
+    "missing_mapping_blockers": [
+      "gateway_paid_hot_path_evidence_mapping_missing",
+      "gateway_paid_hot_path_request_or_operation_ids_missing"
+    ]
+  },
+  "control_plane_paid_readback_artifact": {
+    "required_evidence_mapping": [
+      {
+        "bundle_evidence_key": "post_commit_readback",
+        "input_location": "evidence[] or readiness_evidence",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      },
+      {
+        "bundle_evidence_key": "rollback_proof",
+        "input_location": "evidence[] or readiness_evidence",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      },
+      {
+        "bundle_evidence_key": "reconciliation_report",
+        "input_location": "evidence[] or readiness_evidence",
+        "required_fields": [
+          "evidence_key",
+          "status=passed",
+          "passed=true",
+          "request_id or operation_id or evidence_id",
+          "operation"
+        ]
+      }
+    ],
+    "missing_mapping_blockers": [
+      "control_plane_paid_readback_evidence_mapping_missing",
+      "control_plane_paid_readback_request_or_operation_ids_missing"
+    ]
+  },
+  "production_ready_constraints": {
+    "contract_shape_only": false,
+    "synthetic_selftest": false,
+    "paid_controlled_beta_production_ready_requires_all_seven_evidence": true,
+    "composer_must_not_infer_evidence_from_top_level_status_only": true
+  }
+}

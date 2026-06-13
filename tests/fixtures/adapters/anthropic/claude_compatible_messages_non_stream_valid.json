@@ -1,0 +1,67 @@
+{
+  "name": "claude_compatible_messages_non_stream_valid",
+  "protocol_mode": "claude_compatible",
+  "request": {
+    "model": "claude-compatible-fixture",
+    "max_tokens": 32,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Say hello."
+          }
+        ]
+      }
+    ],
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1/messages",
+    "stream": false,
+    "body": {
+      "model": "claude-compatible-fixture",
+      "max_tokens": 32,
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Say hello."
+            }
+          ]
+        }
+      ],
+      "stream": false
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "msg_claude_compatible_fixture_ok",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-compatible-fixture",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello."
+        }
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "usage": {
+        "input_tokens": 8,
+        "output_tokens": 2
+      }
+    }
+  },
+  "expected_usage": {
+    "prompt_tokens": 8,
+    "completion_tokens": 2,
+    "total_tokens": 10
+  }
+}

@@ -329,6 +329,18 @@ function Get-StableHash {
   return $hash
 }
 
+function New-DeterministicUuid {
+  param([AllowNull()][object]$Seed)
+
+  $hash = Get-StableHash $Seed 32
+  return "{0}-{1}-{2}-{3}-{4}" -f `
+    $hash.Substring(0, 8),
+    $hash.Substring(8, 4),
+    $hash.Substring(12, 4),
+    $hash.Substring(16, 4),
+    $hash.Substring(20, 12)
+}
+
 function New-BeforeImageSnapshot {
   param(
     [string]$Action,
@@ -365,6 +377,19 @@ function Select-ComparableFields {
   $result = [ordered]@{}
 
   switch ($Kind) {
+    "provider" {
+      $fields = @(
+        "provider_code", "code", "name", "status", "metadata"
+      )
+    }
+    "channel" {
+      $fields = @(
+        "channel_source_id", "provider_code", "name", "channel_name", "endpoint",
+        "protocol_mode", "status", "region", "priority", "weight", "tags",
+        "model_mappings", "request_overrides", "timeout_policy", "probe_policy",
+        "health_score"
+      )
+    }
     "canonical_model" {
       $fields = @(
         "model_key", "display_name", "family", "capabilities", "capability_flags",
@@ -395,6 +420,21 @@ function Select-ComparableFields {
   }
 
   return $result
+}
+
+function Get-ProviderNaturalKey {
+  param([object]$Provider)
+
+  $providerCode = Convert-ToKeyPart (Get-PropertyValue $Provider @("provider_code", "code", "provider", "provider_id", "id") $null)
+  return "provider_code=$providerCode"
+}
+
+function Get-ChannelNaturalKey {
+  param([object]$Channel)
+
+  $providerCode = Convert-ToKeyPart (Get-PropertyValue $Channel @("provider_code", "provider", "provider_id") $null)
+  $channelName = Convert-ToKeyPart (Get-PropertyValue $Channel @("name", "channel_name", "display_name") $null)
+  return "provider_code=$providerCode|channel_name=$channelName"
 }
 
 function Get-CanonicalModelNaturalKey {
@@ -445,6 +485,103 @@ function New-SourceChannelBindingRef {
     protocol_mode = Convert-ToSafeText (Get-PropertyValue $Mapping @("protocol_mode") $null)
     internal_provider_id = Convert-ToSafeText (Get-PropertyValue $Mapping @("internal_provider_id", "provider_id") $null)
     internal_channel_id = Convert-ToSafeText (Get-PropertyValue $Mapping @("internal_channel_id", "channel_id") $null)
+  }
+}
+
+function New-ProviderPreviewFromChannelMapping {
+  param(
+    [object]$Mapping,
+    [string]$TenantId
+  )
+
+  $channelPresent = [bool](Get-PropertyValue $Mapping @("channel_present") $true)
+  if (-not $channelPresent) {
+    return $null
+  }
+
+  $providerCode = Convert-ToSafeText (Get-PropertyValue $Mapping @("provider_code", "provider", "provider_id") $null)
+  if ([string]::IsNullOrWhiteSpace($providerCode)) {
+    return $null
+  }
+
+  $internalProviderId = Convert-ToSafeText (Get-PropertyValue $Mapping @("internal_provider_id", "provider_id") $null)
+  if ([string]::IsNullOrWhiteSpace($internalProviderId)) {
+    $internalProviderId = New-DeterministicUuid "$TenantId|provider|$providerCode"
+  }
+
+  $providerName = Convert-ToSafeText (Get-PropertyValue $Mapping @("provider_name", "provider_display_name", "provider_label", "provider_code") $providerCode)
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $Mapping @("channel_source_id", "source_channel_id") $null)
+
+  return [ordered]@{
+    internal_provider_id = $internalProviderId
+    provider_code = $providerCode
+    code = $providerCode
+    name = $providerName
+    status = Normalize-ProviderStatus (Get-PropertyValue $Mapping @("provider_status", "status") "enabled")
+    metadata = [ordered]@{
+      importer = "import-apply-plan"
+      source = "channel_mappings"
+      source_channel_id = $channelSourceId
+      provider_key_material_imported = $false
+    }
+  }
+}
+
+function New-ChannelPreviewFromChannelMapping {
+  param(
+    [object]$Mapping,
+    [string]$TenantId
+  )
+
+  $channelPresent = [bool](Get-PropertyValue $Mapping @("channel_present") $true)
+  if (-not $channelPresent) {
+    return $null
+  }
+
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $Mapping @("channel_source_id", "source_channel_id") $null)
+  $providerCode = Convert-ToSafeText (Get-PropertyValue $Mapping @("provider_code", "provider", "provider_id") $null)
+  $channelName = Convert-ToSafeText (Get-PropertyValue $Mapping @("channel_name", "name", "display_name") $null)
+  $endpoint = Convert-ToSafeText (Get-PropertyValue $Mapping @("endpoint", "base_url", "baseUrl", "url") $null)
+  if ([string]::IsNullOrWhiteSpace($channelSourceId) -or [string]::IsNullOrWhiteSpace($providerCode) -or [string]::IsNullOrWhiteSpace($channelName) -or [string]::IsNullOrWhiteSpace($endpoint)) {
+    return $null
+  }
+
+  $internalProviderId = Convert-ToSafeText (Get-PropertyValue $Mapping @("internal_provider_id", "provider_id") $null)
+  if ([string]::IsNullOrWhiteSpace($internalProviderId)) {
+    $internalProviderId = New-DeterministicUuid "$TenantId|provider|$providerCode"
+  }
+
+  $internalChannelId = Convert-ToSafeText (Get-PropertyValue $Mapping @("internal_channel_id", "channel_id") $null)
+  if ([string]::IsNullOrWhiteSpace($internalChannelId)) {
+    $internalChannelId = New-DeterministicUuid "$TenantId|channel|$providerCode|$channelName"
+  }
+
+  $priority = Get-NullableIntField $Mapping @("priority")
+  if ($null -eq $priority) { $priority = 100 }
+  $weight = Get-NullableIntField $Mapping @("weight")
+  if ($null -eq $weight) { $weight = 100 }
+  $healthScore = Get-NullableDecimalField $Mapping @("health_score", "healthScore")
+  if ($null -eq $healthScore) { $healthScore = [decimal]1.0 }
+
+  return [ordered]@{
+    channel_source_id = $channelSourceId
+    internal_provider_id = $internalProviderId
+    internal_channel_id = $internalChannelId
+    provider_code = $providerCode
+    name = $channelName
+    channel_name = $channelName
+    endpoint = $endpoint
+    protocol_mode = Convert-ToSafeText (Get-PropertyValue $Mapping @("protocol_mode", "protocol") "openai_compatible")
+    status = Normalize-ChannelStatus (Get-PropertyValue $Mapping @("channel_status", "status") "enabled")
+    region = Convert-ToSafeText (Get-PropertyValue $Mapping @("region") $null)
+    priority = $priority
+    weight = $weight
+    tags = Convert-ToSafeObject (Get-PropertyValue $Mapping @("tags") @())
+    model_mappings = Convert-ToSafeObject (Get-PropertyValue $Mapping @("model_mappings", "modelMappings") ([ordered]@{}))
+    request_overrides = Convert-ToSafeObject (Get-PropertyValue $Mapping @("request_overrides", "requestOverrides") @())
+    timeout_policy = Convert-ToSafeObject (Get-PropertyValue $Mapping @("timeout_policy", "timeoutPolicy") ([ordered]@{}))
+    probe_policy = Convert-ToSafeObject (Get-PropertyValue $Mapping @("probe_policy", "probePolicy") ([ordered]@{}))
+    health_score = $healthScore
   }
 }
 
@@ -505,6 +642,186 @@ function Test-SourceChannelBindingShape {
   return [ordered]@{
     checked = @(Convert-ToObjectArray $checked)
     errors = @(Convert-ToObjectArray $errors)
+  }
+}
+
+function Convert-ToOperatorProviderKeyPath {
+  param([AllowNull()][object]$Value)
+
+  $text = Convert-ToSafeText $Value "POST /admin/provider-keys"
+  if ([string]::IsNullOrWhiteSpace($text) -or $text -eq "control_plane_provider_key_create") {
+    return "POST /admin/provider-keys"
+  }
+
+  return $text
+}
+
+function New-ProviderKeyHandoffSidecar {
+  param(
+    [object]$Handoff,
+    [hashtable]$ChannelBindings
+  )
+
+  $safe = Convert-ToSafeObject $Handoff
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $safe @("channel_source_id", "source_channel_id", "channel_id", "channel") $null)
+  $keyAlias = Convert-ToSafeText (Get-PropertyValue $safe @("key_alias", "alias", "name", "label") $null)
+  if ([string]::IsNullOrWhiteSpace($keyAlias)) {
+    $keyAlias = if ([string]::IsNullOrWhiteSpace($channelSourceId)) { "provider-key" } else { "$channelSourceId-provider-key" }
+  }
+
+  $handoffKey = "$channelSourceId|$keyAlias"
+  $handoffId = Convert-ToSafeText (Get-PropertyValue $safe @("handoff_id", "id") $null)
+  if ([string]::IsNullOrWhiteSpace($handoffId)) {
+    $handoffId = "provider-key-handoff:v1:$(Get-StableHash $handoffKey 24)"
+  }
+
+  $locatorHashes = New-Object System.Collections.Generic.List[object]
+  foreach ($hash in (Convert-ToImportArray (Get-PropertyValue $safe @("credential_locator_hashes", "credential_locator_hash", "credential_ref_hash", "locator_hash") $null))) {
+    $hashText = Convert-ToSafeText $hash $null
+    if (-not [string]::IsNullOrWhiteSpace($hashText) -and -not @($locatorHashes.ToArray()).Contains($hashText)) {
+      $locatorHashes.Add($hashText) | Out-Null
+    }
+  }
+
+  $sourceReports = New-Object System.Collections.Generic.List[object]
+  foreach ($sourceReport in (Convert-ToImportArray (Get-PropertyValue $safe @("source_reports", "source_report") $null))) {
+    $sourceReportText = Convert-ToSafeText $sourceReport $null
+    if (-not [string]::IsNullOrWhiteSpace($sourceReportText) -and -not @($sourceReports.ToArray()).Contains($sourceReportText)) {
+      $sourceReports.Add($sourceReportText) | Out-Null
+    }
+  }
+
+  $binding = $null
+  $bindingStatus = "missing_channel_source_id"
+  if (-not [string]::IsNullOrWhiteSpace($channelSourceId) -and $ChannelBindings.ContainsKey($channelSourceId)) {
+    $binding = Convert-ToSafeObject $ChannelBindings[$channelSourceId]
+    if ([bool](Get-PropertyValue $binding @("channel_present") $false)) {
+      $bindingStatus = "bound"
+    } else {
+      $bindingStatus = "source_channel_not_present"
+    }
+  } elseif (-not [string]::IsNullOrWhiteSpace($channelSourceId)) {
+    $bindingStatus = "missing_source_channel_binding"
+  }
+
+  $materialPresent = [bool](Get-PropertyValue $safe @("credential_material_present", "has_secret", "has_credential") $false)
+  $rawMaterialExported = [bool](Get-PropertyValue $safe @("raw_material_exported") $false)
+  $materialIncluded = [bool](Get-PropertyValue $safe @("provider_key_material_included", "key_material_included") $false)
+  $applyDirectlySupported = [bool](Get-PropertyValue $safe @("apply_directly_supported") $false)
+  $recommendedPath = Convert-ToOperatorProviderKeyPath (Get-PropertyValue $safe @("recommended_path", "operator_path") $null)
+  $fingerprint = Convert-ToSafeText (Get-PropertyValue $safe @("fingerprint", "credential_fingerprint", "source_key_fingerprint", "secret_fingerprint") $null)
+  if ([string]::IsNullOrWhiteSpace($fingerprint) -and $locatorHashes.Count -gt 0) {
+    $fingerprint = "locator-sha256-v1:$($locatorHashes[0])"
+  }
+  $providerAlias = Convert-ToSafeText (Get-PropertyValue $safe @("provider_alias", "provider_code", "provider") $null)
+  $channelAlias = Convert-ToSafeText (Get-PropertyValue $safe @("channel_alias", "channel_name", "channel") $channelSourceId)
+  if ($null -ne $binding) {
+    if ([string]::IsNullOrWhiteSpace($providerAlias)) {
+      $providerAlias = Convert-ToSafeText (Get-PropertyValue $binding @("provider_code", "internal_provider_id") $null)
+    }
+    if ([string]::IsNullOrWhiteSpace($channelAlias)) {
+      $channelAlias = Convert-ToSafeText (Get-PropertyValue $binding @("channel_name", "channel_source_id", "internal_channel_id") $channelSourceId)
+    }
+  }
+
+  return [ordered]@{
+    schema_version = "importer.provider-key-operator-sidecar.v1"
+    handoff_id = $handoffId
+    channel_source_id = if ([string]::IsNullOrWhiteSpace($channelSourceId)) { $null } else { $channelSourceId }
+    key_alias = $keyAlias
+    provider_alias = if ([string]::IsNullOrWhiteSpace($providerAlias)) { $null } else { $providerAlias }
+    channel_alias = if ([string]::IsNullOrWhiteSpace($channelAlias)) { $null } else { $channelAlias }
+    fingerprint = if ([string]::IsNullOrWhiteSpace($fingerprint)) { $null } else { $fingerprint }
+    credential_material_present = $materialPresent
+    credential_origin = Convert-ToSafeText (Get-PropertyValue $safe @("credential_origin", "credential_source") $(if ($materialPresent) { "unknown_redacted" } else { "missing" }))
+    credential_locator_redacted = Convert-ToSafeText (Get-PropertyValue $safe @("credential_locator_redacted", "credential_ref_redacted", "locator_redacted") $null)
+    credential_locator_hashes = @(Convert-ToObjectArray $locatorHashes)
+    raw_material_exported = $rawMaterialExported
+    provider_key_material_included = $materialIncluded
+    requires_operator_entry = [bool](Get-PropertyValue $safe @("requires_operator_entry") $true)
+    required_manual_secret_entry = $true
+    recommended_path = $recommendedPath
+    required_operator_path = "POST /admin/provider-keys"
+    apply_directly_supported = $applyDirectlySupported
+    apply_mode = "sidecar_only"
+    raw_secret_in_artifact = $false
+    secret_material_in_artifact = $false
+    manual_secret_entry_contract = [ordered]@{
+      schema_version = "importer.provider-key-manual-secret-entry.v1"
+      required_manual_secret_entry = $true
+      one_time_entry_only = $true
+      raw_secret_source = "operator_out_of_band"
+      entry_path = "POST /admin/provider-keys"
+      allowed_prefill_fields = @("provider_id", "channel_id", "alias", "status", "imported_handoff_id", "source_channel_id")
+      forbidden_prefill_fields = @("credential_value", "provider_credential", "user_credential", "credential_header", "encrypted_secret")
+    }
+    rotation_next_step = "After manual entry succeeds, use provider-key rotate flow for future changes; importer artifacts must keep only alias and fingerprint evidence."
+    recovery_next_step = "If probe/readback fails after manual entry, run provider-key recovery probe from the Control Plane and re-enter the secret out-of-band if required."
+    target_table = "provider_keys"
+    target_secret_columns = @("encrypted_secret", "secret_fingerprint")
+    binding_status = $bindingStatus
+    source_channel_binding = $binding
+    source_reports = @(Convert-ToObjectArray $sourceReports)
+  }
+}
+
+function Test-ProviderKeyHandoffShape {
+  param([object[]]$Handoffs)
+
+  $errors = New-Object System.Collections.Generic.List[object]
+  $warnings = New-Object System.Collections.Generic.List[object]
+  foreach ($handoff in $Handoffs) {
+    $handoffId = Convert-ToSafeText (Get-PropertyValue $handoff @("handoff_id") $null)
+    $keyAlias = Convert-ToSafeText (Get-PropertyValue $handoff @("key_alias") $null)
+    $channelSourceId = Convert-ToSafeText (Get-PropertyValue $handoff @("channel_source_id") $null)
+    $bindingStatus = Convert-ToSafeText (Get-PropertyValue $handoff @("binding_status") "unknown")
+
+    if ([string]::IsNullOrWhiteSpace($handoffId)) {
+      $errors.Add([ordered]@{ key_alias = $keyAlias; reason = "missing_handoff_id" }) | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace($keyAlias)) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; reason = "missing_key_alias" }) | Out-Null
+    }
+    if ([string](Get-PropertyValue $handoff @("schema_version") $null) -ne "importer.provider-key-operator-sidecar.v1") {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "missing_operator_sidecar_schema" }) | Out-Null
+    }
+    if (-not [bool](Get-PropertyValue $handoff @("required_manual_secret_entry") $false)) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "manual_secret_entry_not_required" }) | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $handoff @("fingerprint") $null))) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "missing_non_secret_fingerprint" }) | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $handoff @("provider_alias") $null))) {
+      $warnings.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "missing_provider_alias" }) | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $handoff @("channel_alias") $null))) {
+      $warnings.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "missing_channel_alias" }) | Out-Null
+    }
+    if ([bool](Get-PropertyValue $handoff @("raw_material_exported") $false)) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "raw_material_exported" }) | Out-Null
+    }
+    if ([bool](Get-PropertyValue $handoff @("provider_key_material_included") $false)) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "provider_key_material_included" }) | Out-Null
+    }
+    if ([bool](Get-PropertyValue $handoff @("raw_secret_in_artifact") $false) -or [bool](Get-PropertyValue $handoff @("secret_material_in_artifact") $false)) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "secret_material_in_artifact" }) | Out-Null
+    }
+    if ([bool](Get-PropertyValue $handoff @("apply_directly_supported") $false)) {
+      $errors.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "direct_apply_not_allowed" }) | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace($channelSourceId)) {
+      $warnings.Add([ordered]@{ handoff_id = $handoffId; key_alias = $keyAlias; reason = "missing_channel_source_id" }) | Out-Null
+    } elseif ($bindingStatus -ne "bound") {
+      $warnings.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = $bindingStatus }) | Out-Null
+    }
+    if (-not [bool](Get-PropertyValue $handoff @("credential_material_present") $false)) {
+      $warnings.Add([ordered]@{ handoff_id = $handoffId; channel_source_id = $channelSourceId; key_alias = $keyAlias; reason = "credential_material_missing" }) | Out-Null
+    }
+  }
+
+  return [ordered]@{
+    errors = @(Convert-ToObjectArray $errors)
+    warnings = @(Convert-ToObjectArray $warnings)
   }
 }
 
@@ -822,11 +1139,132 @@ function Get-NullableIntField {
   return [int]$value
 }
 
+function Get-NullableDecimalField {
+  param(
+    [object]$Object,
+    [string[]]$Names
+  )
+
+  $value = Get-PropertyValue $Object $Names $null
+  if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+    return $null
+  }
+
+  return [decimal]$value
+}
+
+function Normalize-ProviderStatus {
+  param([AllowNull()][object]$Status)
+
+  $text = Convert-ToSafeText $Status "enabled"
+  switch ($text.ToLowerInvariant()) {
+    "active" { return "enabled" }
+    "enabled" { return "enabled" }
+    "true" { return "enabled" }
+    "1" { return "enabled" }
+    "disabled" { return "disabled" }
+    "inactive" { return "disabled" }
+    "false" { return "disabled" }
+    "0" { return "disabled" }
+    "deleted" { return "deleted" }
+    default { return "enabled" }
+  }
+}
+
+function Normalize-ChannelStatus {
+  param([AllowNull()][object]$Status)
+
+  $text = Convert-ToSafeText $Status "enabled"
+  switch ($text.ToLowerInvariant()) {
+    "active" { return "enabled" }
+    "enabled" { return "enabled" }
+    "true" { return "enabled" }
+    "1" { return "enabled" }
+    "disabled" { return "disabled" }
+    "inactive" { return "disabled" }
+    "false" { return "disabled" }
+    "0" { return "disabled" }
+    "degraded" { return "degraded" }
+    "cooldown" { return "cooldown" }
+    "deleted" { return "deleted" }
+    default { return "enabled" }
+  }
+}
+
+function Normalize-ModelAssociationStatus {
+  param(
+    [AllowNull()][object]$Status,
+    [AllowNull()][object]$Enabled = $null
+  )
+
+  if ($null -ne $Enabled) {
+    return $(if ([bool]$Enabled) { "enabled" } else { "disabled" })
+  }
+
+  $text = Convert-ToSafeText $Status "enabled"
+  switch ($text.ToLowerInvariant()) {
+    "active" { return "enabled" }
+    "enabled" { return "enabled" }
+    "true" { return "enabled" }
+    "1" { return "enabled" }
+    "disabled" { return "disabled" }
+    "inactive" { return "disabled" }
+    "false" { return "disabled" }
+    "0" { return "disabled" }
+    "deleted" { return "deleted" }
+    default { return "enabled" }
+  }
+}
+
 function Get-SqlExecutorSupport {
   param([object]$Operation)
 
   $kind = Convert-ToSafeText (Get-PropertyValue $Operation.target @("kind") "unknown")
   switch ($kind) {
+    "provider" {
+      $providerCode = Convert-ToSafeText (Get-PropertyValue $Operation.after @("provider_code", "code", "provider", "provider_id", "id") $null)
+      $name = Convert-ToSafeText (Get-PropertyValue $Operation.after @("name", "display_name") $providerCode)
+      if ([string]::IsNullOrWhiteSpace($providerCode) -or [string]::IsNullOrWhiteSpace($name)) {
+        return [ordered]@{
+          operation_id = $Operation.operation_id
+          target = $Operation.target
+          supported = $false
+          adapter = "providers_upsert_v1"
+          reason = "provider SQL adapter requires provider_code and name"
+        }
+      }
+
+      return [ordered]@{
+        operation_id = $Operation.operation_id
+        target = $Operation.target
+        supported = $true
+        adapter = "providers_upsert_v1"
+        reason = "target_schema_supported_for_provider_upsert"
+      }
+    }
+    "channel" {
+      $providerCode = Convert-ToSafeText (Get-PropertyValue $Operation.after @("provider_code", "provider", "provider_id") $null)
+      $internalChannelId = Convert-ToSafeText (Get-PropertyValue $Operation.after @("internal_channel_id", "channel_id", "id") $null)
+      $channelName = Convert-ToSafeText (Get-PropertyValue $Operation.after @("name", "channel_name", "display_name") $null)
+      $endpoint = Convert-ToSafeText (Get-PropertyValue $Operation.after @("endpoint", "base_url", "baseUrl", "url") $null)
+      if ([string]::IsNullOrWhiteSpace($providerCode) -or [string]::IsNullOrWhiteSpace($internalChannelId) -or [string]::IsNullOrWhiteSpace($channelName) -or [string]::IsNullOrWhiteSpace($endpoint)) {
+        return [ordered]@{
+          operation_id = $Operation.operation_id
+          target = $Operation.target
+          supported = $false
+          adapter = "channels_upsert_v1"
+          reason = "channel SQL adapter requires provider_code, internal_channel_id, name, and endpoint"
+        }
+      }
+
+      return [ordered]@{
+        operation_id = $Operation.operation_id
+        target = $Operation.target
+        supported = $true
+        adapter = "channels_upsert_v1"
+        reason = "target_schema_supported_for_channel_upsert"
+      }
+    }
     "canonical_model" {
       return [ordered]@{
         operation_id = $Operation.operation_id
@@ -837,12 +1275,44 @@ function Get-SqlExecutorSupport {
       }
     }
     "model_association" {
+      $after = $Operation.after
+      $associationType = Convert-ToSafeText (Get-PropertyValue $after @("association_type") "explicit_channel")
+      $canonicalModelKey = Convert-ToSafeText (Get-PropertyValue $after @("canonical_model_key", "canonical_model", "model_key") $null)
+      $internalChannelId = Convert-ToSafeText (Get-PropertyValue $after @("internal_channel_id", "channel_id") $null)
+      $upstreamModel = Convert-ToSafeText (Get-PropertyValue $after @("upstream_model_name", "upstream_model", "provider_model") $null)
+
+      if ($associationType -ne "explicit_channel") {
+        return [ordered]@{
+          operation_id = $Operation.operation_id
+          target = $Operation.target
+          supported = $false
+          adapter = "model_associations_pending_v1"
+          reason = "this live SQL adapter only supports explicit_channel associations; channel_tag/model_pattern/global remain pending"
+        }
+      }
+
+      if ([string]::IsNullOrWhiteSpace($canonicalModelKey) -or [string]::IsNullOrWhiteSpace($internalChannelId)) {
+        return [ordered]@{
+          operation_id = $Operation.operation_id
+          target = $Operation.target
+          supported = $false
+          adapter = "model_associations_pending_v1"
+          reason = "model_association SQL adapter requires canonical_model_key and source-channel binding internal_channel_id"
+        }
+      }
+
       return [ordered]@{
         operation_id = $Operation.operation_id
         target = $Operation.target
-        supported = $false
-        adapter = "model_associations_pending_v1"
-        reason = "model_association importer data still carries requested_model/source channel ids; DB schema requires canonical_model_id/channel_id binding before a safe writer can run"
+        supported = $true
+        adapter = "model_associations_upsert_v1"
+        reason = "target_schema_supported_for_bound_explicit_channel_association"
+        constraints = [ordered]@{
+          association_type = $associationType
+          canonical_model_key_required = $true
+          internal_channel_id_required = $true
+          upstream_model_name_present = (-not [string]::IsNullOrWhiteSpace($upstreamModel))
+        }
       }
     }
     "channel_mapping_entry" {
@@ -907,6 +1377,222 @@ function New-PostgreSqlStatement {
     parameter_style = "named"
     sql = $Sql.Trim()
     parameters = Convert-ToSafeObject $Parameters
+  }
+}
+
+function New-PostgreSqlProviderOperationPlan {
+  param(
+    [object]$Operation,
+    [string]$TenantId
+  )
+
+  $after = $Operation.after
+  $providerId = Convert-ToSafeText (Get-PropertyValue $after @("internal_provider_id", "provider_id", "id") $null)
+  $providerCode = Convert-ToSafeText (Get-PropertyValue $after @("provider_code", "code", "provider") $null)
+  $name = Convert-ToSafeText (Get-PropertyValue $after @("name", "display_name") $providerCode)
+  $status = Normalize-ProviderStatus (Get-PropertyValue $after @("status") "enabled")
+  $metadata = Convert-ToSafeObject (Get-PropertyValue $after @("metadata") ([ordered]@{}))
+
+  $parameters = [ordered]@{
+    tenant_id = $TenantId
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    internal_provider_id = $providerId
+    provider_code = $providerCode
+    name = $name
+    status = $status
+    metadata_json = Convert-ToCompactJson $metadata 32
+    after_hash = Get-StableHash $Operation.after 32
+  }
+
+  $beforeSql = @'
+select to_jsonb(p.*) as before_image
+from providers p
+where p.tenant_id = cast(:tenant_id as uuid)
+  and p.code = :provider_code
+  and p.deleted_at is null
+for update;
+'@
+
+  $applySql = @'
+insert into providers (
+  id, tenant_id, code, name, status, metadata
+)
+values (
+  cast(:internal_provider_id as uuid), cast(:tenant_id as uuid), :provider_code, :name,
+  :status, cast(:metadata_json as jsonb)
+)
+on conflict (tenant_id, code) do update
+set name = excluded.name,
+    status = excluded.status,
+    metadata = excluded.metadata,
+    updated_at = now(),
+    deleted_at = null
+returning to_jsonb(providers.*) as after_image;
+'@
+
+  return [ordered]@{
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    action = $Operation.action
+    target = $Operation.target
+    adapter = "providers_upsert_v1"
+    supported = $true
+    replay_policy = @(
+      "capture provider before-image by tenant_id/provider_code",
+      "insert provider with deterministic id when missing",
+      "update provider name/status/metadata when natural key exists",
+      "provider key material is not read or written by this adapter"
+    )
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    before_image_capture = [ordered]@{
+      required = $true
+      target_table = "providers"
+      natural_key = "tenant_id, provider_code"
+      operation_id = $Operation.operation_id
+      idempotency_key = $Operation.idempotency_key
+      rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    }
+    statements = @(
+      New-PostgreSqlStatement "capture_before_image" $Operation.operation_id $beforeSql $parameters
+      New-PostgreSqlStatement "apply_upsert" $Operation.operation_id $applySql $parameters
+    )
+  }
+}
+
+function New-PostgreSqlChannelOperationPlan {
+  param(
+    [object]$Operation,
+    [string]$TenantId
+  )
+
+  $after = $Operation.after
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $after @("channel_source_id", "source_channel_id") $null)
+  $providerCode = Convert-ToSafeText (Get-PropertyValue $after @("provider_code", "provider", "provider_id") $null)
+  $internalProviderId = Convert-ToSafeText (Get-PropertyValue $after @("internal_provider_id", "provider_id") $null)
+  $internalChannelId = Convert-ToSafeText (Get-PropertyValue $after @("internal_channel_id", "channel_id", "id") $null)
+  $channelName = Convert-ToSafeText (Get-PropertyValue $after @("name", "channel_name", "display_name") $null)
+  $endpoint = Convert-ToSafeText (Get-PropertyValue $after @("endpoint", "base_url", "baseUrl", "url") $null)
+  $protocolMode = Convert-ToSafeText (Get-PropertyValue $after @("protocol_mode", "protocol") "openai_compatible")
+  $status = Normalize-ChannelStatus (Get-PropertyValue $after @("status") "enabled")
+  $region = Convert-ToSafeText (Get-PropertyValue $after @("region") $null)
+  $priority = Get-NullableIntField $after @("priority")
+  if ($null -eq $priority) { $priority = 100 }
+  $weight = Get-NullableIntField $after @("weight")
+  if ($null -eq $weight) { $weight = 100 }
+  $tags = Convert-ToSafeObject (Get-PropertyValue $after @("tags") @())
+  $modelMappings = Convert-ToSafeObject (Get-PropertyValue $after @("model_mappings", "modelMappings") ([ordered]@{}))
+  $requestOverrides = Convert-ToSafeObject (Get-PropertyValue $after @("request_overrides", "requestOverrides") @())
+  $timeoutPolicy = Convert-ToSafeObject (Get-PropertyValue $after @("timeout_policy", "timeoutPolicy") ([ordered]@{}))
+  $probePolicy = Convert-ToSafeObject (Get-PropertyValue $after @("probe_policy", "probePolicy") ([ordered]@{}))
+  $healthScore = Get-NullableDecimalField $after @("health_score", "healthScore")
+  if ($null -eq $healthScore) { $healthScore = [decimal]1.0 }
+
+  $parameters = [ordered]@{
+    tenant_id = $TenantId
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    channel_source_id = $channelSourceId
+    provider_code = $providerCode
+    internal_provider_id = $internalProviderId
+    internal_channel_id = $internalChannelId
+    channel_name = $channelName
+    endpoint = $endpoint
+    protocol_mode = $protocolMode
+    status = $status
+    region = $region
+    priority = $priority
+    weight = $weight
+    tags_json = Convert-ToCompactJson $tags 32
+    model_mappings_json = Convert-ToCompactJson $modelMappings 32
+    request_overrides_json = Convert-ToCompactJson $requestOverrides 32
+    timeout_policy_json = Convert-ToCompactJson $timeoutPolicy 32
+    probe_policy_json = Convert-ToCompactJson $probePolicy 32
+    health_score = $healthScore
+    after_hash = Get-StableHash $Operation.after 32
+  }
+
+  $beforeSql = @'
+select to_jsonb(ch.*) as before_image
+from channels ch
+join providers p
+  on p.tenant_id = ch.tenant_id
+ and p.id = ch.provider_id
+where ch.tenant_id = cast(:tenant_id as uuid)
+  and p.code = :provider_code
+  and ch.name = :channel_name
+  and ch.deleted_at is null
+  and p.deleted_at is null
+for update;
+'@
+
+  $applySql = @'
+with provider as (
+  select id
+  from providers
+  where tenant_id = cast(:tenant_id as uuid)
+    and code = :provider_code
+    and deleted_at is null
+  limit 1
+)
+insert into channels (
+  id, tenant_id, provider_id, name, endpoint, protocol_mode, status,
+  region, priority, weight, tags, model_mappings, request_overrides,
+  timeout_policy, probe_policy, health_score
+)
+select
+  cast(:internal_channel_id as uuid), cast(:tenant_id as uuid), provider.id, :channel_name,
+  :endpoint, :protocol_mode, :status, :region, :priority, :weight,
+  cast(:tags_json as jsonb), cast(:model_mappings_json as jsonb),
+  cast(:request_overrides_json as jsonb), cast(:timeout_policy_json as jsonb),
+  cast(:probe_policy_json as jsonb), cast(:health_score as numeric)
+from provider
+on conflict (tenant_id, provider_id, name) do update
+set endpoint = excluded.endpoint,
+    protocol_mode = excluded.protocol_mode,
+    status = excluded.status,
+    region = excluded.region,
+    priority = excluded.priority,
+    weight = excluded.weight,
+    tags = excluded.tags,
+    model_mappings = excluded.model_mappings,
+    request_overrides = excluded.request_overrides,
+    timeout_policy = excluded.timeout_policy,
+    probe_policy = excluded.probe_policy,
+    health_score = excluded.health_score,
+    updated_at = now(),
+    deleted_at = null
+returning to_jsonb(channels.*) as after_image;
+'@
+
+  return [ordered]@{
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    action = $Operation.action
+    target = $Operation.target
+    adapter = "channels_upsert_v1"
+    supported = $true
+    replay_policy = @(
+      "provider must exist by tenant_id/provider_code before channel upsert",
+      "capture channel before-image by tenant_id/provider_code/channel_name",
+      "insert channel with deterministic id when missing",
+      "provider key material is not read or written by this adapter"
+    )
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    before_image_capture = [ordered]@{
+      required = $true
+      target_table = "channels"
+      natural_key = "tenant_id, provider_code, channel_name"
+      operation_id = $Operation.operation_id
+      idempotency_key = $Operation.idempotency_key
+      rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    }
+    statements = @(
+      New-PostgreSqlStatement "capture_before_image" $Operation.operation_id $beforeSql $parameters
+      New-PostgreSqlStatement "apply_upsert" $Operation.operation_id $applySql $parameters
+    )
   }
 }
 
@@ -1106,6 +1792,147 @@ returning to_jsonb(ch.*) as after_image;
   }
 }
 
+function New-PostgreSqlModelAssociationOperationPlan {
+  param(
+    [object]$Operation,
+    [string]$TenantId
+  )
+
+  $after = $Operation.after
+  $canonicalModelKey = Convert-ToSafeText (Get-PropertyValue $after @("canonical_model_key", "canonical_model", "model_key") $null)
+  $associationType = Convert-ToSafeText (Get-PropertyValue $after @("association_type") "explicit_channel")
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $after @("channel_source_id", "source_channel_id") $null)
+  $internalChannelId = Convert-ToSafeText (Get-PropertyValue $after @("internal_channel_id", "channel_id") $null)
+  $upstreamModel = Convert-ToSafeText (Get-PropertyValue $after @("upstream_model_name", "upstream_model", "provider_model") $null)
+  $priority = Get-NullableIntField $after @("priority")
+  if ($null -eq $priority) { $priority = 100 }
+  $conditions = Convert-ToSafeObject (Get-PropertyValue $after @("conditions") ([ordered]@{}))
+  $fallbackAllowed = Get-BooleanField $after @("fallback_allowed") $true
+  $canaryPercent = Convert-ToSafeText (Get-PropertyValue $after @("canary_percent", "canaryPercent") "100")
+  $status = Normalize-ModelAssociationStatus `
+    -Status (Get-PropertyValue $after @("status") $null) `
+    -Enabled (Get-PropertyValue $after @("enabled") $null)
+
+  $parameters = [ordered]@{
+    tenant_id = $TenantId
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    canonical_model_key = $canonicalModelKey
+    association_type = $associationType
+    channel_source_id = $channelSourceId
+    internal_channel_id = $internalChannelId
+    upstream_model_name = $upstreamModel
+    priority = $priority
+    conditions_json = Convert-ToCompactJson $conditions 32
+    fallback_allowed = $fallbackAllowed
+    canary_percent = $canaryPercent
+    status = $status
+    after_hash = Get-StableHash $Operation.after 32
+  }
+
+  $beforeSql = @'
+select to_jsonb(ma.*) as before_image
+from model_associations ma
+join canonical_models cm
+  on cm.tenant_id = ma.tenant_id
+ and cm.id = ma.canonical_model_id
+where ma.tenant_id = cast(:tenant_id as uuid)
+  and cm.model_key = :canonical_model_key
+  and ma.association_type = 'explicit_channel'
+  and ma.channel_id = cast(:internal_channel_id as uuid)
+  and coalesce(ma.upstream_model_name, '') = coalesce(:upstream_model_name, '')
+  and ma.deleted_at is null
+  and cm.deleted_at is null
+for update;
+'@
+
+  $applySql = @'
+with canonical as (
+  select id
+  from canonical_models
+  where tenant_id = cast(:tenant_id as uuid)
+    and model_key = :canonical_model_key
+    and deleted_at is null
+  limit 1
+),
+channel as (
+  select id
+  from channels
+  where tenant_id = cast(:tenant_id as uuid)
+    and id = cast(:internal_channel_id as uuid)
+    and deleted_at is null
+  limit 1
+)
+,
+updated as (
+  update model_associations ma
+  set priority = :priority,
+      conditions = cast(:conditions_json as jsonb),
+      fallback_allowed = :fallback_allowed,
+      canary_percent = cast(:canary_percent as numeric),
+      status = :status,
+      updated_at = now(),
+      deleted_at = null
+  from canonical, channel
+  where ma.tenant_id = cast(:tenant_id as uuid)
+    and ma.canonical_model_id = canonical.id
+    and ma.association_type = 'explicit_channel'
+    and ma.channel_id = channel.id
+    and coalesce(ma.upstream_model_name, '') = coalesce(nullif(:upstream_model_name, ''), '')
+    and ma.deleted_at is null
+    and ma.status <> 'deleted'
+  returning to_jsonb(ma.*) as after_image
+),
+inserted as (
+  insert into model_associations (
+    tenant_id, canonical_model_id, association_type, channel_id, channel_tag,
+    model_pattern, upstream_model_name, priority, conditions, fallback_allowed,
+    canary_percent, status
+  )
+  select
+    cast(:tenant_id as uuid), canonical.id, 'explicit_channel', channel.id, null,
+    null, nullif(:upstream_model_name, ''), :priority, cast(:conditions_json as jsonb),
+    :fallback_allowed, cast(:canary_percent as numeric), :status
+  from canonical, channel
+  where not exists (select 1 from updated)
+  returning to_jsonb(model_associations.*) as after_image
+)
+select after_image from updated
+union all
+select after_image from inserted;
+'@
+
+  return [ordered]@{
+    operation_id = $Operation.operation_id
+    idempotency_key = $Operation.idempotency_key
+    action = $Operation.action
+    target = $Operation.target
+    adapter = "model_associations_upsert_v1"
+    supported = $true
+    replay_policy = @(
+      "source channel binding preflight must provide internal_channel_id",
+      "canonical model must already exist by canonical_model_key",
+      "capture existing explicit_channel association before mutation with FOR UPDATE",
+      "insert or update explicit_channel association by tenant/canonical/channel/upstream natural key",
+      "provider key material is not read or written by this adapter"
+    )
+    rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    before_image_capture = [ordered]@{
+      required = $true
+      target_table = "model_associations"
+      natural_key = "tenant_id, canonical_model_key, internal_channel_id, upstream_model_name"
+      operation_id = $Operation.operation_id
+      idempotency_key = $Operation.idempotency_key
+      rollback_snapshot_entry_id = $Operation.rollback_snapshot_entry_id
+    }
+    statements = @(
+      New-PostgreSqlStatement "capture_before_image" $Operation.operation_id $beforeSql $parameters
+      New-PostgreSqlStatement "apply_upsert" $Operation.operation_id $applySql $parameters
+    )
+  }
+}
+
 function New-PostgreSqlUnsupportedOperationPlan {
   param([object]$Support)
 
@@ -1140,7 +1967,12 @@ create table if not exists importer_apply_runs (
   status text not null check (status in ('prepared', 'applied', 'rolled_back', 'blocked')),
   dry_run_contract boolean not null default true,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  check (length(btrim(transaction_id)) > 0),
+  check (length(btrim(plan_idempotency_key)) > 0),
+  check (length(btrim(rollback_snapshot_idempotency_key)) > 0),
+  check (length(btrim(idempotency_manifest_key)) > 0),
+  check (jsonb_typeof(idempotency_manifest_json) = 'object')
 );
 '@
 
@@ -1152,7 +1984,7 @@ create table if not exists importer_apply_operation_journal (
   operation_idempotency_key text not null,
   target_kind text not null,
   target_natural_key_hash text not null,
-  rollback_action text not null,
+  rollback_action text not null check (rollback_action in ('delete_created_object', 'restore_previous_object')),
   before_image_json jsonb not null,
   before_image_hash text,
   after_hash text not null,
@@ -1162,7 +1994,17 @@ create table if not exists importer_apply_operation_journal (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (transaction_id, operation_id),
-  unique (operation_idempotency_key, target_kind, target_natural_key_hash)
+  unique (operation_idempotency_key, target_kind, target_natural_key_hash),
+  check (length(btrim(snapshot_entry_id)) > 0),
+  check (length(btrim(operation_id)) > 0),
+  check (length(btrim(operation_idempotency_key)) > 0),
+  check (length(btrim(target_kind)) > 0),
+  check (length(btrim(target_natural_key_hash)) > 0),
+  check (length(btrim(after_hash)) > 0),
+  check (before_image_hash is null or length(btrim(before_image_hash)) > 0),
+  check (jsonb_typeof(before_image_json) = 'object'),
+  check (jsonb_typeof(rollback_entry_json) = 'object'),
+  check (jsonb_typeof(error_summary_json) = 'object')
 );
 '@
 
@@ -1344,6 +2186,22 @@ returning transaction_id, status;
     $futureAdapter = "unavailable_for_target_kind"
     $futureMutationIntent = @("refuse until a target-specific rollback adapter is implemented")
     switch ([string]$operation.target.kind) {
+      "provider" {
+        $futureAdapter = "providers_rollback_v1_planned"
+        $futureMutationIntent = @(
+          "delete_created_object by tenant_id/provider_code when before_image.object_exists=false",
+          "restore_previous_object from before_image_json when before_image.object_exists=true",
+          "verify the current provider still matches after_hash or refuse replay"
+        )
+      }
+      "channel" {
+        $futureAdapter = "channels_rollback_v1_planned"
+        $futureMutationIntent = @(
+          "delete_created_object by tenant_id/provider_code/channel_name when before_image.object_exists=false",
+          "restore_previous_object from before_image_json when before_image.object_exists=true",
+          "verify the current channel still matches after_hash or refuse replay"
+        )
+      }
       "canonical_model" {
         $futureAdapter = "canonical_models_rollback_v1_planned"
         $futureMutationIntent = @(
@@ -1361,9 +2219,11 @@ returning transaction_id, status;
         )
       }
       "model_association" {
-        $futureAdapter = "model_associations_rollback_blocked_v1"
+        $futureAdapter = "model_associations_rollback_v1_planned"
         $futureMutationIntent = @(
-          "model_association rollback remains blocked until canonical/channel binding adapters exist"
+          "delete_created_object by persisted model_association id when before_image.object_exists=false",
+          "restore_previous_object from before_image_json when before_image.object_exists=true",
+          "verify the current association still matches after_hash or refuse replay"
         )
       }
     }
@@ -1450,11 +2310,11 @@ returning transaction_id, status;
     mark_run_rolled_back_statement = New-PostgreSqlStatement "rollback_mark_apply_run_rolled_back" "apply_run" $markRunRolledBackSql $runParameters
     refusal_contract = [ordered]@{
       schema_version = "importer.rollback-execution-refusal-contract.v1"
-      refusal_reason = "Rollback execution is plan-only in this slice; no live PostgreSQL runner or compensating mutation writer is implemented, so no database writes were made."
+      refusal_reason = "Rollback execution is plan-only in import-apply-plan.ps1; use scripts/importers/invoke-import-apply-live.ps1 for the supported live PostgreSQL apply/rollback adapters."
       execute_supported = $false
       refuse_execute_when = @(
-        "live PostgreSQL rollback runner is unavailable",
-        "rollback journal rows are not persisted by a live apply transaction",
+        "direct rollback execution was requested from the plan generator instead of invoke-import-apply-live.ps1",
+        "rollback journal rows are not available from a supported live apply transaction",
         "operation journal status is not applied",
         "before_image hash verification fails",
         "current target state no longer matches after_hash",
@@ -1503,8 +2363,14 @@ function New-PostgreSqlApplyExecutorPlan {
       continue
     }
 
-    if ($operation.target.kind -eq "canonical_model") {
+    if ($operation.target.kind -eq "provider") {
+      $operationPlans.Add((New-PostgreSqlProviderOperationPlan $operation $TenantId)) | Out-Null
+    } elseif ($operation.target.kind -eq "channel") {
+      $operationPlans.Add((New-PostgreSqlChannelOperationPlan $operation $TenantId)) | Out-Null
+    } elseif ($operation.target.kind -eq "canonical_model") {
       $operationPlans.Add((New-PostgreSqlCanonicalModelOperationPlan $operation $TenantId)) | Out-Null
+    } elseif ($operation.target.kind -eq "model_association") {
+      $operationPlans.Add((New-PostgreSqlModelAssociationOperationPlan $operation $TenantId)) | Out-Null
     } elseif ($operation.target.kind -eq "channel_mapping_entry") {
       $operationPlans.Add((New-PostgreSqlChannelMappingEntryOperationPlan $operation $TenantId)) | Out-Null
     }
@@ -1628,17 +2494,18 @@ function New-PostgreSqlApplyExecutorPlan {
     }
     refusal_contract = [ordered]@{
       schema_version = "importer.apply-refusal-contract.v1"
-      live_runner_refusal_reason = "This slice can prepare SQL and rollback journal contracts only; a live PostgreSQL runner is unavailable, so no database writes were made."
+      live_runner_refusal_reason = "import-apply-plan.ps1 prepares SQL and rollback journal contracts only; scripts/importers/invoke-import-apply-live.ps1 executes the supported live PostgreSQL adapters."
       refuse_apply_when = @(
         "missing -Force with -Apply",
         "DryRun is false",
         "preflight_status is not pass",
         "blocking_conflicts preflight fails",
         "source_provider_channel_bindings preflight fails",
+        "provider_key_secret_management_handoff preflight fails",
         "write_operations_supported_by_sql_executor preflight fails",
         "rollback_snapshot_shape preflight fails",
         "write idempotency keys are duplicated",
-        "live PostgreSQL runner is unavailable"
+        "direct DB execution was requested from import-apply-plan.ps1 instead of invoke-import-apply-live.ps1"
       )
       conflict_blocking = [ordered]@{
         error_level_conflicts_block_apply = $true
@@ -1757,6 +2624,8 @@ function Get-PlannedAction {
 }
 
 $existingIndex = @{
+  provider = @{}
+  channel = @{}
   canonical_model = @{}
   model_association = @{}
   channel_mapping_entry = @{}
@@ -1765,6 +2634,8 @@ $existingStateSummary = [ordered]@{
   provided = $false
   input_file = $null
   counts = [ordered]@{
+    providers = 0
+    channels = 0
     canonical_models = 0
     model_associations = 0
     channel_mapping_entries = 0
@@ -1776,6 +2647,14 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingStatePath)) {
   $existingState = Read-JsonFile $existingFile
   $existingStateSummary.provided = $true
   $existingStateSummary.input_file = Get-RepoRelativePath $existingFile.FullName
+
+  foreach ($provider in (Convert-ToImportArray (Get-PropertyValue $existingState @("providers") $null))) {
+    Add-ExistingStateItem $existingIndex "provider" (Get-ProviderNaturalKey $provider) $provider
+  }
+
+  foreach ($channel in (Convert-ToImportArray (Get-PropertyValue $existingState @("channels") $null))) {
+    Add-ExistingStateItem $existingIndex "channel" (Get-ChannelNaturalKey $channel) $channel
+  }
 
   foreach ($model in (Convert-ToImportArray (Get-PropertyValue $existingState @("canonical_models") $null))) {
     Add-ExistingStateItem $existingIndex "canonical_model" (Get-CanonicalModelNaturalKey $model) $model
@@ -1795,6 +2674,8 @@ if (-not [string]::IsNullOrWhiteSpace($ExistingStatePath)) {
     }
   }
 
+  $existingStateSummary.counts.providers = $existingIndex.provider.Count
+  $existingStateSummary.counts.channels = $existingIndex.channel.Count
   $existingStateSummary.counts.canonical_models = $existingIndex.canonical_model.Count
   $existingStateSummary.counts.model_associations = $existingIndex.model_association.Count
   $existingStateSummary.counts.channel_mapping_entries = $existingIndex.channel_mapping_entry.Count
@@ -1804,9 +2685,15 @@ $inputFiles = Get-InputFiles $InputPath
 $inputFilePaths = @($inputFiles | ForEach-Object { Get-RepoRelativePath $_.FullName })
 $inputReportSummaries = New-Object System.Collections.Generic.List[object]
 $allConflicts = New-Object System.Collections.Generic.List[object]
+$allProviderPreviews = New-Object System.Collections.Generic.List[object]
+$allChannelPreviews = New-Object System.Collections.Generic.List[object]
+$providerPreviewKeys = @{}
+$channelPreviewKeys = @{}
 $allCanonicalModels = New-Object System.Collections.Generic.List[object]
 $allAssociations = New-Object System.Collections.Generic.List[object]
 $allChannelMappingEntries = New-Object System.Collections.Generic.List[object]
+$allProviderKeyHandoffs = New-Object System.Collections.Generic.List[object]
+$sourceSpecificApplyPlanArtifacts = New-Object System.Collections.Generic.List[object]
 $sourceChannelBindings = @{}
 $blockedRequestedModels = @{}
 $blockedChannels = @{}
@@ -1861,9 +2748,43 @@ foreach ($file in $inputFiles) {
     $allAssociations.Add($association) | Out-Null
   }
 
+  foreach ($handoff in (Convert-ToImportArray (Get-PropertyValue $report @("provider_key_handoffs") $null))) {
+    $allProviderKeyHandoffs.Add($handoff) | Out-Null
+  }
+
+  foreach ($sourceArtifacts in (Convert-ToImportArray (Get-PropertyValue $report @("source_specific_apply_plan_artifacts") $null))) {
+    $sourceSpecificApplyPlanArtifacts.Add((Convert-ToSafeObject $sourceArtifacts)) | Out-Null
+  }
+
   foreach ($mapping in (Convert-ToImportArray (Get-PropertyValue $report @("channel_mappings") $null))) {
     $channelSourceId = Convert-ToSafeText (Get-PropertyValue $mapping @("channel_source_id") $null)
     $binding = New-SourceChannelBindingRef $mapping
+    $providerPreview = $null
+    $channelPreview = $null
+    $internalProviderId = Convert-ToSafeText (Get-PropertyValue $binding @("internal_provider_id") $null)
+    $internalChannelId = Convert-ToSafeText (Get-PropertyValue $binding @("internal_channel_id") $null)
+    $shouldDeriveProviderChannel = $false
+    if ($null -ne $binding -and [bool](Get-PropertyValue $binding @("channel_present") $false)) {
+      $shouldDeriveProviderChannel = ([string]::IsNullOrWhiteSpace($internalProviderId) -or [string]::IsNullOrWhiteSpace($internalChannelId))
+    }
+    if ($shouldDeriveProviderChannel) {
+      $providerPreview = New-ProviderPreviewFromChannelMapping $mapping $script:TenantId
+      $channelPreview = New-ChannelPreviewFromChannelMapping $mapping $script:TenantId
+      if ($null -ne $providerPreview -and $null -ne $channelPreview) {
+        $providerKey = Get-ProviderNaturalKey $providerPreview
+        $channelKey = Get-ChannelNaturalKey $channelPreview
+        if (-not $providerPreviewKeys.ContainsKey($providerKey)) {
+          $providerPreviewKeys[$providerKey] = $true
+          $allProviderPreviews.Add($providerPreview) | Out-Null
+        }
+        if (-not $channelPreviewKeys.ContainsKey($channelKey)) {
+          $channelPreviewKeys[$channelKey] = $true
+          $allChannelPreviews.Add($channelPreview) | Out-Null
+        }
+        $binding["internal_provider_id"] = Convert-ToSafeText (Get-PropertyValue $providerPreview @("internal_provider_id") $null)
+        $binding["internal_channel_id"] = Convert-ToSafeText (Get-PropertyValue $channelPreview @("internal_channel_id") $null)
+      }
+    }
     if ($null -ne $binding -and -not [string]::IsNullOrWhiteSpace($channelSourceId)) {
       $sourceChannelBindings[$channelSourceId] = $binding
     }
@@ -1884,10 +2805,57 @@ foreach ($file in $inputFiles) {
   }
 }
 
+$providerKeyHandoffSidecarItems = New-Object System.Collections.Generic.List[object]
+$providerKeyHandoffKeys = @{}
+foreach ($handoff in $allProviderKeyHandoffs) {
+  $sidecar = New-ProviderKeyHandoffSidecar $handoff $sourceChannelBindings
+  $sidecarKey = "$($sidecar.channel_source_id)|$($sidecar.key_alias)"
+  if ([string]::IsNullOrWhiteSpace($sidecarKey)) {
+    $sidecarKey = $sidecar.handoff_id
+  }
+  if (-not $providerKeyHandoffKeys.ContainsKey($sidecarKey)) {
+    $providerKeyHandoffKeys[$sidecarKey] = $true
+    $providerKeyHandoffSidecarItems.Add($sidecar) | Out-Null
+  }
+}
+$providerKeyHandoffSidecars = @($providerKeyHandoffSidecarItems | Sort-Object channel_source_id, key_alias, handoff_id)
+$providerKeyHandoffValidation = Test-ProviderKeyHandoffShape $providerKeyHandoffSidecars
+
 $plannedCreates = New-Object System.Collections.Generic.List[object]
 $plannedUpdates = New-Object System.Collections.Generic.List[object]
 $plannedSkips = New-Object System.Collections.Generic.List[object]
 $emittedTargets = @{}
+
+foreach ($provider in $allProviderPreviews) {
+  $naturalKey = Get-ProviderNaturalKey $provider
+  $providerCode = Convert-ToSafeText (Get-PropertyValue $provider @("provider_code", "code") $null)
+  if ([string]::IsNullOrWhiteSpace($providerCode)) {
+    $operation = New-PlanOperation "skip" "provider" $naturalKey $provider $null "missing_provider_code" @()
+    Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
+    continue
+  }
+
+  $actionInfo = Get-PlannedAction $existingIndex "provider" $naturalKey $provider
+  $operation = New-PlanOperation $actionInfo.action "provider" $naturalKey $provider $actionInfo.before $actionInfo.reason @()
+  Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
+}
+
+foreach ($channel in $allChannelPreviews) {
+  $naturalKey = Get-ChannelNaturalKey $channel
+  $providerCode = Convert-ToSafeText (Get-PropertyValue $channel @("provider_code") $null)
+  $internalChannelId = Convert-ToSafeText (Get-PropertyValue $channel @("internal_channel_id", "channel_id", "id") $null)
+  $channelName = Convert-ToSafeText (Get-PropertyValue $channel @("name", "channel_name") $null)
+  $endpoint = Convert-ToSafeText (Get-PropertyValue $channel @("endpoint", "base_url", "url") $null)
+  if ([string]::IsNullOrWhiteSpace($providerCode) -or [string]::IsNullOrWhiteSpace($internalChannelId) -or [string]::IsNullOrWhiteSpace($channelName) -or [string]::IsNullOrWhiteSpace($endpoint)) {
+    $operation = New-PlanOperation "skip" "channel" $naturalKey $channel $null "missing_channel_apply_fields" @()
+    Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
+    continue
+  }
+
+  $actionInfo = Get-PlannedAction $existingIndex "channel" $naturalKey $channel
+  $operation = New-PlanOperation $actionInfo.action "channel" $naturalKey $channel $actionInfo.before $actionInfo.reason @()
+  Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
+}
 
 foreach ($model in $allCanonicalModels) {
   $naturalKey = Get-CanonicalModelNaturalKey $model
@@ -1904,9 +2872,17 @@ foreach ($model in $allCanonicalModels) {
 }
 
 foreach ($association in $allAssociations) {
-  $naturalKey = Get-AssociationNaturalKey $association
-  $requestedModel = Convert-ToSafeText (Get-PropertyValue $association @("requested_model", "client_model", "source_model") $null)
-  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $association @("channel_source_id", "source_channel_id") $null)
+  $safeAssociation = Convert-ToSafeObject $association
+  $channelSourceId = Convert-ToSafeText (Get-PropertyValue $safeAssociation @("channel_source_id", "source_channel_id") $null)
+  if (-not [string]::IsNullOrWhiteSpace($channelSourceId) -and $sourceChannelBindings.ContainsKey($channelSourceId)) {
+    $binding = $sourceChannelBindings[$channelSourceId]
+    $safeAssociation["internal_provider_id"] = Convert-ToSafeText (Get-PropertyValue $binding @("internal_provider_id") $null)
+    $safeAssociation["internal_channel_id"] = Convert-ToSafeText (Get-PropertyValue $binding @("internal_channel_id") $null)
+    $safeAssociation["channel_present"] = [bool](Get-PropertyValue $binding @("channel_present") $false)
+  }
+
+  $naturalKey = Get-AssociationNaturalKey $safeAssociation
+  $requestedModel = Convert-ToSafeText (Get-PropertyValue $safeAssociation @("requested_model", "client_model", "source_model") $null)
   $conflictRefs = New-Object System.Collections.Generic.List[object]
   if (-not [string]::IsNullOrWhiteSpace($requestedModel) -and $blockedRequestedModels.ContainsKey($requestedModel)) {
     $conflictRefs.Add($blockedRequestedModels[$requestedModel]) | Out-Null
@@ -1916,19 +2892,19 @@ foreach ($association in $allAssociations) {
   }
 
   if ($conflictRefs.Count -gt 0) {
-    $operation = New-PlanOperation "skip" "model_association" $naturalKey $association $null "blocked_by_conflict" (Convert-ToObjectArray $conflictRefs)
+    $operation = New-PlanOperation "skip" "model_association" $naturalKey $safeAssociation $null "blocked_by_conflict" (Convert-ToObjectArray $conflictRefs)
     Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
     continue
   }
 
   if ([string]::IsNullOrWhiteSpace($requestedModel)) {
-    $operation = New-PlanOperation "skip" "model_association" $naturalKey $association $null "missing_requested_model" @()
+    $operation = New-PlanOperation "skip" "model_association" $naturalKey $safeAssociation $null "missing_requested_model" @()
     Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
     continue
   }
 
-  $actionInfo = Get-PlannedAction $existingIndex "model_association" $naturalKey $association
-  $operation = New-PlanOperation $actionInfo.action "model_association" $naturalKey $association $actionInfo.before $actionInfo.reason @()
+  $actionInfo = Get-PlannedAction $existingIndex "model_association" $naturalKey $safeAssociation
+  $operation = New-PlanOperation $actionInfo.action "model_association" $naturalKey $safeAssociation $actionInfo.before $actionInfo.reason @()
   Add-Operation $plannedCreates $plannedUpdates $plannedSkips $emittedTargets $operation
 }
 
@@ -1980,6 +2956,7 @@ $planSeed = [ordered]@{
   updates = $plannedUpdates.Count
   skips = $plannedSkips.Count
   conflicts = $allConflicts.Count
+  provider_key_handoffs = @($providerKeyHandoffSidecars | ForEach-Object { $_.handoff_id } | Sort-Object)
 }
 $planIdempotencyKey = "importer-apply-plan:v1:$(Get-StableHash $planSeed 24)"
 $rollbackSnapshotKey = "importer-rollback-snapshot:v1:$(Get-StableHash @($rollbackEntries | ForEach-Object { $_.snapshot_entry_id }) 24)"
@@ -2023,6 +3000,27 @@ if ($sourceBindingValidation.errors.Count -gt 0) {
   Add-PreflightCheck $preflightChecks "source_provider_channel_bindings" "pass" "No unbound source provider/channel write was found." ([ordered]@{
       checked_count = $sourceBindingValidation.checked.Count
       source_channel_bindings = @(Convert-ToObjectArray $sourceChannelBindings.Values)
+    })
+}
+
+if ($providerKeyHandoffValidation.errors.Count -gt 0) {
+  Add-PreflightCheck $preflightChecks "provider_key_secret_management_handoff" "fail" "Provider key handoff is sidecar-only and must not include raw credential material or direct DB apply." ([ordered]@{
+      handoff_count = $providerKeyHandoffSidecars.Count
+      sidecar_only = $true
+      raw_material_allowed = $false
+      apply_directly_supported = $false
+      errors = $providerKeyHandoffValidation.errors
+      warnings = $providerKeyHandoffValidation.warnings
+    })
+} else {
+  Add-PreflightCheck $preflightChecks "provider_key_secret_management_handoff" "pass" "Provider key handoff is sidecar-only; operators must enter provider keys through the Control Plane secret-management path." ([ordered]@{
+      handoff_count = $providerKeyHandoffSidecars.Count
+      sidecar_only = $true
+      raw_material_allowed = $false
+      apply_directly_supported = $false
+      warning_count = $providerKeyHandoffValidation.warnings.Count
+      warnings = $providerKeyHandoffValidation.warnings
+      required_operator_path = "POST /admin/provider-keys"
     })
 }
 
@@ -2070,7 +3068,7 @@ foreach ($operation in $writeOperations) {
 $applyExecutionStatus = "not_requested"
 $realApplyStatus = "dry_run_sql_plan"
 $applyRefusalReason = $null
-$realDatabaseWriteRefusalReason = "This slice is plan-only: -Apply -Force prepares SQL, rollback journal DDL/insert plans, and rollback skeletons only; the live PostgreSQL runner is unavailable, so no database writes were made."
+$realDatabaseWriteRefusalReason = "import-apply-plan.ps1 is plan-only: -Apply -Force prepares SQL, rollback journal DDL/insert plans, and rollback skeletons only. Use scripts/importers/invoke-import-apply-live.ps1 for supported live PostgreSQL apply/rollback execution."
 if ($script:ApplyRequested) {
   if ($preflightStatus -eq "pass") {
     $applyExecutionStatus = "prepared_sql_plan"
@@ -2128,7 +3126,7 @@ $transactionContract = [ordered]@{
 }
 
 $targetCounts = [ordered]@{}
-foreach ($kind in @("canonical_model", "model_association", "channel_mapping_entry")) {
+foreach ($kind in @("provider", "channel", "canonical_model", "model_association", "channel_mapping_entry")) {
   $targetCounts[$kind] = [ordered]@{
     creates = @($plannedCreates | Where-Object { $_.target.kind -eq $kind }).Count
     updates = @($plannedUpdates | Where-Object { $_.target.kind -eq $kind }).Count
@@ -2138,9 +3136,12 @@ foreach ($kind in @("canonical_model", "model_association", "channel_mapping_ent
 
 $counts = [ordered]@{
   input_reports = $inputFiles.Count
+  source_provider_previews = $allProviderPreviews.Count
+  source_channel_previews = $allChannelPreviews.Count
   source_canonical_models = $allCanonicalModels.Count
   source_model_associations = $allAssociations.Count
   source_channel_mapping_entries = $allChannelMappingEntries.Count
+  source_provider_key_handoffs = $providerKeyHandoffSidecars.Count
   planned_creates = $plannedCreates.Count
   planned_updates = $plannedUpdates.Count
   planned_skips = $plannedSkips.Count
@@ -2149,7 +3150,122 @@ $counts = [ordered]@{
   blocking_conflicts = $blockingConflictCount
   rollback_snapshot_entries = $rollbackEntries.Count
   source_channel_bindings = $sourceChannelBindings.Count
+  source_specific_apply_plan_artifacts = $sourceSpecificApplyPlanArtifacts.Count
 }
+
+function New-MappingQualityReadback {
+  param(
+    [object[]]$ProviderPreviews,
+    [object[]]$ChannelPreviews,
+    [object[]]$CanonicalModels,
+    [object[]]$Associations,
+    [object[]]$ChannelMappingEntries,
+    [object[]]$ProviderKeyHandoffs,
+    [object[]]$Conflicts,
+    [int]$BlockingConflictCount,
+    [object[]]$PlannedCreates,
+    [object[]]$PlannedUpdates,
+    [object[]]$PlannedSkips,
+    [object[]]$SourceSpecificApplyPlanArtifacts,
+    [string]$PreflightStatus
+  )
+
+  $conflictRefs = @($Conflicts | ForEach-Object {
+      [ordered]@{
+        severity = Convert-ToSafeText (Get-PropertyValue $_ @("severity") "warning")
+        kind = Convert-ToSafeText (Get-PropertyValue $_ @("kind", "type") "conflict")
+        key = Convert-ToSafeText (Get-PropertyValue $_ @("key", "natural_key", "source_key") $null)
+        reason = Convert-ToSafeText (Get-PropertyValue $_ @("reason", "summary") "Conflict requires review.")
+      }
+    })
+  $skipReasons = @($PlannedSkips | ForEach-Object {
+      [ordered]@{
+        type = Convert-ToSafeText (Get-PropertyValue $_.target @("kind") "planned_skip")
+        severity = if ($_.reason -eq "blocked_by_conflict") { "error" } else { "warning" }
+        reason = Convert-ToSafeText (Get-PropertyValue $_ @("reason") "planned_skip")
+        recommended_action = "Resolve or explicitly accept this skipped mapping before live apply."
+      }
+    })
+
+  $sourceArtifactSubscriptionCount = 0
+  $sourceArtifactWalletCount = 0
+  $sourceArtifactUserKeyCount = 0
+  foreach ($artifact in $SourceSpecificApplyPlanArtifacts) {
+    $inner = if ($null -ne $artifact.artifacts) { $artifact.artifacts } else { $artifact }
+    $categories = Get-PropertyValue $inner @("categories") $null
+    $manual = Get-PropertyValue $categories @("manual") $null
+    $blocked = Get-PropertyValue $categories @("blocked") $null
+    $sourceArtifactSubscriptionCount += @(Convert-ToObjectArray (Get-PropertyValue $manual @("subscription_mappings") @())).Count
+    $sourceArtifactWalletCount += @(Convert-ToObjectArray (Get-PropertyValue $manual @("wallet_opening_balance_candidates") @())).Count
+    $sourceArtifactUserKeyCount += @(Convert-ToObjectArray (Get-PropertyValue $blocked @("user_key_reissue_handoffs") @())).Count
+  }
+
+  return [ordered]@{
+    schema_version = "importer.mapping-quality-readback.v1"
+    source_system = "reviewed-apply-plan"
+    status = if ($PreflightStatus -eq "pass") { "ready-for-reviewed-apply-plan" } else { "blocked" }
+    dry_run_only = $true
+    secret_safe = $true
+    mapping_counts = [ordered]@{
+      provider_mappings = $ProviderPreviews.Count
+      channel_mappings = $ChannelPreviews.Count + $ChannelMappingEntries.Count
+      model_mappings = $Associations.Count + $ChannelMappingEntries.Count
+      canonical_model_candidates = $CanonicalModels.Count
+      user_mappings = 0
+      key_mappings = $ProviderKeyHandoffs.Count + $sourceArtifactUserKeyCount
+      provider_key_handoffs = $ProviderKeyHandoffs.Count
+      user_key_reissue_handoffs = $sourceArtifactUserKeyCount
+      wallet_mappings = $sourceArtifactWalletCount
+      subscription_mappings = $sourceArtifactSubscriptionCount
+      planned_creates = $PlannedCreates.Count
+      planned_updates = $PlannedUpdates.Count
+      planned_skips = $PlannedSkips.Count
+      non_migratable_items = $skipReasons.Count
+      conflicts = $Conflicts.Count
+    }
+    conflicts = [ordered]@{
+      count = $Conflicts.Count
+      blocking_count = $BlockingConflictCount
+      refs = $conflictRefs
+    }
+    non_migratable_reasons = $skipReasons
+    operator_handoff_refs_presence = [ordered]@{
+      provider_key_handoffs_present = $ProviderKeyHandoffs.Count -gt 0
+      provider_key_handoff_refs_present = $ProviderKeyHandoffs.Count -gt 0
+      user_key_reissue_refs_present = $sourceArtifactUserKeyCount -gt 0
+      wallet_opening_balance_refs_present = $sourceArtifactWalletCount -gt 0
+      subscription_mapping_refs_present = $sourceArtifactSubscriptionCount -gt 0
+      required_operator_path_present = $ProviderKeyHandoffs.Count -gt 0 -or $sourceArtifactUserKeyCount -gt 0
+    }
+    safe_next_action = if ($PreflightStatus -eq "pass") {
+      "Review write operations, rollback/idempotency contracts, and operator handoff refs before any live runner invocation."
+    } else {
+      "Resolve blocking conflicts and skipped mappings; do not run live apply while preflight is blocked."
+    }
+    forbidden_material_returned = $false
+    raw_provider_key_returned = $false
+    raw_user_key_returned = $false
+    token_returned = $false
+    db_url_returned = $false
+    raw_sql_returned = $false
+    authorization_returned = $false
+  }
+}
+
+$mappingQualityReadback = New-MappingQualityReadback `
+  -ProviderPreviews @(Convert-ToObjectArray $allProviderPreviews) `
+  -ChannelPreviews @(Convert-ToObjectArray $allChannelPreviews) `
+  -CanonicalModels @(Convert-ToObjectArray $allCanonicalModels) `
+  -Associations @(Convert-ToObjectArray $allAssociations) `
+  -ChannelMappingEntries @(Convert-ToObjectArray $allChannelMappingEntries) `
+  -ProviderKeyHandoffs @(Convert-ToObjectArray $providerKeyHandoffSidecars) `
+  -Conflicts @(Convert-ToObjectArray $allConflicts) `
+  -BlockingConflictCount $blockingConflictCount `
+  -PlannedCreates @(Convert-ToObjectArray $plannedCreates) `
+  -PlannedUpdates @(Convert-ToObjectArray $plannedUpdates) `
+  -PlannedSkips @(Convert-ToObjectArray $plannedSkips) `
+  -SourceSpecificApplyPlanArtifacts @(Convert-ToObjectArray $sourceSpecificApplyPlanArtifacts) `
+  -PreflightStatus $preflightStatus
 
 $report = [ordered]@{
   importer = "importer-apply-plan-dryrun"
@@ -2168,7 +3284,7 @@ $report = [ordered]@{
     force_confirmed = $script:ForceConfirmed
     executor = $script:ApplyExecutor
     executor_status = $sqlExecutorPlan.executor_status
-    real_apply_requires = @("-Apply", "-Force", "preflight_status=pass", "source_provider_channel_bindings=pass", "supported_sql_adapters", "live_postgresql_runner")
+    real_apply_requires = @("-Apply", "-Force", "preflight_status=pass", "source_provider_channel_bindings=pass", "provider_key_secret_management_handoff=pass", "supported_sql_adapters", "live_postgresql_runner")
     database_writes = $false
     live_database_connection = $false
     refusal_reason = $applyRefusalReason
@@ -2197,7 +3313,21 @@ $report = [ordered]@{
     secret_material_allowed = $false
     bindings = @(Convert-ToObjectArray $sourceChannelBindings.Values)
   }
+  source_specific_apply_plan_artifacts = @(Convert-ToObjectArray $sourceSpecificApplyPlanArtifacts)
+  provider_key_handoff_contract = [ordered]@{
+    schema_version = "importer.provider-key-handoff-contract.v1"
+    mode = "sidecar_only"
+    raw_material_allowed = $false
+    apply_directly_supported = $false
+    required_operator_path = "POST /admin/provider-keys"
+    target_table = "provider_keys"
+    target_secret_columns = @("encrypted_secret", "secret_fingerprint")
+    handoff_count = $providerKeyHandoffSidecars.Count
+    warnings = $providerKeyHandoffValidation.warnings
+  }
+  provider_key_handoffs = @(Convert-ToObjectArray $providerKeyHandoffSidecars)
   counts = $counts
+  mapping_quality_readback = $mappingQualityReadback
   target_counts = $targetCounts
   planned_creates = @(Convert-ToObjectArray $plannedCreates)
   planned_updates = @(Convert-ToObjectArray $plannedUpdates)
@@ -2215,11 +3345,12 @@ $report = [ordered]@{
     storage_hint = "The PostgreSQL SQL executor plan contains per-operation SELECT ... FOR UPDATE before-image capture statements; a future live runner must persist those results before each mutation."
   }
   next_steps = @(
-    "Resolve blocking conflicts before any real apply path is implemented.",
-    "Run canonical_model and simple channel_mapping_entry SQL adapters only; model association SQL still needs canonical/channel binding adapter coverage.",
-    "Bind source channel ids to internal provider/channel records before writing model associations or channel mapping entries.",
+    "Resolve blocking conflicts before running the live apply path; supported live runners must refuse blocked preflight with no database writes.",
+    "Run provider, channel, canonical_model, bound explicit-channel model_association, and simple channel_mapping_entry SQL adapters through the live PostgreSQL runner; provider key creation remains a Control Plane operator action.",
+    "Review generated source channel bindings before apply; missing source channels and requested-model conflicts still block database writes.",
+    "Review provider_key_handoffs and enter provider keys through POST /admin/provider-keys before routing production traffic to imported channels.",
     "Persist rollback_snapshot and idempotency journal rows before each mutation when a live PostgreSQL runner is added.",
-    "Provider key material is intentionally outside this plan and must use the secret-management path."
+    "Provider key material is intentionally outside this plan and must use the secret-management path; this plan must never write provider_keys.encrypted_secret directly."
   )
 }
 

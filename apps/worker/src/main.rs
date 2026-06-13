@@ -3,8 +3,16 @@ mod billing_reconciliation;
 mod clickhouse_log_store;
 mod prompt_eval_shadow;
 
+use ai_gateway_adapters::{OpenAiAdapterError, OpenAiCompatibleClient};
+use ai_gateway_auth::{
+    PROVIDER_KEY_ENCRYPTION_ALGORITHM, PROVIDER_KEY_MASTER_KEY_LEN, PROVIDER_KEY_NONCE_LEN,
+    ProviderKeyContext, SealedProviderKey, open_provider_key,
+};
 use ai_gateway_config::AppConfig;
-use ai_gateway_db::{DbRepository, RecoveryProbeCandidate, connect};
+use ai_gateway_db::{
+    DbRepository, RecoveryProbeCandidate, RecoveryProbeProviderKeyUpdate,
+    RecoveryProbeSecretMaterial, connect,
+};
 use ai_gateway_observability::{init_tracing, redact_secrets};
 use alert_webhook::{
     AlertWebhookInputSource, AlertWebhookMode, alert_webhook_plan, read_alert_webhook_input,
@@ -16,18 +24,30 @@ use billing_reconciliation::{
 };
 use clickhouse_log_store::{
     ClickHouseLogStoreInputSource, ClickHouseLogStoreMode, clickhouse_log_store_execute_error,
-    clickhouse_log_store_plan, read_clickhouse_log_store_input,
+    clickhouse_log_store_plan, clickhouse_log_store_plan_with_readback,
+    clickhouse_log_store_plan_with_runtime_wal, clickhouse_log_store_plan_with_service_readiness,
+    read_clickhouse_log_store_input,
 };
 use prompt_eval_shadow::{
     PromptEvalShadowInputSource, PromptEvalShadowMode, prompt_eval_shadow_execute_error,
     prompt_eval_shadow_plan, read_prompt_eval_shadow_input,
 };
-use serde::Serialize;
-use std::{future::Future, pin::Pin};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    env,
+    future::Future,
+    pin::Pin,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 use uuid::Uuid;
 
 const DEFAULT_TENANT_ID: Uuid = Uuid::from_u128(0x00000000_0000_0000_0000_000000000001);
 const DEFAULT_RECOVERY_PROBE_LIMIT: i64 = 100;
+const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64";
+const RECOVERY_PROBE_TIMEOUT_SECONDS: u64 = 5;
+const SUBSCRIPTION_SCHEDULER_MAX_BACKOFF_SECONDS: u64 = 300;
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[tokio::main]
@@ -107,8 +127,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             mode: ClickHouseLogStoreMode::DryRun,
             tenant_id,
             input_path,
+            readback,
+            write_artifact,
+            service_readiness,
+            write_service_readiness_artifact,
+            local_smoke,
+            write_local_smoke_artifact,
+            production_smoke_artifact_path,
             ..
-        }) => run_clickhouse_log_store_dry_run(tenant_id, input_path).await,
+        }) => {
+            run_clickhouse_log_store_dry_run(
+                tenant_id,
+                input_path,
+                readback,
+                write_artifact,
+                service_readiness,
+                write_service_readiness_artifact,
+                local_smoke,
+                write_local_smoke_artifact,
+                false,
+                false,
+                production_smoke_artifact_path,
+            )
+            .await
+        }
         Ok(WorkerCommand::ClickHouseLogStore {
             mode: ClickHouseLogStoreMode::Execute,
             force,
@@ -118,6 +160,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             clickhouse_log_store_execute_error(force),
         )
         .into()),
+        Ok(WorkerCommand::SubscriptionScheduler {
+            control_plane_base_url,
+            admin_session_token_env,
+            tenant_id,
+            worker_id,
+            limit,
+            mode,
+            event_status,
+            event_type,
+            reason,
+            interval_seconds,
+            max_runs,
+            timeout_seconds,
+        }) => {
+            run_subscription_scheduler_worker(SubscriptionSchedulerWorkerConfig {
+                control_plane_base_url,
+                admin_session_token_env,
+                tenant_id,
+                worker_id,
+                limit,
+                mode,
+                event_status,
+                event_type,
+                reason,
+                interval_seconds,
+                max_runs,
+                timeout_seconds,
+            })
+            .await
+        }
         Err(message) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("{message}\n\n{}", usage()),
@@ -172,7 +244,7 @@ async fn run_recovery_probe_execute(
     let candidates = repository
         .list_recovery_probe_candidates(tenant_id, limit)
         .await?;
-    let probe = ContextUnavailableRecoveryProbe;
+    let probe = HttpRecoveryProbeRunner::new(&repository);
     let report = execute_recovery_probes(tenant_id, candidates, &probe, &repository).await;
     let migration_error_count = report.migration_error_count;
 
@@ -271,6 +343,15 @@ async fn run_prompt_eval_shadow_dry_run(
 async fn run_clickhouse_log_store_dry_run(
     tenant_id: Option<Uuid>,
     input_path: Option<String>,
+    readback: bool,
+    write_artifact: bool,
+    service_readiness: bool,
+    write_service_readiness_artifact: bool,
+    local_smoke: bool,
+    write_local_smoke_artifact: bool,
+    dev_writer: bool,
+    write_dev_writer_artifact: bool,
+    production_smoke_artifact_path: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (source, input) =
         read_clickhouse_log_store_input(input_path.as_deref()).map_err(|error| {
@@ -283,13 +364,818 @@ async fn run_clickhouse_log_store_dry_run(
             }
         }
     };
-    let plan = clickhouse_log_store_plan(tenant_id, source, input).map_err(|error| {
+    let plan = if write_artifact {
+        clickhouse_log_store_plan_with_runtime_wal(tenant_id, source, input, true, true)
+    } else if write_service_readiness_artifact {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+            production_smoke_artifact_path,
+        )
+    } else if write_dev_writer_artifact {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            true,
+            production_smoke_artifact_path,
+        )
+    } else if dev_writer {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            production_smoke_artifact_path,
+        )
+    } else if write_local_smoke_artifact {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            false,
+            false,
+            true,
+            true,
+            false,
+            false,
+            production_smoke_artifact_path,
+        )
+    } else if local_smoke {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            production_smoke_artifact_path,
+        )
+    } else if service_readiness {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            production_smoke_artifact_path,
+        )
+    } else if readback {
+        clickhouse_log_store_plan_with_readback(tenant_id, source, input, true)
+    } else if production_smoke_artifact_path.is_some() {
+        clickhouse_log_store_plan_with_service_readiness(
+            tenant_id,
+            source,
+            input,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            production_smoke_artifact_path,
+        )
+    } else {
+        clickhouse_log_store_plan(tenant_id, source, input)
+    }
+    .map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, safe_error_text(&error))
     })?;
 
     serde_json::to_writer_pretty(std::io::stdout(), &plan)?;
     println!();
     Ok(())
+}
+
+async fn run_subscription_scheduler_worker(
+    config: SubscriptionSchedulerWorkerConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let admin_session_token = env::var(&config.admin_session_token_env).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} is required and will be sent as x-admin-session; token value is never printed",
+                config.admin_session_token_env
+            ),
+        )
+    })?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(config.timeout_seconds))
+        .build()?;
+
+    let mut run_number = 0_u64;
+    let mut consecutive_errors = 0_u64;
+    loop {
+        run_number += 1;
+        let started = Instant::now();
+        let report = match run_subscription_scheduler_worker_once(
+            &client,
+            &config,
+            &admin_session_token,
+            run_number,
+        )
+        .await
+        {
+            Ok(report) => {
+                consecutive_errors = 0;
+                report
+            }
+            Err(error) => {
+                consecutive_errors += 1;
+                let report = subscription_scheduler_worker_error_report(
+                    &config,
+                    run_number,
+                    started.elapsed(),
+                    consecutive_errors,
+                    error.as_ref(),
+                );
+                if config.interval_seconds.is_none() {
+                    serde_json::to_writer_pretty(std::io::stdout(), &report)?;
+                    println!();
+                    return Err(error);
+                }
+                report
+            }
+        };
+
+        if config.interval_seconds.is_some() {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            serde_json::to_writer_pretty(std::io::stdout(), &report)?;
+            println!();
+        }
+
+        if let Some(max_runs) = config.max_runs
+            && run_number >= max_runs
+        {
+            break;
+        }
+
+        let Some(interval_seconds) = config.interval_seconds else {
+            break;
+        };
+        let sleep_seconds = if consecutive_errors == 0 {
+            interval_seconds
+        } else {
+            subscription_scheduler_backoff_seconds(interval_seconds, consecutive_errors)
+        };
+        tokio::time::sleep(Duration::from_secs(sleep_seconds)).await;
+    }
+
+    Ok(())
+}
+
+async fn run_subscription_scheduler_worker_once(
+    client: &reqwest::Client,
+    config: &SubscriptionSchedulerWorkerConfig,
+    admin_session_token: &str,
+    run_number: u64,
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let started = Instant::now();
+    let run_due_url = control_plane_admin_url(
+        &config.control_plane_base_url,
+        "/admin/subscriptions/run-due-scheduler-events",
+    );
+    let handoff_url = control_plane_admin_url(
+        &config.control_plane_base_url,
+        "/admin/subscriptions/scheduler-worker",
+    );
+    let reason = config.reason.clone().or_else(|| {
+        if config.mode == "dry_run" {
+            None
+        } else {
+            Some("subscription scheduler worker command".to_string())
+        }
+    });
+    let body = json!({
+        "tenant_id": config.tenant_id,
+        "worker_id": config.worker_id,
+        "limit": config.limit,
+        "mode": config.mode,
+        "event_status": config.event_status,
+        "event_type": config.event_type,
+        "reason": reason
+    });
+
+    let run_due_response = client
+        .post(&run_due_url)
+        .header("x-admin-session", admin_session_token)
+        .json(&body)
+        .send()
+        .await?;
+    let run_due_status = run_due_response.status().as_u16();
+    let run_due_json = response_json_or_error(run_due_response).await?;
+
+    let handoff_status_filter = if config.event_status == "replayed" {
+        "replayed"
+    } else {
+        "scheduled"
+    };
+    let handoff_response = client
+        .get(&handoff_url)
+        .header("x-admin-session", admin_session_token)
+        .query(&[
+            ("limit", config.limit.to_string()),
+            ("event_status", handoff_status_filter.to_string()),
+            ("event_type", config.event_type.clone()),
+            ("worker_id", config.worker_id.clone()),
+        ])
+        .send()
+        .await?;
+    let handoff_status = handoff_response.status().as_u16();
+    let handoff_json = response_json_or_error(handoff_response).await?;
+    let run_due_counts = subscription_scheduler_counts(&run_due_json);
+    let supervisor_counts = subscription_scheduler_counts(&handoff_json);
+    let next_run = subscription_scheduler_next_run(&run_due_json, &handoff_json);
+    let provider_executor_handoff_summary =
+        subscription_scheduler_provider_executor_handoff_summary(&run_due_json);
+    let refund_or_credit_note_handoff_summary =
+        subscription_scheduler_refund_or_credit_note_handoff_summary(&run_due_json);
+    let scheduler_worker_readback = subscription_scheduler_worker_readback_summary(
+        &handoff_json,
+        handoff_status,
+        provider_executor_handoff_summary.clone(),
+        refund_or_credit_note_handoff_summary.clone(),
+    );
+    let duration_ms = duration_ms(started.elapsed());
+
+    Ok(json!({
+        "schema": "ai_worker_subscription_scheduler_command.v1",
+        "run_number": run_number,
+        "status": "ok",
+        "worker_id": config.worker_id,
+        "tenant_id": config.tenant_id,
+        "mode": config.mode,
+        "limit": config.limit,
+        "processed_count": run_due_counts.processed,
+        "skipped_count": run_due_counts.skipped,
+        "blocked_count": run_due_counts.blocked,
+        "next_run": next_run,
+        "payment_capture_handoff_summary": provider_executor_handoff_summary.clone(),
+        "provider_executor_handoff_summary": provider_executor_handoff_summary.clone(),
+        "refund_or_credit_note_handoff_summary": refund_or_credit_note_handoff_summary.clone(),
+        "scheduler_worker_readback": scheduler_worker_readback,
+        "duration_ms": duration_ms,
+        "control_plane": {
+            "base_url": safe_endpoint_text(&config.control_plane_base_url),
+            "run_due_endpoint": "/admin/subscriptions/run-due-scheduler-events",
+            "handoff_endpoint": "/admin/subscriptions/scheduler-worker",
+            "admin_session_token_env": config.admin_session_token_env,
+            "admin_session_token_value_returned": false
+        },
+        "request": {
+            "mode": config.mode,
+            "limit": config.limit,
+            "event_status": config.event_status,
+            "event_type": config.event_type,
+            "reason_present": reason.is_some(),
+            "interval_seconds": config.interval_seconds,
+            "max_runs": config.max_runs,
+            "max_iterations": config.max_runs,
+            "timeout_seconds": config.timeout_seconds
+        },
+        "run_due": {
+            "http_status": run_due_status,
+            "summary": {
+                "processed_count": run_due_counts.processed,
+                "skipped_count": run_due_counts.skipped,
+                "blocked_count": run_due_counts.blocked,
+                "next_run": next_run,
+                "payment_capture_handoff_summary": provider_executor_handoff_summary.clone(),
+                "provider_executor_handoff_summary": provider_executor_handoff_summary.clone(),
+                "refund_or_credit_note_handoff_summary": refund_or_credit_note_handoff_summary.clone()
+            },
+            "response": run_due_json
+        },
+        "supervisor_readback": {
+            "http_status": handoff_status,
+            "event_status_filter": handoff_status_filter,
+            "summary": {
+                "processed_count": supervisor_counts.processed,
+                "skipped_count": supervisor_counts.skipped,
+                "blocked_count": supervisor_counts.blocked,
+                "payment_capture_handoff_summary": provider_executor_handoff_summary.clone(),
+                "provider_executor_handoff_summary": provider_executor_handoff_summary.clone(),
+                "refund_or_credit_note_handoff_summary": refund_or_credit_note_handoff_summary.clone()
+            },
+            "response": handoff_json
+        },
+        "loop": {
+            "interval_seconds": config.interval_seconds,
+            "bounded_sleep": true,
+            "error_backoff_max_seconds": SUBSCRIPTION_SCHEDULER_MAX_BACKOFF_SECONDS,
+            "next_sleep_seconds": config.interval_seconds.unwrap_or(0),
+            "next_loop_attempt_unix_ms": config.interval_seconds.map(|seconds| unix_epoch_ms().saturating_add(seconds.saturating_mul(1000)))
+        },
+        "operator_entrypoints": {
+            "one_shot": "cargo run -p ai-worker -- subscription-scheduler --once --worker-id <id> --mode apply --reason <reason>",
+            "loop": "cargo run -p ai-worker -- subscription-scheduler --interval-seconds 60 --max-iterations 10 --worker-id <id> --mode apply --reason <reason>",
+            "cronjob_supported": true,
+            "systemd_timer_supported": true,
+            "long_running_process_started_by_this_check": false
+        },
+        "secret_safe": true,
+        "raw_admin_session_returned": false,
+        "authorization_returned": false,
+        "cookie_returned": false
+    }))
+}
+
+async fn response_json_or_error(
+    response: reqwest::Response,
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(std::io::Error::other(format!(
+            "control-plane request failed with HTTP {}: {}",
+            status.as_u16(),
+            safe_error_text(&body)
+        ))
+        .into());
+    }
+
+    serde_json::from_str(&body).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("control-plane returned non-JSON body: {error}"),
+        )
+        .into()
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubscriptionSchedulerCounts {
+    processed: u64,
+    skipped: u64,
+    blocked: u64,
+}
+
+fn subscription_scheduler_counts(value: &Value) -> SubscriptionSchedulerCounts {
+    let data = response_data(value);
+    SubscriptionSchedulerCounts {
+        processed: json_u64(data, &["processed_count", "processed"])
+            .unwrap_or_else(|| json_array_len(data.get("processed"))),
+        skipped: json_u64(data, &["skipped_count", "skipped"])
+            .unwrap_or_else(|| json_array_len(data.get("skipped"))),
+        blocked: json_u64(data, &["blocked_count", "blocked"])
+            .unwrap_or_else(|| json_array_len(data.get("blocked"))),
+    }
+}
+
+fn subscription_scheduler_next_run(run_due: &Value, supervisor: &Value) -> Value {
+    let run_due_data = response_data(run_due);
+    if let Some(next_run) = run_due_data.get("next_run") {
+        return next_run.clone();
+    }
+
+    let supervisor_data = response_data(supervisor);
+    json!({
+        "at": supervisor_data.get("next_run_at").cloned().unwrap_or(Value::Null),
+        "source": "subscription_scheduler_worker_supervisors.next_run_at",
+        "runtime_daemon_running": false,
+        "operator_polling_supported": true
+    })
+}
+
+fn subscription_scheduler_worker_readback_summary(
+    value: &Value,
+    http_status: u16,
+    provider_executor_handoff_summary: Value,
+    refund_or_credit_note_handoff_summary: Value,
+) -> Value {
+    let data = response_data(value);
+    let counts = subscription_scheduler_counts(value);
+    json!({
+        "http_status": http_status,
+        "schema": data.get("schema").cloned().unwrap_or(Value::Null),
+        "state_available": data.get("state_available").cloned().unwrap_or(Value::Null),
+        "status": data.get("status").cloned().unwrap_or(Value::Null),
+        "worker_id": data.get("worker_id").cloned().unwrap_or(Value::Null),
+        "lease_heartbeat_at": data.get("lease_heartbeat_at").cloned().unwrap_or(Value::Null),
+        "last_run_at": data.get("last_run_at").cloned().unwrap_or(Value::Null),
+        "next_run_at": data.get("next_run_at").cloned().unwrap_or(Value::Null),
+        "processed_count": counts.processed,
+        "skipped_count": counts.skipped,
+        "blocked_count": counts.blocked,
+        "payment_capture_handoff_summary": provider_executor_handoff_summary.clone(),
+        "provider_executor_handoff_summary": provider_executor_handoff_summary,
+        "refund_or_credit_note_handoff_summary": refund_or_credit_note_handoff_summary,
+        "last_mode": data.get("last_mode").cloned().unwrap_or(Value::Null),
+        "background_process_started": data.get("background_process_started").cloned().unwrap_or(Value::Null),
+        "secret_safe": data.get("secret_safe").cloned().unwrap_or(json!(true)),
+        "authorization_returned": data.get("authorization_returned").cloned().unwrap_or(json!(false))
+    })
+}
+
+#[derive(Default)]
+struct SubscriptionSchedulerRefundOrCreditNoteHandoffSummary {
+    handoff_count: u64,
+    local_credit_note_ref_present_count: u64,
+    local_payment_refund_ref_present_count: u64,
+    provider_refund_ref_present_count: u64,
+    refund_executed_true_count: u64,
+    refund_executed_false_count: u64,
+    blocked_reason_counts: BTreeMap<String, u64>,
+}
+
+fn subscription_scheduler_refund_or_credit_note_handoff_summary(value: &Value) -> Value {
+    let mut summary = SubscriptionSchedulerRefundOrCreditNoteHandoffSummary::default();
+    collect_subscription_scheduler_refund_or_credit_note_handoffs(
+        response_data(value),
+        &mut summary,
+    );
+
+    json!({
+        "schema": "ai_worker_subscription_scheduler_refund_or_credit_note_handoff_summary.v1",
+        "source": "control_plane_run_due.refund_or_credit_note_handoff",
+        "handoff_count": summary.handoff_count,
+        "local_credit_note_ref_present_count": summary.local_credit_note_ref_present_count,
+        "local_payment_refund_ref_present_count": summary.local_payment_refund_ref_present_count,
+        "provider_refund_ref_present_count": summary.provider_refund_ref_present_count,
+        "blocked_reason_counts": summary.blocked_reason_counts,
+        "refund_executed": summary.refund_executed_true_count > 0,
+        "refund_executed_false_count": summary.refund_executed_false_count,
+        "refund_executed_true_count": summary.refund_executed_true_count,
+        "refund_executed_all_false": summary.handoff_count > 0 && summary.refund_executed_true_count == 0,
+        "network_or_provider_call_performed": false,
+        "raw_payload_returned": false,
+        "authorization_returned": false,
+        "cookie_returned": false,
+        "secret_safe": true
+    })
+}
+
+fn collect_subscription_scheduler_refund_or_credit_note_handoffs(
+    data: &Value,
+    summary: &mut SubscriptionSchedulerRefundOrCreditNoteHandoffSummary,
+) {
+    collect_subscription_scheduler_refund_or_credit_note_handoffs_from_items(
+        data.get("processed"),
+        summary,
+    );
+    collect_subscription_scheduler_refund_or_credit_note_handoffs_from_items(
+        data.get("skipped"),
+        summary,
+    );
+    collect_subscription_scheduler_refund_or_credit_note_handoffs_from_items(
+        data.get("blocked"),
+        summary,
+    );
+}
+
+fn collect_subscription_scheduler_refund_or_credit_note_handoffs_from_items(
+    items: Option<&Value>,
+    summary: &mut SubscriptionSchedulerRefundOrCreditNoteHandoffSummary,
+) {
+    let Some(items) = items.and_then(Value::as_array) else {
+        return;
+    };
+
+    for item in items {
+        if let Some(handoff) = subscription_scheduler_refund_or_credit_note_handoff_value(item) {
+            record_subscription_scheduler_refund_or_credit_note_handoff(handoff, summary);
+        }
+    }
+}
+
+fn subscription_scheduler_refund_or_credit_note_handoff_value(item: &Value) -> Option<&Value> {
+    item.get("refund_or_credit_note_handoff")
+        .or_else(|| item.pointer("/event/refund_or_credit_note_handoff"))
+        .or_else(|| item.pointer("/status_transition/refund_or_credit_note_handoff"))
+        .or_else(|| item.pointer("/local_execution_readback/refund_or_credit_note_handoff"))
+}
+
+fn record_subscription_scheduler_refund_or_credit_note_handoff(
+    handoff: &Value,
+    summary: &mut SubscriptionSchedulerRefundOrCreditNoteHandoffSummary,
+) {
+    summary.handoff_count += 1;
+    if handoff
+        .pointer("/local_refs/local_credit_note_refs_present")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        summary.local_credit_note_ref_present_count += 1;
+    }
+    if handoff
+        .pointer("/local_refs/local_payment_refund_ref_present")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        summary.local_payment_refund_ref_present_count += 1;
+    }
+    if handoff
+        .pointer("/payment_refund/provider_refund_ref_present")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        summary.provider_refund_ref_present_count += 1;
+    }
+    if handoff
+        .get("refund_executed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        summary.refund_executed_true_count += 1;
+    } else {
+        summary.refund_executed_false_count += 1;
+    }
+    if let Some(reasons) = handoff.get("blocked_reasons").and_then(Value::as_array) {
+        for reason in reasons {
+            if let Some(reason) = reason.as_str() {
+                *summary
+                    .blocked_reason_counts
+                    .entry(safe_error_text(reason))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct SubscriptionSchedulerProviderHandoffSummary {
+    handoff_count: u64,
+    ready_for_provider_executor_count: u64,
+    not_ready_for_provider_executor_count: u64,
+    provider_object_ref_present_count: u64,
+    provider_object_ref_missing_count: u64,
+    provider_object_ref_unknown_count: u64,
+    payment_capture_executed_true_count: u64,
+    payment_capture_executed_false_count: u64,
+    payment_capture_executed_unknown_count: u64,
+    blocked_reason_counts: BTreeMap<String, u64>,
+}
+
+fn subscription_scheduler_provider_executor_handoff_summary(value: &Value) -> Value {
+    let mut summary = SubscriptionSchedulerProviderHandoffSummary::default();
+    collect_subscription_scheduler_provider_handoffs(response_data(value), &mut summary);
+
+    json!({
+        "schema": "ai_worker_subscription_scheduler_provider_executor_handoff_summary.v1",
+        "source": "control_plane_run_due.payment_capture_handoff",
+        "handoff_count": summary.handoff_count,
+        "ready_for_provider_executor_count": summary.ready_for_provider_executor_count,
+        "not_ready_for_provider_executor_count": summary.not_ready_for_provider_executor_count,
+        "blocked_reason_counts": summary.blocked_reason_counts,
+        "provider_object_ref_present_counts": {
+            "present": summary.provider_object_ref_present_count,
+            "missing": summary.provider_object_ref_missing_count,
+            "unknown": summary.provider_object_ref_unknown_count
+        },
+        "payment_capture_executed": summary.payment_capture_executed_true_count > 0,
+        "payment_capture_executed_false_count": summary.payment_capture_executed_false_count,
+        "payment_capture_executed_true_count": summary.payment_capture_executed_true_count,
+        "payment_capture_executed_unknown_count": summary.payment_capture_executed_unknown_count,
+        "payment_capture_executed_all_false": summary.handoff_count > 0
+            && summary.payment_capture_executed_true_count == 0
+            && summary.payment_capture_executed_unknown_count == 0,
+        "network_or_provider_call_performed": false,
+        "raw_payload_returned": false,
+        "authorization_returned": false,
+        "cookie_returned": false,
+        "secret_safe": true
+    })
+}
+
+fn collect_subscription_scheduler_provider_handoffs(
+    data: &Value,
+    summary: &mut SubscriptionSchedulerProviderHandoffSummary,
+) {
+    collect_subscription_scheduler_provider_handoffs_from_items(data.get("processed"), summary);
+    collect_subscription_scheduler_provider_handoffs_from_items(data.get("skipped"), summary);
+    collect_subscription_scheduler_provider_handoffs_from_items(data.get("blocked"), summary);
+}
+
+fn collect_subscription_scheduler_provider_handoffs_from_items(
+    items: Option<&Value>,
+    summary: &mut SubscriptionSchedulerProviderHandoffSummary,
+) {
+    let Some(items) = items.and_then(Value::as_array) else {
+        return;
+    };
+
+    for item in items {
+        if let Some(handoff) = subscription_scheduler_provider_handoff_value(item) {
+            record_subscription_scheduler_provider_handoff(handoff, summary);
+        }
+    }
+}
+
+fn subscription_scheduler_provider_handoff_value(item: &Value) -> Option<&Value> {
+    item.get("payment_capture_handoff")
+        .or_else(|| item.get("payment_provider_executor_handoff"))
+        .or_else(|| item.pointer("/event/payment_capture_handoff"))
+        .or_else(|| item.pointer("/event/payment_provider_executor_handoff"))
+        .or_else(|| item.pointer("/status_transition/payment_capture_handoff"))
+        .or_else(|| item.pointer("/local_execution_readback/payment_capture_handoff"))
+}
+
+fn record_subscription_scheduler_provider_handoff(
+    handoff: &Value,
+    summary: &mut SubscriptionSchedulerProviderHandoffSummary,
+) {
+    summary.handoff_count += 1;
+    if handoff
+        .get("ready_for_provider_executor")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        summary.ready_for_provider_executor_count += 1;
+    } else {
+        summary.not_ready_for_provider_executor_count += 1;
+    }
+
+    match handoff
+        .pointer("/provider_refs/provider_object_ref_present")
+        .and_then(Value::as_bool)
+    {
+        Some(true) => summary.provider_object_ref_present_count += 1,
+        Some(false) => summary.provider_object_ref_missing_count += 1,
+        None => summary.provider_object_ref_unknown_count += 1,
+    }
+
+    match handoff
+        .get("payment_capture_executed")
+        .and_then(Value::as_bool)
+    {
+        Some(true) => summary.payment_capture_executed_true_count += 1,
+        Some(false) => summary.payment_capture_executed_false_count += 1,
+        None => summary.payment_capture_executed_unknown_count += 1,
+    }
+
+    if let Some(reasons) = handoff.get("blocked_reasons").and_then(Value::as_array) {
+        for reason in reasons {
+            if let Some(reason) = reason.as_str() {
+                *summary
+                    .blocked_reason_counts
+                    .entry(safe_error_text(reason))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+fn subscription_scheduler_worker_error_report(
+    config: &SubscriptionSchedulerWorkerConfig,
+    run_number: u64,
+    elapsed: Duration,
+    consecutive_errors: u64,
+    error: &(dyn std::error::Error + Send + Sync),
+) -> Value {
+    let next_sleep_seconds = config
+        .interval_seconds
+        .map(|interval_seconds| {
+            subscription_scheduler_backoff_seconds(interval_seconds, consecutive_errors)
+        })
+        .unwrap_or(0);
+
+    json!({
+        "schema": "ai_worker_subscription_scheduler_command.v1",
+        "run_number": run_number,
+        "status": "error",
+        "worker_id": config.worker_id,
+        "tenant_id": config.tenant_id,
+        "mode": config.mode,
+        "limit": config.limit,
+        "processed_count": 0,
+        "skipped_count": 0,
+        "blocked_count": 1,
+        "next_run": Value::Null,
+        "payment_capture_handoff_summary": subscription_scheduler_provider_executor_handoff_summary(&json!({})),
+        "provider_executor_handoff_summary": subscription_scheduler_provider_executor_handoff_summary(&json!({})),
+        "refund_or_credit_note_handoff_summary": subscription_scheduler_refund_or_credit_note_handoff_summary(&json!({})),
+        "scheduler_worker_readback": {
+            "http_status": Value::Null,
+            "state_available": Value::Null,
+            "status": "unavailable",
+            "processed_count": 0,
+            "skipped_count": 0,
+            "blocked_count": 1,
+            "payment_capture_handoff_summary": subscription_scheduler_provider_executor_handoff_summary(&json!({})),
+            "provider_executor_handoff_summary": subscription_scheduler_provider_executor_handoff_summary(&json!({})),
+            "refund_or_credit_note_handoff_summary": subscription_scheduler_refund_or_credit_note_handoff_summary(&json!({})),
+            "secret_safe": true,
+            "authorization_returned": false
+        },
+        "duration_ms": duration_ms(elapsed),
+        "error": {
+            "message": safe_error_text(&error.to_string()),
+            "consecutive_errors": consecutive_errors,
+            "admin_session_token_value_returned": false,
+            "authorization_returned": false,
+            "cookie_returned": false
+        },
+        "request": {
+            "mode": config.mode,
+            "limit": config.limit,
+            "event_status": config.event_status,
+            "event_type": config.event_type,
+            "interval_seconds": config.interval_seconds,
+            "max_runs": config.max_runs,
+            "max_iterations": config.max_runs,
+            "timeout_seconds": config.timeout_seconds
+        },
+        "loop": {
+            "interval_seconds": config.interval_seconds,
+            "bounded_sleep": true,
+            "error_backoff": true,
+            "error_backoff_max_seconds": SUBSCRIPTION_SCHEDULER_MAX_BACKOFF_SECONDS,
+            "next_sleep_seconds": next_sleep_seconds,
+            "next_loop_attempt_unix_ms": config.interval_seconds.map(|_| unix_epoch_ms().saturating_add(next_sleep_seconds.saturating_mul(1000)))
+        },
+        "secret_safe": true,
+        "raw_admin_session_returned": false,
+        "authorization_returned": false,
+        "cookie_returned": false
+    })
+}
+
+fn response_data(value: &Value) -> &Value {
+    value.get("data").unwrap_or(value)
+}
+
+fn json_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(number) = value.get(*key).and_then(Value::as_u64) {
+            return Some(number);
+        }
+    }
+    None
+}
+
+fn json_array_len(value: Option<&Value>) -> u64 {
+    value
+        .and_then(Value::as_array)
+        .map(|items| items.len() as u64)
+        .unwrap_or(0)
+}
+
+fn subscription_scheduler_backoff_seconds(interval_seconds: u64, consecutive_errors: u64) -> u64 {
+    let exponent = consecutive_errors.saturating_sub(1).min(8) as u32;
+    let multiplier = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+    interval_seconds
+        .saturating_mul(multiplier)
+        .clamp(1, SUBSCRIPTION_SCHEDULER_MAX_BACKOFF_SECONDS)
+}
+
+fn duration_ms(duration: Duration) -> u128 {
+    duration.as_millis()
+}
+
+fn unix_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn control_plane_admin_url(base_url: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,8 +1211,45 @@ enum WorkerCommand {
         mode: ClickHouseLogStoreMode,
         tenant_id: Option<Uuid>,
         input_path: Option<String>,
+        readback: bool,
+        write_artifact: bool,
+        service_readiness: bool,
+        write_service_readiness_artifact: bool,
+        local_smoke: bool,
+        write_local_smoke_artifact: bool,
+        production_smoke_artifact_path: Option<String>,
         force: bool,
     },
+    SubscriptionScheduler {
+        control_plane_base_url: String,
+        admin_session_token_env: String,
+        tenant_id: Uuid,
+        worker_id: String,
+        limit: i64,
+        mode: String,
+        event_status: String,
+        event_type: String,
+        reason: Option<String>,
+        interval_seconds: Option<u64>,
+        max_runs: Option<u64>,
+        timeout_seconds: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubscriptionSchedulerWorkerConfig {
+    control_plane_base_url: String,
+    admin_session_token_env: String,
+    tenant_id: Uuid,
+    worker_id: String,
+    limit: i64,
+    mode: String,
+    event_status: String,
+    event_type: String,
+    reason: Option<String>,
+    interval_seconds: Option<u64>,
+    max_runs: Option<u64>,
+    timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,6 +1514,13 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<WorkerCommand
         "clickhouse-log-store" | "clickhouse-log-store-plan" => {
             let mut tenant_id = None;
             let mut input_path = None;
+            let mut readback = false;
+            let mut write_artifact = false;
+            let mut service_readiness = false;
+            let mut write_service_readiness_artifact = false;
+            let mut local_smoke = false;
+            let mut write_local_smoke_artifact = false;
+            let mut production_smoke_artifact_path = None;
             let mut force = false;
             let mut explicit_mode = None;
 
@@ -603,7 +1533,95 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<WorkerCommand
                             "--dry-run",
                         )?;
                     }
-                    "--execute" | "--send" => {
+                    "--check-config" | "--config-readback" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                    }
+                    "--final-dod"
+                    | "--acceptance-matrix"
+                    | "--production-smoke-handoff"
+                    | "--final-closure-audit"
+                    | "--closure-audit"
+                    | "--evidence-watcher"
+                    | "--watch-evidence" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                    }
+                    "--read-production-smoke-artifact" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| format!("{arg} requires a JSON file path"))?;
+                        production_smoke_artifact_path = Some(raw);
+                    }
+                    "--artifact" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| "--artifact requires a JSON file path".to_string())?;
+                        production_smoke_artifact_path = Some(raw);
+                    }
+                    "--service-readiness" | "--service-readiness-check" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                        service_readiness = true;
+                    }
+                    "--write-service-readiness-artifact" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                        service_readiness = true;
+                        write_service_readiness_artifact = true;
+                    }
+                    "--local-smoke-dry-run" | "--local-compose-smoke" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                        local_smoke = true;
+                    }
+                    "--write-local-smoke-artifact" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                        local_smoke = true;
+                        write_local_smoke_artifact = true;
+                    }
+                    "--readback" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            "--readback",
+                        )?;
+                        readback = true;
+                    }
+                    "--write-artifact" | "--write-wal-artifact" => {
+                        set_clickhouse_log_store_mode(
+                            &mut explicit_mode,
+                            ClickHouseLogStoreMode::DryRun,
+                            arg.as_str(),
+                        )?;
+                        readback = true;
+                        write_artifact = true;
+                    }
+                    "--execute" | "--send" | "--production-smoke" => {
                         set_clickhouse_log_store_mode(
                             &mut explicit_mode,
                             ClickHouseLogStoreMode::Execute,
@@ -639,7 +1657,159 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Result<WorkerCommand
                 mode: explicit_mode.unwrap_or(ClickHouseLogStoreMode::DryRun),
                 tenant_id,
                 input_path,
+                readback,
+                write_artifact,
+                service_readiness,
+                write_service_readiness_artifact,
+                local_smoke,
+                write_local_smoke_artifact,
+                production_smoke_artifact_path,
                 force,
+            })
+        }
+        "subscription-scheduler" | "subscription-scheduler-worker" => {
+            let mut control_plane_base_url = env::var("CONTROL_PLANE_BASE_URL")
+                .or_else(|_| env::var("CONTROL_PLANE_ADMIN_BASE_URL"))
+                .unwrap_or_else(|_| "http://127.0.0.1:8081".to_string());
+            let mut admin_session_token_env = "CONTROL_PLANE_ADMIN_SESSION_TOKEN".to_string();
+            let mut tenant_id = DEFAULT_TENANT_ID;
+            let mut worker_id = env::var("SUBSCRIPTION_SCHEDULER_WORKER_ID")
+                .unwrap_or_else(|_| format!("subscription-scheduler-worker-{}", Uuid::new_v4()));
+            let mut limit = 50_i64;
+            let mut mode = "dry_run".to_string();
+            let mut event_status = "scheduled".to_string();
+            let mut event_type = "all".to_string();
+            let mut reason = None;
+            let mut interval_seconds = None;
+            let mut max_runs = Some(1_u64);
+            let mut timeout_seconds = 30_u64;
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--once" => {
+                        interval_seconds = None;
+                        max_runs = Some(1);
+                    }
+                    "--control-plane-url" | "--control-plane-base-url" => {
+                        control_plane_base_url = args
+                            .next()
+                            .ok_or_else(|| format!("{arg} requires a URL value"))?;
+                    }
+                    "--admin-session-token-env" => {
+                        admin_session_token_env = args.next().ok_or_else(|| {
+                            "--admin-session-token-env requires an env var name".to_string()
+                        })?;
+                    }
+                    "--tenant-id" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| "--tenant-id requires a UUID value".to_string())?;
+                        tenant_id = raw
+                            .parse()
+                            .map_err(|_| format!("invalid --tenant-id UUID `{raw}`"))?;
+                    }
+                    "--worker-id" => {
+                        worker_id = args
+                            .next()
+                            .ok_or_else(|| "--worker-id requires a non-empty value".to_string())?;
+                        if worker_id.trim().is_empty() {
+                            return Err("--worker-id must not be empty".to_string());
+                        }
+                    }
+                    "--limit" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| "--limit requires an integer value".to_string())?;
+                        limit = raw
+                            .parse::<i64>()
+                            .map_err(|_| format!("invalid --limit integer `{raw}`"))?;
+                        if limit <= 0 {
+                            return Err("--limit must be at least 1".to_string());
+                        }
+                    }
+                    "--mode" => {
+                        mode = args.next().ok_or_else(|| {
+                            "--mode requires dry_run, apply, refuse, or replay".to_string()
+                        })?;
+                        validate_subscription_scheduler_mode(&mode)?;
+                    }
+                    "--event-status" => {
+                        event_status = args.next().ok_or_else(|| {
+                            "--event-status requires scheduled, replayed, or all".to_string()
+                        })?;
+                    }
+                    "--event-type" => {
+                        event_type = args.next().ok_or_else(|| {
+                            "--event-type requires all, renew, payment_failed, dunning, expire, or prorate".to_string()
+                        })?;
+                    }
+                    "--reason" => {
+                        reason = Some(
+                            args.next()
+                                .ok_or_else(|| "--reason requires a value".to_string())?,
+                        );
+                    }
+                    "--interval-seconds" => {
+                        let raw = args.next().ok_or_else(|| {
+                            "--interval-seconds requires an integer value".to_string()
+                        })?;
+                        let parsed = raw
+                            .parse::<u64>()
+                            .map_err(|_| format!("invalid --interval-seconds integer `{raw}`"))?;
+                        if parsed == 0 {
+                            return Err("--interval-seconds must be at least 1".to_string());
+                        }
+                        interval_seconds = Some(parsed);
+                        max_runs = None;
+                    }
+                    "--max-runs" | "--max-iterations" => {
+                        let raw = args
+                            .next()
+                            .ok_or_else(|| format!("{arg} requires an integer value"))?;
+                        let parsed = raw
+                            .parse::<u64>()
+                            .map_err(|_| format!("invalid {arg} integer `{raw}`"))?;
+                        if parsed == 0 {
+                            return Err(format!("{arg} must be at least 1"));
+                        }
+                        max_runs = Some(parsed);
+                    }
+                    "--timeout-seconds" => {
+                        let raw = args.next().ok_or_else(|| {
+                            "--timeout-seconds requires an integer value".to_string()
+                        })?;
+                        timeout_seconds = raw
+                            .parse::<u64>()
+                            .map_err(|_| format!("invalid --timeout-seconds integer `{raw}`"))?;
+                        if timeout_seconds == 0 {
+                            return Err("--timeout-seconds must be at least 1".to_string());
+                        }
+                    }
+                    "--help" | "-h" => return Err(usage()),
+                    other => {
+                        return Err(format!("unknown subscription-scheduler argument `{other}`"));
+                    }
+                }
+            }
+
+            validate_subscription_scheduler_mode(&mode)?;
+            if mode != "dry_run" && reason.as_ref().is_none_or(|value| value.trim().is_empty()) {
+                reason = Some("subscription scheduler worker command".to_string());
+            }
+
+            Ok(WorkerCommand::SubscriptionScheduler {
+                control_plane_base_url,
+                admin_session_token_env,
+                tenant_id,
+                worker_id: safe_plan_text(&worker_id),
+                limit,
+                mode,
+                event_status,
+                event_type,
+                reason: reason.map(|value| safe_plan_text(&value)),
+                interval_seconds,
+                max_runs,
+                timeout_seconds,
             })
         }
         "--help" | "-h" => Err(usage()),
@@ -724,7 +1894,7 @@ fn set_clickhouse_log_store_mode(
         && *existing_mode != mode
     {
         return Err(format!(
-            "choose either --dry-run or --execute/--send for clickhouse-log-store, not both; `{flag}` conflicts with the existing mode"
+            "choose either --dry-run/--readback/--write-artifact/--service-readiness or --execute/--send for clickhouse-log-store, not both; `{flag}` conflicts with the existing mode"
         ));
     }
 
@@ -732,8 +1902,15 @@ fn set_clickhouse_log_store_mode(
     Ok(())
 }
 
+fn validate_subscription_scheduler_mode(mode: &str) -> Result<(), String> {
+    match mode {
+        "dry_run" | "apply" | "refuse" | "replay" => Ok(()),
+        _ => Err("--mode must be dry_run, apply, refuse, or replay".to_string()),
+    }
+}
+
 fn usage() -> String {
-    "Usage:\n  ai-worker\n  ai-worker recovery-probe [--dry-run|--execute] [--tenant-id <uuid>] [--limit <n>]\n  ai-worker alert-webhook [--dry-run] [--input <json>] [--tenant-id <uuid>]  # emits sender contract, no network send\n  ai-worker alert-webhook --send|--execute [--force]  # refused in this dry-run slice\n  ai-worker billing-reconciliation [--dry-run] --input <json> [--day <YYYY-MM-DD>] [--tenant-id <uuid>] [--project-id <uuid>] [--limit <n>]\n  ai-worker billing-reconciliation --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker prompt-eval-shadow [--dry-run] --input <json> [--tenant-id <uuid>]  # emits prompt registry/eval dataset/shadow traffic plan, no writes or sends\n  ai-worker prompt-eval-shadow --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker clickhouse-log-store [--dry-run] --input <json> [--tenant-id <uuid>]  # emits queue/backpressure/dedup/table mapping plan, no DB or network\n  ai-worker clickhouse-log-store --execute|--send [--force]  # refused in this dry-run slice"
+    "Usage:\n  ai-worker\n  ai-worker recovery-probe [--dry-run|--execute] [--tenant-id <uuid>] [--limit <n>]\n  ai-worker alert-webhook [--dry-run] [--input <json>] [--tenant-id <uuid>]  # emits sender contract, no network send\n  ai-worker alert-webhook --send|--execute [--force]  # refused in this dry-run slice\n  ai-worker billing-reconciliation [--dry-run] --input <json> [--day <YYYY-MM-DD>] [--tenant-id <uuid>] [--project-id <uuid>] [--limit <n>]\n  ai-worker billing-reconciliation --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker prompt-eval-shadow [--dry-run] --input <json> [--tenant-id <uuid>]  # emits prompt registry/eval dataset/shadow traffic plan, no writes or sends\n  ai-worker prompt-eval-shadow --execute|--send [--force]  # refused in this dry-run slice\n  ai-worker clickhouse-log-store [--dry-run|--check-config|--config-readback|--final-dod|--acceptance-matrix|--production-smoke-handoff|--final-closure-audit|--evidence-watcher] [--read-production-smoke-artifact <json>] [--readback] [--write-artifact] [--service-readiness] [--write-service-readiness-artifact] [--local-smoke-dry-run] [--write-local-smoke-artifact] --input <json> [--tenant-id <uuid>]  # emits config guard, local compose smoke prototype, service readiness, production smoke handoff/readback gate, evidence watcher/checklist, final closure audit/DoD matrix, queue/backpressure/dedup/table mapping/WAL readback contract; opt-in artifact writes only repo .tmp artifacts\n  ai-worker clickhouse-log-store --execute|--send|--production-smoke [--force]  # refused in this dry-run slice\n  ai-worker subscription-scheduler [--once] [--control-plane-url <url>] [--admin-session-token-env <env>] [--tenant-id <uuid>] [--worker-id <id>] [--mode dry_run|apply|refuse|replay] [--limit <n>] [--event-status all|scheduled|replayed] [--event-type all|renew|payment_failed|dunning|expire|prorate] [--reason <text>] [--interval-seconds <n>] [--max-runs <n>|--max-iterations <n>] [--timeout-seconds <n>]  # calls run-due and prints JSON/NDJSON supervisor heartbeat/readback"
         .to_string()
 }
 
@@ -916,38 +2093,242 @@ trait RecoveryProbeRunner {
 }
 
 trait ProviderKeyStatusWriter {
-    fn set_provider_key_status<'a>(
+    fn persist_provider_key_recovery_probe<'a>(
         &'a self,
-        tenant_id: Uuid,
-        provider_key_id: Uuid,
-        status: &'a str,
+        update: RecoveryProbeProviderKeyUpdate,
     ) -> BoxFuture<'a, Result<bool, String>>;
 }
 
-struct ContextUnavailableRecoveryProbe;
+struct HttpRecoveryProbeRunner<'a> {
+    repository: &'a DbRepository,
+}
 
-impl RecoveryProbeRunner for ContextUnavailableRecoveryProbe {
+impl<'a> HttpRecoveryProbeRunner<'a> {
+    fn new(repository: &'a DbRepository) -> Self {
+        Self { repository }
+    }
+}
+
+impl RecoveryProbeRunner for HttpRecoveryProbeRunner<'_> {
     fn probe<'a>(
         &'a self,
-        _candidate: &'a RecoveryProbeCandidate,
+        candidate: &'a RecoveryProbeCandidate,
     ) -> BoxFuture<'a, RecoveryProbeCheck> {
-        Box::pin(async move { RecoveryProbeCheck::failure("probe_context_unavailable", false) })
+        Box::pin(async move { execute_http_recovery_probe(self.repository, candidate).await })
     }
 }
 
 impl ProviderKeyStatusWriter for DbRepository {
-    fn set_provider_key_status<'a>(
+    fn persist_provider_key_recovery_probe<'a>(
         &'a self,
-        tenant_id: Uuid,
-        provider_key_id: Uuid,
-        status: &'a str,
+        update: RecoveryProbeProviderKeyUpdate,
     ) -> BoxFuture<'a, Result<bool, String>> {
         Box::pin(async move {
-            DbRepository::update_provider_key_status(self, tenant_id, provider_key_id, status)
+            DbRepository::update_provider_key_recovery_probe_result(self, update)
                 .await
                 .map(|updated| updated.is_some())
                 .map_err(|error| safe_error_text(&error.to_string()))
         })
+    }
+}
+
+async fn execute_http_recovery_probe(
+    repository: &DbRepository,
+    candidate: &RecoveryProbeCandidate,
+) -> RecoveryProbeCheck {
+    if !candidate
+        .channel_protocol_mode
+        .eq_ignore_ascii_case("openai_compatible")
+    {
+        return RecoveryProbeCheck::failure("unsupported_protocol", false);
+    }
+
+    let material = match repository
+        .get_recovery_probe_secret_material(
+            candidate.tenant_id,
+            candidate.provider_id,
+            candidate.channel_id,
+            candidate.provider_key_id,
+        )
+        .await
+    {
+        Ok(Some(material)) => material,
+        Ok(None) => return RecoveryProbeCheck::failure("secret_material_unavailable", false),
+        Err(error) => {
+            let _ = safe_error_text(&error.to_string());
+            return RecoveryProbeCheck::failure("secret_material_unavailable", false);
+        }
+    };
+
+    match open_recovery_probe_provider_key(&material) {
+        Ok(secret) => {
+            let client = match OpenAiCompatibleClient::new_with_timeout(
+                material.channel_endpoint,
+                Duration::from_secs(RECOVERY_PROBE_TIMEOUT_SECONDS),
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    return RecoveryProbeCheck::failure(recovery_probe_error_code(&error), false);
+                }
+            };
+
+            match client
+                .models_with_provider_key(Some(secret.expose_secret()))
+                .await
+            {
+                Ok(_) => RecoveryProbeCheck {
+                    status: RecoveryProbeCheckStatus::Success,
+                    upstream_call: true,
+                    error_code: None,
+                },
+                Err(error) => RecoveryProbeCheck::failure(recovery_probe_error_code(&error), true),
+            }
+        }
+        Err(error_code) => RecoveryProbeCheck::failure(error_code, false),
+    }
+}
+
+fn open_recovery_probe_provider_key(
+    material: &RecoveryProbeSecretMaterial,
+) -> Result<ai_gateway_auth::ProviderKeySecret, &'static str> {
+    if !material
+        .channel_protocol_mode
+        .eq_ignore_ascii_case("openai_compatible")
+    {
+        return Err("unsupported_protocol");
+    }
+
+    let master_key = load_recovery_probe_provider_key_master_key()?;
+    let sealed = sealed_provider_key_from_payload(&material.encrypted_secret)?;
+    let context = ProviderKeyContext::new(
+        material.tenant_id.to_string(),
+        material.provider_id.to_string(),
+        material.provider_key_id.to_string(),
+    )
+    .map_err(|_| "provider_key_context_invalid")?;
+
+    open_provider_key(&master_key, &context, &sealed).map_err(|_| "provider_key_decrypt_failed")
+}
+
+fn load_recovery_probe_provider_key_master_key()
+-> Result<[u8; PROVIDER_KEY_MASTER_KEY_LEN], &'static str> {
+    let raw = env::var(PROVIDER_KEY_MASTER_KEY_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or("provider_key_master_key_not_configured")?;
+    let decoded = decode_base64(&raw).map_err(|_| "provider_key_master_key_invalid")?;
+    decoded
+        .try_into()
+        .map_err(|_bytes: Vec<u8>| "provider_key_master_key_invalid")
+}
+
+#[derive(Debug, Deserialize)]
+struct SealedProviderKeyPayload {
+    version: u8,
+    algorithm: String,
+    master_key_id: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+fn sealed_provider_key_from_payload(
+    encrypted_secret: &str,
+) -> Result<SealedProviderKey, &'static str> {
+    let payload = serde_json::from_str::<SealedProviderKeyPayload>(encrypted_secret)
+        .map_err(|_| "provider_key_secret_invalid")?;
+
+    if payload.algorithm != PROVIDER_KEY_ENCRYPTION_ALGORITHM {
+        return Err("provider_key_secret_invalid");
+    }
+
+    let nonce = hex::decode(payload.nonce).map_err(|_| "provider_key_secret_invalid")?;
+    let nonce: [u8; PROVIDER_KEY_NONCE_LEN] = nonce
+        .try_into()
+        .map_err(|_bytes: Vec<u8>| "provider_key_secret_invalid")?;
+    let ciphertext = hex::decode(payload.ciphertext).map_err(|_| "provider_key_secret_invalid")?;
+
+    Ok(SealedProviderKey {
+        version: payload.version,
+        master_key_id: payload.master_key_id,
+        nonce,
+        ciphertext,
+    })
+}
+
+fn recovery_probe_error_code(error: &OpenAiAdapterError) -> &'static str {
+    match error {
+        OpenAiAdapterError::InvalidUpstreamBaseUrl(_) => "invalid_upstream_base_url",
+        OpenAiAdapterError::ProviderAuthorizationInvalid => "provider_authorization_invalid",
+        OpenAiAdapterError::UpstreamTimeout => "provider_timeout",
+        OpenAiAdapterError::UpstreamStatus {
+            status: 401 | 403, ..
+        } => "provider_auth_failed",
+        OpenAiAdapterError::UpstreamStatus { status: 429, .. } => "provider_rate_limited",
+        OpenAiAdapterError::UpstreamStatus { status, .. } if *status >= 500 => "provider_5xx",
+        OpenAiAdapterError::UpstreamConnect(_)
+        | OpenAiAdapterError::UpstreamRequest(_)
+        | OpenAiAdapterError::UpstreamRead(_)
+        | OpenAiAdapterError::UpstreamInvalidJson { .. }
+        | OpenAiAdapterError::HttpClient(_) => "provider_probe_failed",
+        OpenAiAdapterError::InvalidJson(_)
+        | OpenAiAdapterError::InvalidRequest { .. }
+        | OpenAiAdapterError::RequestSerialize(_)
+        | OpenAiAdapterError::StreamingNotImplemented
+        | OpenAiAdapterError::UpstreamStatus { .. } => "provider_probe_failed",
+    }
+}
+
+fn decode_base64(raw: &str) -> Result<Vec<u8>, ()> {
+    let bytes = raw
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return Err(());
+    }
+
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunk_count = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let is_last = index + 1 == chunk_count;
+        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        if padding > 2 || (padding > 0 && !is_last) || chunk[0] == b'=' || chunk[1] == b'=' {
+            return Err(());
+        }
+        if padding == 1 && chunk[2] == b'=' {
+            return Err(());
+        }
+        if padding == 2 && chunk[2] != b'=' {
+            return Err(());
+        }
+
+        let b0 = base64_value(chunk[0])?;
+        let b1 = base64_value(chunk[1])?;
+        output.push((b0 << 2) | (b1 >> 4));
+
+        if padding < 2 {
+            let b2 = base64_value(chunk[2])?;
+            output.push((b1 << 4) | (b2 >> 2));
+
+            if padding == 0 {
+                let b3 = base64_value(chunk[3])?;
+                output.push((b2 << 6) | b3);
+            }
+        }
+    }
+
+    Ok(output)
+}
+
+fn base64_value(byte: u8) -> Result<u8, ()> {
+    match byte {
+        b'A'..=b'Z' => Ok(byte - b'A'),
+        b'a'..=b'z' => Ok(byte - b'a' + 26),
+        b'0'..=b'9' => Ok(byte - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err(()),
     }
 }
 
@@ -980,30 +2361,27 @@ async fn execute_recovery_probes(
             failure_count += 1;
         }
 
-        let mut status_update_attempted = false;
+        let status_update_attempted = transition.update_required;
         let mut status_update_applied = false;
         let mut status_update_error = None;
 
-        if transition.update_required {
-            status_update_attempted = true;
-            match status_writer
-                .set_provider_key_status(
-                    candidate.tenant_id,
-                    candidate.provider_key_id,
-                    &transition.to_status,
-                )
-                .await
-            {
-                Ok(applied) => {
+        let persistence_update =
+            recovery_probe_provider_key_update(&candidate, &check, &transition);
+        match status_writer
+            .persist_provider_key_recovery_probe(persistence_update)
+            .await
+        {
+            Ok(applied) => {
+                if transition.update_required {
                     status_update_applied = applied;
                     if applied {
                         migration_applied_count += 1;
                     }
                 }
-                Err(error) => {
-                    migration_error_count += 1;
-                    status_update_error = Some(safe_error_text(&error));
-                }
+            }
+            Err(error) => {
+                migration_error_count += 1;
+                status_update_error = Some(safe_error_text(&error));
             }
         }
 
@@ -1047,6 +2425,40 @@ fn recovery_probe_transition(
         from_status: candidate.provider_key_status.clone(),
         to_status: to_status.to_string(),
         update_required: candidate.provider_key_status != to_status,
+    }
+}
+
+fn recovery_probe_provider_key_update(
+    candidate: &RecoveryProbeCandidate,
+    check: &RecoveryProbeCheck,
+    transition: &RecoveryProbeTransition,
+) -> RecoveryProbeProviderKeyUpdate {
+    let last_error_code = check.error_code.as_deref().map(safe_error_text);
+
+    RecoveryProbeProviderKeyUpdate {
+        tenant_id: candidate.tenant_id,
+        provider_key_id: candidate.provider_key_id,
+        status: transition.to_status.clone(),
+        health_score: recovery_probe_health_score(candidate, check),
+        last_error_code: last_error_code.clone(),
+        recovery_probe_summary: json!({
+            "result": check.result_label(),
+            "error_code": last_error_code,
+            "upstream_call": check.upstream_call,
+            "from_status": safe_plan_text(&transition.from_status),
+            "to_status": safe_plan_text(&transition.to_status),
+        }),
+    }
+}
+
+fn recovery_probe_health_score(
+    candidate: &RecoveryProbeCandidate,
+    check: &RecoveryProbeCheck,
+) -> f64 {
+    if check.is_success() {
+        1.0
+    } else {
+        candidate.provider_key_health_score.clamp(0.0, 0.25)
     }
 }
 
@@ -1176,6 +2588,112 @@ mod tests {
         .expect_err("conflicting modes should fail");
 
         assert!(error.contains("either --dry-run or --execute"));
+    }
+
+    #[test]
+    fn subscription_scheduler_accepts_max_iterations_alias() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "subscription-scheduler".to_string(),
+            "--worker-id".to_string(),
+            "scheduler-worker-a".to_string(),
+            "--interval-seconds".to_string(),
+            "5".to_string(),
+            "--max-iterations".to_string(),
+            "3".to_string(),
+        ])
+        .expect("subscription scheduler command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::SubscriptionScheduler {
+                control_plane_base_url: "http://127.0.0.1:8081".to_string(),
+                admin_session_token_env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN".to_string(),
+                tenant_id: DEFAULT_TENANT_ID,
+                worker_id: "scheduler-worker-a".to_string(),
+                limit: 50,
+                mode: "dry_run".to_string(),
+                event_status: "scheduled".to_string(),
+                event_type: "all".to_string(),
+                reason: None,
+                interval_seconds: Some(5),
+                max_runs: Some(3),
+                timeout_seconds: 30,
+            }
+        );
+    }
+
+    #[test]
+    fn subscription_scheduler_error_backoff_is_bounded() {
+        assert_eq!(subscription_scheduler_backoff_seconds(10, 1), 10);
+        assert_eq!(subscription_scheduler_backoff_seconds(10, 3), 40);
+        assert_eq!(
+            subscription_scheduler_backoff_seconds(120, 8),
+            SUBSCRIPTION_SCHEDULER_MAX_BACKOFF_SECONDS
+        );
+    }
+
+    #[test]
+    fn subscription_scheduler_provider_handoff_summary_is_secret_safe_counts_only() {
+        let summary = subscription_scheduler_provider_executor_handoff_summary(&json!({
+            "data": {
+                "processed": [
+                    {
+                        "event": {
+                            "payment_capture_handoff": {
+                                "ready_for_provider_executor": false,
+                                "blocked_reasons": [
+                                    "provider_payment_intent_ref_missing",
+                                    "network_disabled"
+                                ],
+                                "provider_refs": {
+                                    "provider_object_ref_present": false,
+                                    "provider_object_ref_raw_echoed": false,
+                                    "raw_ref": "pi_secret_should_not_escape"
+                                },
+                                "payment_capture_executed": false,
+                                "authorization": "secret_should_not_escape",
+                                "raw_provider_payload": {"secret": true}
+                            }
+                        }
+                    },
+                    {
+                        "payment_provider_executor_handoff": {
+                            "ready_for_provider_executor": false,
+                            "blocked_reasons": ["provider_payment_intent_ref_missing"],
+                            "provider_refs": {
+                                "provider_object_ref_present": true
+                            },
+                            "payment_capture_executed": false
+                        }
+                    }
+                ],
+                "skipped": [],
+                "blocked": []
+            }
+        }));
+
+        assert_eq!(summary["handoff_count"], json!(2));
+        assert_eq!(summary["ready_for_provider_executor_count"], json!(0));
+        assert_eq!(summary["not_ready_for_provider_executor_count"], json!(2));
+        assert_eq!(
+            summary["blocked_reason_counts"]["provider_payment_intent_ref_missing"],
+            json!(2)
+        );
+        assert_eq!(
+            summary["blocked_reason_counts"]["network_disabled"],
+            json!(1)
+        );
+        assert_eq!(
+            summary["provider_object_ref_present_counts"],
+            json!({"present": 1, "missing": 1, "unknown": 0})
+        );
+        assert_eq!(summary["payment_capture_executed"], json!(false));
+        assert_eq!(summary["payment_capture_executed_false_count"], json!(2));
+        assert_eq!(summary["payment_capture_executed_all_false"], json!(true));
+        assert_eq!(summary["authorization_returned"], json!(false));
+        assert_eq!(summary["raw_payload_returned"], json!(false));
+        assert!(!summary.to_string().contains("secret_should_not_escape"));
     }
 
     #[test]
@@ -1382,6 +2900,328 @@ mod tests {
                 input_path: Some(
                     "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
                 ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_readback_is_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--dry-run".to_string(),
+            "--readback".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store readback command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: true,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_config_readback_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--config-readback".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store config readback command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_final_dod_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--final-dod".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store final DoD command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_production_smoke_handoff_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--production-smoke-handoff".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store production smoke handoff command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_final_closure_audit_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--final-closure-audit".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store final closure audit command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_evidence_watcher_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--evidence-watcher".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store evidence watcher command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_production_smoke_artifact_readback_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--read-production-smoke-artifact".to_string(),
+            "tests/fixtures/worker/clickhouse_production_smoke_artifact_accepted_simulation.json"
+                .to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store production smoke artifact readback should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: Some(
+                    "tests/fixtures/worker/clickhouse_production_smoke_artifact_accepted_simulation.json".to_string()
+                ),
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_service_readiness_is_plan_only_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--service-readiness".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store service readiness command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: true,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_service_readiness_artifact_requires_explicit_opt_in() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--write-service-readiness-artifact".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store service readiness artifact command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: false,
+                write_artifact: false,
+                service_readiness: true,
+                write_service_readiness_artifact: true,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: false,
+            }
+        );
+    }
+
+    #[test]
+    fn clickhouse_log_store_write_artifact_is_explicit_dry_run_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--write-artifact".to_string(),
+            "--input".to_string(),
+            "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string(),
+        ])
+        .expect("ClickHouse log store artifact writer command should parse");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::DryRun,
+                tenant_id: None,
+                input_path: Some(
+                    "tests/fixtures/worker/clickhouse_log_store_plan_contract.json".to_string()
+                ),
+                readback: true,
+                write_artifact: true,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
                 force: false,
             }
         );
@@ -1403,10 +3243,46 @@ mod tests {
                 mode: ClickHouseLogStoreMode::Execute,
                 tenant_id: None,
                 input_path: None,
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
                 force: true,
             }
         );
         assert!(clickhouse_log_store_execute_error(true).contains("ClickHouse write"));
+    }
+
+    #[test]
+    fn clickhouse_log_store_production_smoke_is_execute_refusal_mode() {
+        let command = parse_command([
+            "ai-worker".to_string(),
+            "clickhouse-log-store".to_string(),
+            "--production-smoke".to_string(),
+            "--force".to_string(),
+        ])
+        .expect("production smoke mode should parse before runtime refusal");
+
+        assert_eq!(
+            command,
+            WorkerCommand::ClickHouseLogStore {
+                mode: ClickHouseLogStoreMode::Execute,
+                tenant_id: None,
+                input_path: None,
+                readback: false,
+                write_artifact: false,
+                service_readiness: false,
+                write_service_readiness_artifact: false,
+                local_smoke: false,
+                write_local_smoke_artifact: false,
+                production_smoke_artifact_path: None,
+                force: true,
+            }
+        );
+        assert!(clickhouse_log_store_execute_error(true).contains("network request"));
     }
 
     #[test]
@@ -1419,7 +3295,9 @@ mod tests {
         ])
         .expect_err("conflicting ClickHouse log store modes should fail");
 
-        assert!(error.contains("either --dry-run or --execute/--send"));
+        assert!(error.contains(
+            "either --dry-run/--readback/--write-artifact/--service-readiness or --execute/--send"
+        ));
     }
 
     #[test]
@@ -1569,6 +3447,9 @@ mod tests {
             status_writer.updates(),
             vec![(DEFAULT_TENANT_ID, Uuid::from_u128(1), "enabled".to_string())]
         );
+        assert_eq!(status_writer.persists().len(), 1);
+        assert_eq!(status_writer.persists()[0].last_error_code, None);
+        assert_eq!(status_writer.persists()[0].health_score, 1.0);
         assert_eq!(report.results[0].probe_result, "success");
         assert_eq!(report.results[0].transition_from_status, "cooldown");
         assert_eq!(report.results[0].transition_to_status, "enabled");
@@ -1751,6 +3632,22 @@ mod tests {
         assert_eq!(report.failure_count, 1);
         assert_eq!(report.migration_applied_count, 0);
         assert!(status_writer.updates().is_empty());
+        let persists = status_writer.persists();
+        assert_eq!(persists.len(), 1);
+        assert_eq!(persists[0].status, "cooldown");
+        assert_eq!(persists[0].health_score, 0.25);
+        let persisted_error = persists[0]
+            .last_error_code
+            .as_deref()
+            .expect("failure should persist error code");
+        assert!(persisted_error.contains("[REDACTED]"));
+        assert!(!persisted_error.contains(&raw_provider_secret));
+        assert!(!persisted_error.contains(&raw_fingerprint));
+        assert!(!persisted_error.contains(&raw_encrypted_secret));
+        assert_eq!(
+            persists[0].recovery_probe_summary["result"].as_str(),
+            Some("failure")
+        );
         assert_eq!(report.results[0].probe_result, "failure");
         assert_eq!(report.results[0].transition_to_status, "cooldown");
         assert!(!report.results[0].status_update_attempted);
@@ -1826,6 +3723,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockProviderKeyStatusWriter {
+        persists: Mutex<Vec<RecoveryProbeProviderKeyUpdate>>,
         updates: Mutex<Vec<(Uuid, Uuid, String)>>,
         error: Option<String>,
         errors_by_id: HashMap<Uuid, String>,
@@ -1834,6 +3732,7 @@ mod tests {
     impl MockProviderKeyStatusWriter {
         fn failing(error: impl Into<String>) -> Self {
             Self {
+                persists: Mutex::new(Vec::new()),
                 updates: Mutex::new(Vec::new()),
                 error: Some(error.into()),
                 errors_by_id: HashMap::new(),
@@ -1842,6 +3741,7 @@ mod tests {
 
         fn failing_for(provider_key_id: Uuid, error: impl Into<String>) -> Self {
             Self {
+                persists: Mutex::new(Vec::new()),
                 updates: Mutex::new(Vec::new()),
                 error: None,
                 errors_by_id: HashMap::from([(provider_key_id, error.into())]),
@@ -1851,15 +3751,18 @@ mod tests {
         fn updates(&self) -> Vec<(Uuid, Uuid, String)> {
             self.updates.lock().expect("updates lock").clone()
         }
+
+        fn persists(&self) -> Vec<RecoveryProbeProviderKeyUpdate> {
+            self.persists.lock().expect("persists lock").clone()
+        }
     }
 
     impl ProviderKeyStatusWriter for MockProviderKeyStatusWriter {
-        fn set_provider_key_status<'a>(
+        fn persist_provider_key_recovery_probe<'a>(
             &'a self,
-            tenant_id: Uuid,
-            provider_key_id: Uuid,
-            status: &'a str,
+            update: RecoveryProbeProviderKeyUpdate,
         ) -> BoxFuture<'a, Result<bool, String>> {
+            let provider_key_id = update.provider_key_id;
             let error = self
                 .errors_by_id
                 .get(&provider_key_id)
@@ -1867,11 +3770,14 @@ mod tests {
             let result = if let Some(error) = error {
                 Err(error.clone())
             } else {
-                self.updates.lock().expect("updates lock").push((
-                    tenant_id,
-                    provider_key_id,
-                    status.to_string(),
-                ));
+                if update.status == "enabled" {
+                    self.updates.lock().expect("updates lock").push((
+                        update.tenant_id,
+                        provider_key_id,
+                        update.status.clone(),
+                    ));
+                }
+                self.persists.lock().expect("persists lock").push(update);
                 Ok(true)
             };
 

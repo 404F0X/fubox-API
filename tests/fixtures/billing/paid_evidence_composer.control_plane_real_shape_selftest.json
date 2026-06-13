@@ -1,0 +1,53 @@
+{
+  "schema_version": "control_plane_paid_ledger_readback_verification.v1",
+  "artifact_id": "control-plane-paid-readback-real-shape-selftest",
+  "generated_at_utc": "2026-06-05T21:01:00Z",
+  "generated_by": "synthetic_selftest_fixture",
+  "environment_scope": "synthetic_selftest",
+  "overall_status": "passed",
+  "production_readback_claim": true,
+  "contract_shape_only": false,
+  "synthetic_selftest": true,
+  "selftest_fixture": true,
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "provider_key_echoed": false,
+    "virtual_key_echoed": false
+  },
+  "readiness_evidence": {
+    "post_commit_readback": true,
+    "rollback_proof": true,
+    "reconciliation_report": true
+  },
+  "evidence": [
+    {
+      "evidence_key": "post_commit_readback",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060005",
+      "operation": "readback",
+      "generated_at_utc": "2026-06-05T21:01:01Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "rollback_proof",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060006",
+      "operation": "rollback",
+      "generated_at_utc": "2026-06-05T21:01:02Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "reconciliation_report",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000060007",
+      "operation": "reconciliation",
+      "generated_at_utc": "2026-06-05T21:01:03Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    }
+  ]
+}

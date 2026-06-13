@@ -132,8 +132,11 @@ dependencies = [
 name = "ai-gateway-billing-ledger"
 version = "0.1.0-alpha"
 dependencies = [
+ "hex",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "tokio",
@@ -206,10 +209,14 @@ dependencies = [
 name = "ai-worker"
 version = "0.1.0-alpha"
 dependencies = [
+ "ai-gateway-adapters",
+ "ai-gateway-auth",
  "ai-gateway-billing-ledger",
  "ai-gateway-config",
  "ai-gateway-db",
  "ai-gateway-observability",
+ "hex",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

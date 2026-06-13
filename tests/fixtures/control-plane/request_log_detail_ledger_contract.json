@@ -1,5 +1,6 @@
 {
   "scenario": "control_plane_request_log_detail_ledger_contract",
+  "related_operator_readback_contract": "tests/fixtures/request_trace_usage/multi_source_operator_readback_contract.json",
   "endpoint": {
     "method": "GET",
     "path": "/admin/request-logs/{id}",
@@ -24,17 +25,21 @@
       "usage_snapshot",
       "policy_snapshot",
       "metadata",
-      "id",
       "tenant_id",
-      "wallet_id",
-      "virtual_key_id",
-      "price_version_id",
-      "related_ledger_entry_id",
       "payload",
       "body",
       "request_body",
       "response_body",
       "raw_metadata"
+    ],
+    "operator_explainability_coverage": [
+      "route_decision",
+      "fallback_or_reject",
+      "usage_cost",
+      "ledger_billing_refusal",
+      "preauthorize_and_rate_limit_explainability",
+      "provider_attempt_summary",
+      "redaction"
     ]
   },
   "examples": {
@@ -46,6 +51,34 @@
             "tenant_id": "00000000-0000-0000-0000-000000000001",
             "status": "succeeded",
             "partial_sent": false,
+            "openai_compat": {
+              "schema": "gateway_openai_compat_projection_v1",
+              "source_schema": "gateway_openai_chat_completion_compat_v1",
+              "status": "recorded",
+              "secret_safe": true,
+              "mode": "non_stream",
+              "endpoint": "chat_completions",
+              "x_request_id": "00000000-0000-0000-0000-000000000011",
+              "request_id_header_present": true,
+              "response_id": "chatcmpl-contract-1",
+              "response_id_present": true,
+              "object": "chat.completion",
+              "type": "chat.completion",
+              "model": "upstream-gpt",
+              "choices_count": 1,
+              "finish_reasons": [
+                "stop"
+              ],
+              "finish_reason_present": true,
+              "response_body_hash": "sha256:resp-contract-1",
+              "provider_usage_present": true,
+              "usage_present": true,
+              "usage_recorded": true,
+              "input_tokens_recorded": true,
+              "output_tokens_recorded": true,
+              "done_sent": null,
+              "final_chunk": null
+            },
             "input_tokens": 12,
             "output_tokens": 34,
             "final_cost": "0.01000000",
@@ -57,10 +90,295 @@
             "created_at": "2026-06-02 12:00:01+00",
             "completed_at": "2026-06-02 12:00:01+00"
           },
+          "usage_explainability": {
+            "schema": "admin_request_usage_explainability_v1",
+            "secret_safe": true,
+            "source": "request_log_detail_safe_read_model",
+            "endpoint": {
+              "inbound_protocol": "openai",
+              "outbound_protocol": "openai",
+              "protocol_mode": "openai_compatible",
+              "provider_protocol": null,
+              "downstream_protocol": null,
+              "openai_compat_endpoint": "chat_completions",
+              "requested_model_present": true,
+              "upstream_model_present": true
+            },
+            "adapter_usage": {
+              "observed": true,
+              "recorded": true,
+              "source": "adapter_usage_projection"
+            },
+            "gateway_fallback": {
+              "used": false,
+              "source": "not_used"
+            },
+            "tokens": {
+              "prompt": {
+                "tokens": 12,
+                "source": "adapter_usage_projection",
+                "recorded": true,
+                "adapter_usage": true,
+                "safe_mismatch_reason": "token_count_recorded"
+              },
+              "completion": {
+                "tokens": 34,
+                "source": "adapter_usage_projection",
+                "recorded": true,
+                "adapter_usage": true,
+                "safe_mismatch_reason": "token_count_recorded"
+              },
+              "cache": {
+                "tokens": null,
+                "source": "not_recorded",
+                "recorded": false,
+                "adapter_usage": false,
+                "safe_mismatch_reason": "not_available_in_request_detail_safe_projection"
+              },
+              "reasoning": {
+                "tokens": null,
+                "source": "not_recorded",
+                "recorded": false,
+                "adapter_usage": false,
+                "safe_mismatch_reason": "not_available_in_request_detail_safe_projection"
+              },
+              "embedding": {
+                "tokens": null,
+                "source": "not_recorded",
+                "recorded": false,
+                "adapter_usage": false,
+                "safe_mismatch_reason": "not_available_in_request_detail_safe_projection"
+              }
+            },
+            "provider_attempts": {
+              "count": 0,
+              "usage_present": false,
+              "token_sum": 0,
+              "fallback_attempt_present": false
+            },
+            "rating": {
+              "status": "rated_and_ledger_ref_present",
+              "final_cost": "0.01000000",
+              "currency": "USD",
+              "price_version_ref_present": true
+            },
+            "ledger": {
+              "ref_present": true,
+              "confirmed_ref_present": true,
+              "entry_count": 1,
+              "source": "ledger_entries_by_request_id"
+            },
+            "safe_mismatch_reasons": [
+              "cache_reasoning_embedding_columns_not_in_detail_projection"
+            ],
+            "omitted_fields": [
+              "prompt_material",
+              "request_body_material",
+              "provider_response_material",
+              "auth_header_material",
+              "provider_credential_material",
+              "ledger_usage_snapshot",
+              "ledger_policy_snapshot",
+              "ledger_metadata"
+            ]
+          },
+          "billing_usage_source": {
+            "schema": "admin_request_usage_explainability_v1",
+            "secret_safe": true,
+            "source": "request_log_detail_safe_read_model",
+            "endpoint": {
+              "inbound_protocol": "openai",
+              "outbound_protocol": "openai",
+              "protocol_mode": "openai_compatible",
+              "provider_protocol": null,
+              "downstream_protocol": null,
+              "openai_compat_endpoint": "chat_completions",
+              "requested_model_present": true,
+              "upstream_model_present": true
+            },
+            "adapter_usage": {
+              "observed": true,
+              "recorded": true,
+              "source": "adapter_usage_projection"
+            },
+            "gateway_fallback": {
+              "used": false,
+              "source": "not_used"
+            },
+            "tokens": {
+              "prompt": {
+                "tokens": 12,
+                "source": "adapter_usage_projection",
+                "recorded": true,
+                "adapter_usage": true,
+                "safe_mismatch_reason": "token_count_recorded"
+              },
+              "completion": {
+                "tokens": 34,
+                "source": "adapter_usage_projection",
+                "recorded": true,
+                "adapter_usage": true,
+                "safe_mismatch_reason": "token_count_recorded"
+              },
+              "cache": {
+                "tokens": null,
+                "source": "not_recorded",
+                "recorded": false,
+                "adapter_usage": false,
+                "safe_mismatch_reason": "not_available_in_request_detail_safe_projection"
+              },
+              "reasoning": {
+                "tokens": null,
+                "source": "not_recorded",
+                "recorded": false,
+                "adapter_usage": false,
+                "safe_mismatch_reason": "not_available_in_request_detail_safe_projection"
+              },
+              "embedding": {
+                "tokens": null,
+                "source": "not_recorded",
+                "recorded": false,
+                "adapter_usage": false,
+                "safe_mismatch_reason": "not_available_in_request_detail_safe_projection"
+              }
+            },
+            "provider_attempts": {
+              "count": 0,
+              "usage_present": false,
+              "token_sum": 0,
+              "fallback_attempt_present": false
+            },
+            "rating": {
+              "status": "rated_and_ledger_ref_present",
+              "final_cost": "0.01000000",
+              "currency": "USD",
+              "price_version_ref_present": true
+            },
+            "ledger": {
+              "ref_present": true,
+              "confirmed_ref_present": true,
+              "entry_count": 1,
+              "source": "ledger_entries_by_request_id"
+            },
+            "safe_mismatch_reasons": [
+              "cache_reasoning_embedding_columns_not_in_detail_projection"
+            ],
+            "omitted_fields": [
+              "prompt_material",
+              "request_body_material",
+              "provider_response_material",
+              "auth_header_material",
+              "provider_credential_material",
+              "ledger_usage_snapshot",
+              "ledger_policy_snapshot",
+              "ledger_metadata"
+            ]
+          },
+          "preauthorize_and_rate_limit_explainability": {
+            "schema": "admin_preauthorize_and_rate_limit_explainability_v1",
+            "secret_safe": true,
+            "source": "request_log_detail_safe_read_model",
+            "preauthorize": {
+              "status": "authorized_or_not_required",
+              "balance": {
+                "status": "ref_present",
+                "source": "request_log_error_and_ledger_ref_presence",
+                "amount_omitted": true
+              },
+              "budget": {
+                "status": "passed_or_not_required",
+                "source": "request_log_error_code_only",
+                "amount_omitted": true
+              },
+              "reject_reason": null,
+              "provider_attempts_blocked": false
+            },
+            "rate_limit_reservation": {
+              "status": "not_recorded",
+              "scope": "virtual_key",
+              "retry_after_ms": null,
+              "window_status": "not_recorded",
+              "concurrency": {
+                "status": "not_recorded",
+                "limit": null,
+                "used": null,
+                "remaining": null,
+                "required": null,
+                "retry_after_ms": null,
+                "window_seconds": null,
+                "window_status": "not_recorded",
+                "reservation_status": "not_recorded"
+              },
+              "rpm": {
+                "status": "not_recorded",
+                "limit": null,
+                "used": null,
+                "remaining": null,
+                "required": null,
+                "retry_after_ms": null,
+                "window_seconds": 60,
+                "window_status": "not_recorded",
+                "reservation_status": "not_recorded"
+              },
+              "tpm": {
+                "status": "not_recorded",
+                "limit": null,
+                "used": null,
+                "remaining": null,
+                "required": null,
+                "retry_after_ms": null,
+                "window_seconds": 60,
+                "window_status": "not_recorded",
+                "reservation_status": "not_recorded"
+              }
+            },
+            "fallback_or_reject": {
+              "fallback_present": true,
+              "fallback_reasons": [],
+              "route_fallback_reason": "fallback_blocked",
+              "reject_reason": null,
+              "route_reject_reason": null,
+              "billing_refusal_reason": null
+            },
+            "safe_next_action": "inspect_provider_attempts_or_trace_summary_if_issue_persists",
+            "ledger_refs": {
+              "reservation_ref_present": false,
+              "settle_ref_present": true,
+              "any_ledger_ref_present": true,
+              "entry_count": 1,
+              "source": "ledger_entries_by_request_id"
+            },
+            "omitted_fields": [
+              "key_material",
+              "auth_header_material",
+              "request_body_material",
+              "response_body_material",
+              "wallet_credential_material",
+              "provider_credential_material",
+              "raw_rate_limit_window",
+              "raw_route_decision_snapshot",
+              "ledger_metadata",
+              "ledger_idempotency_key"
+            ]
+          },
           "provider_attempts": [],
           "route_decision_snapshot": {
             "version": "route_decision_snapshot_v1",
-            "strategy": "priority_weight"
+            "strategy": "priority_weight",
+            "summary": {
+              "candidate_count": 2,
+              "filtered_count": 1,
+              "filter_reasons": [
+                "profile_denied"
+              ],
+              "fallback_status": "fallback_blocked",
+              "reject_reason": "none",
+              "selected_channel_id": "00000000-0000-0000-0000-000000000401",
+              "selected_provider_model": "upstream-gpt",
+              "selected_score_total": 42,
+              "strategy": "priority_weight",
+              "trace_affinity_status": "disabled"
+            }
           },
           "ledger": {
             "limit": 25,
@@ -78,11 +396,45 @@
             ],
             "entries": [
               {
+                "id": "00000000-0000-0000-0000-00000000005b",
+                "project_id": "00000000-0000-0000-0000-000000000002",
+                "wallet_id": "00000000-0000-0000-0000-000000000028",
                 "request_id": "00000000-0000-0000-0000-000000000011",
+                "virtual_key_id": "00000000-0000-0000-0000-000000000007",
+                "trace_id": "trace-ledger-1",
+                "related_ledger_entry_id": null,
+                "price_version_id": "00000000-0000-0000-0000-000000000003",
                 "entry_type": "settle",
                 "amount": "-0.01000000",
                 "currency": "USD",
                 "status": "confirmed",
+                "balance": {
+                  "before": null,
+                  "after": null,
+                  "currency": "USD",
+                  "status": "config-needed",
+                  "source": "ledger_entry_summary.v1",
+                  "reason": "historical wallet balance snapshots are not stored on ledger_entries"
+                },
+                "refs": {
+                  "ledger_entry_id": "00000000-0000-0000-0000-00000000005b",
+                  "wallet_id": "00000000-0000-0000-0000-000000000028",
+                  "project_id": "00000000-0000-0000-0000-000000000002",
+                  "request_id": "00000000-0000-0000-0000-000000000011",
+                  "virtual_key_id": "00000000-0000-0000-0000-000000000007",
+                  "trace_id": "trace-ledger-1",
+                  "related_ledger_entry_id": null,
+                  "price_version_id": "00000000-0000-0000-0000-000000000003",
+                  "credit_grant_id": null,
+                  "voucher_id": null,
+                  "voucher_redemption_id": null,
+                  "order_id": null,
+                  "payment_intent_id": null,
+                  "payment_capture_id": null,
+                  "invoice_id": null,
+                  "refund_id": null,
+                  "ref_source": "ledger_entry_columns_and_safe_metadata_refs"
+                },
                 "occurred_at": "2026-06-02 12:00:01+00",
                 "created_at": "2026-06-02 12:00:01+00"
               }

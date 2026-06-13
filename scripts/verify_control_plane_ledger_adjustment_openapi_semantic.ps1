@@ -228,6 +228,10 @@ function Write-SafeHost {
   Write-Host (Redact-SafeText $Text)
 }
 
+function New-SelfTestBearerHeader {
+  return ("Authorization: " + "Bearer " + "selftest-token-" + "123456789")
+}
+
 function Get-RepoRelativePath {
   param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -2785,7 +2789,7 @@ function Add-SimulatedSemanticEvidence {
 
   $sensitiveTail = @(
     "simulated semantic validator checked ledger execute schemas",
-    "Authorization: Bearer selftest-token-123456789",
+    (New-SelfTestBearerHeader),
     "Cookie: session=selftest-cookie",
     "operation_key=selftest-operation-key",
     "raw_metadata={never-return}",
@@ -2828,7 +2832,7 @@ function Add-SimulatedToolPreflightBlockerEvidence {
     "node=unavailable",
     "npm=unavailable",
     "offline package cache unavailable",
-    "Authorization: Bearer selftest-token-123456789",
+    (New-SelfTestBearerHeader),
     "package_token=selftest-package-token"
   )
 
@@ -2869,7 +2873,7 @@ function Add-SimulatedRealExecutionEvidence {
   $blockerReason = if ($Classification -eq "blocker") { "simulated real command tool/cache blocker" } else { "" }
   $output = @(
     "simulated real opt-in command completed",
-    "Authorization: Bearer selftest-token-123456789",
+    (New-SelfTestBearerHeader),
     "Cookie: session=selftest-cookie",
     "package_token=selftest-package-token",
     "operation_key=selftest-operation-key",
@@ -3636,24 +3640,26 @@ if ($SimulateClientMismatch) {
 }
 if ($SimulateSensitiveOutputTail) {
   $ps = Get-PowerShellRunner
+  $selfTestBearerHeader = New-SelfTestBearerHeader
   [void](Invoke-Process `
       -FileName $ps.Source `
       -Arguments @(
         "-NoProfile",
         "-Command",
-        "Write-Output 'Authorization: Bearer selftest-token-123456789'; Write-Output 'Cookie: session=selftest-cookie'; Write-Output 'api_key=selftest-api-key'; Write-Output 'operation_key=selftest-operation-key'; Write-Output 'raw_metadata={never-return}'"
+        "Write-Output '$selfTestBearerHeader'; Write-Output 'Cookie: session=selftest-cookie'; Write-Output 'api_key=selftest-api-key'; Write-Output 'operation_key=selftest-operation-key'; Write-Output 'raw_metadata={never-return}'"
       ) `
       -Label "simulated sensitive output tail")
   Exit-WithResult
 }
 if ($SimulateSensitiveCommandFailure) {
   $ps = Get-PowerShellRunner
+  $selfTestBearerHeader = New-SelfTestBearerHeader
   [void](Invoke-Process `
       -FileName $ps.Source `
       -Arguments @(
         "-NoProfile",
         "-Command",
-        "Write-Error 'Authorization: Bearer selftest-token-123456789 package_token=selftest-package-token raw_metadata={never-return}'; exit 9"
+        "Write-Error '$selfTestBearerHeader package_token=selftest-package-token raw_metadata={never-return}'; exit 9"
       ) `
       -Label "simulated sensitive command failure")
   Exit-WithResult

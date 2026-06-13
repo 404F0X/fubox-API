@@ -1,10 +1,15 @@
 export { default as Activity } from "lucide-react/dist/esm/icons/activity.js";
+export { default as ArrowRight } from "lucide-react/dist/esm/icons/arrow-right.js";
 export { default as CheckCircle2 } from "lucide-react/dist/esm/icons/check-circle-2.js";
 export { default as CircleDashed } from "lucide-react/dist/esm/icons/circle-dashed.js";
 export { default as Clock } from "lucide-react/dist/esm/icons/clock.js";
+export { default as Copy } from "lucide-react/dist/esm/icons/copy.js";
+export { default as CreditCard } from "lucide-react/dist/esm/icons/credit-card.js";
 export { default as Database } from "lucide-react/dist/esm/icons/database.js";
+export { default as Download } from "lucide-react/dist/esm/icons/download.js";
 export { default as Edit3 } from "lucide-react/dist/esm/icons/edit-3.js";
 export { default as Eye } from "lucide-react/dist/esm/icons/eye.js";
+export { default as FileInput } from "lucide-react/dist/esm/icons/file-input.js";
 export { default as Key } from "lucide-react/dist/esm/icons/key.js";
 export { default as KeyRound } from "lucide-react/dist/esm/icons/key-round.js";
 export { default as LogIn } from "lucide-react/dist/esm/icons/log-in.js";

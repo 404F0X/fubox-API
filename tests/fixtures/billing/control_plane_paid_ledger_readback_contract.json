@@ -1,0 +1,83 @@
+{
+  "contract": "control_plane_paid_ledger_readback_contract_v1",
+  "output_schema": "control_plane_paid_ledger_readback_verification.v1",
+  "blocked_without_gateway_artifact": "gateway_paid_hot_path_artifact_missing",
+  "required_e9_evidence": [
+    "gateway_hot_path_reserve_settle_refund",
+    "insufficient_balance_prevents_provider_call",
+    "settle_idempotency",
+    "refund_idempotency",
+    "post_commit_readback",
+    "rollback_proof",
+    "reconciliation_report"
+  ],
+  "readback_fields": {
+    "gateway_artifact": [
+      "path_bounded",
+      "exists",
+      "secret_safe",
+      "request_ids_present",
+      "operation_ids_present"
+    ],
+    "control_plane_readback": [
+      "ledger_entries_table_present",
+      "request_logs_table_present",
+      "provider_attempts_table_present",
+      "audit_logs_table_present",
+      "reserve_rows_seen",
+      "settle_rows_seen",
+      "refund_rows_seen",
+      "insufficient_balance_provider_attempts_zero",
+      "post_commit_readback_passed",
+      "rollback_readback_passed",
+      "reconciliation_report_passed"
+    ],
+    "e9_mapping": [
+      "gateway_hot_path_reserve_settle_refund",
+      "insufficient_balance_prevents_provider_call",
+      "settle_idempotency",
+      "refund_idempotency",
+      "post_commit_readback",
+      "rollback_proof",
+      "reconciliation_report"
+    ]
+  },
+  "selftest_cases": [
+    {
+      "name": "complete_artifact_accepted_shape",
+      "expected": "accepted_shape"
+    },
+    {
+      "name": "missing_gateway_artifact_refused",
+      "expected": "blocked"
+    },
+    {
+      "name": "raw_secret_marker_refused",
+      "expected": "refused"
+    },
+    {
+      "name": "mismatched_operation_id_refused",
+      "expected": "refused"
+    },
+    {
+      "name": "mismatched_refund_idempotency_refused",
+      "expected": "refused"
+    }
+  ],
+  "secret_safe_forbidden_markers": [
+    "Authorization",
+    "Bearer ",
+    "Cookie",
+    "provider_key",
+    "virtual_key",
+    "postgres://",
+    "DATABASE_URL"
+  ],
+  "paid_beta_boundary": {
+    "user_has_allowed_paid": true,
+    "control_plane_readback_can_feed_e9_bundle": true,
+    "verifier_can_open_paid_by_itself": false,
+    "does_not_modify_gateway": true,
+    "does_not_execute_live_mutation": true
+  }
+}

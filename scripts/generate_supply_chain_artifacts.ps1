@@ -2,7 +2,11 @@
 [CmdletBinding()]
 param(
   [string]$OutputDirectory,
-  [string]$ImageIdFile
+  [string]$ImageIdFile,
+  [switch]$Plan,
+  [string]$WriteManifestTemplate,
+  [string]$CheckManifestFreshness,
+  [switch]$DryRunGate
 )
 
 $ErrorActionPreference = "Stop"
@@ -416,6 +420,311 @@ function Get-RelativePaths {
   return @($relativePaths.ToArray() | Sort-Object -Unique)
 }
 
+function New-ManifestFreshnessPlan {
+  param(
+    [Parameter(Mandatory = $true)][string]$OutputDirectoryPath,
+    [string[]]$TrackedFiles = @(),
+    [string[]]$ContainerFiles = @(),
+    [string[]]$CiFiles = @()
+  )
+
+  $allSourceFiles = @(Get-RelativePaths (@($TrackedFiles) + @($ContainerFiles) + @($CiFiles) + @(
+    (Join-Path $script:RepoRoot "scripts/generate_supply_chain_artifacts.ps1"),
+    (Join-Path $script:RepoRoot "scripts/scan_supply_chain.ps1"),
+    (Join-Path $script:RepoRoot "scripts/test_supply_chain_artifacts.ps1")
+  )))
+
+  return [ordered]@{
+    schemaVersion = "manifest-freshness-plan/v1"
+    generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+    purpose = "Functional planning seam for manifest/SBOM freshness. It does not execute clean-clone, full release evidence, network vulnerability scans, or a release approval gate."
+    outputDirectory = Get-RepoRelativePath $OutputDirectoryPath
+    requiredArtifacts = @(
+      [ordered]@{ path = "sbom.cyclonedx.json"; kind = "CycloneDX SBOM"; freshnessSource = "lockfiles and container manifests" },
+      [ordered]@{ path = "provenance.intoto.json"; kind = "SLSA/in-toto provenance"; freshnessSource = "source material digests and generated SBOM digest" },
+      [ordered]@{ path = "manifest.json"; kind = "artifact manifest"; freshnessSource = "required artifact hashes and source coverage contract" },
+      [ordered]@{ path = "SHA256SUMS"; kind = "checksums"; freshnessSource = "generated artifact file hashes" }
+    )
+    sourceFiles = $allSourceFiles
+    sourceFileGroups = [ordered]@{
+      lockfiles = @(Get-RelativePaths $TrackedFiles)
+      containerManifests = @(Get-RelativePaths $ContainerFiles)
+      ciWorkflows = @(Get-RelativePaths $CiFiles)
+      supplyChainScripts = @(
+        "scripts/generate_supply_chain_artifacts.ps1",
+        "scripts/scan_supply_chain.ps1",
+        "scripts/test_supply_chain_artifacts.ps1"
+      )
+    }
+    stalenessRules = @(
+      [ordered]@{ id = "required_artifacts_present"; rule = "All required artifacts must exist in the output directory before release review." },
+      [ordered]@{ id = "manifest_artifact_hashes_match"; rule = "manifest.json artifact sha256 values must match current file contents." },
+      [ordered]@{ id = "checksums_match"; rule = "SHA256SUMS entries must match current generated artifact file contents." },
+      [ordered]@{ id = "source_materials_current"; rule = "Any change to a listed source file after artifact generation requires regenerating SBOM/provenance/manifest/checksums." },
+      [ordered]@{ id = "provenance_subject_current"; rule = "provenance.intoto.json must identify sbom.cyclonedx.json with the current SBOM sha256." },
+      [ordered]@{ id = "operator_evidence_not_implied"; rule = "A fresh manifest/SBOM plan is not clean-clone evidence, full SBOM approval, or release approval." }
+    )
+    commandsToRun = [ordered]@{
+      planOnly = "pwsh -NoProfile -File scripts/generate_supply_chain_artifacts.ps1 -Plan"
+      writeTemplate = "pwsh -NoProfile -File scripts/generate_supply_chain_artifacts.ps1 -Plan -WriteManifestTemplate artifacts/supply-chain/manifest.freshness.template.json"
+      generateArtifacts = "pwsh -NoProfile -File scripts/generate_supply_chain_artifacts.ps1 -OutputDirectory artifacts/supply-chain"
+      offlineSupplyChainScan = "pwsh -NoProfile -File scripts/scan_supply_chain.ps1 -SkipNetwork"
+      selfTest = "pwsh -NoProfile -File scripts/test_supply_chain_artifacts.ps1"
+      laterOperatorActions = @(
+        "Run clean-clone transcript in a fresh checkout.",
+        "Run full SBOM/release evidence review with the operator's selected toolchain.",
+        "Run the full release gate only when the release owner intentionally resumes release readiness."
+      )
+    }
+    nonGoals = @(
+      "does not read or print environment variable values",
+      "does not require provider keys, API tokens, DB URLs, or production credentials",
+      "does not perform clean clone or full release evidence closure"
+    )
+  }
+}
+
+function Get-JsonArrayStrings {
+  param($Value)
+
+  if ($null -eq $Value) {
+    return @()
+  }
+
+  return @($Value | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+}
+
+function Add-GateReason {
+  param(
+    [Parameter(Mandatory = $true)]$List,
+    [Parameter(Mandatory = $true)][string]$Code,
+    [Parameter(Mandatory = $true)][string]$Message
+  )
+
+  [void]$List.Add([ordered]@{
+    code = $Code
+    message = $Message
+  })
+}
+
+function Compare-StringSets {
+  param(
+    [Parameter(Mandatory = $true)][string]$Name,
+    [string[]]$Expected,
+    [string[]]$Actual,
+    [Parameter(Mandatory = $true)]$BlockedReasons
+  )
+
+  $expectedSet = @(Get-JsonArrayStrings $Expected)
+  $actualSet = @(Get-JsonArrayStrings $Actual)
+  $missing = @($expectedSet | Where-Object { $actualSet -notcontains $_ })
+  $unexpected = @($actualSet | Where-Object { $expectedSet -notcontains $_ })
+
+  if ($missing.Count -gt 0) {
+    Add-GateReason -List $BlockedReasons -Code ("missing_{0}" -f $Name) -Message ("Template is missing {0}: {1}" -f $Name, ($missing -join ", "))
+  }
+  if ($unexpected.Count -gt 0) {
+    Add-GateReason -List $BlockedReasons -Code ("unexpected_{0}" -f $Name) -Message ("Template has unexpected {0}: {1}" -f $Name, ($unexpected -join ", "))
+  }
+
+  return [ordered]@{
+    expected = $expectedSet
+    actual = $actualSet
+    missing = $missing
+    unexpected = $unexpected
+    match = ($missing.Count -eq 0 -and $unexpected.Count -eq 0)
+  }
+}
+
+function Get-ObjectPropertyNames {
+  param($Object)
+
+  if ($null -eq $Object) {
+    return @()
+  }
+
+  if ($Object -is [System.Collections.IDictionary]) {
+    return @($Object.Keys | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+  }
+
+  return @($Object.PSObject.Properties | ForEach-Object { [string]$_.Name } | Sort-Object -Unique)
+}
+
+function Get-ObjectPropertyValue {
+  param(
+    $Object,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  if ($null -eq $Object) {
+    return @()
+  }
+
+  if ($Object -is [System.Collections.IDictionary]) {
+    if ($Object.Contains($Name)) {
+      return @($Object[$Name])
+    }
+    return @()
+  }
+
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    return @()
+  }
+
+  return @($property.Value)
+}
+
+function Test-ManifestFreshness {
+  param(
+    [Parameter(Mandatory = $true)]$CurrentPlan,
+    [string]$TemplatePath,
+    [bool]$DryRunOnly
+  )
+
+  $blockedReasons = New-Object System.Collections.Generic.List[object]
+  $pendingReasons = New-Object System.Collections.Generic.List[object]
+  $acceptedReasons = New-Object System.Collections.Generic.List[object]
+  $readback = [ordered]@{
+    templatePath = if ([string]::IsNullOrWhiteSpace($TemplatePath)) { "" } else { Get-RepoRelativePath $TemplatePath }
+    templateSchemaVersion = ""
+    currentSchemaVersion = [string]$CurrentPlan.schemaVersion
+    requiredArtifacts = $null
+    sourceFiles = $null
+    sourceFileGroups = [ordered]@{}
+    stalenessRules = $null
+  }
+
+  if ([string]::IsNullOrWhiteSpace($TemplatePath)) {
+    Add-GateReason -List $pendingReasons -Code "manifest_template_not_supplied" -Message "No freshness template path was supplied; current plan was generated for readback only."
+    return [ordered]@{
+      schemaVersion = "manifest-freshness-dry-run-gate/v1"
+      generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+      classification = "pending"
+      accepted = $false
+      dryRunOnly = $DryRunOnly
+      releaseEvidenceClosure = $false
+      fullSbomApproval = $false
+      cleanCloneExecuted = $false
+      reasons = [ordered]@{
+        accepted = @($acceptedReasons.ToArray())
+        blocked = @($blockedReasons.ToArray())
+        pending = @($pendingReasons.ToArray())
+      }
+      readback = $readback
+      currentPlan = $CurrentPlan
+      operatorActions = @(
+        "Run clean-clone transcript in a fresh checkout.",
+        "Run full SBOM/release evidence review with the release owner's selected toolchain.",
+        "Treat this dry-run gate as readback only; it does not approve release evidence."
+      )
+    }
+  }
+
+  if (-not [System.IO.Path]::IsPathRooted($TemplatePath)) {
+    $TemplatePath = Join-Path $script:RepoRoot $TemplatePath
+  }
+
+  if (-not (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) {
+    Add-GateReason -List $pendingReasons -Code "manifest_template_missing" -Message "Freshness template is not present; write it with -Plan -WriteManifestTemplate before checking."
+    $readback.templatePath = Get-RepoRelativePath $TemplatePath
+    return [ordered]@{
+      schemaVersion = "manifest-freshness-dry-run-gate/v1"
+      generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+      classification = "pending"
+      accepted = $false
+      dryRunOnly = $DryRunOnly
+      releaseEvidenceClosure = $false
+      fullSbomApproval = $false
+      cleanCloneExecuted = $false
+      reasons = [ordered]@{
+        accepted = @($acceptedReasons.ToArray())
+        blocked = @($blockedReasons.ToArray())
+        pending = @($pendingReasons.ToArray())
+      }
+      readback = $readback
+      currentPlan = $CurrentPlan
+      operatorActions = @(
+        "Run clean-clone transcript in a fresh checkout.",
+        "Run full SBOM/release evidence review with the release owner's selected toolchain.",
+        "Treat this dry-run gate as readback only; it does not approve release evidence."
+      )
+    }
+  }
+
+  $template = (Get-Content -LiteralPath $TemplatePath -Raw) | ConvertFrom-Json -ErrorAction Stop
+  $readback.templatePath = Get-RepoRelativePath $TemplatePath
+  $readback.templateSchemaVersion = [string]$template.schemaVersion
+
+  if (-not [string]::Equals([string]$template.schemaVersion, [string]$CurrentPlan.schemaVersion, [System.StringComparison]::Ordinal)) {
+    Add-GateReason -List $blockedReasons -Code "schema_version_mismatch" -Message ("Template schema '{0}' does not match current plan schema '{1}'." -f [string]$template.schemaVersion, [string]$CurrentPlan.schemaVersion)
+  }
+
+  $readback.requiredArtifacts = Compare-StringSets `
+    -Name "required_artifacts" `
+    -Expected @($CurrentPlan.requiredArtifacts | ForEach-Object { [string]$_.path }) `
+    -Actual @($template.requiredArtifacts | ForEach-Object { [string]$_.path }) `
+    -BlockedReasons $blockedReasons
+
+  $readback.sourceFiles = Compare-StringSets `
+    -Name "source_files" `
+    -Expected @($CurrentPlan.sourceFiles) `
+    -Actual @($template.sourceFiles) `
+    -BlockedReasons $blockedReasons
+
+  $currentGroupNames = @(Get-ObjectPropertyNames $CurrentPlan.sourceFileGroups)
+  $templateGroupNames = @(Get-ObjectPropertyNames $template.sourceFileGroups)
+  $readback.sourceFileGroups.groupNames = Compare-StringSets `
+    -Name "source_file_group_names" `
+    -Expected $currentGroupNames `
+    -Actual $templateGroupNames `
+    -BlockedReasons $blockedReasons
+
+  foreach ($groupName in $currentGroupNames) {
+    $currentValues = @(Get-ObjectPropertyValue -Object $CurrentPlan.sourceFileGroups -Name $groupName)
+    $templateValues = if ($templateGroupNames -contains $groupName) { @(Get-ObjectPropertyValue -Object $template.sourceFileGroups -Name $groupName) } else { @() }
+    $readback.sourceFileGroups[$groupName] = Compare-StringSets `
+      -Name ("source_file_group_{0}" -f $groupName) `
+      -Expected $currentValues `
+      -Actual $templateValues `
+      -BlockedReasons $blockedReasons
+  }
+
+  $readback.stalenessRules = Compare-StringSets `
+    -Name "staleness_rules" `
+    -Expected @($CurrentPlan.stalenessRules | ForEach-Object { [string]$_.id }) `
+    -Actual @($template.stalenessRules | ForEach-Object { [string]$_.id }) `
+    -BlockedReasons $blockedReasons
+
+  if ($blockedReasons.Count -eq 0) {
+    Add-GateReason -List $acceptedReasons -Code "manifest_freshness_contract_matches" -Message "Template matches the current required artifacts, source files, source groups, and staleness rule ids."
+  }
+
+  $classification = if ($blockedReasons.Count -gt 0) { "blocked" } elseif ($pendingReasons.Count -gt 0) { "pending" } else { "accepted" }
+  return [ordered]@{
+    schemaVersion = "manifest-freshness-dry-run-gate/v1"
+    generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+    classification = $classification
+    accepted = ($classification -eq "accepted")
+    dryRunOnly = $DryRunOnly
+    releaseEvidenceClosure = $false
+    fullSbomApproval = $false
+    cleanCloneExecuted = $false
+    reasons = [ordered]@{
+      accepted = @($acceptedReasons.ToArray())
+      blocked = @($blockedReasons.ToArray())
+      pending = @($pendingReasons.ToArray())
+    }
+    readback = $readback
+    currentPlan = $CurrentPlan
+    operatorActions = @(
+      "Run clean-clone transcript in a fresh checkout.",
+      "Run full SBOM/release evidence review with the release owner's selected toolchain.",
+      "Treat this dry-run gate as readback only; it does not approve release evidence."
+    )
+  }
+}
+
 $resolvedOutput = $OutputDirectory
 if (-not [System.IO.Path]::IsPathRooted($resolvedOutput)) {
   $resolvedOutput = Join-Path $script:RepoRoot $resolvedOutput
@@ -461,6 +770,42 @@ $sbomPath = Join-Path $resolvedOutput "sbom.cyclonedx.json"
 $provenancePath = Join-Path $resolvedOutput "provenance.intoto.json"
 $summaryPath = Join-Path $resolvedOutput "manifest.json"
 $checksumsPath = Join-Path $resolvedOutput "SHA256SUMS"
+
+if ($Plan -or $DryRunGate -or -not [string]::IsNullOrWhiteSpace($CheckManifestFreshness)) {
+  $planObject = New-ManifestFreshnessPlan `
+    -OutputDirectoryPath $resolvedOutput `
+    -TrackedFiles $trackedFiles `
+    -ContainerFiles $containerFiles `
+    -CiFiles $ciFiles
+
+  if (-not [string]::IsNullOrWhiteSpace($WriteManifestTemplate)) {
+    $resolvedTemplatePath = $WriteManifestTemplate
+    if (-not [System.IO.Path]::IsPathRooted($resolvedTemplatePath)) {
+      $resolvedTemplatePath = Join-Path $script:RepoRoot $resolvedTemplatePath
+    }
+    $templateParent = Split-Path -Parent $resolvedTemplatePath
+    if (-not [string]::IsNullOrWhiteSpace($templateParent)) {
+      New-Item -ItemType Directory -Force -Path $templateParent | Out-Null
+    }
+    Write-JsonArtifact -Path $resolvedTemplatePath -Object $planObject
+  }
+
+  if ($DryRunGate -or -not [string]::IsNullOrWhiteSpace($CheckManifestFreshness)) {
+    $gateObject = Test-ManifestFreshness `
+      -CurrentPlan $planObject `
+      -TemplatePath $CheckManifestFreshness `
+      -DryRunOnly $true
+
+    Write-Output ($gateObject | ConvertTo-Json -Depth 24)
+    if ([string]$gateObject.classification -eq "blocked") {
+      exit 2
+    }
+    exit 0
+  }
+
+  Write-Output ($planObject | ConvertTo-Json -Depth 20)
+  exit 0
+}
 
 $sbom = [ordered]@{
   bomFormat = "CycloneDX"

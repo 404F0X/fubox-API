@@ -1,0 +1,7 @@
+{
+  "schema": "gateway_tpm_trusted_numeric_source_file_read_model_backend_fixture_v1",
+  "source_type": "read_model",
+  "token_kind": "input_tokens",
+  "tokens": 222,
+  "material_in_output": false
+}

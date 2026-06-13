@@ -39,6 +39,14 @@ Compose 开发栈加载 `db/dev-seeds` 中的本地 smoke 数据，包括 fake v
 
 只有当 TCP peer IP 命中 `server.trusted_proxy_allowlist` 中的单 IP 或 CIDR 时，Gateway 才信任 forwarded client IP header。信任代理后，优先使用 `X-Forwarded-For` 的第一个 IP；没有 `X-Forwarded-For` 时才使用 `X-Real-IP`。header 中的 IP 格式不合法会在 auth 阶段返回错误。不要把普通客户端网段加入该 allowlist；只加入实际反向代理或负载均衡器地址。
 
+Settings 页面和本地部署文档可引用 network security 示例生成器：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\write_network_security_config_example.ps1
+```
+
+默认输出路径是 `.tmp/network-security/network_security_config_example.yaml`。加 `-PrintOnly` 时只把 YAML 打印到 stdout，不创建或覆盖文件。生成内容只使用 RFC5737 IPv4 与 RFC3849 IPv6 文档网段，用于说明 `server.trusted_proxy_allowlist`、profile `ip_allowlist` 和 virtual key `ip_allowlist` 的形状；不要把真实生产客户端、办公网、VPN、负载均衡器、provider、Authorization、API key 或 secret 值写入该示例。
+
 ## 4. Kubernetes / Helm
 
 P0 Helm values 需要包含：
@@ -52,6 +60,51 @@ P0 Helm values 需要包含：
 - DB/Redis connection。
 - ingress。
 - network policy，P1。
+
+## 4.1 Staging 配置 seam
+
+当前 Helm / Compose 交付的是 staging-ready 配置 seam，不是 release evidence 闭环，也不代表已经完成真实 staging、load、chaos 或 security review。
+
+共享 staging 前至少需要补齐这些配置 presence：
+
+- Postgres：`database.secretRef.name` / `DATABASE_URL`，供 Gateway、Control Plane、Worker 和 operator Job 使用。
+- Redis：`redis.secretRef.name` / `REDIS_URL`，供 rate limit、缓存、队列/状态读写使用。
+- Application secrets：`application.secretRef.name`，至少包含 `AI_GATEWAY_MASTER_KEY`、`AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64`、`AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_ID`。
+- ClickHouse：`clickhouse.secretRef.name`，Worker/read-model 路径启用时提供 endpoint、database、table、username、password；未接入前保持 `config-needed`。
+- Provider：`provider.secretRef.name`，只放 sandbox/真实 provider adapter 所需 secret env；provider key 明文不得进入 ConfigMap、Admin UI env 或文档。
+- Payment：`payment.secretRef.name`，只放 merchant/account/webhook signing 等支付 adapter secret env；当前本地 payment demo 不等同真实 capture/refund/chargeback。
+- 安全 knobs：`trusted_proxy_allowlist`、IP allowlist、CORS origins、Redis-backed rate limit policy 必须用目标集群真实 LB/proxy/CORS 策略替换 `.example.invalid` 和 `config-needed` 占位。
+
+最小非 live 检查：
+
+```powershell
+python deploy\helm\validate_chart.py --skip-helm
+$env:AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64='dev-compose-config-only-32-byte-placeholder'
+docker compose -f deploy\docker-compose\docker-compose.yml config
+```
+
+这些检查只证明配置结构可渲染、关键 staging 字段有落点；真实 staging smoke、load、chaos、安全评审和发布证据仍是后续 operator 工作。
+
+## 4.2 Staging smoke/security plan seam
+
+下一步 operator 可先生成 presence-only 计划，不连接 Kubernetes、不读取 Secret value、不运行真实 smoke/load/chaos/security review：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\plan_staging_smoke_security.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\plan_staging_smoke_security.ps1 -WriteFile
+```
+
+默认写入 `.tmp/staging/staging_smoke_security_plan.json`。输出固定为 `staging-smoke-security-plan/v1`，覆盖：
+
+- smoke 顺序：render chart、migration、readiness、admin/mock provider seed、virtual key、`/v1/models`、mock chat、request trace readback、billing ledger readback、可选 recovery probe。
+- security presence checks：Secret refs、Admin UI 不挂 secret env、浏览器 public env 缺席、trusted proxy/IP allowlist/CORS/rate limit/payload policy、provider/payment secret omitted、service account token 和 pod security context。
+- security review checklist/readback：覆盖 CORS origins、IP allowlist、trusted proxy、Secret refs、Redis-backed rate limit、metadata-only payload policy、provider config presence、payment config presence、ClickHouse config presence；readback 只允许 `not-run`、`config-needed`、`reviewed`、`follow-up-required`、`pass` 这类状态，不记录真实 CIDR 清单、Secret data、token、DB URL、provider/payment secret、Authorization 或 raw payload。
+- required presence：只列 Secret ref 名称路径和必需 env key 名称，例如 `DATABASE_URL`、`REDIS_URL`、`AI_GATEWAY_MASTER_KEY`、ClickHouse/provider/payment adapter env；不得输出实际值。
+- load plan/readback seam：列出目标服务（gateway、control-plane、admin-ui、worker、mock-provider 以及 Redis/Postgres/ClickHouse 依赖语义）、流量模型（gateway latency、streaming idle timeout、rate-limit reservation、request-log ingest baseline）、resource guard、rollback criteria 和 `staging-load-plan-readback/v1` 允许字段。该 seam 只描述后续 operator 如何记录低量 staging baseline，不发请求、不压测。
+- chaos plan/readback seam：列出 provider 5xx fallback、Redis unavailable、Postgres failover readiness、worker restart recovery 等实验占位、resource guard、rollback criteria 和 `staging-chaos-plan-readback/v1` 允许字段。该 seam 不做故障注入、不改集群状态。
+- expected outputs：`staging_smoke_summary_json`、`security_presence_matrix_json`、`staging_security_review_readback_json`、`staging_load_plan_readback_json`、`staging_chaos_plan_readback_json`、不含 secret 的 operator notes，以及真实 load/chaos/security review 后续 action。
+
+计划输出禁止包含 secret values、tokens、DB URLs、provider/payment secrets、Authorization headers、raw webhook body、raw request/response payload。真实 staging smoke、load、chaos、安全评审和 release evidence 仍由 operator 在具备目标环境和凭证后执行。
 
 ## 5. 配置管理
 

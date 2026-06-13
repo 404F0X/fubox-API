@@ -29,9 +29,15 @@
     "upstream_call": "send_anthropic_messages_request",
     "upstream_model_rewrite": "anthropic_messages_request_for_upstream",
     "upstream_headers": {
-      "api_key_header": "x-api-key",
-      "anthropic_version_header": "anthropic-version",
+      "api_key_header_present": true,
+      "api_key_value_logged": false,
+      "anthropic_version_header_present": true,
       "content_type": "application/json"
+    },
+    "request_log_protocol_metadata": {
+      "inbound_protocol": "anthropic",
+      "outbound_protocol": "anthropic",
+      "protocol_mode_source": "selected_route.protocol_mode"
     },
     "fallback_on_retryable_provider_error": true
   },
@@ -122,13 +128,13 @@
       "sk-live-secret",
       "Authorization",
       "Bearer ",
-      "x-api-key"
+      "api-key:"
     ]
   },
   "remaining_gaps": [
     "live smoke with gateway plus mock provider and database",
-    "dedicated Anthropic protocol route or capability constraints beyond shared chat route candidates",
-    "complete Messages tool/content-block runtime semantics"
+    "dedicated Anthropic protocol route capability constraints beyond shared chat route candidates",
+    "broader Messages content-block semantics beyond text and tool_use fixtures"
   ],
   "notes": "Dry-run fixture for the Gateway Anthropic Messages runtime slice. It locks the order auth, request log, preauthorize, provider attempt, provider key open, upstream request, usage rating, ledger settle for non-streaming requests, and the minimal streaming runtime handoff."
 }

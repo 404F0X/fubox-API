@@ -1,0 +1,612 @@
+{
+  "schema": "payment_order_invoice_contract.v1",
+  "status": "contract_enforced_not_runtime_wired",
+  "runtime_implemented": false,
+  "contract_only": true,
+  "paid_gate_changed": false,
+  "secret_safe": true,
+  "runtime_acceptance_contract": {
+    "runtime_artifact_schema": "payment_order_invoice_runtime.v1",
+    "runtime_artifact_path": ".tmp/credit-wallet/payment_order_invoice_runtime.json",
+    "contract_artifact_must_not_mark_runtime_verified": true,
+    "runtime_implemented_required": true,
+    "contract_only_required": false,
+    "route_or_internal_runtime_invocation_required": true,
+    "order_lifecycle_readback_required": true,
+    "provider_handoff_redacted_readback_required": true,
+    "provider_callback_or_capture_readback_required": true,
+    "payment_confirm_capture_readback_required": true,
+    "invoice_receipt_readback_required": true,
+    "refund_cancel_chargeback_reversal_readback_required": true,
+    "reconciliation_readback_required": true,
+    "idempotency_replay_readback_required": true,
+    "conflict_no_duplicate_write_readback_required": true,
+    "audit_readback_required": true,
+    "money_decimal_strings_required": true,
+    "secret_safe_required": true,
+    "paid_gate_changed_required": false,
+    "direct_wallet_snapshot_mutation_forbidden": true,
+    "raw_provider_secret_output_allowed": false,
+    "client_secret_output_allowed": false,
+    "raw_provider_payload_output_allowed": false,
+    "pii_output_allowed": false
+  },
+  "money_contract": {
+    "format": "decimal_string_with_currency",
+    "scale": 8,
+    "float_allowed": false
+  },
+  "order_states": [
+    "created",
+    "pending_payment",
+    "paid",
+    "cancelled",
+    "expired",
+    "refunded",
+    "failed"
+  ],
+  "payment_states": [
+    "intent_created",
+    "provider_handoff",
+    "captured",
+    "cancelled",
+    "refunded",
+    "failed"
+  ],
+  "invoice_states": [
+    "draft",
+    "issued",
+    "paid",
+    "voided",
+    "refunded"
+  ],
+  "secret_safe_contract": {
+    "provider_reference_bounded": true,
+    "provider_reference_redacted": true,
+    "raw_provider_secret_output_allowed": false,
+    "client_secret_output_allowed": false,
+    "raw_provider_payload_output_allowed": false,
+    "pii_output_allowed": false,
+    "forbidden_output_terms": [
+      "authorization",
+      "bearer",
+      "provider_key",
+      "virtual_key",
+      "database_url",
+      "postgres://",
+      "password",
+      "raw_secret",
+      "payment_secret",
+      "client_secret",
+      "raw_provider_payload"
+    ]
+  },
+  "accounting_contract": {
+    "capture_success_requires_credit_grant_or_ledger_marker": true,
+    "refund_or_cancel_requires_grant_revoke_or_ledger_reversal_marker": true,
+    "reconciliation_markers_required": true,
+    "audit_metadata_required": true,
+    "direct_wallet_snapshot_mutation_allowed": false,
+    "allowed_markers": [
+      "order_row",
+      "payment_intent_row",
+      "payment_capture_row",
+      "invoice_row",
+      "receipt_row",
+      "credit_grant_row",
+      "admin_adjustment_entry",
+      "ledger_reversal_entry",
+      "credit_grant_revoke_row",
+      "refund_row",
+      "audit_log",
+      "reconciliation_marker"
+    ]
+  },
+  "required_cases": [
+    "order_created",
+    "order_pending_payment",
+    "payment_intent_provider_handoff",
+    "payment_confirm_paid",
+    "payment_confirm_idempotent_replay",
+    "invoice_issued_receipt",
+    "payment_refund_applied",
+    "payment_refund_idempotent_replay",
+    "order_cancelled_before_capture",
+    "order_expired_no_credit",
+    "payment_failed_no_credit",
+    "amount_mismatch_refused",
+    "currency_mismatch_refused",
+    "provider_status_mismatch_refused",
+    "duplicate_provider_reference_refused",
+    "non_positive_amount_refused",
+    "ownership_mismatch_refused",
+    "refund_exceeds_captured_refused",
+    "invoice_duplicate_refused"
+  ],
+  "cases": [
+    {
+      "name": "order_created",
+      "operation": "order_create",
+      "decision": "created",
+      "idempotency": "applied",
+      "request": {
+        "idempotency_key_present": true,
+        "tenant_id": "00000000-0000-0000-0000-000000360101",
+        "project_id": "00000000-0000-0000-0000-000000360102",
+        "wallet_id": "00000000-0000-0000-0000-000000360201",
+        "currency": "USD",
+        "amount": "120.00000000",
+        "actor_id": "user:billing",
+        "actor_type": "user"
+      },
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360301",
+        "status": "created",
+        "currency": "USD",
+        "amount": "120.00000000",
+        "audit_id": "00000000-0000-0000-0000-000000360901",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "audit_log"
+      ],
+      "audit_metadata": {
+        "operation": "order_create",
+        "actor_id_present": true,
+        "request_or_operation_id_present": true,
+        "reason": "customer_top_up_order"
+      }
+    },
+    {
+      "name": "order_pending_payment",
+      "operation": "order_mark_pending_payment",
+      "decision": "pending_payment",
+      "idempotency": "applied",
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360301",
+        "status": "pending_payment",
+        "currency": "USD",
+        "amount": "120.00000000",
+        "payment_intent_id": "00000000-0000-0000-0000-000000360401",
+        "audit_id": "00000000-0000-0000-0000-000000360902",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "payment_intent_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "payment_intent_provider_handoff",
+      "operation": "payment_provider_handoff",
+      "decision": "provider_handoff",
+      "idempotency": "applied",
+      "request": {
+        "order_id": "00000000-0000-0000-0000-000000360301",
+        "provider": "bounded_external_provider",
+        "currency": "USD",
+        "amount": "120.00000000"
+      },
+      "response": {
+        "payment_intent_id": "00000000-0000-0000-0000-000000360401",
+        "provider_reference": "provider_ref_redacted_360401",
+        "provider_reference_redacted": true,
+        "provider_reference_bounded": true,
+        "client_credential_echoed": false,
+        "provider_payload_echoed": false,
+        "status": "provider_handoff",
+        "currency": "USD",
+        "amount": "120.00000000",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "payment_intent_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "payment_confirm_paid",
+      "operation": "payment_confirm_capture",
+      "decision": "paid",
+      "idempotency": "applied",
+      "request": {
+        "payment_intent_id": "00000000-0000-0000-0000-000000360401",
+        "provider_reference_hash_lookup": true,
+        "currency": "USD",
+        "captured_amount": "120.00000000"
+      },
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360301",
+        "payment_id": "00000000-0000-0000-0000-000000360402",
+        "status": "paid",
+        "currency": "USD",
+        "captured_amount": "120.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000360501",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000360601",
+        "invoice_id": "00000000-0000-0000-0000-000000360701",
+        "receipt_id": "00000000-0000-0000-0000-000000360801",
+        "audit_id": "00000000-0000-0000-0000-000000360903",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "payment_capture_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "invoice_row",
+        "receipt_row",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "payment_amount": "120.00000000",
+        "issued_credit_amount": "120.00000000",
+        "invoice_line_total": "120.00000000",
+        "ledger_effect_amount": "120.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "payment_confirm_idempotent_replay",
+      "operation": "payment_confirm_capture",
+      "decision": "replayed",
+      "idempotency": "replayed",
+      "same_idempotency_key": true,
+      "same_body": true,
+      "new_credit_grant_row_written": false,
+      "new_ledger_entry_written": false,
+      "new_invoice_row_written": false,
+      "new_refund_row_written": false,
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360301",
+        "payment_id": "00000000-0000-0000-0000-000000360402",
+        "credit_grant_id": "00000000-0000-0000-0000-000000360501",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000360601",
+        "invoice_id": "00000000-0000-0000-0000-000000360701",
+        "idempotency": "replayed",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "payment_capture_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "invoice_row",
+        "receipt_row",
+        "audit_log",
+        "reconciliation_marker"
+      ]
+    },
+    {
+      "name": "invoice_issued_receipt",
+      "operation": "invoice_issue_receipt",
+      "decision": "issued",
+      "idempotency": "applied",
+      "response": {
+        "invoice_id": "00000000-0000-0000-0000-000000360701",
+        "invoice_number": "INV-2026-000360701",
+        "invoice_status": "issued",
+        "receipt_id": "00000000-0000-0000-0000-000000360801",
+        "receipt_status": "paid",
+        "currency": "USD",
+        "subtotal_amount": "120.00000000",
+        "tax_amount": "0.00000000",
+        "total_amount": "120.00000000",
+        "line_items": [
+          {
+            "line_item_id": "00000000-0000-0000-0000-000000360711",
+            "description": "wallet_top_up_credit",
+            "quantity": "1.00000000",
+            "unit_amount": "120.00000000",
+            "line_total": "120.00000000",
+            "tax_amount": "0.00000000",
+            "currency": "USD"
+          }
+        ],
+        "links": {
+          "order_id": "00000000-0000-0000-0000-000000360301",
+          "payment_id": "00000000-0000-0000-0000-000000360402",
+          "ledger_entry_id": "00000000-0000-0000-0000-000000360601",
+          "credit_grant_id": "00000000-0000-0000-0000-000000360501"
+        },
+        "pii_payload_echoed": false,
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "invoice_row",
+        "receipt_row",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "payment_amount": "120.00000000",
+        "issued_credit_amount": "120.00000000",
+        "invoice_line_total": "120.00000000",
+        "ledger_effect_amount": "120.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "payment_refund_applied",
+      "operation": "payment_refund",
+      "decision": "refunded",
+      "idempotency": "applied",
+      "request": {
+        "payment_id": "00000000-0000-0000-0000-000000360402",
+        "refund_amount": "120.00000000",
+        "currency": "USD"
+      },
+      "response": {
+        "refund_id": "00000000-0000-0000-0000-000000360403",
+        "order_id": "00000000-0000-0000-0000-000000360301",
+        "status": "refunded",
+        "currency": "USD",
+        "refund_amount": "120.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000360501",
+        "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000360602",
+        "invoice_id": "00000000-0000-0000-0000-000000360701",
+        "audit_id": "00000000-0000-0000-0000-000000360904",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "refund_row",
+        "credit_grant_revoke_row",
+        "ledger_reversal_entry",
+        "invoice_row",
+        "audit_log",
+        "reconciliation_marker"
+      ],
+      "reconciliation": {
+        "payment_amount": "120.00000000",
+        "refund_amount": "120.00000000",
+        "reversed_credit_amount": "120.00000000",
+        "ledger_reversal_amount": "120.00000000",
+        "currency": "USD",
+        "matched": true
+      }
+    },
+    {
+      "name": "payment_refund_idempotent_replay",
+      "operation": "payment_refund",
+      "decision": "replayed",
+      "idempotency": "replayed",
+      "same_idempotency_key": true,
+      "same_body": true,
+      "new_credit_grant_row_written": false,
+      "new_ledger_entry_written": false,
+      "new_invoice_row_written": false,
+      "new_refund_row_written": false,
+      "response": {
+        "refund_id": "00000000-0000-0000-0000-000000360403",
+        "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000360602",
+        "invoice_id": "00000000-0000-0000-0000-000000360701",
+        "idempotency": "replayed",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "refund_row",
+        "credit_grant_revoke_row",
+        "ledger_reversal_entry",
+        "invoice_row",
+        "audit_log",
+        "reconciliation_marker"
+      ]
+    },
+    {
+      "name": "order_cancelled_before_capture",
+      "operation": "order_cancel",
+      "decision": "cancelled",
+      "idempotency": "applied",
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360302",
+        "status": "cancelled",
+        "credit_issued": false,
+        "currency": "USD",
+        "amount": "50.00000000",
+        "audit_id": "00000000-0000-0000-0000-000000360905",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "audit_log"
+      ],
+      "refund_cancel_policy": {
+        "credit_grant_revoke_or_ledger_reversal_required_if_credit_issued": true,
+        "no_credit_issued_no_reversal_required": true
+      }
+    },
+    {
+      "name": "order_expired_no_credit",
+      "operation": "order_expire",
+      "decision": "expired",
+      "idempotency": "applied",
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360303",
+        "status": "expired",
+        "credit_issued": false,
+        "currency": "USD",
+        "amount": "50.00000000",
+        "audit_id": "00000000-0000-0000-0000-000000360906",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "payment_failed_no_credit",
+      "operation": "payment_fail",
+      "decision": "failed",
+      "idempotency": "applied",
+      "response": {
+        "order_id": "00000000-0000-0000-0000-000000360304",
+        "payment_id": "00000000-0000-0000-0000-000000360404",
+        "status": "failed",
+        "credit_issued": false,
+        "currency": "USD",
+        "amount": "50.00000000",
+        "audit_id": "00000000-0000-0000-0000-000000360907",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "order_row",
+        "payment_intent_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "amount_mismatch_refused",
+      "operation": "payment_confirm_capture",
+      "decision": "refused",
+      "refusal_code": "payment_amount_mismatch",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "payment_amount_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "currency_mismatch_refused",
+      "operation": "payment_confirm_capture",
+      "decision": "refused",
+      "refusal_code": "payment_currency_mismatch",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "payment_currency_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "provider_status_mismatch_refused",
+      "operation": "payment_confirm_capture",
+      "decision": "refused",
+      "refusal_code": "provider_status_mismatch",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "provider_status_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "duplicate_provider_reference_refused",
+      "operation": "payment_provider_handoff",
+      "decision": "refused",
+      "refusal_code": "duplicate_provider_reference",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "duplicate_provider_reference",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "non_positive_amount_refused",
+      "operation": "order_create",
+      "decision": "refused",
+      "refusal_code": "non_positive_payment_amount",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "non_positive_payment_amount",
+        "amount": "0.00000000",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "ownership_mismatch_refused",
+      "operation": "order_create",
+      "decision": "refused",
+      "refusal_code": "payment_order_ownership_mismatch",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "payment_order_ownership_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "refund_exceeds_captured_refused",
+      "operation": "payment_refund",
+      "decision": "refused",
+      "refusal_code": "refund_exceeds_captured_amount",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "refund_exceeds_captured_amount",
+        "refund_amount": "200.00000000",
+        "captured_amount": "120.00000000",
+        "currency": "USD",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "invoice_duplicate_refused",
+      "operation": "invoice_issue_receipt",
+      "decision": "refused",
+      "refusal_code": "duplicate_invoice_number",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "invoice_write_allowed": false,
+      "refund_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "duplicate_invoice_number",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    }
+  ]
+}

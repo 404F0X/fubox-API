@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod admin;
 mod alerts;
 mod auth;
@@ -5,6 +7,7 @@ mod auth_login_rate_limit;
 mod auth_repo;
 mod prompt_eval_shadow;
 mod rbac;
+mod user_auth;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -56,7 +59,7 @@ impl ControlPlaneState {
         }
     }
 
-    fn app(&self) -> &AppState {
+    pub(crate) fn app(&self) -> &AppState {
         &self.app
     }
 
@@ -102,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .merge(auth::router())
+        .merge(user_auth::router())
         .merge(admin_router)
         .layer(TraceLayer::new_for_http())
         .layer(cors)

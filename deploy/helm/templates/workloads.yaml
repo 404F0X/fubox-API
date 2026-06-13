@@ -82,7 +82,7 @@ spec:
               value: {{ tpl (toString $value) $root | quote }}
             {{- end }}
           {{- end }}
-          {{- if or $svc.extraEnvFrom (and $svc.applicationSecretRef $root.Values.application.secretRef.name) (and $svc.databaseSecretRef $root.Values.database.secretRef.name) (and $svc.redisSecretRef $root.Values.redis.secretRef.name) }}
+          {{- if or $svc.extraEnvFrom (and $svc.applicationSecretRef $root.Values.application.secretRef.name) (and $svc.databaseSecretRef $root.Values.database.secretRef.name) (and $svc.redisSecretRef $root.Values.redis.secretRef.name) (and $svc.clickhouseSecretRef $root.Values.clickhouse.secretRef.name) (and $svc.providerSecretRef $root.Values.provider.secretRef.name) (and $svc.paymentSecretRef $root.Values.payment.secretRef.name) }}
           envFrom:
             {{- if and $svc.applicationSecretRef $root.Values.application.secretRef.name }}
             - secretRef:
@@ -98,6 +98,21 @@ spec:
             - secretRef:
                 name: {{ $root.Values.redis.secretRef.name | quote }}
                 optional: {{ default false $root.Values.redis.secretRef.optional }}
+            {{- end }}
+            {{- if and $svc.clickhouseSecretRef $root.Values.clickhouse.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.clickhouse.secretRef.name | quote }}
+                optional: {{ default true $root.Values.clickhouse.secretRef.optional }}
+            {{- end }}
+            {{- if and $svc.providerSecretRef $root.Values.provider.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.provider.secretRef.name | quote }}
+                optional: {{ default true $root.Values.provider.secretRef.optional }}
+            {{- end }}
+            {{- if and $svc.paymentSecretRef $root.Values.payment.secretRef.name }}
+            - secretRef:
+                name: {{ $root.Values.payment.secretRef.name | quote }}
+                optional: {{ default true $root.Values.payment.secretRef.optional }}
             {{- end }}
             {{- with $svc.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}

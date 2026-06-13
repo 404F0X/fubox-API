@@ -1,5 +1,6 @@
 {
   "scenario": "control_plane_trace_request_summary_contract",
+  "related_operator_readback_contract": "tests/fixtures/request_trace_usage/multi_source_operator_readback_contract.json",
   "base_path": "/admin",
   "endpoint": {
     "method": "GET",
@@ -47,6 +48,15 @@
       "ledger.entries[].virtual_key_id",
       "ledger.entries[].price_version_id",
       "ledger.entries[].related_ledger_entry_id"
+    ],
+    "operator_explainability_coverage": [
+      "route_decision",
+      "fallback_or_reject",
+      "usage_cost",
+      "ledger_billing_refusal",
+      "guardrail_audit",
+      "provider_attempt_summary",
+      "redaction"
     ]
   },
   "examples": {

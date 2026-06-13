@@ -43,6 +43,19 @@
       "provider_attempt_status": "succeeded",
       "stream_end_reason": "completed",
       "usage_source": "response.completed usage",
+      "safe_readback": {
+        "schema": "openai_responses_protocol_metadata_v1",
+        "records": [
+          "event_type",
+          "terminal_kind",
+          "response_status",
+          "usage_token_field_presence",
+          "finish_or_reason_presence",
+          "reasoning_summary_count",
+          "output_item_type_counts"
+        ],
+        "raw_prompt_messages_provider_payload_omitted": true
+      },
       "rating_and_settle": "when completed terminal has complete usage and non-zero rating"
     },
     "failed_or_error_terminal": {
@@ -50,7 +63,11 @@
       "provider_attempt_status": "failed",
       "stream_end_reason": "upstream_error",
       "late_fallback": false,
-      "usage_billed": false
+      "usage_billed": false,
+      "nested_error_readback": {
+        "records_type_code_status_and_message_presence_only": true,
+        "raw_error_message_omitted": true
+      }
     },
     "invalid_json_event": {
       "request_status": "partial_or_failed",
@@ -66,5 +83,5 @@
     "provider-secret-value",
     "payload body secret"
   ],
-  "notes": "Dry-run/source contract for the first Gateway OpenAI Responses streaming runtime slice. Live mock-provider scenarios are still pending; this fixture locks no 501, preauth/provider side-effect order, OpenAI-compatible stream adapter usage, Responses terminal usage/rating semantics, and secret-safe output."
+  "notes": "Dry-run/source contract for the Gateway OpenAI Responses streaming runtime slice. Local Responses edge-case readback covers terminal usage, nested errors, finish/reasoning metadata, and shape-only output item counts. Live mock-provider/provider matrix scenarios are still pending; this fixture locks no 501, preauth/provider side-effect order, OpenAI-compatible stream adapter usage, Responses terminal usage/rating semantics, and secret-safe output."
 }

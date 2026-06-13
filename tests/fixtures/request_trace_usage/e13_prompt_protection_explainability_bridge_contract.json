@@ -1,0 +1,133 @@
+{
+  "schema": "request_trace_usage_explainability_e13_bridge_contract_fixture_v1",
+  "source": "E13 prompt protection beta closure evidence report",
+  "related_operator_readback_contract": "tests/fixtures/request_trace_usage/multi_source_operator_readback_contract.json",
+  "required_output_schema": "request_trace_usage_explainability_e13_bridge_v1",
+  "required_request_count": 4,
+  "required_request_fields": [
+    "name",
+    "endpoint",
+    "request_id",
+    "request_id_opaque",
+    "expected_prompt_rejection_fields",
+    "provider_attempts_count",
+    "route_provider_expectations",
+    "request_log_expectations",
+    "guardrail_expectations",
+    "audit_readback_expectations",
+    "support_field_expectations",
+    "usage_cost_expectations",
+    "ledger_balance_expectations",
+    "secret_safe_omissions"
+  ],
+  "required_rejection_fields": {
+    "request_status": "rejected",
+    "http_status": 400,
+    "error_code": "prompt_protection_rejected",
+    "error_stage": "request_preflight",
+    "prompt_protection_action": "reject"
+  },
+  "required_provider_attempts_count": 0,
+  "required_request_log_expectations": {
+    "redaction_status": "hash_only",
+    "payload_stored": false,
+    "payload_object_ref_present": false,
+    "raw_payload_omitted": true
+  },
+  "required_route_provider_expectations": {
+    "route_policy_version_available": true,
+    "resolved_provider_id_available_when_routed": true,
+    "resolved_channel_id_available_when_routed": true,
+    "route_decision_snapshot_sanitized": true,
+    "provider_attempt_rows_metadata_only": true,
+    "provider_secret_values_omitted": true
+  },
+  "required_guardrail_expectations": {
+    "decision_source": "prompt_protection",
+    "enforcement_stage": "request_preflight",
+    "action": "reject",
+    "metadata_only": true
+  },
+  "required_audit_readback": {
+    "runtime_owned_required": true,
+    "current_runtime_owned_required": true,
+    "gateway_runtime_provenance_required": true,
+    "admin_ui_api_readback_status_expected": "pass"
+  },
+  "required_support_field_expectations": {
+    "request_id_required": true,
+    "trace_id_required_when_present": true,
+    "audit_lookup_fields": [
+      "request_id",
+      "resource_type",
+      "action",
+      "created_at"
+    ],
+    "operator_safe_fields": [
+      "request_id",
+      "trace_id",
+      "route",
+      "provider",
+      "ledger",
+      "guardrail",
+      "audit",
+      "usage",
+      "balance"
+    ],
+    "forbidden_fields": [
+      "raw_prompt",
+      "raw_request_body",
+      "raw_response_body",
+      "credential_values",
+      "provider_secret_values"
+    ]
+  },
+  "usage_cost_policy": {
+    "provider_usage_expected": "none",
+    "provider_attempts_required_zero": true,
+    "billing_mode": "usage_only_beta",
+    "real_paid_billing_claimed": false
+  },
+  "ledger_balance_policy": {
+    "ledger_entries_linked_by_request_id": true,
+    "ledger_entries_metadata_only": true,
+    "prompt_rejection_debit_expected": false,
+    "balance_readback_source": "control_plane_remaining_balance_endpoint_when_wallet_exists",
+    "balance_claim_for_prompt_rejection": "unchanged_by_guardrail_rejection"
+  },
+  "operator_explainability_contract": {
+    "required_surfaces": [
+      "request_log_detail",
+      "trace_summary",
+      "audit_logs",
+      "ledger_entries",
+      "remaining_balance"
+    ],
+    "required_field_groups": [
+      "route",
+      "provider",
+      "ledger",
+      "guardrail",
+      "audit",
+      "usage",
+      "balance",
+      "support"
+    ],
+    "prompt_response_secret_safe": true,
+    "e8_e11_coverage": "external_runtime_input_required"
+  },
+  "negative_selftests": [
+    "missing_request_id_rejected",
+    "provider_attempts_nonzero_rejected",
+    "raw_material_marker_rejected"
+  ],
+  "todo_14_scope": {
+    "e13_subclosure_ready": true,
+    "todo_14_overall_closed": false,
+    "e8_request_ids_required_from_e8_lane": true,
+    "e11_request_ids_required_from_e11_lane": true,
+    "e8_e11_request_ids_status": "external_runtime_input_required",
+    "missing_current_smoke_ids_classification": "runtime_input_required",
+    "global_api_distribution_blocker": false
+  }
+}

@@ -1,4 +1,5 @@
 import { CheckCircle2, CircleDashed } from "./icons";
+import { MetricTile } from "../design/MetricTile";
 
 export type FeaturePanelData = {
   checklist: string[];
@@ -27,10 +28,7 @@ export function FeaturePanel({ panel }: Props) {
 
       <div className="feature-stats" aria-label={`${panel.title} summary`}>
         {panel.stats.map((item) => (
-          <article className={`metric-card metric-card--${item.tone}`} key={item.label}>
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-          </article>
+          <MetricTile key={item.label} label={item.label} value={item.value} tone={item.tone} />
         ))}
       </div>
 

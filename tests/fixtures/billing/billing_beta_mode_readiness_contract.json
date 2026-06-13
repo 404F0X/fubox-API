@@ -1,0 +1,128 @@
+{
+  "contract": "billing_beta_mode_readiness.v1",
+  "description": "Paid beta readiness refusal gate. This fixture is DB-free, network-free, and secret-safe.",
+  "exit_code_contract": {
+    "usage_only_allowed_exit_code": 0,
+    "paid_allowed_exit_code": 0,
+    "paid_refused_missing_evidence_exit_code": 2
+  },
+  "required_evidence": [
+    "gateway_hot_path_reserve_settle_refund",
+    "insufficient_balance_prevents_provider_call",
+    "settle_idempotency",
+    "refund_idempotency",
+    "post_commit_readback",
+    "rollback_proof",
+    "reconciliation_report"
+  ],
+  "default_evidence": {
+    "gateway_hot_path_reserve_settle_refund": false,
+    "insufficient_balance_prevents_provider_call": false,
+    "settle_idempotency": false,
+    "refund_idempotency": false,
+    "post_commit_readback": false,
+    "rollback_proof": false,
+    "reconciliation_report": false
+  },
+  "secret_safe": {
+    "database_url_output": "omitted",
+    "env_value_output": "omitted",
+    "raw_secret_echoed": false,
+    "credential_material_echoed": false,
+    "network_or_db_io_performed": false
+  },
+  "cases": [
+    {
+      "name": "usage_only_beta_default_allowed",
+      "billing_mode_requested": "usage_only_beta",
+      "expect": {
+        "usage_only_beta_allowed": true,
+        "paid_controlled_beta_allowed": false,
+        "decision": "usage_only_beta_allowed",
+        "missing_evidence": [
+          "gateway_hot_path_reserve_settle_refund",
+          "insufficient_balance_prevents_provider_call",
+          "settle_idempotency",
+          "refund_idempotency",
+          "post_commit_readback",
+          "rollback_proof",
+          "reconciliation_report"
+        ],
+        "blockers": [],
+        "exit_code": 0
+      }
+    },
+    {
+      "name": "paid_controlled_beta_default_refused",
+      "billing_mode_requested": "paid_controlled_beta",
+      "expect": {
+        "usage_only_beta_allowed": false,
+        "paid_controlled_beta_allowed": false,
+        "decision": "paid_controlled_beta_refused_missing_evidence",
+        "missing_evidence": [
+          "gateway_hot_path_reserve_settle_refund",
+          "insufficient_balance_prevents_provider_call",
+          "settle_idempotency",
+          "refund_idempotency",
+          "post_commit_readback",
+          "rollback_proof",
+          "reconciliation_report"
+        ],
+        "blockers": [
+          "gateway_hot_path_reserve_settle_refund",
+          "insufficient_balance_prevents_provider_call",
+          "settle_idempotency",
+          "refund_idempotency",
+          "post_commit_readback",
+          "rollback_proof",
+          "reconciliation_report"
+        ],
+        "exit_code": 2
+      }
+    },
+    {
+      "name": "paid_controlled_beta_all_evidence_contract_shape_only_refused",
+      "billing_mode_requested": "paid_controlled_beta",
+      "paid_evidence_bundle_production_ready": false,
+      "evidence": {
+        "gateway_hot_path_reserve_settle_refund": true,
+        "insufficient_balance_prevents_provider_call": true,
+        "settle_idempotency": true,
+        "refund_idempotency": true,
+        "post_commit_readback": true,
+        "rollback_proof": true,
+        "reconciliation_report": true
+      },
+      "expect": {
+        "usage_only_beta_allowed": false,
+        "paid_controlled_beta_allowed": false,
+        "decision": "paid_controlled_beta_requested_blocked_not_production_ready",
+        "missing_evidence": [],
+        "blockers": [],
+        "exit_code": 2
+      }
+    },
+    {
+      "name": "paid_controlled_beta_all_evidence_allowed",
+      "billing_mode_requested": "paid_controlled_beta",
+      "paid_evidence_bundle_production_ready": true,
+      "evidence": {
+        "gateway_hot_path_reserve_settle_refund": true,
+        "insufficient_balance_prevents_provider_call": true,
+        "settle_idempotency": true,
+        "refund_idempotency": true,
+        "post_commit_readback": true,
+        "rollback_proof": true,
+        "reconciliation_report": true
+      },
+      "expect": {
+        "usage_only_beta_allowed": false,
+        "paid_controlled_beta_allowed": true,
+        "decision": "paid_controlled_beta_allowed",
+        "missing_evidence": [],
+        "blockers": [],
+        "exit_code": 0
+      }
+    }
+  ]
+}

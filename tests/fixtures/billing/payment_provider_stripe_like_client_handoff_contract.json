@@ -1,0 +1,70 @@
+{
+  "contract": "payment_provider_stripe_like_client_handoff.v1",
+  "status": "crate_contract_only",
+  "runtime": {
+    "network_call_enabled": true,
+    "network_call_performed": false,
+    "real_charge_or_refund_side_effects": false
+  },
+  "handoff": {
+    "implementation": "reqwest_boundary",
+    "runtime_secret_ref_required": true,
+    "runtime_secret_ref_resolved": true,
+    "reqwest_client_configured": true,
+    "request_builder_configured": true,
+    "object_ref_present": true,
+    "object_fetch_would_be_sent": true,
+    "object_fetch_blocked_reasons": [],
+    "suppression": "network_call_performed_remains_false_until_real_executor_is_allowed"
+  },
+  "blocked_reason_examples": [
+    "network_disabled",
+    "network_client_not_configured",
+    "http_client_not_configured",
+    "runtime_secret_not_configured",
+    "credential_source_not_ready",
+    "merchant_account_ref_missing",
+    "provider_object_ref_missing",
+    "idempotency_safe_marker_missing"
+  ],
+  "retry_policy": {
+    "max_attempts": "configured_summary_only",
+    "retry_on_timeout": true,
+    "retry_on_429": true,
+    "retry_on_5xx": true,
+    "backoff": "bounded_exponential_jitter_summary_only",
+    "idempotency_required_for_post_retry": true
+  },
+  "source_of_truth_handoff": {
+    "adapter": "stripe_api_source_of_truth.fetch_adapter",
+    "fetch_adapter_schema": "payment_provider_stripe_api_fetch_adapter.v1",
+    "required_provider_object_summary_schema": "payment_provider_stripe_like_source_of_truth_summary.v1",
+    "reconciliation_handoff": "payment_provider_stripe_like_response_object_reconciliation.v1",
+    "provider_object_summary_present": false,
+    "response_header_summary_present": false,
+    "source_of_truth_handoff_ready": true,
+    "network_call_performed": false
+  },
+  "secret_safety": {
+    "raw_secret_allowed": false,
+    "authorization_value_allowed": false,
+    "raw_provider_ref_allowed": false,
+    "raw_headers_allowed": false,
+    "raw_body_allowed": false,
+    "raw_provider_payload_allowed": false,
+    "credential_source_policy": "secret_ref_resolution_presence_only"
+  },
+  "omitted_fields": [
+    "provider_api_key",
+    "credential_value",
+    "authorization",
+    "raw_object_ref",
+    "raw_provider_ref",
+    "raw_request_headers",
+    "raw_response_headers",
+    "raw_request_body",
+    "raw_response_body",
+    "provider_object_source_of_truth",
+    "stripe_response_payload"
+  ]
+}

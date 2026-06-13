@@ -1,0 +1,198 @@
+{
+  "schema": "paid_beta_evidence_index_manifest_v1",
+  "status_date": "2026-06-05",
+  "paid_controlled_beta_requested": true,
+  "paid_controlled_beta_allowed": true,
+  "current_state": "controlled_paid_beta_evidence_accepted_by_main_review",
+  "source_markdown": "docs/PAID_BETA_EVIDENCE_INDEX.md",
+  "operator_runbook": "docs/PAID_BETA_RUNBOOK.md",
+  "main_review_status": "accepted",
+  "accepted_artifact_paths": [
+    ".tmp/paid-beta/e8_gateway_paid_hot_path.json",
+    ".tmp/paid-beta/e11_control_plane_paid_readback_reconciliation.json",
+    ".tmp/paid-beta/real_paid_evidence_bundle.json",
+    ".tmp/paid-beta/e9_paid_readiness_gate.json",
+    "artifacts/beta_acceptance_paid_aggregator_20260605_main_final_review.json"
+  ],
+  "remaining_caveats": [
+    "controlled paid beta evidence accepted by main review, not full Production RC",
+    "bounded smoke refund endpoint is dev evidence only",
+    "partial refund policy and deeper reconciliation remain Production RC work"
+  ],
+  "secret_safe_policy": {
+    "raw_prompt_allowed": false,
+    "raw_request_body_allowed": false,
+    "token_allowed": false,
+    "authorization_header_allowed": false,
+    "cookie_allowed": false,
+    "database_url_allowed": false,
+    "provider_key_allowed": false,
+    "virtual_key_allowed": false
+  },
+  "required_artifacts": [
+    {
+      "id": "e8_gateway_paid_hot_path",
+      "owner": "E8 / Gateway",
+      "expected_path": ".tmp/paid-beta/e8_gateway_paid_hot_path.json",
+      "schema": "gateway_paid_hot_path_evidence_v1",
+      "pass_markers": [
+        "overall_status=pass",
+        "gateway_hot_path_reserve_settle_refund=pass",
+        "insufficient_balance_prevents_provider_call=pass",
+        "settle_idempotency=pass",
+        "refund_idempotency=pass",
+        "provider_attempts_count=0 for insufficient-balance case",
+        "secret_safe=true"
+      ],
+      "blocked_markers": [
+        "artifact_missing",
+        "stale_commit",
+        "simulation_or_fixture",
+        "reserve_settle_refund_not_all_passed",
+        "insufficient_balance_still_calls_provider",
+        "provider_attempts_generated",
+        "secret_safe_failure"
+      ],
+      "release_artifact": true,
+      "current_status": "accepted_by_main_review_controlled_paid_beta_evidence_independent_sql_readback_pass"
+    },
+    {
+      "id": "e11_control_plane_paid_readback_reconciliation",
+      "owner": "E11 / Control Plane",
+      "expected_path": ".tmp/paid-beta/e11_control_plane_paid_readback_reconciliation.json",
+      "schema": "control_plane_paid_ledger_readback_verification.v1",
+      "pass_markers": [
+        "overall_status=pass",
+        "post_commit_readback=pass",
+        "rollback_proof=pass",
+        "reconciliation_report=pass",
+        "audit_admin_api_sql_readback=pass",
+        "secret_safe=true"
+      ],
+      "blocked_markers": [
+        "gateway_paid_hot_path_artifact_missing",
+        "readback_mismatch",
+        "rollback_missing",
+        "reconciliation_missing",
+        "raw_secret_or_body_marker",
+        "stale_or_simulated_artifact"
+      ],
+      "release_artifact": true,
+      "current_status": "accepted_by_main_review_overall_pass_actual_exit_code_0_refund_row_readback_pass"
+    },
+    {
+      "id": "e9_real_paid_evidence_bundle",
+      "owner": "E9 / Billing Ledger",
+      "expected_path": ".tmp/paid-beta/real_paid_evidence_bundle.json",
+      "schema": "billing_paid_strong_consistency_evidence_bundle.v1",
+      "pass_markers": [
+        "contract_shape_only=false",
+        "synthetic_selftest=false",
+        "production_hot_path_claim=true",
+        "paid_controlled_beta_production_ready=true",
+        "all_seven_required_evidence_items_pass",
+        "secret_safe.raw_secret_present=false"
+      ],
+      "blocked_markers": [
+        "missing_e8_source_artifact",
+        "missing_e11_source_artifact",
+        "contract_shape_only",
+        "synthetic_selftest",
+        "production_ready_false",
+        "missing_or_invalid_evidence",
+        "secret_safe_failure"
+      ],
+      "release_artifact": true,
+      "current_status": "accepted_by_main_review_accepted_contract_shape_production_ready_non_synthetic_real_bundle"
+    },
+    {
+      "id": "e9_paid_readiness_gate_json",
+      "owner": "E9 / Release",
+      "expected_path": ".tmp/paid-beta/e9_paid_readiness_gate.json",
+      "schema": "billing_beta_mode_readiness.v1",
+      "pass_markers": [
+        "paid_controlled_beta_requested=true",
+        "paid_controlled_beta_allowed=true",
+        "paid_evidence_bundle_status=pass",
+        "missing_evidence=[]",
+        "actual_exit_code=0"
+      ],
+      "blocked_markers": [
+        "paid_evidence_bundle_missing",
+        "paid_evidence_bundle_contract_shape_only_not_production_ready",
+        "paid_evidence_bundle_refused",
+        "actual_exit_code=2",
+        "paid_controlled_beta_allowed=false"
+      ],
+      "release_artifact": true,
+      "current_status": "accepted_by_main_review_paid_controlled_beta_allowed_true"
+    },
+    {
+      "id": "qa_paid_acceptance_aggregator",
+      "owner": "QA / Release",
+      "expected_path": "artifacts/beta_acceptance_paid_aggregator_20260605_main_final_review.json",
+      "schema": "paid_beta_acceptance_aggregator_v2",
+      "pass_markers": [
+        "overall_status=pass",
+        "paid_controlled_beta_allowed=true",
+        "e8_e11_e9_artifacts_all_pass",
+        "secret_scan=pass",
+        "missing_artifacts=[]",
+        "not_final_if_blocked=false"
+      ],
+      "blocked_markers": [
+        "overall_status=blocked",
+        "missing_e9_readiness_json",
+        "missing_e8_artifact",
+        "missing_e11_artifact",
+        "missing_real_bundle",
+        "release_gate_paid_allowed_blocked",
+        "secret_scan_fail"
+      ],
+      "release_artifact": true,
+      "current_status": "accepted_by_main_review_overall_pass_paid_controlled_beta_allowed_true_no_blocked_or_failed_checks"
+    },
+    {
+      "id": "secret_scan",
+      "owner": "QA / Security",
+      "expected_path": "artifacts/paid_beta_secret_scan_<run_id>.json",
+      "schema": "secret_scan_summary_v1",
+      "pass_markers": [
+        "exit_code=0",
+        "hits=0",
+        "warnings_accepted_by_security",
+        "no_prompt_token_authorization_cookie_dsn_provider_key_virtual_key_leakage"
+      ],
+      "blocked_markers": [
+        "nonzero_exit",
+        "hits_greater_than_zero",
+        "untriaged_warnings",
+        "raw_secret_material_in_paid_artifact"
+      ],
+      "release_artifact": true,
+      "current_status": "accepted_by_main_review_secret_scan_exit_0"
+    },
+    {
+      "id": "full_todo_20_summary",
+      "owner": "QA",
+      "expected_path": "artifacts/beta_acceptance_summary_<run_id>.json",
+      "schema": "beta_acceptance_summary_v1",
+      "pass_markers": [
+        "full_wrapper_runtime_admin_ui_npm_gates_pass",
+        "paid_evidence_accepted",
+        "paid_controlled_beta_allowed=true",
+        "not_final_beta_acceptance=false",
+        "secret_safe=true"
+      ],
+      "blocked_markers": [
+        "summary_missing",
+        "full_gate_not_run",
+        "p0_or_paid_blocker_open",
+        "paid_controlled_beta_allowed=false",
+        "stale_or_simulated_evidence"
+      ],
+      "release_artifact": true,
+      "current_status": "controlled_paid_beta_evidence_accepted_not_full_production_rc"
+    }
+  ]
+}

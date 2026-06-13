@@ -16,12 +16,18 @@
       "dry_run",
       "test_mode",
       "upstream_call",
+      "protocol",
+      "status",
+      "next_step",
       "requested_model",
       "upstream_model",
       "channel",
       "provider",
       "billing",
       "credential_material",
+      "manual_test_explainability",
+      "protocol_readiness",
+      "endpoint_capabilities",
       "request_plan",
       "next_steps"
     ],
@@ -41,6 +47,9 @@
           "dry_run": true,
           "test_mode": "channel_manual_test",
           "upstream_call": false,
+          "protocol": "openai",
+          "status": "config-needed",
+          "next_step": "Add an enabled provider key before running OpenAI-compatible models/chat live traffic.",
           "requested_model": "gpt-visible",
           "upstream_model": "upstream-gpt",
           "channel": {
@@ -48,7 +57,7 @@
             "name": "primary channel",
             "status": "enabled",
             "protocol_mode": "openai_compatible",
-            "endpoint": "https://provider.example/v1",
+            "endpoint": "omitted",
             "priority": 10,
             "weight": 100,
             "health_score": 1.0
@@ -66,17 +75,194 @@
           },
           "credential_material": {
             "provider_key_secret": "omitted",
-            "secret_fingerprint": "omitted"
+            "secret_fingerprint": "omitted",
+            "authorization_header": "omitted",
+            "configured": false
+          },
+          "manual_test_explainability": {
+            "schema": "channel_manual_test_explainability.v1",
+            "protocol": "openai",
+            "status": "config-needed",
+            "execution_mode": "dry_run_only",
+            "mock_status": "ready",
+            "live_status": "provider_key_missing",
+            "config_needed": ["enabled_provider_key_missing_for_live"],
+            "provider_key_lifecycle_summary": {
+              "enabled_provider_key_present": false,
+              "secret_available_to_runtime": false,
+              "secret_returned": false,
+              "fingerprint_returned": false,
+              "authorization_returned": false,
+              "summary": "no enabled provider key is configured; dry-run can explain mock contract only"
+            },
+            "endpoint_capability": {
+              "method": "POST",
+              "path_template": "/v1/chat/completions",
+              "operation": "OpenAI models/chat",
+              "mock_contract": "openai.chat.completions.v1",
+              "capabilities": [
+                {
+                  "endpoint": "chat",
+                  "operation": "OpenAI Chat Completions",
+                  "supported": true,
+                  "protocol": "openai",
+                  "path_template": "/v1/chat/completions",
+                  "mockable_config_status": "ready",
+                  "mock_contract": "openai.chat.completions.v1",
+                  "live_config_status": "blocked_provider_key_missing",
+                  "provider_key_present": false,
+                  "known_missing_pieces": ["enabled_provider_key_missing_for_live"],
+                  "safe_next_action": "Add an enabled provider key for live use, or keep this endpoint in mock-only validation.",
+                  "raw_endpoint_returned": false,
+                  "raw_payload_returned": false,
+                  "authorization_returned": false,
+                  "provider_key_returned": false
+                }
+              ],
+              "raw_endpoint_returned": false,
+              "raw_payload_returned": false
+            },
+            "safe_next_action": "Add an enabled provider key before running OpenAI-compatible models/chat live traffic.",
+            "omitted_secret_policy": {
+              "provider_key_returned": false,
+              "provider_key_secret_returned": false,
+              "provider_key_fingerprint_returned": false,
+              "authorization_header_returned": false,
+              "raw_endpoint_returned": false,
+              "raw_payload_returned": false,
+              "omitted_fields": [
+                "provider_key",
+                "provider_key_secret",
+                "provider_key_fingerprint",
+                "authorization",
+                "raw_endpoint",
+                "raw_payload",
+                "request_body",
+                "headers"
+              ],
+              "policy": "presence_and_status_only"
+            },
+            "secret_safe": true
+          },
+          "protocol_readiness": {
+            "schema": "provider_channel_protocol_readiness.v1",
+            "protocol_mode": "openai_compatible",
+            "normalized_protocol": "openai",
+            "status": "mockable-config-ready",
+            "supported_endpoint_count": 3,
+            "mockable_config_status": "ready",
+            "live_config_status": "provider_key_missing",
+            "provider_key_present": false,
+            "known_missing_pieces": ["enabled_provider_key_missing_for_live"],
+            "safe_next_action": "Add an enabled provider key, or continue with mock-only contract checks.",
+            "secret_safe": true,
+            "raw_endpoint_returned": false,
+            "raw_payload_returned": false,
+            "authorization_returned": false,
+            "provider_key_returned": false
+          },
+          "endpoint_capabilities": {
+            "schema": "provider_channel_endpoint_capabilities.v1",
+            "protocol": "openai",
+            "endpoints": [
+              {
+                "endpoint": "chat",
+                "operation": "OpenAI Chat Completions",
+                "supported": true,
+                "protocol": "openai",
+                "path_template": "/v1/chat/completions",
+                "mockable_config_status": "ready",
+                "mock_contract": "openai.chat.completions.v1",
+                "live_config_status": "blocked_provider_key_missing",
+                "provider_key_present": false,
+                "known_missing_pieces": ["enabled_provider_key_missing_for_live"],
+                "safe_next_action": "Add an enabled provider key for live use, or keep this endpoint in mock-only validation.",
+                "raw_endpoint_returned": false,
+                "raw_payload_returned": false,
+                "authorization_returned": false,
+                "provider_key_returned": false
+              },
+              {
+                "endpoint": "responses",
+                "operation": "OpenAI Responses",
+                "supported": true,
+                "protocol": "openai",
+                "path_template": "/v1/responses",
+                "mockable_config_status": "ready",
+                "mock_contract": "openai.responses.v1",
+                "live_config_status": "blocked_provider_key_missing",
+                "provider_key_present": false,
+                "known_missing_pieces": ["enabled_provider_key_missing_for_live"],
+                "safe_next_action": "Add an enabled provider key for live use, or keep this endpoint in mock-only validation.",
+                "raw_endpoint_returned": false,
+                "raw_payload_returned": false,
+                "authorization_returned": false,
+                "provider_key_returned": false
+              },
+              {
+                "endpoint": "embeddings",
+                "operation": "OpenAI Embeddings",
+                "supported": true,
+                "protocol": "openai",
+                "path_template": "/v1/embeddings",
+                "mockable_config_status": "ready",
+                "mock_contract": "openai.embeddings.v1",
+                "live_config_status": "blocked_provider_key_missing",
+                "provider_key_present": false,
+                "known_missing_pieces": ["enabled_provider_key_missing_for_live"],
+                "safe_next_action": "Add an enabled provider key for live use, or keep this endpoint in mock-only validation.",
+                "raw_endpoint_returned": false,
+                "raw_payload_returned": false,
+                "authorization_returned": false,
+                "provider_key_returned": false
+              },
+              {
+                "endpoint": "anthropic_messages",
+                "operation": "Anthropic Messages",
+                "supported": false,
+                "protocol": "openai",
+                "path_template": "/v1/messages",
+                "mockable_config_status": "unsupported_by_channel_protocol",
+                "mock_contract": "unsupported_by_channel_protocol",
+                "live_config_status": "unsupported_by_channel_protocol",
+                "provider_key_present": false,
+                "known_missing_pieces": ["channel_protocol_does_not_support_endpoint"],
+                "safe_next_action": "Choose a channel whose protocol supports this endpoint.",
+                "raw_endpoint_returned": false,
+                "raw_payload_returned": false,
+                "authorization_returned": false,
+                "provider_key_returned": false
+              },
+              {
+                "endpoint": "gemini_native",
+                "operation": "Gemini generateContent",
+                "supported": false,
+                "protocol": "openai",
+                "path_template": "/v1beta/models/{model}:generateContent",
+                "mockable_config_status": "unsupported_by_channel_protocol",
+                "mock_contract": "unsupported_by_channel_protocol",
+                "live_config_status": "unsupported_by_channel_protocol",
+                "provider_key_present": false,
+                "known_missing_pieces": ["channel_protocol_does_not_support_endpoint"],
+                "safe_next_action": "Choose a channel whose protocol supports this endpoint.",
+                "raw_endpoint_returned": false,
+                "raw_payload_returned": false,
+                "authorization_returned": false,
+                "provider_key_returned": false
+              }
+            ]
           },
           "request_plan": {
             "method": "POST",
             "path": "/v1/chat/completions",
-            "protocol_mode": "openai_compatible",
-            "model": "upstream-gpt"
+            "protocol_mode": "openai",
+            "operation": "OpenAI models/chat",
+            "model": "upstream-gpt",
+            "mock_contract": "openai.chat.completions.v1"
           },
           "next_steps": [
             "Dry-run only: no upstream provider call was made.",
-            "Run a live manual probe only after provider-key selection and non-billable request logging are implemented."
+            "Add an enabled provider key before running OpenAI-compatible models/chat live traffic."
           ]
         }
       }

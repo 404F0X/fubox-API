@@ -1,0 +1,6 @@
+Import production/apply-plan readback seam
+
+- Wire UI/demo code to `GET /admin/importer/apply-runs/readback` and `POST /admin/importer/apply-runs/readback` when showing reviewed apply-plan handoff status.
+- Display only `plan_hash`, `idempotency_fingerprint`, `applied_row_counts`, `rollback_journal_ref_present`, `blocked_reasons`, `safe_next_action`, and `db_writes_performed=false`.
+- Never request or render DB URLs, raw SQL, raw user keys, provider keys, Authorization material, or secrets.
+- [!] Real production DB connection, real apply, rollback replay, and operator execution window remain outside this local readback seam.

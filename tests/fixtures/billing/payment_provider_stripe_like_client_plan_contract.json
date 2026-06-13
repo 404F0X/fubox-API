@@ -1,0 +1,123 @@
+{
+  "contract": "payment_provider_stripe_like_client_plan.v1",
+  "status": "crate_contract_only",
+  "runtime": {
+    "http_client": "request_plan_only",
+    "network_call_enabled": false,
+    "network_call_performed": false,
+    "real_charge_or_refund_side_effects": false
+  },
+  "operations": [
+    "retrieve_payment_intent",
+    "retrieve_charge",
+    "retrieve_refund",
+    "retrieve_dispute",
+    "capture_payment_intent",
+    "create_refund",
+    "chargeback_ack"
+  ],
+  "request_shape": {
+    "provider": "stripe_like|string",
+    "operation": "retrieve_payment_intent|retrieve_charge|retrieve_refund|retrieve_dispute|capture_payment_intent|create_refund|chargeback_ack",
+    "credential_source": "operator_secret_ref_name_only",
+    "credential_source_ready": true,
+    "merchant_account_ref_present": true,
+    "idempotency": {
+      "present": "required_for_post_operations",
+      "key_hash": "sha256_hex_optional",
+      "fingerprint": "public_fingerprint_optional"
+    },
+    "provider_refs": {
+      "provider_object_ref": "presence_hash_or_fingerprint",
+      "dispute_ref": "presence_hash_or_fingerprint",
+      "charge_ref": "presence_hash_or_fingerprint",
+      "refund_ref": "presence_hash_or_fingerprint"
+    },
+    "amount": "fixed_decimal_string_optional",
+    "currency": "ISO-4217 uppercase string optional",
+    "reason": "public_reason_code_optional",
+    "local_refs": "PaymentProviderRefs"
+  },
+  "http_request_readback": {
+    "retrieve_payment_intent": {
+      "method": "GET",
+      "path_template": "/v1/payment_intents/{payment_intent_ref}",
+      "body_fields": [],
+      "idempotency_header_required": false,
+      "credential_source_required": true
+    },
+    "retrieve_charge": {
+      "method": "GET",
+      "path_template": "/v1/charges/{charge_ref}",
+      "body_fields": [],
+      "idempotency_header_required": false,
+      "credential_source_required": true
+    },
+    "retrieve_refund": {
+      "method": "GET",
+      "path_template": "/v1/refunds/{refund_ref}",
+      "body_fields": [],
+      "idempotency_header_required": false,
+      "credential_source_required": true
+    },
+    "retrieve_dispute": {
+      "method": "GET",
+      "path_template": "/v1/disputes/{dispute_ref}",
+      "body_fields": [],
+      "idempotency_header_required": false,
+      "credential_source_required": true
+    },
+    "capture_payment_intent": {
+      "method": "POST",
+      "path_template": "/v1/payment_intents/{payment_intent_ref}/capture",
+      "body_fields": [
+        "amount_to_capture",
+        "currency",
+        "metadata[local_refs_present]"
+      ],
+      "idempotency_header_required": true,
+      "credential_source_required": true
+    },
+    "create_refund": {
+      "method": "POST",
+      "path_template": "/v1/refunds",
+      "body_fields": [
+        "charge",
+        "payment_intent",
+        "amount",
+        "currency",
+        "reason",
+        "metadata[local_refs_present]"
+      ],
+      "idempotency_header_required": true,
+      "credential_source_required": true
+    },
+    "chargeback_ack": {
+      "method": "POST",
+      "path_template": "/v1/disputes/{dispute_ref}/close",
+      "body_fields": [
+        "metadata[acknowledged_by_ledger]",
+        "metadata[local_refs_present]"
+      ],
+      "idempotency_header_required": true,
+      "credential_source_required": true
+    }
+  },
+  "secret_safety": {
+    "raw_secret_allowed": false,
+    "authorization_value_allowed": false,
+    "raw_idempotency_allowed": false,
+    "raw_provider_payload_allowed": false,
+    "raw_provider_ref_allowed": false,
+    "request_body_value_echoed": false,
+    "path_uses_template_only": true,
+    "credential_source_policy": "secret_ref_name_or_presence_only"
+  },
+  "blocked_reasons": [
+    "unsupported_provider",
+    "credential_source_not_ready",
+    "merchant_account_ref_missing",
+    "provider_object_ref_missing",
+    "idempotency_safe_marker_missing"
+  ]
+}

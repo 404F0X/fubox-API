@@ -30,6 +30,8 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<ChatMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    // Preserve OpenAI Chat Completions fields that this adapter does not interpret
+    // itself, including tools, tool_choice, parallel_tool_calls, and response_format.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -40,6 +42,8 @@ pub struct ChatMessage {
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Value>,
+    // Preserve message-level compatibility fields such as assistant tool_calls and
+    // tool message tool_call_id when forwarding to upstream providers.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -52,6 +56,8 @@ pub struct OpenAiResponseRequest {
     pub input: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    // Preserve Responses API fields this adapter does not interpret itself,
+    // including tools, tool_choice, parallel_tool_calls, and response_format/text.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -136,6 +142,12 @@ pub enum OpenAiAdapterError {
     },
     #[error("upstream returned non-JSON response with HTTP {status}: {message}")]
     UpstreamInvalidJson {
+        status: u16,
+        message: String,
+        retry_after: Option<AdapterRetryAfter>,
+    },
+    #[error("upstream returned invalid response schema with HTTP {status}: {message}")]
+    UpstreamInvalidResponse {
         status: u16,
         message: String,
         retry_after: Option<AdapterRetryAfter>,
@@ -237,6 +249,56 @@ impl ChatCompletionRequest {
     }
 }
 
+fn normalize_responses_messages_like_input(value: &mut Value) -> Result<(), OpenAiAdapterError> {
+    let object = value.as_object_mut().ok_or_else(|| {
+        OpenAiAdapterError::invalid_request("request body must be a JSON object", Some("body"))
+    })?;
+    let input_present = object.get("input").is_some_and(|input| !input.is_null());
+
+    let Some(messages) = object.remove("messages") else {
+        return Ok(());
+    };
+    if input_present {
+        return Ok(());
+    }
+    if messages.is_null() {
+        return Ok(());
+    }
+    if !messages.is_array() {
+        return Err(OpenAiAdapterError::invalid_request(
+            "messages must be an array when used as Responses input",
+            Some("messages"),
+        ));
+    }
+
+    object.insert("input".to_string(), messages);
+    Ok(())
+}
+
+fn remove_responses_compatibility_messages(value: &mut Value) {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("messages");
+    }
+}
+
+fn strip_or_normalize_responses_chat_only_fields(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+
+    if !object.contains_key("max_output_tokens") {
+        if let Some(max_tokens) = object.remove("max_tokens") {
+            object.insert("max_output_tokens".to_string(), max_tokens);
+        }
+    } else {
+        object.remove("max_tokens");
+    }
+
+    for field in ["n", "logprobs", "top_logprobs"] {
+        object.remove(field);
+    }
+}
+
 impl OpenAiResponseRequest {
     pub fn routing_fields_from_slice(
         body: &[u8],
@@ -273,7 +335,10 @@ impl OpenAiResponseRequest {
     }
 
     pub fn from_slice(body: &[u8]) -> Result<Self, OpenAiAdapterError> {
-        let request: Self = serde_json::from_slice(body)
+        let mut value: Value = serde_json::from_slice(body)
+            .map_err(|error| OpenAiAdapterError::InvalidJson(error.to_string()))?;
+        normalize_responses_messages_like_input(&mut value)?;
+        let request: Self = serde_json::from_value(value)
             .map_err(|error| OpenAiAdapterError::InvalidJson(error.to_string()))?;
         request.validate()?;
         Ok(request)
@@ -309,12 +374,15 @@ impl OpenAiResponseRequest {
 
     pub fn to_upstream_request(&self) -> Result<AdapterUpstreamRequest, OpenAiAdapterError> {
         self.validate()?;
+        let mut body = serde_json::to_value(self)
+            .map_err(|error| OpenAiAdapterError::RequestSerialize(error.to_string()))?;
+        remove_responses_compatibility_messages(&mut body);
+        strip_or_normalize_responses_chat_only_fields(&mut body);
 
         Ok(AdapterUpstreamRequest {
             method: "POST".to_string(),
             path: RESPONSES_PATH.to_string(),
-            body: serde_json::to_value(self)
-                .map_err(|error| OpenAiAdapterError::RequestSerialize(error.to_string()))?,
+            body,
             stream: self.is_streaming(),
         })
     }
@@ -369,6 +437,17 @@ impl OpenAiEmbeddingRequest {
             });
         }
 
+        let Some(input) = self.input.as_ref() else {
+            return Ok(());
+        };
+        if !is_supported_embeddings_input(input) {
+            return Err(OpenAiAdapterError::InvalidRequest {
+                message: "input must be a string, string array, token array, or token array batch"
+                    .to_string(),
+                param: Some("input"),
+            });
+        }
+
         Ok(())
     }
 
@@ -376,6 +455,10 @@ impl OpenAiEmbeddingRequest {
         let mut request = self.clone();
         request.model = upstream_model.into();
         request
+    }
+
+    pub fn input_shape_summary(&self) -> Value {
+        embeddings_input_shape_summary(self.input.as_ref())
     }
 
     pub fn to_upstream_request(&self) -> Result<AdapterUpstreamRequest, OpenAiAdapterError> {
@@ -389,6 +472,195 @@ impl OpenAiEmbeddingRequest {
             stream: false,
         })
     }
+}
+
+fn embeddings_input_shape_summary(input: Option<&Value>) -> Value {
+    let Some(input) = input else {
+        return json!({
+            "schema": "openai_embeddings_input_shape_v1",
+            "kind": "missing",
+            "item_count": 0,
+            "contains_raw_input": false
+        });
+    };
+
+    match input {
+        Value::String(_) => json!({
+            "schema": "openai_embeddings_input_shape_v1",
+            "kind": "string",
+            "item_count": 1,
+            "contains_raw_input": false
+        }),
+        Value::Array(items) => {
+            let kind = if items.iter().all(Value::is_string) {
+                "string_array"
+            } else if items.iter().all(|item| {
+                item.as_array()
+                    .is_some_and(|tokens| tokens.iter().all(is_json_integer))
+            }) {
+                "token_array_batch"
+            } else if items.iter().all(is_json_integer) {
+                "token_array"
+            } else if items.is_empty() {
+                "empty_array"
+            } else {
+                "mixed_array"
+            };
+            let token_counts = embeddings_input_token_counts(kind, items);
+            let mut summary = json!({
+                "schema": "openai_embeddings_input_shape_v1",
+                "kind": kind,
+                "item_count": items.len(),
+                "contains_raw_input": false
+            });
+            if let Some(token_counts) = token_counts {
+                summary["token_counts"] = token_counts;
+            }
+            summary
+        }
+        _ => json!({
+            "schema": "openai_embeddings_input_shape_v1",
+            "kind": "unsupported",
+            "item_count": 0,
+            "contains_raw_input": false
+        }),
+    }
+}
+
+fn is_supported_embeddings_input(input: &Value) -> bool {
+    match input {
+        Value::String(_) => true,
+        Value::Array(items) if items.is_empty() => false,
+        Value::Array(items) if items.iter().all(Value::is_string) => true,
+        Value::Array(items) if items.iter().all(is_json_integer) => true,
+        Value::Array(items) => items.iter().all(|item| {
+            item.as_array()
+                .is_some_and(|tokens| !tokens.is_empty() && tokens.iter().all(is_json_integer))
+        }),
+        _ => false,
+    }
+}
+
+fn is_json_integer(value: &Value) -> bool {
+    value.as_i64().is_some() || value.as_u64().is_some()
+}
+
+fn embeddings_input_token_counts(kind: &str, items: &[Value]) -> Option<Value> {
+    match kind {
+        "token_array" => Some(json!({
+            "total": items.len(),
+            "min": items.len(),
+            "max": items.len()
+        })),
+        "token_array_batch" => {
+            let counts: Vec<usize> = items
+                .iter()
+                .filter_map(|item| item.as_array().map(Vec::len))
+                .collect();
+            Some(json!({
+                "total": counts.iter().sum::<usize>(),
+                "min": counts.iter().min().copied().unwrap_or(0),
+                "max": counts.iter().max().copied().unwrap_or(0)
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn validate_embeddings_success_response_schema(
+    status: u16,
+    response: &Value,
+    retry_after: Option<AdapterRetryAfter>,
+) -> Result<(), OpenAiAdapterError> {
+    let Some(data) = response.get("data").and_then(Value::as_array) else {
+        return Err(OpenAiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: "embeddings response data must be an array".to_string(),
+            retry_after,
+        });
+    };
+
+    if data
+        .iter()
+        .any(|item| item.get("embedding").and_then(Value::as_array).is_none())
+    {
+        return Err(OpenAiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: "embeddings response items must include embedding arrays".to_string(),
+            retry_after,
+        });
+    }
+
+    Ok(())
+}
+
+fn embeddings_response_shape_summary(response: &Value) -> Value {
+    let data = response.get("data").and_then(Value::as_array);
+    let dimensions: Vec<usize> = data
+        .into_iter()
+        .flat_map(|items| items.iter())
+        .filter_map(|item| {
+            item.get("embedding")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+        })
+        .collect();
+    let first_dimension = dimensions.first().copied();
+    let mut unique_dimensions = dimensions.clone();
+    unique_dimensions.sort_unstable();
+    unique_dimensions.dedup();
+
+    let data_count = response
+        .get("data")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let usage = response.get("usage");
+
+    json!({
+        "schema": "openai_embeddings_response_shape_v1",
+        "object": response.get("object").and_then(Value::as_str),
+        "model_present": response
+            .get("model")
+            .and_then(Value::as_str)
+            .is_some_and(|model| !model.trim().is_empty()),
+        "data": {
+            "present": response.get("data").is_some(),
+            "array": response.get("data").and_then(Value::as_array).is_some(),
+            "embedding_count": data_count,
+            "all_items_embedding_arrays": response
+                .get("data")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().all(|item| {
+                    item.get("embedding").and_then(Value::as_array).is_some()
+                })),
+            "all_items_indexed": response
+                .get("data")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().all(|item| {
+                    item.get("index").and_then(Value::as_i64).is_some()
+                })),
+            "first_dimension": first_dimension,
+            "unique_dimensions": unique_dimensions,
+            "dimension_consistent": unique_dimensions.len() <= 1,
+        },
+        "usage": {
+            "present": usage.is_some(),
+            "object": usage.and_then(Value::as_object).is_some(),
+            "prompt_tokens_numeric": usage
+                .and_then(|usage| usage.get("prompt_tokens").or_else(|| usage.get("input_tokens")))
+                .and_then(Value::as_u64)
+                .is_some(),
+            "total_tokens_numeric": usage
+                .and_then(|usage| usage.get("total_tokens"))
+                .and_then(Value::as_u64)
+                .is_some(),
+            "completion_tokens_ignored_for_embeddings": usage
+                .and_then(|usage| usage.get("completion_tokens").or_else(|| usage.get("output_tokens")))
+                .is_some(),
+        },
+        "raw_payload_omitted": true,
+        "raw_embeddings_omitted": true,
+    })
 }
 
 impl OpenAiModelsRequest {
@@ -821,7 +1093,18 @@ impl OpenAiCompatibleClient {
         retry_after: Option<AdapterRetryAfter>,
         provider_key: Option<&str>,
     ) -> Result<Value, OpenAiAdapterError> {
-        Self::parse_openai_json_response_with_context(status, body, retry_after, provider_key)
+        let json = Self::parse_openai_json_response_with_context(
+            status,
+            body,
+            retry_after.clone(),
+            provider_key,
+        )?;
+        validate_embeddings_success_response_schema(status, &json, retry_after)?;
+        Ok(json)
+    }
+
+    pub fn embeddings_response_shape_summary(response: &Value) -> Value {
+        embeddings_response_shape_summary(response)
     }
 
     pub fn parse_models_response(status: u16, body: &[u8]) -> Result<Value, OpenAiAdapterError> {
@@ -832,6 +1115,10 @@ impl OpenAiCompatibleClient {
         data: &[u8],
     ) -> Result<OpenAiResponsesStreamEvent, OpenAiAdapterError> {
         OpenAiResponsesStreamEvent::from_data_slice(data)
+    }
+
+    pub fn responses_protocol_metadata(response: &Value) -> Value {
+        responses_protocol_metadata(response)
     }
 
     fn parse_models_response_with_retry_after(
@@ -902,10 +1189,11 @@ impl OpenAiCompatibleClient {
         request: &OpenAiResponseRequest,
         provider_key: Option<&str>,
     ) -> Result<reqwest::RequestBuilder, OpenAiAdapterError> {
+        let upstream_request = self.build_responses_request(request)?;
         let mut builder = self
             .http
             .post(format!("{}{}", self.base_url, RESPONSES_PATH))
-            .json(request);
+            .json(&upstream_request.body);
 
         if let Some(provider_key) = provider_key {
             builder = builder.header(AUTHORIZATION, bearer_authorization(provider_key)?);
@@ -1003,7 +1291,35 @@ impl OpenAiResponsesStreamEvent {
             return None;
         }
 
-        openai_usage(&self.data).or_else(|| self.data.get("response").and_then(openai_usage))
+        openai_usage(&self.data)
+            .or_else(|| self.data.get("response").and_then(openai_usage))
+            .or_else(|| self.data.get("error").and_then(openai_usage))
+    }
+
+    pub fn protocol_metadata(&self) -> Value {
+        let mut metadata =
+            responses_protocol_metadata(self.data.get("response").unwrap_or(&self.data));
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("mode".to_string(), Value::String("stream".to_string()));
+            object.insert(
+                "event_type".to_string(),
+                self.data
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(|value| Value::String(value.to_string()))
+                    .unwrap_or(Value::Null),
+            );
+            object.insert(
+                "terminal_kind".to_string(),
+                json!(self.terminal_kind.clone()),
+            );
+            object.insert(
+                "terminal".to_string(),
+                Value::Bool(self.terminal_kind.is_terminal()),
+            );
+            object.insert("error".to_string(), responses_error_shape(&self.data));
+        }
+        metadata
     }
 }
 
@@ -1027,7 +1343,8 @@ impl OpenAiAdapterError {
             Self::UpstreamConnect(_)
             | Self::UpstreamRequest(_)
             | Self::UpstreamRead(_)
-            | Self::UpstreamInvalidJson { .. } => 502,
+            | Self::UpstreamInvalidJson { .. }
+            | Self::UpstreamInvalidResponse { .. } => 502,
             Self::UpstreamStatus { status, .. } => *status,
         }
     }
@@ -1169,6 +1486,19 @@ impl OpenAiAdapterError {
                     "provider_status": status
                 }),
             ),
+            Self::UpstreamInvalidResponse {
+                status, message, ..
+            } => error_body(
+                "provider_error",
+                "provider_invalid_response",
+                message,
+                None,
+                json!({
+                    "error_owner": "parser",
+                    "error_stage": "response_transform",
+                    "provider_status": status
+                }),
+            ),
         };
 
         self.attach_error_signal_metadata(&mut body);
@@ -1208,7 +1538,8 @@ impl OpenAiAdapterError {
     pub fn retry_after(&self) -> Option<&AdapterRetryAfter> {
         match self {
             Self::UpstreamStatus { retry_after, .. }
-            | Self::UpstreamInvalidJson { retry_after, .. } => retry_after.as_ref(),
+            | Self::UpstreamInvalidJson { retry_after, .. }
+            | Self::UpstreamInvalidResponse { retry_after, .. } => retry_after.as_ref(),
             _ => None,
         }
     }
@@ -1238,6 +1569,11 @@ impl OpenAiAdapterError {
                 ..
             } => Some(status_signal(*status, retry_after.as_ref())),
             Self::UpstreamInvalidJson {
+                status,
+                retry_after,
+                ..
+            }
+            | Self::UpstreamInvalidResponse {
                 status,
                 retry_after,
                 ..
@@ -1591,17 +1927,24 @@ fn is_sensitive_json_key(key: &str) -> bool {
 
 fn openai_usage(response: &Value) -> Option<AdapterUsage> {
     let usage = response.get("usage")?;
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .and_then(Value::as_u64);
+    let completion_tokens = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .and_then(Value::as_u64);
+    let total_tokens = usage.get("total_tokens").and_then(Value::as_u64);
+
+    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
 
     Some(AdapterUsage {
-        prompt_tokens: usage
-            .get("prompt_tokens")
-            .or_else(|| usage.get("input_tokens"))
-            .and_then(Value::as_u64),
-        completion_tokens: usage
-            .get("completion_tokens")
-            .or_else(|| usage.get("output_tokens"))
-            .and_then(Value::as_u64),
-        total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
     })
 }
 
@@ -1624,6 +1967,175 @@ fn openai_responses_stream_terminal_kind(data: &Value) -> OpenAiResponsesStreamT
         }
         _ => OpenAiResponsesStreamTerminalKind::None,
     }
+}
+
+fn responses_protocol_metadata(response: &Value) -> Value {
+    let output = response.get("output").and_then(Value::as_array);
+    let output_item_counts = responses_output_item_counts(output);
+    let output_count = output.map_or(0, Vec::len);
+    let status = response.get("status").and_then(Value::as_str);
+    let finish_reason = response
+        .get("finish_reason")
+        .or_else(|| response.get("finishReason"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let reason = response
+        .get("reason")
+        .or_else(|| {
+            response
+                .get("incomplete_details")
+                .and_then(|details| details.get("reason"))
+        })
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    json!({
+        "schema": "openai_responses_protocol_metadata_v1",
+        "secret_safe": true,
+        "mode": "non_stream",
+        "object": response.get("object").and_then(Value::as_str),
+        "status": status,
+        "output_count": output_count,
+        "output_item_counts": output_item_counts,
+        "known_output_item_types": [
+            "message",
+            "tool_call",
+            "function_call",
+            "refusal",
+            "error",
+            "reasoning"
+        ],
+        "compat_normalization": {
+            "message": output_item_counts.get("message").and_then(Value::as_u64).unwrap_or(0),
+            "tool_call": output_item_counts.get("tool_call").and_then(Value::as_u64).unwrap_or(0),
+            "function_call": output_item_counts.get("function_call").and_then(Value::as_u64).unwrap_or(0),
+            "refusal": output_item_counts.get("refusal").and_then(Value::as_u64).unwrap_or(0),
+            "error": output_item_counts.get("error").and_then(Value::as_u64).unwrap_or(0)
+        },
+        "usage": responses_usage_shape(response),
+        "finish": {
+            "finish_reason_present": finish_reason.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            "finish_reason": finish_reason,
+            "reason_present": reason.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            "reason": reason
+        },
+        "reasoning": responses_reasoning_shape(output),
+        "refusal": responses_refusal_shape(response, output),
+        "error": responses_error_shape(response),
+        "raw_payload_omitted": true,
+        "raw_prompt_omitted": true,
+        "raw_messages_omitted": true,
+        "raw_provider_payload_omitted": true
+    })
+}
+
+fn responses_output_item_counts(output: Option<&Vec<Value>>) -> Value {
+    let mut counts = Map::new();
+    if let Some(output) = output {
+        for item in output {
+            let item_type = item
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("unknown");
+            let current = counts
+                .get(item_type)
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .saturating_add(1);
+            counts.insert(item_type.to_string(), Value::from(current));
+        }
+    }
+    Value::Object(counts)
+}
+
+fn responses_usage_shape(response: &Value) -> Value {
+    let usage = response.get("usage");
+    json!({
+        "provider_usage_present": usage.is_some(),
+        "input_tokens_present": usage
+            .and_then(|usage| usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")))
+            .and_then(Value::as_u64)
+            .is_some(),
+        "output_tokens_present": usage
+            .and_then(|usage| usage.get("output_tokens").or_else(|| usage.get("completion_tokens")))
+            .and_then(Value::as_u64)
+            .is_some(),
+        "total_tokens_present": usage
+            .and_then(|usage| usage.get("total_tokens"))
+            .and_then(Value::as_u64)
+            .is_some()
+    })
+}
+
+fn responses_reasoning_shape(output: Option<&Vec<Value>>) -> Value {
+    let mut item_count = 0usize;
+    let mut summary_count = 0usize;
+    if let Some(output) = output {
+        for item in output {
+            if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+                item_count += 1;
+                summary_count += item
+                    .get("summary")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+            }
+        }
+    }
+
+    json!({
+        "item_count": item_count,
+        "summary_count": summary_count,
+        "raw_reasoning_omitted": true
+    })
+}
+
+fn responses_refusal_shape(response: &Value, output: Option<&Vec<Value>>) -> Value {
+    let top_level_refusal = response.get("refusal").is_some();
+    let output_refusal_count = output.map_or(0usize, |output| {
+        output
+            .iter()
+            .filter(|item| item.get("type").and_then(Value::as_str) == Some("refusal"))
+            .count()
+    });
+
+    json!({
+        "present": top_level_refusal || output_refusal_count > 0,
+        "top_level_present": top_level_refusal,
+        "output_item_count": output_refusal_count,
+        "raw_refusal_omitted": true
+    })
+}
+
+fn responses_error_shape(value: &Value) -> Value {
+    let error = value.get("error").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("error"))
+    });
+    let output_error_count =
+        value
+            .get("output")
+            .and_then(Value::as_array)
+            .map_or(0usize, |output| {
+                output
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("error"))
+                    .count()
+            });
+
+    json!({
+        "present": error.is_some() || output_error_count > 0,
+        "type": error.and_then(|error| error.get("type")).and_then(Value::as_str),
+        "code": error.and_then(|error| error.get("code")).and_then(Value::as_str),
+        "status": error.and_then(|error| error.get("status")).and_then(Value::as_str),
+        "message_present": error
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .is_some_and(|message| !message.trim().is_empty()),
+        "output_item_count": output_error_count,
+        "raw_error_omitted": true
+    })
 }
 
 fn provider_error_code(status: u16) -> &'static str {
@@ -1792,6 +2304,87 @@ mod tests {
         }
     }
 
+    fn assert_chat_tool_calling_passthrough(
+        fixture: &Value,
+        upstream: &AdapterUpstreamRequest,
+        parsed: &Value,
+    ) {
+        assert_eq!(&upstream.body["tools"], &fixture["request"]["tools"]);
+        assert_eq!(
+            &upstream.body["tool_choice"],
+            &fixture["request"]["tool_choice"]
+        );
+        assert_eq!(
+            &upstream.body["parallel_tool_calls"],
+            &fixture["request"]["parallel_tool_calls"]
+        );
+        assert_eq!(
+            &upstream.body["response_format"],
+            &fixture["request"]["response_format"]
+        );
+        assert_eq!(
+            &upstream.body["messages"][1]["tool_calls"],
+            &fixture["request"]["messages"][1]["tool_calls"]
+        );
+        assert_eq!(
+            &upstream.body["messages"][2]["tool_call_id"],
+            &fixture["request"]["messages"][2]["tool_call_id"]
+        );
+        assert_eq!(
+            &parsed["choices"][0]["message"]["tool_calls"],
+            &fixture["response"]["body"]["choices"][0]["message"]["tool_calls"]
+        );
+        assert!(parsed["choices"][0]["message"]["content"].is_null());
+    }
+
+    fn assert_responses_tool_calling_passthrough(
+        fixture: &Value,
+        upstream: &AdapterUpstreamRequest,
+        parsed: &Value,
+    ) {
+        for field in [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "response_format",
+            "text",
+        ] {
+            assert_eq!(
+                &upstream.body[field], &fixture["request"][field],
+                "{field} should pass through to the upstream Responses request"
+            );
+        }
+
+        for item_type in [
+            "message",
+            "reasoning",
+            "function_call",
+            "tool_call",
+            "refusal",
+            "error",
+            "image_generation_call",
+            "file_search_call",
+        ] {
+            let parsed_item = parsed["output"]
+                .as_array()
+                .expect("parsed Responses output should be an array")
+                .iter()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some(item_type))
+                .unwrap_or_else(|| panic!("parsed Responses output should include {item_type}"));
+            let fixture_item = fixture["response"]["body"]["output"]
+                .as_array()
+                .expect("fixture Responses output should be an array")
+                .iter()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some(item_type))
+                .unwrap_or_else(|| panic!("fixture Responses output should include {item_type}"));
+
+            assert_eq!(
+                parsed_item, fixture_item,
+                "Responses {item_type} output item should pass through unchanged"
+            );
+        }
+    }
+
     #[test]
     fn validates_required_model() {
         let error = ChatCompletionRequest::from_slice(br#"{"messages":[{"role":"user"}]}"#)
@@ -1896,6 +2489,121 @@ mod tests {
     }
 
     #[test]
+    fn chat_tool_calling_fixture_preserves_openai_compatible_contract() {
+        let client =
+            OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
+        let fixture = load_openai_fixture("chat_tool_calling_valid.json");
+        let request = serde_json::to_vec(&fixture["request"]).expect("fixture request");
+        let parsed_request =
+            ChatCompletionRequest::from_slice(&request).expect("tool-calling request validates");
+
+        assert_eq!(parsed_request.extra["tools"], fixture["request"]["tools"]);
+        assert_eq!(
+            parsed_request.extra["tool_choice"],
+            fixture["request"]["tool_choice"]
+        );
+        assert_eq!(
+            parsed_request.extra["parallel_tool_calls"],
+            fixture["request"]["parallel_tool_calls"]
+        );
+        assert_eq!(
+            parsed_request.extra["response_format"],
+            fixture["request"]["response_format"]
+        );
+        assert_eq!(
+            parsed_request.messages[1].extra["tool_calls"],
+            fixture["request"]["messages"][1]["tool_calls"]
+        );
+        assert_eq!(
+            parsed_request.messages[2].extra["tool_call_id"],
+            fixture["request"]["messages"][2]["tool_call_id"]
+        );
+
+        let upstream = client
+            .build_upstream_request(AdapterOperation::ChatCompletions, &request)
+            .expect("tool-calling fixture should build an upstream request");
+        let expected_upstream = &fixture["expected_upstream"];
+
+        assert_eq!(
+            upstream.method,
+            expected_upstream["method"].as_str().expect("method")
+        );
+        assert_eq!(
+            upstream.path,
+            expected_upstream["path"].as_str().expect("path")
+        );
+        assert_eq!(
+            upstream.stream,
+            expected_upstream["stream"].as_bool().expect("stream")
+        );
+        assert_eq!(&upstream.body, &expected_upstream["body"]);
+
+        let parsed = client
+            .parse_response(
+                AdapterOperation::ChatCompletions,
+                fixture_response_status(&fixture),
+                &fixture_response_body(&fixture),
+            )
+            .expect("tool-calling fixture response should parse");
+        assert_eq!(&parsed, &fixture["response"]["body"]);
+        assert_chat_tool_calling_passthrough(&fixture, &upstream, &parsed);
+    }
+
+    #[test]
+    fn responses_tool_calling_fixture_preserves_openai_compatible_contract() {
+        let client =
+            OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
+        let fixture = load_openai_fixture("responses_tool_calling_valid.json");
+        let request = serde_json::to_vec(&fixture["request"]).expect("fixture request");
+        let parsed_request =
+            OpenAiResponseRequest::from_slice(&request).expect("tool-calling request validates");
+
+        assert_eq!(parsed_request.extra["tools"], fixture["request"]["tools"]);
+        assert_eq!(
+            parsed_request.extra["tool_choice"],
+            fixture["request"]["tool_choice"]
+        );
+        assert_eq!(
+            parsed_request.extra["parallel_tool_calls"],
+            fixture["request"]["parallel_tool_calls"]
+        );
+        assert_eq!(
+            parsed_request.extra["response_format"],
+            fixture["request"]["response_format"]
+        );
+        assert_eq!(parsed_request.extra["text"], fixture["request"]["text"]);
+
+        let upstream = client
+            .build_upstream_request(AdapterOperation::Responses, &request)
+            .expect("tool-calling fixture should build an upstream Responses request");
+        let expected_upstream = &fixture["expected_upstream"];
+
+        assert_eq!(
+            upstream.method,
+            expected_upstream["method"].as_str().expect("method")
+        );
+        assert_eq!(
+            upstream.path,
+            expected_upstream["path"].as_str().expect("path")
+        );
+        assert_eq!(
+            upstream.stream,
+            expected_upstream["stream"].as_bool().expect("stream")
+        );
+        assert_eq!(&upstream.body, &expected_upstream["body"]);
+
+        let parsed = client
+            .parse_response(
+                AdapterOperation::Responses,
+                fixture_response_status(&fixture),
+                &fixture_response_body(&fixture),
+            )
+            .expect("tool-calling fixture response should parse");
+        assert_eq!(&parsed, &fixture["response"]["body"]);
+        assert_responses_tool_calling_passthrough(&fixture, &upstream, &parsed);
+    }
+
+    #[test]
     fn builds_responses_upstream_request_contract_and_preserves_payload() {
         let client =
             OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
@@ -1920,6 +2628,116 @@ mod tests {
     }
 
     #[test]
+    fn responses_accepts_messages_like_payload_as_input_without_forwarding_raw_messages_field() {
+        let client =
+            OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
+        let request = OpenAiResponseRequest::from_slice(
+            br#"{"model":"mock-gpt","messages":[{"role":"user","content":"hi"}],"stream":false,"temperature":0}"#,
+        )
+        .expect("chat-style messages should be accepted as responses input")
+        .with_upstream_model("upstream-gpt");
+
+        let upstream = client
+            .build_responses_request(&request)
+            .expect("upstream request");
+
+        assert_eq!(upstream.method, "POST");
+        assert_eq!(upstream.path, RESPONSES_PATH);
+        assert!(!upstream.stream);
+        assert_eq!(upstream.body["model"], "upstream-gpt");
+        assert_eq!(upstream.body["input"][0]["role"], "user");
+        assert_eq!(upstream.body["input"][0]["content"], "hi");
+        assert_eq!(upstream.body["stream"], false);
+        assert_eq!(upstream.body["temperature"], 0);
+        assert!(
+            upstream.body.get("messages").is_none(),
+            "messages must be normalized to input rather than forwarded as a raw compatibility field"
+        );
+    }
+
+    #[test]
+    fn responses_drops_raw_messages_compatibility_field_when_input_is_present() {
+        let client =
+            OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
+        let request = OpenAiResponseRequest::from_slice(
+            br#"{"model":"mock-gpt","input":"canonical input","messages":[{"role":"user","content":"raw compat"}],"stream":false}"#,
+        )
+        .expect("canonical input with compatibility messages should validate");
+
+        assert!(request.extra.get("messages").is_none());
+
+        let upstream = client
+            .build_responses_request(&request)
+            .expect("upstream request");
+        assert_eq!(upstream.body["input"], "canonical input");
+        assert!(
+            upstream.body.get("messages").is_none(),
+            "raw compatibility messages must not be forwarded when canonical input exists"
+        );
+    }
+
+    #[test]
+    fn build_responses_request_sanitizes_manually_constructed_raw_messages_extra() {
+        let client =
+            OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
+        let mut extra = Map::new();
+        extra.insert(
+            "messages".to_string(),
+            json!([{"role":"user","content":"raw compat"}]),
+        );
+        let request = OpenAiResponseRequest {
+            model: "mock-gpt".to_string(),
+            input: Some(json!("canonical input")),
+            stream: Some(false),
+            extra,
+        };
+
+        let upstream = client
+            .build_responses_request(&request)
+            .expect("manually constructed request should build");
+        assert_eq!(upstream.body["input"], "canonical input");
+        assert!(
+            upstream.body.get("messages").is_none(),
+            "build_responses_request must strip raw compatibility messages even when request is constructed directly"
+        );
+    }
+
+    #[test]
+    fn build_responses_request_strips_or_normalizes_chat_only_fields() {
+        let client =
+            OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
+        let request = OpenAiResponseRequest::from_slice(
+            br#"{"model":"mock-gpt","input":"hi","stream":false,"max_tokens":16,"n":2,"logprobs":true,"top_logprobs":3}"#,
+        )
+        .expect("chat-compatible request should validate");
+
+        let upstream = client
+            .build_responses_request(&request)
+            .expect("upstream request");
+
+        assert_eq!(upstream.body["max_output_tokens"], 16);
+        for stripped in ["max_tokens", "n", "logprobs", "top_logprobs"] {
+            assert!(
+                upstream.body.get(stripped).is_none(),
+                "{stripped} must not be forwarded to /v1/responses"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_messages_like_payload_rejects_non_array_messages() {
+        let error = OpenAiResponseRequest::from_slice(
+            br#"{"model":"mock-gpt","messages":{"role":"user","content":"hi"}}"#,
+        )
+        .expect_err("messages compatibility field must stay bounded");
+        let mapping = error.to_adapter_error_mapping();
+
+        assert_eq!(mapping.http_status, 400);
+        assert_eq!(mapping.code, "invalid_request");
+        assert_eq!(mapping.param.as_deref(), Some("messages"));
+    }
+
+    #[test]
     fn builds_embeddings_upstream_request_contract_and_preserves_payload() {
         let client =
             OpenAiCompatibleClient::new("http://127.0.0.1:18080").expect("valid upstream base URL");
@@ -1941,6 +2759,46 @@ mod tests {
         assert_eq!(upstream.body["input"][1], "bye");
         assert_eq!(upstream.body["encoding_format"], "float");
         assert_eq!(upstream.body["dimensions"], 8);
+    }
+
+    #[test]
+    fn embeddings_input_shape_summary_is_normalized_and_secret_safe() {
+        let request = OpenAiEmbeddingRequest::from_slice(
+            br#"{"model":"mock-embedding","input":["sk-live-secret raw embedding input","second raw input"]}"#,
+        )
+        .expect("valid request");
+
+        let summary = request.input_shape_summary();
+        assert_eq!(summary["schema"], "openai_embeddings_input_shape_v1");
+        assert_eq!(summary["kind"], "string_array");
+        assert_eq!(summary["item_count"], 2);
+        assert_eq!(summary["contains_raw_input"], false);
+
+        let serialized = serde_json::to_string(&summary).expect("summary should serialize");
+        for marker in ["sk-live-secret", "raw embedding input", "second raw input"] {
+            assert!(
+                !serialized.contains(marker),
+                "embeddings input shape summary leaked forbidden marker: {marker}"
+            );
+        }
+
+        let token_request =
+            OpenAiEmbeddingRequest::from_slice(br#"{"model":"mock-embedding","input":[1,2,3]}"#)
+                .expect("token array request");
+        assert_eq!(token_request.input_shape_summary()["kind"], "token_array");
+        assert_eq!(
+            token_request.input_shape_summary()["token_counts"]["total"],
+            3
+        );
+
+        let token_batch_request = OpenAiEmbeddingRequest::from_slice(
+            br#"{"model":"mock-embedding","input":[[1,2,3],[4,5]]}"#,
+        )
+        .expect("token array batch request");
+        let token_batch_summary = token_batch_request.input_shape_summary();
+        assert_eq!(token_batch_summary["kind"], "token_array_batch");
+        assert_eq!(token_batch_summary["item_count"], 2);
+        assert_eq!(token_batch_summary["token_counts"]["total"], 5);
     }
 
     #[test]
@@ -2005,6 +2863,13 @@ mod tests {
             OpenAiEmbeddingRequest::from_slice(br#"{"input":"hi"}"#).expect_err("missing model");
         let missing_input = OpenAiEmbeddingRequest::from_slice(br#"{"model":"mock-embedding"}"#)
             .expect_err("missing input");
+        let mixed_input =
+            OpenAiEmbeddingRequest::from_slice(br#"{"model":"mock-embedding","input":["raw",1]}"#)
+                .expect_err("mixed embeddings input should be rejected");
+        let object_input = OpenAiEmbeddingRequest::from_slice(
+            br#"{"model":"mock-embedding","input":{"text":"raw"}}"#,
+        )
+        .expect_err("object embeddings input should be rejected");
 
         assert_eq!(missing_model.http_status(), 400);
         assert_eq!(
@@ -2016,6 +2881,15 @@ mod tests {
             missing_input.to_openai_error_body()["error"]["param"],
             "input"
         );
+        assert_eq!(
+            mixed_input.to_adapter_error_mapping().code,
+            "invalid_request"
+        );
+        assert_eq!(
+            mixed_input.to_adapter_error_mapping().param.as_deref(),
+            Some("input")
+        );
+        assert_eq!(object_input.to_adapter_error_mapping().owner, "client");
     }
 
     #[test]
@@ -2182,6 +3056,34 @@ mod tests {
         assert!(error.is_terminal());
         assert!(error.is_error());
 
+        let error_usage = OpenAiCompatibleClient::parse_responses_stream_event(
+            br#"{"type":"error","error":{"type":"server_error","message":"overloaded","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}"#,
+        )
+        .expect("error terminal response stream event with usage should parse");
+        let usage = error_usage
+            .usage()
+            .expect("error terminal event should expose explicit nested usage");
+        assert_eq!(usage.prompt_tokens, Some(5));
+        assert_eq!(usage.completion_tokens, Some(1));
+        assert_eq!(usage.total_tokens, Some(6));
+        let error_metadata = error_usage.protocol_metadata();
+        assert_eq!(error_metadata["mode"], "stream");
+        assert_eq!(error_metadata["event_type"], "error");
+        assert_eq!(error_metadata["terminal"], true);
+        assert_eq!(error_metadata["error"]["present"], true);
+        assert_eq!(error_metadata["error"]["type"], "server_error");
+        assert_eq!(error_metadata["error"]["message_present"], true);
+        assert!(!error_metadata.to_string().contains("overloaded"));
+
+        let empty_usage = OpenAiCompatibleClient::parse_responses_stream_event(
+            br#"{"type":"response.completed","response":{"id":"resp_empty_usage","status":"completed","usage":{"input_tokens_details":{"cached_tokens":1}}}}"#,
+        )
+        .expect("terminal response stream event with token details should parse");
+        assert!(
+            empty_usage.usage().is_none(),
+            "usage details without explicit token totals must not become billable usage"
+        );
+
         let missing_terminal = sse_fixture_events("responses_stream_missing_terminal.sse")
             .into_iter()
             .map(|data| {
@@ -2276,10 +3178,44 @@ mod tests {
     }
 
     #[test]
+    fn responses_protocol_metadata_summarizes_edge_items_without_raw_payload() {
+        let fixture = load_openai_fixture("responses_tool_calling_valid.json");
+        let metadata =
+            OpenAiCompatibleClient::responses_protocol_metadata(&fixture["response"]["body"]);
+        let metadata_text = metadata.to_string();
+
+        assert_eq!(metadata["schema"], "openai_responses_protocol_metadata_v1");
+        assert_eq!(metadata["output_item_counts"]["message"], 1);
+        assert_eq!(metadata["output_item_counts"]["tool_call"], 1);
+        assert_eq!(metadata["output_item_counts"]["function_call"], 1);
+        assert_eq!(metadata["output_item_counts"]["refusal"], 1);
+        assert_eq!(metadata["output_item_counts"]["error"], 1);
+        assert_eq!(metadata["reasoning"]["item_count"], 1);
+        assert_eq!(metadata["refusal"]["present"], true);
+        assert_eq!(metadata["error"]["present"], true);
+        assert_eq!(metadata["usage"]["input_tokens_present"], true);
+        assert_eq!(metadata["raw_prompt_omitted"], true);
+        assert_eq!(metadata["raw_messages_omitted"], true);
+        assert_eq!(metadata["raw_provider_payload_omitted"], true);
+
+        for forbidden in [
+            "Checking the weather tool",
+            "Need current weather",
+            "{\"city\":\"London\"}",
+            "What is the weather in London",
+        ] {
+            assert!(
+                !metadata_text.contains(forbidden),
+                "Responses metadata leaked forbidden raw marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_embeddings_success_response_and_extracts_usage() {
         let payload = OpenAiCompatibleClient::parse_embeddings_response(
             200,
-            br#"{"object":"list","usage":{"prompt_tokens":3,"total_tokens":3}}"#,
+            br#"{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"usage":{"prompt_tokens":3,"total_tokens":3}}"#,
         )
         .expect("valid provider JSON");
         let client =
@@ -2287,9 +3223,60 @@ mod tests {
         let usage = client.extract_usage(&payload).expect("usage");
 
         assert_eq!(payload["object"], "list");
+        assert_eq!(payload["data"][0]["embedding"][0], 0.1);
         assert_eq!(usage.prompt_tokens, Some(3));
         assert_eq!(usage.completion_tokens, None);
         assert_eq!(usage.total_tokens, Some(3));
+    }
+
+    #[test]
+    fn embeddings_response_shape_summary_is_safe_and_tolerates_usage_gaps() {
+        let payload = json!({
+            "object": "list",
+            "model": "mock-embedding",
+            "data": [
+                {"object": "embedding", "embedding": [0.1, -0.2], "index": 0},
+                {"object": "embedding", "embedding": [0.3, -0.4, 0.5], "index": 1}
+            ],
+            "usage": {"prompt_tokens": "not-numeric", "total_tokens": 99}
+        });
+
+        let summary = OpenAiCompatibleClient::embeddings_response_shape_summary(&payload);
+
+        assert_eq!(summary["schema"], "openai_embeddings_response_shape_v1");
+        assert_eq!(summary["data"]["embedding_count"], 2);
+        assert_eq!(summary["data"]["first_dimension"], 2);
+        assert_eq!(summary["data"]["unique_dimensions"], json!([2, 3]));
+        assert_eq!(summary["data"]["dimension_consistent"], false);
+        assert_eq!(summary["usage"]["present"], true);
+        assert_eq!(summary["usage"]["prompt_tokens_numeric"], false);
+        assert_eq!(summary["usage"]["total_tokens_numeric"], true);
+        assert_eq!(summary["raw_payload_omitted"], true);
+        assert_eq!(summary["raw_embeddings_omitted"], true);
+
+        let serialized = serde_json::to_string(&summary).expect("summary should serialize");
+        for marker in ["0.1", "-0.2", "0.3", "-0.4", "0.5"] {
+            assert!(
+                !serialized.contains(marker),
+                "embeddings response shape summary leaked embedding value: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn embeddings_provider_schema_mismatch_maps_to_parser_error() {
+        let error = OpenAiCompatibleClient::parse_embeddings_response(
+            200,
+            br#"{"object":"list","data":[{"object":"embedding","index":0}]}"#,
+        )
+        .expect_err("missing embedding array should be a provider schema mismatch");
+        let mapping = error.to_adapter_error_mapping();
+
+        assert_eq!(mapping.http_status, 502);
+        assert_eq!(mapping.code, "provider_invalid_response");
+        assert_eq!(mapping.owner, "parser");
+        assert_eq!(mapping.stage, "response_transform");
+        assert_eq!(mapping.retryable, Some(true));
     }
 
     #[test]

@@ -368,10 +368,32 @@ function Assert-FixtureContract {
   if ($Fixture.dev_seed.master_key_id -ne "dev-seed-v1") {
     throw "fixture dev_seed.master_key_id must be dev-seed-v1"
   }
-  foreach ($check in @("gateway_chat_success", "provider_key_id_persisted", "provider_error_redaction")) {
+  foreach ($check in @(
+      "gateway_chat_success",
+      "provider_key_id_persisted",
+      "provider_error_redaction",
+      "provider_error_status_mapping_safe",
+      "multi_key_retry_does_not_reuse_failed_key"
+    )) {
     if (@($Fixture.live_checks | Where-Object { $_.name -eq $check }).Count -ne 1) {
       throw "fixture live_checks must include '$check'"
     }
+  }
+  if ([bool]$Fixture.contract_only_checks.encrypted_at_rest_and_fingerprint_only -ne $true) {
+    throw "fixture contract_only_checks.encrypted_at_rest_and_fingerprint_only must be true"
+  }
+  if ([bool]$Fixture.contract_only_checks.runtime_status_mapping_safe -ne $true) {
+    throw "fixture contract_only_checks.runtime_status_mapping_safe must be true"
+  }
+  if ([bool]$Fixture.contract_only_checks.multi_key_retry_safety -ne $true) {
+    throw "fixture contract_only_checks.multi_key_retry_safety must be true"
+  }
+  $multiKeyRetry = @($Fixture.live_checks | Where-Object { $_.name -eq "multi_key_retry_does_not_reuse_failed_key" })[0]
+  if ($multiKeyRetry.contract_schema -ne "gateway_provider_key_multi_key_retry_v1") {
+    throw "multi-key retry contract schema must be gateway_provider_key_multi_key_retry_v1"
+  }
+  if ([bool]$multiKeyRetry.expected.failed_provider_key_id_must_differ_from_next_provider_key_id -ne $true) {
+    throw "multi-key retry contract must require failed_provider_key_id != next_provider_key_id"
   }
 }
 
@@ -610,6 +632,18 @@ from (
     pk.secret_fingerprint,
     pk.status as provider_key_status,
     pk.deleted_at is null as provider_key_active,
+    pk.cooldown_until::text as provider_key_cooldown_until,
+    (
+      (
+        pk.status in ('enabled', 'degraded', 'recovery_probe')
+        and (pk.cooldown_until is null or pk.cooldown_until <= now())
+      )
+      or (
+        pk.status = 'cooldown'
+        and pk.cooldown_until is not null
+        and pk.cooldown_until <= now()
+      )
+    ) as provider_key_runtime_eligible,
     pk.metadata as provider_key_metadata,
     ch.id::text as channel_id,
     ch.provider_id::text as provider_id,
@@ -658,7 +692,16 @@ from (
 }
 
 function Assert-ProviderKeySeedRow {
-  $rows = @(Get-ProviderKeySeedRows)
+  $rows = @()
+  $deadline = (Get-Date).AddSeconds([Math]::Max(2, $TimeoutSeconds))
+  do {
+    $rows = @(Get-ProviderKeySeedRows)
+    if ($rows.Count -eq 0) { break }
+    if ([bool]$rows[0].provider_key_runtime_eligible) { break }
+    if ($rows[0].provider_key_status -ne "cooldown") { break }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+
   if ($rows.Count -eq 0) {
     throw "dev seed is incomplete: provider key '$($script:Fixture.dev_seed.provider_key_id)' is not joined to model '$Model' in compose postgres"
   }
@@ -670,7 +713,7 @@ function Assert-ProviderKeySeedRow {
   if ($row.channel_id -ne $script:Fixture.dev_seed.channel_id) { $missing += "channel_id" }
   if ($row.provider_key_id -ne $script:Fixture.dev_seed.provider_key_id) { $missing += "provider_key_id" }
   if ($row.key_alias -ne $script:Fixture.dev_seed.key_alias) { $missing += "key_alias" }
-  if ($row.provider_key_status -ne "enabled") { $missing += "provider_keys.status" }
+  if ([bool]$row.provider_key_runtime_eligible -ne $true) { $missing += "provider_keys.runtime_eligible" }
   if ([bool]$row.provider_key_active -ne $true) { $missing += "provider_keys.deleted_at" }
   if ($row.secret_fingerprint -ne $script:Fixture.dev_seed.secret_fingerprint) { $missing += "provider_keys.secret_fingerprint" }
   if ($row.channel_status -ne "enabled") { $missing += "channels.status" }

@@ -8,13 +8,14 @@ use std::{
     env, fmt,
     net::{IpAddr, SocketAddr},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ai_gateway_adapters::{
     Adapter, AdapterProviderErrorSignal, AdapterProviderTransportErrorKind, AdapterRetryAfter,
     AdapterUpstreamRequest, AdapterUsage, AnthropicAdapter, AnthropicAdapterError,
-    AnthropicMessagesRequest, ChatCompletionRequest, OpenAiAdapterError, OpenAiCompatibleClient,
+    AnthropicMessagesRequest, ChatCompletionRequest, GeminiAdapter, GeminiAdapterError,
+    GeminiGenerateContentRequest, OpenAiAdapterError, OpenAiCompatibleClient,
     OpenAiEmbeddingRequest, OpenAiResponseRequest,
 };
 use ai_gateway_app_core::{AppState, health_payload, normalize_listen_addr};
@@ -71,15 +72,18 @@ use axum::{
     routing::{get, post},
 };
 use db::{
-    AuthContext, GatewayRepository, LedgerSettleEntry, PreAuthorizeReadModel,
-    ProviderAttemptFinalUpdate, ProviderKeyRuntimeStatusUpdate, RequestFinalUpdate,
-    RequestPayloadLog, RequestRouteLog, ResolvedCanonicalModel, ResolvedChatRoute,
-    ResolvedPriceVersion, TraceAffinityPreviousSuccessRoute, VisibleModel,
-    connect_gateway_repository,
+    AuthContext, GatewayRepository, LedgerSettleEntry, PaidReserveEntry, PaidReserveOutcome,
+    PaidSettledRefundEntry, PaidSettledRefundOutcome, PreAuthorizeReadModel,
+    PromptProtectionRuntimeAuditLog, ProviderAttemptFinalUpdate, ProviderKeyRuntimeStatusUpdate,
+    RequestFinalUpdate, RequestPayloadLog, RequestRouteLog, ResolvedCanonicalModel,
+    ResolvedChatRoute, ResolvedPriceVersion, TraceAffinityPreviousSuccessRoute,
+    VirtualKeyRateLimitAcquire, VisibleModel, connect_gateway_repository,
 };
 use errors::{
-    ErrorLogSummary, GatewayApiError, adapter_error_response, anthropic_adapter_error_response,
-    summarize_adapter_error, summarize_anthropic_adapter_error,
+    ErrorLogSummary, GatewayApiError, adapter_error_diagnostic_metadata, adapter_error_response,
+    anthropic_adapter_error_diagnostic_metadata, anthropic_adapter_error_response,
+    gemini_adapter_error_diagnostic_metadata, gemini_adapter_error_response,
+    summarize_adapter_error, summarize_anthropic_adapter_error, summarize_gemini_adapter_error,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -108,9 +112,11 @@ const AI_PROFILE_HEADER: &str = "x-ai-profile";
 const AI_PROFILE_HEADER_MAX_LEN: usize = 128;
 const AI_TRACE_ID_HEADER: &str = "x-ai-trace-id";
 const AI_TRACE_ID_MAX_LEN: usize = 256;
+pub(crate) const X_REQUEST_ID_HEADER: &str = "x-request-id";
 const TRACE_AFFINITY_LOOKBACK_SECONDS: i64 = 3_600;
 const GATEWAY_TRACE_AFFINITY_RUNTIME_SCHEMA: &str = "gateway_trace_affinity_runtime_v1";
 const GATEWAY_RATE_LIMIT_RUNTIME_SCHEMA: &str = "gateway_rate_limit_runtime_v1";
+const VIRTUAL_KEY_RATE_LIMIT_RUNTIME_SCHEMA: &str = "virtual_key_rate_limit_runtime_v1";
 const GATEWAY_RATE_LIMIT_RESERVATION_RUNTIME_SCHEMA: &str =
     "gateway_rate_limit_reservation_runtime_v1";
 const GATEWAY_RATE_LIMIT_RESERVATION_BACKEND: &str = "request_local_plan";
@@ -128,12 +134,23 @@ const PROVIDER_KEY_MASTER_KEY_ENV: &str = "AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BA
 const GATEWAY_CORS_ALLOWED_ORIGINS_ENV: &str = "AI_GATEWAY_CORS_ALLOWED_ORIGINS";
 const PROMPT_PROTECTION_POLICY_ENV: &str = "AI_GATEWAY_PROMPT_PROTECTION";
 const PROMPT_PROTECTION_CONFIG_ENV: &str = "AI_GATEWAY_PROMPT_PROTECTION_CONFIG_JSON";
+const GATEWAY_PAID_HOT_PATH_BETA_ENV: &str = "GATEWAY_PAID_HOT_PATH_BETA";
+const GATEWAY_PAID_HOT_PATH_SMOKE_REFUND_ENV: &str = "GATEWAY_PAID_HOT_PATH_SMOKE_REFUND_ENABLED";
+const GATEWAY_PAID_HOT_PATH_SMOKE_REFUND_HEADER: &str = "x-e8-paid-hot-path-smoke-refund";
+const GATEWAY_PAID_HOT_PATH_BETA_RESERVE_AMOUNT_ENV: &str =
+    "GATEWAY_PAID_HOT_PATH_BETA_RESERVE_AMOUNT";
+const GATEWAY_PAID_HOT_PATH_BETA_DEFAULT_RESERVE_AMOUNT: &str = "0.00000100";
 const GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS_ENV: &str =
     "GATEWAY_TPM_TRUSTED_TOKENIZER_PROMPT_TOKENS";
 const GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS_ENV: &str =
     "GATEWAY_TPM_TRUSTED_READ_MODEL_INPUT_TOKENS";
 const MAX_PROMPT_PROTECTION_CONFIG_JSON_BYTES: usize = 16 * 1024;
 const PROMPT_PROTECTION_POLICY_VERSION: &str = "gateway_prompt_protection_v1";
+const PROMPT_PROTECTION_RUNTIME_AUDIT_ACTION: &str = "prompt_protection.reject";
+const PROMPT_PROTECTION_RUNTIME_AUDIT_RESOURCE_TYPE: &str = "prompt_protection";
+const PROMPT_PROTECTION_RUNTIME_AUDIT_SCHEMA: &str =
+    "prompt_protection_audit_logs_mutation_row_attempt_v1";
+const PROMPT_PROTECTION_EVIDENCE_READBACK_SCHEMA: &str = "prompt_protection_evidence_readback_v1";
 const PAYLOAD_POLICY_RUNTIME_SCHEMA: &str = "gateway_payload_policy_v1";
 const PAYLOAD_POLICY_FULL_FALLBACK_REASON: &str = "raw_payload_storage_not_configured";
 const METRICS_ENDPOINT_CHAT_COMPLETIONS: &str = "chat_completions";
@@ -251,11 +268,13 @@ struct PromptProtectionRejectHttpSpy {
     request_id: uuid::Uuid,
     authenticate_count: std::sync::atomic::AtomicUsize,
     request_started_count: std::sync::atomic::AtomicUsize,
+    runtime_audit_count: std::sync::atomic::AtomicUsize,
     request_finished_count: std::sync::atomic::AtomicUsize,
     provider_attempt_started_count: std::sync::atomic::AtomicUsize,
     provider_key_open_count: std::sync::atomic::AtomicUsize,
     upstream_call_count: std::sync::atomic::AtomicUsize,
     last_request_log: std::sync::Mutex<Option<PromptProtectionRejectRequestLog>>,
+    last_runtime_audit_log: std::sync::Mutex<Option<PromptProtectionRejectRuntimeAuditLog>>,
     last_finish_log: std::sync::Mutex<Option<PromptProtectionRejectFinishLog>>,
 }
 
@@ -273,6 +292,16 @@ struct PromptProtectionRejectRequestLog {
     provider_key_id: Option<uuid::Uuid>,
     route_policy_version: Option<String>,
     route_decision_snapshot: Value,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct PromptProtectionRejectRuntimeAuditLog {
+    request_id: uuid::Uuid,
+    action: String,
+    resource_type: String,
+    after_snapshot: Value,
+    metadata: Value,
 }
 
 #[cfg(test)]
@@ -320,6 +349,25 @@ struct GatewayRateLimitRuntime {
     unavailable_candidate_count: usize,
     missing_counter_candidate_count: usize,
     blocking_dimensions: BTreeSet<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VirtualKeyRateLimitRuntime {
+    dimensions: BTreeMap<&'static str, VirtualKeyRateLimitDimensionRuntime>,
+    attempted_dimensions: BTreeSet<&'static str>,
+    applied_dimensions: BTreeSet<&'static str>,
+    refused_dimension: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VirtualKeyRateLimitDimensionRuntime {
+    limit: Option<i64>,
+    required: i64,
+    used: Option<i64>,
+    remaining: Option<i64>,
+    retry_after_ms: Option<u64>,
+    window_seconds: Option<u64>,
+    window_status: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -404,11 +452,13 @@ impl PromptProtectionRejectHttpSpy {
             request_id: uuid::Uuid::from_u128(0x0eed_1300_5000_0000_0000_0000_0000_0001),
             authenticate_count: std::sync::atomic::AtomicUsize::new(0),
             request_started_count: std::sync::atomic::AtomicUsize::new(0),
+            runtime_audit_count: std::sync::atomic::AtomicUsize::new(0),
             request_finished_count: std::sync::atomic::AtomicUsize::new(0),
             provider_attempt_started_count: std::sync::atomic::AtomicUsize::new(0),
             provider_key_open_count: std::sync::atomic::AtomicUsize::new(0),
             upstream_call_count: std::sync::atomic::AtomicUsize::new(0),
             last_request_log: std::sync::Mutex::new(None),
+            last_runtime_audit_log: std::sync::Mutex::new(None),
             last_finish_log: std::sync::Mutex::new(None),
         }
     }
@@ -453,6 +503,26 @@ impl PromptProtectionRejectHttpSpy {
         Ok(self.request_id)
     }
 
+    async fn insert_prompt_protection_runtime_audit_log(
+        &self,
+        audit: PromptProtectionRuntimeAuditLog,
+    ) -> Result<(), GatewayApiError> {
+        self.runtime_audit_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self
+            .last_runtime_audit_log
+            .lock()
+            .expect("prompt protection spy runtime audit log lock") =
+            Some(PromptProtectionRejectRuntimeAuditLog {
+                request_id: audit.request_id,
+                action: audit.action,
+                resource_type: audit.resource_type,
+                after_snapshot: audit.after_snapshot,
+                metadata: audit.metadata,
+            });
+        Ok(())
+    }
+
     async fn finish_request(&self, update: RequestFinalUpdate) -> Result<(), GatewayApiError> {
         self.request_finished_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -485,6 +555,11 @@ impl PromptProtectionRejectHttpSpy {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    fn runtime_audit_count(&self) -> usize {
+        self.runtime_audit_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn provider_attempt_started_count(&self) -> usize {
         self.provider_attempt_started_count
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -506,6 +581,14 @@ impl PromptProtectionRejectHttpSpy {
             .expect("prompt protection spy request log lock")
             .clone()
             .expect("prompt protection spy request log")
+    }
+
+    fn last_runtime_audit_log(&self) -> PromptProtectionRejectRuntimeAuditLog {
+        self.last_runtime_audit_log
+            .lock()
+            .expect("prompt protection spy runtime audit log lock")
+            .clone()
+            .expect("prompt protection spy runtime audit log")
     }
 
     fn last_finish_log(&self) -> PromptProtectionRejectFinishLog {
@@ -551,6 +634,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/v1/responses", post(responses))
         .route("/v1/embeddings", post(embeddings))
         .route("/v1/messages", post(anthropic_messages))
+        .route(
+            "/__e8/paid-hot-path/refund-after-settle",
+            post(e8_paid_hot_path_refund_after_settle_smoke),
+        )
         .route(
             "/v1beta/models/{*native_path}",
             post(gemini_generate_content_native_passthrough),
@@ -603,7 +690,8 @@ fn gateway_cors_layer() -> CorsLayer {
             AUTHORIZATION,
             HeaderName::from_static(AI_PROFILE_HEADER),
             HeaderName::from_static(AI_TRACE_ID_HEADER),
-        ]);
+        ])
+        .expose_headers([HeaderName::from_static(X_REQUEST_ID_HEADER)]);
 
     let allowed_origins = gateway_cors_allowed_origins();
     if !allowed_origins.is_empty() {
@@ -633,6 +721,107 @@ async fn metrics(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
         [(CONTENT_TYPE, "text/plain; version=0.0.4")],
         metrics_body(state.app.service_name()),
     )
+}
+
+#[derive(Debug, Deserialize)]
+struct PaidRefundAfterSettleSmokeRequest {
+    request_id: uuid::Uuid,
+    settle_ledger_entry_id: uuid::Uuid,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PaidRefundAfterSettleSmokeResponse {
+    schema: &'static str,
+    request_id: uuid::Uuid,
+    settle_ledger_entry_id: uuid::Uuid,
+    refund_idempotency_key: String,
+    outcome: &'static str,
+    smoke_only: bool,
+}
+
+async fn e8_paid_hot_path_refund_after_settle_smoke(
+    State(state): State<Arc<GatewayState>>,
+    ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(request): Json<PaidRefundAfterSettleSmokeRequest>,
+) -> Response {
+    let started_at = Instant::now();
+    if !paid_hot_path_smoke_refund_enabled(&headers) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let token = match bearer_token(&headers) {
+        Ok(token) => token,
+        Err(error) => return gateway_error_response_with_metrics(started_at, error),
+    };
+    let repository = match state.repository() {
+        Ok(repository) => repository,
+        Err(error) => return gateway_error_response_with_metrics(started_at, error),
+    };
+    let profile_ref = match ai_profile_header(&headers) {
+        Ok(profile_ref) => profile_ref,
+        Err(error) => return gateway_error_response_with_metrics(started_at, error),
+    };
+    let client_ip = match client_ip_for_auth(
+        &headers,
+        client_addr.ip(),
+        &state.app.config().server.trusted_proxy_allowlist,
+    ) {
+        Ok(client_ip) => client_ip,
+        Err(error) => return gateway_error_response_with_metrics(started_at, error),
+    };
+    let auth = match repository
+        .authenticate_virtual_key(token, profile_ref, client_ip)
+        .await
+    {
+        Ok(auth) => auth,
+        Err(error) => return gateway_error_response_with_metrics(started_at, error),
+    };
+    if !paid_hot_path_beta_enabled(repository, &auth).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("e8_paid_hot_path_smoke_after_settle_refund")
+        .to_string();
+    let entry = PaidSettledRefundEntry {
+        request_id: request.request_id,
+        settle_ledger_entry_id: request.settle_ledger_entry_id,
+        reason,
+    };
+    let refund_idempotency_key =
+        db::paid_settled_refund_idempotency_key(request.settle_ledger_entry_id);
+    let outcome = match repository
+        .insert_full_paid_refund_after_settle_ledger_entry(&auth, entry)
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => return gateway_error_response_with_metrics(started_at, error),
+    };
+
+    let status = match outcome {
+        PaidSettledRefundOutcome::Applied | PaidSettledRefundOutcome::Idempotent => StatusCode::OK,
+        PaidSettledRefundOutcome::SourceNotSettled
+        | PaidSettledRefundOutcome::NothingRefundable => StatusCode::CONFLICT,
+    };
+    (
+        status,
+        Json(PaidRefundAfterSettleSmokeResponse {
+            schema: "gateway_paid_hot_path_refund_after_settle_smoke_v1",
+            request_id: request.request_id,
+            settle_ledger_entry_id: request.settle_ledger_entry_id,
+            refund_idempotency_key,
+            outcome: paid_settled_refund_outcome_label(outcome),
+            smoke_only: true,
+        }),
+    )
+        .into_response()
 }
 
 async fn chat_completions(
@@ -751,20 +940,21 @@ async fn chat_completions(
             prompt_protection_hit_count = rejection.hit_count,
             "prompt protection rejected chat completion request"
         );
-        start_and_finish_request_error(
+        start_audit_and_finish_prompt_protection_rejection(
             repository,
             &auth,
             requested_model_for_log,
-            Some(&request_body_hash),
+            &request_body_hash,
             prompt_protection_request_payload_log(&payload_policy, body.len(), &request_body_hash),
             RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
                 &auth,
                 requested_model_for_log,
-                rejection.metadata,
+                rejection.metadata.clone(),
             ))
             .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
+            &rejection,
         )
         .await;
         return error.into_response();
@@ -828,6 +1018,12 @@ async fn chat_completions(
         &route_decision.trace_affinity,
         &route_decision.rate_limit,
     );
+    let mut virtual_key_rate_limit = VirtualKeyRateLimitRuntime::from_auth(&auth);
+    let route_snapshot = if request.is_streaming() {
+        route_snapshot
+    } else {
+        route_snapshot_with_virtual_key_rate_limit(route_snapshot, &virtual_key_rate_limit)
+    };
     let attempt_routes = chat_attempt_routes(
         &route_candidates,
         &route_decision.decision,
@@ -871,6 +1067,193 @@ async fn chat_completions(
     // Per request and bounded by routing.default_max_attempts through attempt_routes.
     let mut upstream_clients = OpenAiClientCache::with_capacity(attempt_routes.len());
 
+    if paid_hot_path_beta_enabled(repository, &auth).await {
+        if let Some(response) = pre_authorize_before_provider_attempt(
+            METRICS_ENDPOINT_CHAT_COMPLETIONS,
+            repository,
+            &auth,
+            request_id,
+            started_at,
+            selected_route,
+        )
+        .await
+        {
+            return response;
+        }
+    }
+
+    let mut virtual_key_concurrency_acquired = false;
+    if let Some(limit) = virtual_key_concurrency_limit(&auth) {
+        virtual_key_rate_limit.record_attempt("concurrency");
+        match repository
+            .acquire_virtual_key_concurrency_slot(&auth, limit)
+            .await
+        {
+            Ok(acquire) if acquire.applied => {
+                virtual_key_rate_limit.record_applied("concurrency", &acquire);
+                virtual_key_concurrency_acquired = true;
+            }
+            Ok(_) => {
+                virtual_key_rate_limit.record_refused("concurrency");
+                let error = GatewayApiError::api_key_rate_limited("concurrency");
+                record_request_virtual_key_rate_limit(
+                    repository,
+                    &auth,
+                    request_id,
+                    selected_route,
+                    route_snapshot.clone(),
+                    &virtual_key_rate_limit,
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    &auth,
+                    request_id,
+                    started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+            Err(error) => {
+                finish_request_with_error(
+                    repository,
+                    &auth,
+                    request_id,
+                    started_at,
+                    error.log_summary(),
+                )
+                .await;
+                return error.into_response();
+            }
+        }
+    }
+
+    if let Some(limit) = virtual_key_rpm_limit(&auth) {
+        virtual_key_rate_limit.record_attempt("rpm");
+        match repository.acquire_virtual_key_rpm_slot(&auth, limit).await {
+            Ok(acquire) if acquire.applied => {
+                virtual_key_rate_limit.record_applied("rpm", &acquire);
+            }
+            Ok(_) => {
+                virtual_key_rate_limit.record_refused("rpm");
+                let error = GatewayApiError::api_key_rate_limited("rpm");
+                record_request_virtual_key_rate_limit(
+                    repository,
+                    &auth,
+                    request_id,
+                    selected_route,
+                    route_snapshot.clone(),
+                    &virtual_key_rate_limit,
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    &auth,
+                    request_id,
+                    started_at,
+                    error.log_summary(),
+                )
+                .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
+                return error.into_response();
+            }
+            Err(error) => {
+                finish_request_with_error(
+                    repository,
+                    &auth,
+                    request_id,
+                    started_at,
+                    error.log_summary(),
+                )
+                .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
+                return error.into_response();
+            }
+        }
+    }
+
+    if let Some(limit) = virtual_key_tpm_limit(&auth) {
+        virtual_key_rate_limit.record_attempt("tpm");
+        let required_tokens = rate_limit_tpm_estimate.estimate.required_tokens_i64();
+        virtual_key_rate_limit.record_required("tpm", required_tokens);
+        match repository
+            .acquire_virtual_key_tpm_capacity(&auth, limit, required_tokens)
+            .await
+        {
+            Ok(acquire) if acquire.applied => {
+                virtual_key_rate_limit.record_applied("tpm", &acquire);
+            }
+            Ok(_) => {
+                virtual_key_rate_limit.record_refused("tpm");
+                let error = GatewayApiError::api_key_rate_limited("tpm");
+                record_request_virtual_key_rate_limit(
+                    repository,
+                    &auth,
+                    request_id,
+                    selected_route,
+                    route_snapshot.clone(),
+                    &virtual_key_rate_limit,
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    &auth,
+                    request_id,
+                    started_at,
+                    error.log_summary(),
+                )
+                .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
+                return error.into_response();
+            }
+            Err(error) => {
+                finish_request_with_error(
+                    repository,
+                    &auth,
+                    request_id,
+                    started_at,
+                    error.log_summary(),
+                )
+                .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
+                return error.into_response();
+            }
+        }
+    }
+
+    let route_snapshot =
+        route_snapshot_with_virtual_key_rate_limit(route_snapshot, &virtual_key_rate_limit);
+    record_request_virtual_key_rate_limit(
+        repository,
+        &auth,
+        request_id,
+        selected_route,
+        route_snapshot.clone(),
+        &virtual_key_rate_limit,
+    )
+    .await;
+
     if request.is_streaming() {
         return streaming::chat_completions_streaming(streaming::StreamingChatContext {
             repository,
@@ -880,10 +1263,12 @@ async fn chat_completions(
             request: &request,
             attempt_routes: &attempt_routes,
             upstream_clients: &mut upstream_clients,
+            native_http: &state.native_http,
             upstream_timeout: state.upstream_timeout,
             stream_idle_timeout: state.stream_idle_timeout,
             route_snapshot,
             rate_limit_tpm_estimate: Some(&rate_limit_tpm_estimate),
+            virtual_key_concurrency_acquired,
         })
         .await;
     }
@@ -903,6 +1288,12 @@ async fn chat_completions(
         )
         .await
         {
+            release_virtual_key_concurrency_if_needed(
+                repository,
+                &auth,
+                virtual_key_concurrency_acquired,
+            )
+            .await;
             return response;
         }
 
@@ -919,6 +1310,12 @@ async fn chat_completions(
         )
         .await
         {
+            release_virtual_key_concurrency_if_needed(
+                repository,
+                &auth,
+                virtual_key_concurrency_acquired,
+            )
+            .await;
             return response;
         }
         if !rate_limit_reservation.executable() {
@@ -962,47 +1359,356 @@ async fn chat_completions(
                     error.log_summary(),
                 )
                 .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
                 return error.into_response();
             }
         };
 
         let provider_started_at = Instant::now();
-        let upstream_client = match cached_openai_client(
-            &mut upstream_clients,
-            &route.endpoint,
-            state.upstream_timeout,
-        )
-        .await
-        {
-            Ok(client) => client,
-            Err(error) => {
-                let summary = summarize_adapter_error(&error);
-                release_gateway_rate_limit_reservation_if_needed(
-                    repository,
-                    &auth,
-                    route,
-                    &mut rate_limit_reservation,
-                )
-                .await;
-                finish_provider_attempt_with_adapter_error_with_metadata(
-                    repository,
-                    &auth,
-                    route,
-                    attempt_id,
-                    provider_started_at,
-                    &error,
-                    summary.clone(),
-                    provider_attempt_metadata_with_rate_limit_reservation(
-                        json!({}),
-                        &rate_limit_reservation,
-                        "error",
-                    ),
-                )
-                .await;
-                finish_request_with_error(repository, &auth, request_id, started_at, summary).await;
-                return adapter_error_response(error);
+        if route_uses_gemini_adapter(route) {
+            let adapter = GeminiAdapter::new();
+            let upstream_request = match gemini_chat_completions_request_for_upstream(
+                &adapter,
+                &request,
+                &route.upstream_model,
+            ) {
+                Ok(upstream_request) => upstream_request,
+                Err(error) => {
+                    let summary = summarize_gemini_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_gemini_adapter_error_with_metadata(
+                        repository,
+                        &auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(repository, &auth, request_id, started_at, summary)
+                        .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        &auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return gemini_adapter_error_response(error);
+                }
+            };
+
+            let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
+                Ok(provider_key) => provider_key,
+                Err(error) => {
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_error_with_metadata(
+                        repository,
+                        &auth,
+                        attempt_id,
+                        provider_started_at,
+                        error.log_summary(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(
+                        repository,
+                        &auth,
+                        request_id,
+                        started_at,
+                        error.log_summary(),
+                    )
+                    .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        &auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return error.into_response();
+                }
+            };
+
+            let upstream_timeout = route_upstream_timeout(route, state.upstream_timeout);
+            let native_http = match native_http_client(upstream_timeout) {
+                Ok(client) => client,
+                Err(error) => {
+                    let error = GeminiAdapterError::RequestSerialize(error.to_string());
+                    let summary = summarize_gemini_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_gemini_adapter_error_with_metadata(
+                        repository,
+                        &auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(repository, &auth, request_id, started_at, summary)
+                        .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        &auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return gemini_adapter_error_response(error);
+                }
+            };
+
+            match send_gemini_chat_completions_request(
+                &native_http,
+                route,
+                &upstream_request,
+                provider_key.secret.expose_secret(),
+            )
+            .await
+            {
+                Ok(payload) => {
+                    let response_payload = normalize_openai_chat_completion_payload(
+                        payload.clone(),
+                        &request.model,
+                        request_id,
+                    );
+                    let response_body = response_payload.to_string();
+                    let response_body_hash = sha256_hex(response_body.as_bytes());
+                    let response_payload_metadata =
+                        response_payload_metadata(&payload_policy, response_body.as_bytes());
+                    let usage = request_usage_from_adapter_usage(adapter.extract_usage(&payload));
+                    let openai_compat = openai_chat_completion_compat_metadata(
+                        &payload,
+                        &response_payload,
+                        request_id,
+                        &response_body_hash,
+                        usage,
+                    );
+                    finish_provider_attempt_success(
+                        repository,
+                        &auth,
+                        attempt_id,
+                        provider_started_at,
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({"adapter": "gemini_generate_content"}),
+                            &rate_limit_reservation,
+                            "completed",
+                        ),
+                    )
+                    .await;
+                    record_request_final_route(
+                        repository,
+                        &auth,
+                        request_id,
+                        route,
+                        route_snapshot_with_final_attempt(
+                            route_snapshot_with_openai_compat(
+                                route_snapshot.clone(),
+                                openai_compat,
+                            ),
+                            route,
+                            attempt_no,
+                            &fallback_events,
+                        ),
+                    )
+                    .await;
+                    let rating = rate_request_usage(
+                        repository,
+                        &auth,
+                        route.canonical_model_id,
+                        usage,
+                        Some(&payload),
+                    )
+                    .await;
+                    finish_request_success(
+                        repository,
+                        &auth,
+                        request_id,
+                        started_at,
+                        Some(response_body_hash),
+                        usage,
+                        rating.clone(),
+                        Some(response_payload_metadata),
+                    )
+                    .await;
+                    settle_request_ledger(
+                        repository,
+                        &auth,
+                        request_id,
+                        route,
+                        usage,
+                        rating.as_ref(),
+                    )
+                    .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        &auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return openai_json_response_with_request_id(
+                        StatusCode::OK,
+                        request_id,
+                        response_payload,
+                    );
+                }
+                Err(error) => {
+                    let summary = summarize_gemini_adapter_error(&error);
+
+                    if attempt_index + 1 < attempt_routes.len()
+                        && gemini_provider_error_can_fallback(&error)
+                    {
+                        let next_route = &attempt_routes[attempt_index + 1];
+                        let event = fallback_event(attempt_no, &summary, route, next_route);
+                        release_gateway_rate_limit_reservation_if_needed(
+                            repository,
+                            &auth,
+                            route,
+                            &mut rate_limit_reservation,
+                        )
+                        .await;
+                        finish_provider_attempt_with_gemini_adapter_error_and_fallback_for_endpoint(
+                            METRICS_ENDPOINT_CHAT_COMPLETIONS,
+                            repository,
+                            &auth,
+                            route,
+                            attempt_id,
+                            provider_started_at,
+                            &error,
+                            summary.clone(),
+                            Some(summary.error_code.as_str()),
+                            provider_attempt_metadata_with_rate_limit_reservation(
+                                provider_attempt_fallback_metadata(&event),
+                                &rate_limit_reservation,
+                                "fallback",
+                            ),
+                        )
+                        .await;
+                        fallback_events.push(event);
+
+                        tracing::warn!(
+                            attempt_no,
+                            provider_id = %route.provider_id,
+                            channel_id = %route.channel_id,
+                            error_code = %summary.error_code,
+                            "Gemini provider attempt failed; trying fallback route"
+                        );
+                        continue;
+                    }
+
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_gemini_adapter_error_with_metadata(
+                        repository,
+                        &auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(repository, &auth, request_id, started_at, summary)
+                        .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        &auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return gemini_adapter_error_response(error);
+                }
             }
-        };
+        }
+
+        let upstream_timeout = route_upstream_timeout(route, state.upstream_timeout);
+        let upstream_client =
+            match cached_openai_client(&mut upstream_clients, &route.endpoint, upstream_timeout)
+                .await
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    let summary = summarize_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        &auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_adapter_error_with_metadata(
+                        repository,
+                        &auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(repository, &auth, request_id, started_at, summary)
+                        .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        &auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return adapter_error_response(error);
+                }
+            };
         let upstream_request = request_for_upstream(&request, &route.upstream_model);
 
         let provider_key = match open_provider_key_for_route(repository, &auth, route).await {
@@ -1036,6 +1742,12 @@ async fn chat_completions(
                     error.log_summary(),
                 )
                 .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
                 return error.into_response();
             }
         };
@@ -1048,12 +1760,24 @@ async fn chat_completions(
             .await
         {
             Ok(payload) => {
-                let response_body = payload.to_string();
+                let response_payload = normalize_openai_chat_completion_payload(
+                    payload.clone(),
+                    &request.model,
+                    request_id,
+                );
+                let response_body = response_payload.to_string();
                 let response_body_hash = sha256_hex(response_body.as_bytes());
                 let response_payload_metadata =
                     response_payload_metadata(&payload_policy, response_body.as_bytes());
                 let usage =
                     request_usage_from_adapter_usage(upstream_client.extract_usage(&payload));
+                let openai_compat = openai_chat_completion_compat_metadata(
+                    &payload,
+                    &response_payload,
+                    request_id,
+                    &response_body_hash,
+                    usage,
+                );
                 finish_provider_attempt_success(
                     repository,
                     &auth,
@@ -1072,7 +1796,7 @@ async fn chat_completions(
                     request_id,
                     route,
                     route_snapshot_with_final_attempt(
-                        route_snapshot.clone(),
+                        route_snapshot_with_openai_compat(route_snapshot.clone(), openai_compat),
                         route,
                         attempt_no,
                         &fallback_events,
@@ -1100,7 +1824,17 @@ async fn chat_completions(
                 .await;
                 settle_request_ledger(repository, &auth, request_id, route, usage, rating.as_ref())
                     .await;
-                return (StatusCode::OK, Json(payload)).into_response();
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
+                return openai_json_response_with_request_id(
+                    StatusCode::OK,
+                    request_id,
+                    response_payload,
+                );
             }
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -1166,6 +1900,12 @@ async fn chat_completions(
                 )
                 .await;
                 finish_request_with_error(repository, &auth, request_id, started_at, summary).await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    &auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
                 return adapter_error_response(error);
             }
         }
@@ -1194,6 +1934,8 @@ async fn chat_completions(
         error.log_summary(),
     )
     .await;
+    release_virtual_key_concurrency_if_needed(repository, &auth, virtual_key_concurrency_acquired)
+        .await;
     error.into_response()
 }
 
@@ -1257,7 +1999,7 @@ async fn chat_completions_prompt_protection_reject_probe(
         let route = RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
             &auth,
             requested_model_for_log,
-            rejection.metadata,
+            rejection.metadata.clone(),
         ))
         .with_trace_id(request_trace.trace_id.as_deref());
         let payload_log =
@@ -1274,6 +2016,17 @@ async fn chat_completions_prompt_protection_reject_probe(
             Ok(request_id) => request_id,
             Err(error) => return error.into_response(),
         };
+        if let Err(error) = spy
+            .insert_prompt_protection_runtime_audit_log(prompt_protection_runtime_audit_log(
+                request_id,
+                METRICS_ENDPOINT_CHAT_COMPLETIONS,
+                &request_body_hash,
+                &rejection,
+            ))
+            .await
+        {
+            return error.into_response();
+        }
         let summary = error.log_summary();
         let update = RequestFinalUpdate {
             status: request_status_for_http(summary.http_status),
@@ -1450,21 +2203,22 @@ async fn responses(
             prompt_protection_hit_count = rejection.hit_count,
             "prompt protection rejected responses request"
         );
-        start_and_finish_request_error_for_endpoint(
+        start_audit_and_finish_prompt_protection_rejection_for_endpoint(
             METRICS_ENDPOINT_RESPONSES,
             repository,
             &auth,
             requested_model_for_log,
-            Some(&request_body_hash),
+            &request_body_hash,
             prompt_protection_request_payload_log(&payload_policy, body.len(), &request_body_hash),
             RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
                 &auth,
                 requested_model_for_log,
-                rejection.metadata,
+                rejection.metadata.clone(),
             ))
             .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
+            &rejection,
         )
         .await;
         return error.into_response();
@@ -1783,6 +2537,12 @@ async fn responses(
                     response_payload_metadata(&payload_policy, response_body.as_bytes());
                 let usage =
                     request_usage_from_adapter_usage(upstream_client.extract_usage(&payload));
+                let openai_compat = openai_responses_compat_metadata(
+                    &payload,
+                    request_id,
+                    &response_body_hash,
+                    usage,
+                );
                 finish_provider_attempt_success(
                     repository,
                     &auth,
@@ -1800,11 +2560,14 @@ async fn responses(
                     &auth,
                     request_id,
                     route,
-                    route_snapshot_with_final_attempt(
-                        route_snapshot.clone(),
-                        route,
-                        attempt_no,
-                        &fallback_events,
+                    route_snapshot_with_openai_compat(
+                        route_snapshot_with_final_attempt(
+                            route_snapshot.clone(),
+                            route,
+                            attempt_no,
+                            &fallback_events,
+                        ),
+                        openai_compat,
                     ),
                 )
                 .await;
@@ -2021,7 +2784,7 @@ async fn responses_prompt_protection_reject_probe(
         let route = RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
             &auth,
             requested_model_for_log,
-            rejection.metadata,
+            rejection.metadata.clone(),
         ))
         .with_trace_id(request_trace.trace_id.as_deref());
         let payload_log =
@@ -2038,6 +2801,17 @@ async fn responses_prompt_protection_reject_probe(
             Ok(request_id) => request_id,
             Err(error) => return error.into_response(),
         };
+        if let Err(error) = spy
+            .insert_prompt_protection_runtime_audit_log(prompt_protection_runtime_audit_log(
+                request_id,
+                METRICS_ENDPOINT_RESPONSES,
+                &request_body_hash,
+                &rejection,
+            ))
+            .await
+        {
+            return error.into_response();
+        }
         let summary = error.log_summary();
         let update = RequestFinalUpdate {
             status: request_status_for_http(summary.http_status),
@@ -2201,21 +2975,22 @@ async fn embeddings(
             prompt_protection_hit_count = rejection.hit_count,
             "prompt protection rejected embeddings request"
         );
-        start_and_finish_request_error_for_endpoint(
+        start_audit_and_finish_prompt_protection_rejection_for_endpoint(
             METRICS_ENDPOINT_EMBEDDINGS,
             repository,
             &auth,
             requested_model_for_log,
-            Some(&request_body_hash),
+            &request_body_hash,
             prompt_protection_request_payload_log(&payload_policy, body.len(), &request_body_hash),
             RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
                 &auth,
                 requested_model_for_log,
-                rejection.metadata,
+                rejection.metadata.clone(),
             ))
             .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
+            &rejection,
         )
         .await;
         return error.into_response();
@@ -2517,6 +3292,13 @@ async fn embeddings(
                 let usage = request_usage_from_embedding_adapter_usage(
                     upstream_client.extract_usage(&payload),
                 );
+                let openai_compat = openai_embeddings_compat_metadata(
+                    &request,
+                    &payload,
+                    request_id,
+                    &response_body_hash,
+                    usage,
+                );
                 finish_provider_attempt_success(
                     repository,
                     &auth,
@@ -2534,11 +3316,14 @@ async fn embeddings(
                     &auth,
                     request_id,
                     route,
-                    route_snapshot_with_final_attempt(
-                        route_snapshot.clone(),
-                        route,
-                        attempt_no,
-                        &fallback_events,
+                    route_snapshot_with_openai_compat(
+                        route_snapshot_with_final_attempt(
+                            route_snapshot.clone(),
+                            route,
+                            attempt_no,
+                            &fallback_events,
+                        ),
+                        openai_compat,
                     ),
                 )
                 .await;
@@ -2564,7 +3349,7 @@ async fn embeddings(
                 .await;
                 settle_request_ledger(repository, &auth, request_id, route, usage, rating.as_ref())
                     .await;
-                return (StatusCode::OK, Json(payload)).into_response();
+                return openai_json_response_with_request_id(StatusCode::OK, request_id, payload);
             }
             Err(error) => {
                 let summary = summarize_adapter_error(&error);
@@ -2820,21 +3605,22 @@ async fn anthropic_messages(
             prompt_protection_hit_count = rejection.hit_count,
             "prompt protection rejected anthropic messages request"
         );
-        start_and_finish_request_error_for_endpoint(
+        start_audit_and_finish_prompt_protection_rejection_for_endpoint(
             METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
             repository,
             &auth,
             requested_model_for_log,
-            Some(&request_body_hash),
+            &request_body_hash,
             prompt_protection_request_payload_log(&payload_policy, body.len(), &request_body_hash),
             RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
                 &auth,
                 requested_model_for_log,
-                rejection.metadata,
+                rejection.metadata.clone(),
             ))
             .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
+            &rejection,
         )
         .await;
         return error.into_response();
@@ -2944,7 +3730,12 @@ async fn anthropic_messages(
             Some(&request_body_hash),
             request_payload_log(&payload_policy, &body),
             RequestRouteLog::for_route(selected_route, route_snapshot.clone())
-                .with_trace_id(request_trace.trace_id.as_deref()),
+                .with_trace_id(request_trace.trace_id.as_deref())
+                .with_protocol_metadata(
+                    "anthropic",
+                    "anthropic",
+                    selected_route.protocol_mode.as_str(),
+                ),
         )
         .await
     {
@@ -3425,7 +4216,7 @@ async fn anthropic_messages_prompt_protection_reject_probe(
         let route = RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
             &auth,
             requested_model_for_log,
-            rejection.metadata,
+            rejection.metadata.clone(),
         ))
         .with_trace_id(request_trace.trace_id.as_deref());
         let payload_log =
@@ -3442,6 +4233,17 @@ async fn anthropic_messages_prompt_protection_reject_probe(
             Ok(request_id) => request_id,
             Err(error) => return error.into_response(),
         };
+        if let Err(error) = spy
+            .insert_prompt_protection_runtime_audit_log(prompt_protection_runtime_audit_log(
+                request_id,
+                METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+                &request_body_hash,
+                &rejection,
+            ))
+            .await
+        {
+            return error.into_response();
+        }
         let summary = error.log_summary();
         let update = RequestFinalUpdate {
             status: request_status_for_http(summary.http_status),
@@ -3662,21 +4464,22 @@ async fn gemini_generate_content_native_passthrough(
             prompt_protection_hit_count = rejection.hit_count,
             "prompt protection rejected gemini native request"
         );
-        start_and_finish_request_error_for_endpoint(
+        start_audit_and_finish_prompt_protection_rejection_for_endpoint(
             METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
             repository,
             &auth,
             requested_model_for_log,
-            Some(&request_body_hash),
+            &request_body_hash,
             prompt_protection_request_payload_log(&payload_policy, body.len(), &request_body_hash),
             RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
                 &auth,
                 requested_model_for_log,
-                rejection.metadata,
+                rejection.metadata.clone(),
             ))
             .with_trace_id(request_trace.trace_id.as_deref()),
             started_at,
             error.log_summary(),
+            &rejection,
         )
         .await;
         return error.into_response();
@@ -4061,7 +4864,7 @@ async fn gemini_generate_content_native_passthrough(
             &state.native_http,
             route,
             &upstream_path,
-            upstream_body.body,
+            upstream_body.body.clone(),
             provider_key.secret.expose_secret(),
             inbound_content_type.as_deref(),
         )
@@ -4072,13 +4875,18 @@ async fn gemini_generate_content_native_passthrough(
                 let response_payload_metadata =
                     response_payload_metadata(&payload_policy, &payload.body);
                 let usage = gemini_usage_from_response_body(&payload.body);
+                let gemini_protocol_metadata = gemini_native_protocol_metadata(
+                    &payload.body,
+                    &upstream_body,
+                    native_streaming_requested,
+                );
                 finish_provider_attempt_success(
                     repository,
                     &auth,
                     attempt_id,
                     provider_started_at,
                     provider_attempt_metadata_with_rate_limit_reservation(
-                        json!({}),
+                        gemini_protocol_metadata.clone(),
                         &rate_limit_reservation,
                         "completed",
                     ),
@@ -4089,11 +4897,14 @@ async fn gemini_generate_content_native_passthrough(
                     &auth,
                     request_id,
                     route,
-                    route_snapshot_with_final_attempt(
-                        route_snapshot.clone(),
-                        route,
-                        attempt_no,
-                        &fallback_events,
+                    route_snapshot_with_gemini_native_protocol(
+                        route_snapshot_with_final_attempt(
+                            route_snapshot.clone(),
+                            route,
+                            attempt_no,
+                            &fallback_events,
+                        ),
+                        gemini_protocol_metadata,
                     ),
                 )
                 .await;
@@ -4315,7 +5126,7 @@ async fn gemini_native_prompt_protection_reject_probe(
         let route = RequestRouteLog::unresolved(route_snapshot_for_prompt_protection_rejection(
             &auth,
             requested_model_for_log,
-            rejection.metadata,
+            rejection.metadata.clone(),
         ))
         .with_trace_id(request_trace.trace_id.as_deref());
         let payload_log =
@@ -4332,6 +5143,17 @@ async fn gemini_native_prompt_protection_reject_probe(
             Ok(request_id) => request_id,
             Err(error) => return error.into_response(),
         };
+        if let Err(error) = spy
+            .insert_prompt_protection_runtime_audit_log(prompt_protection_runtime_audit_log(
+                request_id,
+                METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+                &request_body_hash,
+                &rejection,
+            ))
+            .await
+        {
+            return error.into_response();
+        }
         let summary = error.log_summary();
         let update = RequestFinalUpdate {
             status: request_status_for_http(summary.http_status),
@@ -4828,6 +5650,29 @@ async fn send_anthropic_messages_request(
     anthropic_upstream_response(response, provider_key).await
 }
 
+async fn send_gemini_chat_completions_request(
+    http: &reqwest::Client,
+    route: &ResolvedChatRoute,
+    upstream_request: &AdapterUpstreamRequest,
+    provider_key: &str,
+) -> Result<Value, GeminiAdapterError> {
+    let url = native_upstream_url(&route.endpoint, &upstream_request.path)
+        .map_err(|error| GeminiAdapterError::RequestSerialize(error.to_string()))?;
+    let response = http
+        .post(url)
+        .header(
+            GEMINI_API_KEY_HEADER,
+            gemini_provider_key_header(provider_key)?,
+        )
+        .header(reqwest::header::CONTENT_TYPE, APPLICATION_JSON_CONTENT_TYPE)
+        .json(&upstream_request.body)
+        .send()
+        .await
+        .map_err(gemini_reqwest_error)?;
+
+    gemini_chat_completions_upstream_response(response, provider_key).await
+}
+
 pub(crate) fn native_upstream_url(
     endpoint: &str,
     upstream_path: &str,
@@ -4852,6 +5697,14 @@ fn anthropic_provider_key_header(
         AnthropicAdapterError::RequestSerialize(
             "provider authorization credential is invalid".into(),
         )
+    })
+}
+
+fn gemini_provider_key_header(
+    provider_key: &str,
+) -> Result<reqwest::header::HeaderValue, GeminiAdapterError> {
+    reqwest::header::HeaderValue::from_str(provider_key).map_err(|_| {
+        GeminiAdapterError::RequestSerialize("provider authorization credential is invalid".into())
     })
 }
 
@@ -4905,6 +5758,24 @@ async fn anthropic_upstream_response(
     anthropic_parse_messages_response(status.as_u16(), &body, retry_after, provider_key)
 }
 
+async fn gemini_chat_completions_upstream_response(
+    response: reqwest::Response,
+    provider_key: &str,
+) -> Result<Value, GeminiAdapterError> {
+    let status = response.status().as_u16();
+    let retry_after = native_retry_after_from_headers(response.headers());
+    let body = response
+        .bytes()
+        .await
+        .map_err(|_| GeminiAdapterError::UpstreamInvalidJson {
+            status,
+            message: "failed to read upstream response body".to_string(),
+            retry_after: retry_after.clone(),
+        })?;
+
+    gemini_parse_chat_completions_response(status, &body, retry_after, provider_key)
+}
+
 pub(crate) fn anthropic_parse_messages_response(
     status: u16,
     body: &[u8],
@@ -4936,6 +5807,31 @@ pub(crate) fn anthropic_parse_messages_response(
     }
 
     Ok(payload)
+}
+
+fn gemini_parse_chat_completions_response(
+    status: u16,
+    body: &[u8],
+    retry_after: Option<AdapterRetryAfter>,
+    provider_key: &str,
+) -> Result<Value, GeminiAdapterError> {
+    if !(200..300).contains(&status) {
+        let payload = serde_json::from_slice::<Value>(body)
+            .map(|value| redact_provider_key_from_value(redact_payload_value(&value), provider_key))
+            .unwrap_or_else(|_| {
+                json!({
+                    "provider_error_body_hash": sha256_hex(body),
+                    "provider_error_body": "non_json_redacted"
+                })
+            });
+        return Err(GeminiAdapterError::UpstreamStatus {
+            status,
+            body: payload,
+            retry_after,
+        });
+    }
+
+    GeminiAdapter::parse_chat_completions_response(status, body)
 }
 
 pub(crate) fn native_upstream_status_error(
@@ -4985,6 +5881,25 @@ pub(crate) fn anthropic_reqwest_error(error: reqwest::Error) -> AnthropicAdapter
     };
 
     AnthropicAdapterError::UpstreamInvalidJson {
+        status,
+        message: message.to_string(),
+        retry_after: None,
+    }
+}
+
+fn gemini_reqwest_error(error: reqwest::Error) -> GeminiAdapterError {
+    let status = if error.is_timeout() { 504 } else { 502 };
+    let message = if error.is_timeout() {
+        "upstream provider request timed out"
+    } else if error.is_connect() {
+        "failed to connect to upstream provider"
+    } else if error.is_body() {
+        "failed to read upstream provider response"
+    } else {
+        "upstream provider request failed"
+    };
+
+    GeminiAdapterError::UpstreamInvalidJson {
         status,
         message: message.to_string(),
         retry_after: None,
@@ -5083,6 +5998,42 @@ fn gemini_usage_from_response_body(body: &[u8]) -> RequestUsageUpdate {
     }
 }
 
+fn gemini_native_protocol_metadata(
+    response_body: &[u8],
+    upstream_body: &NativePreparedBody,
+    streaming_requested: bool,
+) -> Value {
+    let protocol_readback = serde_json::from_slice::<Value>(response_body)
+        .map(|value| GeminiAdapter::generate_content_protocol_metadata(&value))
+        .unwrap_or_else(|_| {
+            json!({
+                "schema": "gemini_generate_content_protocol_metadata_v1",
+                "protocol": "gemini_generate_content",
+                "terminal_status": "non_json_response",
+                "payload_body_omitted": true,
+            })
+        });
+
+    json!({
+        "gemini_generate_content": {
+            "schema": "gateway_gemini_generate_content_native_v1",
+            "mode": "native_passthrough",
+            "downstream_protocol": "gemini_generate_content",
+            "provider_protocol": "gemini_generate_content",
+            "streaming_requested": streaming_requested,
+            "request": {
+                "model_rewritten": upstream_body.model_rewritten,
+                "request_body_hash": upstream_body.request_body_hash,
+                "upstream_body_hash": upstream_body.upstream_body_hash,
+                "payload_body_omitted": true,
+            },
+            "response": protocol_readback,
+            "credential_material_omitted": true,
+            "payload_body_omitted": true,
+        }
+    })
+}
+
 fn redact_provider_key_from_value(value: Value, provider_key: &str) -> Value {
     let provider_key = provider_key.trim();
     if provider_key.is_empty() {
@@ -5110,6 +6061,9 @@ impl<'a> RequestRouteLog<'a> {
     fn unresolved(route_decision_snapshot: Value) -> Self {
         Self {
             trace_id: None,
+            inbound_protocol: None,
+            outbound_protocol: None,
+            protocol_mode: None,
             canonical_model_id: None,
             upstream_model: None,
             resolved_provider_id: None,
@@ -5126,6 +6080,9 @@ impl<'a> RequestRouteLog<'a> {
     ) -> RequestRouteLog<'static> {
         RequestRouteLog {
             trace_id: None,
+            inbound_protocol: None,
+            outbound_protocol: None,
+            protocol_mode: None,
             canonical_model_id: Some(model.id),
             upstream_model: None,
             resolved_provider_id: None,
@@ -5139,6 +6096,9 @@ impl<'a> RequestRouteLog<'a> {
     fn for_route(route: &'a ResolvedChatRoute, route_decision_snapshot: Value) -> Self {
         Self {
             trace_id: None,
+            inbound_protocol: None,
+            outbound_protocol: None,
+            protocol_mode: None,
             canonical_model_id: Some(route.canonical_model_id),
             upstream_model: Some(route.upstream_model.as_str()),
             resolved_provider_id: Some(route.provider_id),
@@ -5154,6 +6114,18 @@ impl<'a> RequestRouteLog<'a> {
             .map(str::trim)
             .filter(|trace_id| !trace_id.is_empty())
             .map(str::to_string);
+        self
+    }
+
+    fn with_protocol_metadata(
+        mut self,
+        inbound_protocol: &'a str,
+        outbound_protocol: &'a str,
+        protocol_mode: &'a str,
+    ) -> Self {
+        self.inbound_protocol = Some(inbound_protocol);
+        self.outbound_protocol = Some(outbound_protocol);
+        self.protocol_mode = Some(protocol_mode);
         self
     }
 }
@@ -6007,6 +6979,190 @@ impl GatewayRateLimitRuntime {
     }
 }
 
+impl VirtualKeyRateLimitRuntime {
+    fn from_auth(auth: &AuthContext) -> Self {
+        let mut dimensions = BTreeMap::new();
+        if let Some(limit) = virtual_key_concurrency_limit(auth) {
+            dimensions.insert(
+                "concurrency",
+                VirtualKeyRateLimitDimensionRuntime::new(
+                    limit,
+                    GATEWAY_RATE_LIMIT_REQUIRED_CONCURRENCY,
+                    None,
+                    "not_windowed",
+                ),
+            );
+        }
+        if let Some(limit) = virtual_key_rpm_limit(auth) {
+            dimensions.insert(
+                "rpm",
+                VirtualKeyRateLimitDimensionRuntime::new(
+                    limit,
+                    GATEWAY_RATE_LIMIT_REQUIRED_REQUESTS,
+                    Some(60),
+                    "summary_only",
+                ),
+            );
+        }
+        if let Some(limit) = virtual_key_tpm_limit(auth) {
+            dimensions.insert(
+                "tpm",
+                VirtualKeyRateLimitDimensionRuntime::new(
+                    limit,
+                    GATEWAY_RATE_LIMIT_REQUIRED_TOKENS_FALLBACK,
+                    Some(60),
+                    "summary_only",
+                ),
+            );
+        }
+
+        Self {
+            dimensions,
+            attempted_dimensions: BTreeSet::new(),
+            applied_dimensions: BTreeSet::new(),
+            refused_dimension: None,
+        }
+    }
+
+    fn record_attempt(&mut self, dimension: &'static str) {
+        self.attempted_dimensions.insert(dimension);
+    }
+
+    fn record_required(&mut self, dimension: &'static str, required: i64) {
+        if let Some(summary) = self.dimensions.get_mut(dimension) {
+            summary.required = required;
+        }
+    }
+
+    fn record_applied(&mut self, dimension: &'static str, acquire: &VirtualKeyRateLimitAcquire) {
+        self.applied_dimensions.insert(dimension);
+        if let Some(summary) = self.dimensions.get_mut(dimension) {
+            summary.used = acquire.used_after;
+            summary.remaining = acquire.remaining;
+        }
+    }
+
+    fn record_refused(&mut self, dimension: &'static str) {
+        self.refused_dimension = Some(dimension);
+        if let Some(summary) = self.dimensions.get_mut(dimension) {
+            summary.retry_after_ms = rate_limit_retry_after_ms_for_dimension(dimension);
+        }
+    }
+
+    fn metadata(&self) -> Value {
+        json!({
+            "schema": VIRTUAL_KEY_RATE_LIMIT_RUNTIME_SCHEMA,
+            "scope": "virtual_key",
+            "status": if self.refused_dimension.is_some() {
+                "limited"
+            } else if self.attempted_dimensions.is_empty() {
+                "not_checked"
+            } else {
+                "ok"
+            },
+            "retry_after_ms": self.refused_dimension
+                .and_then(|dimension| self.dimensions.get(dimension))
+                .and_then(|dimension| dimension.retry_after_ms),
+            "window_status": if self.dimensions.values().any(|dimension| dimension.window_seconds.is_some()) {
+                "summary_only"
+            } else {
+                "not_windowed"
+            },
+            "configured_dimensions": self.dimensions.keys().copied().collect::<Vec<_>>(),
+            "acquire": {
+                "attempted_dimensions": self.attempted_dimensions.iter().copied().collect::<Vec<_>>(),
+                "applied_dimensions": self.applied_dimensions.iter().copied().collect::<Vec<_>>(),
+                "refused_dimension": self.refused_dimension,
+            },
+            "dimensions": {
+                "concurrency": self.dimension_metadata("concurrency"),
+                "rpm": self.dimension_metadata("rpm"),
+                "tpm": self.dimension_metadata("tpm"),
+            },
+            "policy_material_in_output": false,
+            "window_material_in_output": false,
+        })
+    }
+
+    fn dimension_metadata(&self, dimension: &'static str) -> Value {
+        let configured = self.dimensions.contains_key(dimension);
+        let attempted = self.attempted_dimensions.contains(dimension);
+        let applied = self.applied_dimensions.contains(dimension);
+        let refused = self.refused_dimension == Some(dimension);
+        let status = if refused {
+            "limited"
+        } else if applied {
+            "ok"
+        } else if attempted {
+            "not_applied"
+        } else if configured {
+            "configured"
+        } else {
+            "not_configured"
+        };
+        let summary = self.dimensions.get(dimension);
+
+        json!({
+            "scope": "virtual_key",
+            "status": status,
+            "configured": configured,
+            "attempted": attempted,
+            "applied": applied,
+            "refused": refused,
+            "limit": summary.and_then(|summary| summary.limit),
+            "required": summary.map(|summary| summary.required),
+            "used": summary.and_then(|summary| summary.used),
+            "remaining": summary.and_then(|summary| summary.remaining),
+            "retry_after_ms": summary.and_then(|summary| summary.retry_after_ms),
+            "window_seconds": summary.and_then(|summary| summary.window_seconds),
+            "window_status": summary
+                .map(|summary| summary.window_status)
+                .unwrap_or("not_configured"),
+        })
+    }
+}
+
+impl VirtualKeyRateLimitDimensionRuntime {
+    fn new(
+        limit: i32,
+        required: i64,
+        window_seconds: Option<u64>,
+        window_status: &'static str,
+    ) -> Self {
+        Self {
+            limit: Some(i64::from(limit)),
+            required,
+            used: None,
+            remaining: None,
+            retry_after_ms: None,
+            window_seconds,
+            window_status,
+        }
+    }
+}
+
+fn rate_limit_retry_after_ms_for_dimension(dimension: &str) -> Option<u64> {
+    match dimension {
+        "rpm" | "tpm" => Some(millis_until_next_minute_window()),
+        "concurrency" => None,
+        _ => None,
+    }
+}
+
+fn millis_until_next_minute_window() -> u64 {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let elapsed_ms = elapsed.as_millis() as u64;
+    let minute_ms = 60_000;
+    let remainder = elapsed_ms % minute_ms;
+    if remainder == 0 {
+        minute_ms
+    } else {
+        minute_ms - remainder
+    }
+}
+
 fn route_selection_context_for_gateway_trace_affinity(
     request_trace: &GatewayRequestTrace,
     previous_success: Option<&TraceAffinityPreviousSuccessRoute>,
@@ -6669,6 +7825,22 @@ pub(crate) fn provider_attempt_metadata_with_rate_limit_reservation(
     }
 }
 
+fn provider_attempt_metadata_with_normalized_error(
+    mut metadata: Value,
+    diagnostic: Value,
+) -> Value {
+    let provider_error = diagnostic
+        .get("provider_error")
+        .cloned()
+        .unwrap_or(diagnostic);
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("provider_error".to_string(), provider_error);
+        metadata
+    } else {
+        json!({ "provider_error": provider_error })
+    }
+}
+
 pub(crate) fn rate_limit_reservation_skip_event(
     attempt_no: i32,
     route: &ResolvedChatRoute,
@@ -6845,9 +8017,24 @@ async fn cached_openai_client(
     timeout: Duration,
 ) -> Result<OpenAiCompatibleClient, OpenAiAdapterError> {
     let endpoint = validate_provider_endpoint_for_runtime(endpoint).await?;
-    cached_openai_client_with_builder(clients, &endpoint, |endpoint| {
+    let cache_key = format!(
+        "{}|timeout_ms={}",
+        upstream_base_url_cache_key(&endpoint),
+        timeout.as_millis()
+    );
+    cached_openai_client_with_builder_and_cache_key(clients, &cache_key, &endpoint, |endpoint| {
         OpenAiCompatibleClient::new_with_timeout(endpoint.to_string(), timeout)
     })
+}
+
+fn route_upstream_timeout(route: &ResolvedChatRoute, default_timeout: Duration) -> Duration {
+    route
+        .timeout_policy
+        .get("request_timeout_ms")
+        .and_then(Value::as_u64)
+        .filter(|milliseconds| *milliseconds > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(default_timeout)
 }
 
 fn configured_max_provider_attempts(config: &AppConfig) -> usize {
@@ -6925,21 +8112,30 @@ fn resolved_provider_endpoint_ips_allowed(ips: &[IpAddr]) -> bool {
             .all(provider_endpoint_resolved_ip_allowed)
 }
 
+#[cfg(test)]
 fn cached_openai_client_with_builder(
     clients: &mut OpenAiClientCache,
     endpoint: &str,
     build_client: impl FnOnce(&str) -> Result<OpenAiCompatibleClient, OpenAiAdapterError>,
 ) -> Result<OpenAiCompatibleClient, OpenAiAdapterError> {
     let cache_key = upstream_base_url_cache_key(endpoint);
-    if let Some(client) = clients.get(&cache_key) {
+    cached_openai_client_with_builder_and_cache_key(clients, &cache_key, endpoint, build_client)
+}
+
+fn cached_openai_client_with_builder_and_cache_key(
+    clients: &mut OpenAiClientCache,
+    cache_key: &str,
+    endpoint: &str,
+    build_client: impl FnOnce(&str) -> Result<OpenAiCompatibleClient, OpenAiAdapterError>,
+) -> Result<OpenAiCompatibleClient, OpenAiAdapterError> {
+    if let Some(client) = clients.get(cache_key) {
         return Ok(client.clone());
     }
 
     let client = build_client(endpoint)?;
-    let base_url = client.base_url().to_string();
-    clients.insert(base_url.clone(), client);
+    clients.insert(cache_key.to_string(), client);
     Ok(clients
-        .get(&base_url)
+        .get(cache_key)
         .expect("inserted upstream client must be cached")
         .clone())
 }
@@ -7021,6 +8217,18 @@ fn append_gateway_rate_limit_metadata(value: &mut Value, rate_limit: &GatewayRat
     }
 }
 
+fn route_snapshot_with_virtual_key_rate_limit(
+    mut snapshot: Value,
+    rate_limit: &VirtualKeyRateLimitRuntime,
+) -> Value {
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("virtual_key_rate_limit".to_string(), rate_limit.metadata());
+        snapshot
+    } else {
+        json!({ "virtual_key_rate_limit": rate_limit.metadata() })
+    }
+}
+
 fn route_snapshot_with_final_attempt(
     mut snapshot: Value,
     final_route: &ResolvedChatRoute,
@@ -7048,6 +8256,28 @@ fn route_snapshot_with_final_attempt(
         snapshot
     } else {
         json!({ "fallback": fallback })
+    }
+}
+
+fn route_snapshot_with_openai_compat(mut snapshot: Value, openai_compat: Value) -> Value {
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("openai_compat".to_string(), openai_compat);
+        snapshot
+    } else {
+        json!({ "openai_compat": openai_compat })
+    }
+}
+
+fn route_snapshot_with_gemini_native_protocol(mut snapshot: Value, metadata: Value) -> Value {
+    let gemini_metadata = metadata
+        .get("gemini_generate_content")
+        .cloned()
+        .unwrap_or(metadata);
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("gemini_generate_content".to_string(), gemini_metadata);
+        snapshot
+    } else {
+        json!({ "gemini_generate_content": gemini_metadata })
     }
 }
 
@@ -7130,6 +8360,13 @@ pub(crate) fn anthropic_provider_error_can_fallback(error: &AnthropicAdapterErro
         .is_some_and(error_signal_can_fallback)
 }
 
+fn gemini_provider_error_can_fallback(error: &GeminiAdapterError) -> bool {
+    error
+        .to_error_signal()
+        .as_ref()
+        .is_some_and(error_signal_can_fallback)
+}
+
 fn error_signal_can_fallback(signal: &AdapterProviderErrorSignal) -> bool {
     if let Some(status_code) = signal.status_code {
         return matches!(status_code, 408 | 429 | 500..=599);
@@ -7172,6 +8409,16 @@ fn provider_key_runtime_status_patch_for_anthropic_adapter_error(
 ) -> Option<ProviderKeyRuntimeStatusPatch> {
     let adapter_signal = error.to_error_signal()?;
     let quota_like = anthropic_adapter_error_is_quota_like(error);
+
+    provider_key_runtime_status_patch_for_adapter_signal(&adapter_signal, quota_like, summary)
+}
+
+fn provider_key_runtime_status_patch_for_gemini_adapter_error(
+    error: &GeminiAdapterError,
+    summary: &ErrorLogSummary,
+) -> Option<ProviderKeyRuntimeStatusPatch> {
+    let adapter_signal = error.to_error_signal()?;
+    let quota_like = gemini_adapter_error_is_quota_like(error);
 
     provider_key_runtime_status_patch_for_adapter_signal(&adapter_signal, quota_like, summary)
 }
@@ -7313,6 +8560,13 @@ fn anthropic_adapter_error_is_quota_like(error: &AnthropicAdapterError) -> bool 
     }
 }
 
+fn gemini_adapter_error_is_quota_like(error: &GeminiAdapterError) -> bool {
+    match error {
+        GeminiAdapterError::UpstreamStatus { body, .. } => value_contains_quota_like_text(body),
+        _ => false,
+    }
+}
+
 fn value_contains_quota_like_text(value: &Value) -> bool {
     match value {
         Value::String(value) => is_quota_like_text(value),
@@ -7367,6 +8621,30 @@ fn anthropic_messages_request_for_upstream(
     adapter.build_messages_request(&request)
 }
 
+fn route_uses_gemini_adapter(route: &ResolvedChatRoute) -> bool {
+    matches!(
+        route.protocol_mode.as_str(),
+        "gemini" | "gemini_generate_content"
+    )
+}
+
+fn gemini_chat_completions_request_for_upstream(
+    adapter: &GeminiAdapter,
+    request: &ChatCompletionRequest,
+    upstream_model: &str,
+) -> Result<AdapterUpstreamRequest, GeminiAdapterError> {
+    let mut request = request_for_upstream(request, upstream_model);
+    if request.is_streaming() {
+        return Err(GeminiAdapterError::InvalidRequest {
+            message: "Gemini chat completions streaming conversion is not enabled".to_string(),
+            param: Some("stream"),
+        });
+    }
+    request.stream = Some(false);
+    let request = GeminiGenerateContentRequest::from_openai_chat_request(&request)?;
+    adapter.build_generate_content_request(&request)
+}
+
 async fn record_request_final_route(
     repository: &GatewayRepository,
     auth: &AuthContext,
@@ -7385,6 +8663,31 @@ async fn record_request_final_route(
         tracing::warn!(
             message = %error.message,
             "failed to update request log final provider route"
+        );
+    }
+}
+
+async fn record_request_virtual_key_rate_limit(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    request_id: uuid::Uuid,
+    route: &ResolvedChatRoute,
+    route_decision_snapshot: Value,
+    rate_limit: &VirtualKeyRateLimitRuntime,
+) {
+    let route_decision_snapshot =
+        route_snapshot_with_virtual_key_rate_limit(route_decision_snapshot, rate_limit);
+    if let Err(error) = repository
+        .update_request_route_selection(
+            auth,
+            request_id,
+            RequestRouteLog::for_route(route, route_decision_snapshot),
+        )
+        .await
+    {
+        tracing::warn!(
+            message = %error.message,
+            "failed to update request log virtual key rate-limit metadata"
         );
     }
 }
@@ -7799,7 +9102,7 @@ pub(crate) async fn pre_authorize_before_provider_attempt(
     request_started_at: Instant,
     route: &ResolvedChatRoute,
 ) -> Option<Response> {
-    let error = pre_authorize_route(repository, auth, route).await?;
+    let error = pre_authorize_route(repository, auth, request_id, route).await?;
     finish_request_with_error_for_endpoint(
         endpoint,
         repository,
@@ -7816,25 +9119,39 @@ pub(crate) async fn pre_authorize_before_provider_attempt(
 async fn pre_authorize_route(
     repository: &GatewayRepository,
     auth: &AuthContext,
+    request_id: uuid::Uuid,
     route: &ResolvedChatRoute,
 ) -> Option<GatewayApiError> {
+    let paid_hot_path_beta = paid_hot_path_beta_enabled(repository, auth).await;
     let price_version = match repository
         .resolve_active_price_version(auth, route.canonical_model_id)
         .await
     {
         Ok(Some(price_version)) => price_version,
+        Ok(None) if paid_hot_path_beta => {
+            return Some(GatewayApiError::billing_insufficient_balance());
+        }
         Ok(None) => return None,
         Err(error) => {
             tracing::warn!(
                 message = %error.message,
                 "failed to resolve price version for pre_authorize"
             );
-            return None;
+            return if paid_hot_path_beta {
+                Some(GatewayApiError::billing_insufficient_balance())
+            } else {
+                None
+            };
         }
     };
 
-    let (estimate, currency) = pre_authorize_estimate_from_price_version(&price_version)?;
-    if estimate.minimum_cost.is_zero() && !estimate.billable_if_usage_present {
+    let (estimate, currency) = match pre_authorize_estimate_from_price_version(&price_version) {
+        Some(estimate) => estimate,
+        None if paid_hot_path_beta => return Some(GatewayApiError::billing_insufficient_balance()),
+        None => return None,
+    };
+    if !paid_hot_path_beta && estimate.minimum_cost.is_zero() && !estimate.billable_if_usage_present
+    {
         return None;
     }
 
@@ -7848,13 +9165,37 @@ async fn pre_authorize_route(
                 message = %error.message,
                 "failed to read pre_authorize balance snapshot"
             );
-            return None;
+            return if paid_hot_path_beta {
+                Some(GatewayApiError::billing_insufficient_balance())
+            } else {
+                None
+            };
         }
     };
+
+    if paid_hot_path_beta && read_model.wallet.is_none() {
+        tracing::warn!(
+            "paid hot-path beta rejected request because no active wallet was available"
+        );
+        return Some(GatewayApiError::billing_insufficient_balance());
+    }
+
     let scale = estimate.minimum_cost.scale();
+    let reserve_amount = if paid_hot_path_beta {
+        match paid_hot_path_reserve_amount(estimate) {
+            Some(amount) => amount,
+            None => return Some(GatewayApiError::billing_insufficient_balance()),
+        }
+    } else {
+        estimate.minimum_cost
+    };
+    let decision_estimate = PreAuthorizeEstimate {
+        minimum_cost: reserve_amount,
+        billable_if_usage_present: estimate.billable_if_usage_present || paid_hot_path_beta,
+    };
     let wallet = pre_authorize_wallet_balance(&read_model, &currency, scale);
     let budgets = pre_authorize_budget_balances(&read_model, &currency, scale);
-    let decision = pre_authorize(estimate, wallet, &budgets);
+    let decision = pre_authorize(decision_estimate, wallet, &budgets);
 
     if let PreAuthorizeDecision::Reject(reason) = decision {
         tracing::warn!(
@@ -7863,7 +9204,109 @@ async fn pre_authorize_route(
         );
     }
 
-    pre_authorize_error_for_decision(decision)
+    if let Some(error) = pre_authorize_error_for_decision(decision) {
+        return Some(error);
+    }
+
+    if paid_hot_path_beta {
+        let reserve_amount_string = reserve_amount.to_string();
+        let reserve_entry = PaidReserveEntry {
+            request_id,
+            model: &route.canonical_model_key,
+            reserve_amount: &reserve_amount_string,
+            currency: &currency,
+            price_version_id: price_version.id,
+        };
+        match repository
+            .insert_pending_paid_reserve_ledger_entry(auth, reserve_entry)
+            .await
+        {
+            Ok(PaidReserveOutcome::Applied | PaidReserveOutcome::Idempotent) => {}
+            Ok(PaidReserveOutcome::RejectedInsufficientBalance) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    "paid hot-path beta reserve rejected request before provider attempt"
+                );
+                return Some(GatewayApiError::billing_insufficient_balance());
+            }
+            Err(error) => {
+                tracing::warn!(
+                    message = %error.message,
+                    request_id = %request_id,
+                    "paid hot-path beta reserve failed before provider attempt"
+                );
+                return Some(GatewayApiError::billing_insufficient_balance());
+            }
+        }
+    }
+
+    None
+}
+
+async fn paid_hot_path_beta_enabled(repository: &GatewayRepository, auth: &AuthContext) -> bool {
+    if paid_hot_path_beta_env_enabled() {
+        return true;
+    }
+
+    match repository
+        .virtual_key_paid_hot_path_beta_enabled(auth)
+        .await
+    {
+        Ok(enabled) => enabled,
+        Err(error) => {
+            tracing::warn!(
+                message = %error.message,
+                "failed to read paid hot-path beta virtual key opt-in"
+            );
+            false
+        }
+    }
+}
+
+fn paid_hot_path_beta_env_enabled() -> bool {
+    env_truthy(&env::var(GATEWAY_PAID_HOT_PATH_BETA_ENV).unwrap_or_default())
+}
+
+fn paid_hot_path_smoke_refund_enabled(headers: &HeaderMap) -> bool {
+    if env_truthy(&env::var(GATEWAY_PAID_HOT_PATH_SMOKE_REFUND_ENV).unwrap_or_default()) {
+        return true;
+    }
+
+    headers
+        .get(GATEWAY_PAID_HOT_PATH_SMOKE_REFUND_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(env_truthy)
+}
+
+const fn paid_settled_refund_outcome_label(outcome: PaidSettledRefundOutcome) -> &'static str {
+    match outcome {
+        PaidSettledRefundOutcome::Applied => "applied",
+        PaidSettledRefundOutcome::Idempotent => "idempotent",
+        PaidSettledRefundOutcome::SourceNotSettled => "source_not_settled",
+        PaidSettledRefundOutcome::NothingRefundable => "nothing_refundable",
+    }
+}
+
+fn env_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "enabled" | "paid_controlled_beta"
+    )
+}
+
+fn paid_hot_path_reserve_amount(estimate: PreAuthorizeEstimate) -> Option<FixedDecimal> {
+    if estimate.minimum_cost.units() > 0 {
+        return Some(estimate.minimum_cost);
+    }
+
+    let configured = env::var(GATEWAY_PAID_HOT_PATH_BETA_RESERVE_AMOUNT_ENV)
+        .unwrap_or_else(|_| GATEWAY_PAID_HOT_PATH_BETA_DEFAULT_RESERVE_AMOUNT.to_string());
+    let amount = FixedDecimal::parse(configured.trim(), estimate.minimum_cost.scale()).ok()?;
+    if amount.units() > 0 {
+        Some(amount)
+    } else {
+        None
+    }
 }
 
 fn pre_authorize_estimate_from_price_version(
@@ -7978,6 +9421,273 @@ fn success_request_final_update(
     }
 }
 
+fn openai_json_response_with_request_id(
+    status: StatusCode,
+    request_id: uuid::Uuid,
+    payload: Value,
+) -> Response {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(&request_id.to_string()) {
+        headers.insert(HeaderName::from_static(X_REQUEST_ID_HEADER), value);
+    }
+
+    (status, headers, Json(payload)).into_response()
+}
+
+fn normalize_openai_chat_completion_payload(
+    mut payload: Value,
+    requested_model: &str,
+    request_id: uuid::Uuid,
+) -> Value {
+    let Some(object) = payload.as_object_mut() else {
+        return payload;
+    };
+
+    insert_string_if_missing_or_empty(object, "id", format!("chatcmpl-{}", request_id.simple()));
+    insert_string_if_missing_or_empty(object, "object", "chat.completion");
+    insert_i64_if_missing_or_non_numeric(object, "created", unix_timestamp_now());
+    insert_string_if_missing_or_empty(object, "model", requested_model);
+
+    if let Some(Value::Array(choices)) = object.get_mut("choices") {
+        for (index, choice) in choices.iter_mut().enumerate() {
+            let Some(choice) = choice.as_object_mut() else {
+                continue;
+            };
+            insert_i64_if_missing_or_non_numeric(choice, "index", index as i64);
+            if !choice.contains_key("message") && !choice.contains_key("delta") {
+                choice.insert(
+                    "message".to_string(),
+                    json!({
+                        "role": "assistant",
+                        "content": ""
+                    }),
+                );
+            }
+            if choice.get("finish_reason").is_none_or(Value::is_null) {
+                choice.insert(
+                    "finish_reason".to_string(),
+                    Value::String("stop".to_string()),
+                );
+            }
+        }
+    }
+
+    payload
+}
+
+fn openai_chat_completion_compat_metadata(
+    provider_payload: &Value,
+    response_payload: &Value,
+    request_id: uuid::Uuid,
+    response_body_hash: &str,
+    usage: RequestUsageUpdate,
+) -> Value {
+    let provider_object = provider_payload.as_object();
+    let finish_reasons = response_payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| {
+            choices
+                .iter()
+                .map(|choice| {
+                    choice
+                        .get("finish_reason")
+                        .and_then(Value::as_str)
+                        .map(|finish_reason| Value::String(finish_reason.to_string()))
+                        .unwrap_or(Value::Null)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "schema": "gateway_openai_chat_completion_compat_v1",
+        "secret_safe": true,
+        "mode": "non_stream",
+        "endpoint": "chat_completions",
+        "response_body_hash": response_body_hash,
+        "x_request_id": request_id.to_string(),
+        "response_id": response_payload.get("id").and_then(Value::as_str),
+        "object": response_payload.get("object").and_then(Value::as_str),
+        "model": response_payload.get("model").and_then(Value::as_str),
+        "choices_count": finish_reasons.len(),
+        "finish_reasons": finish_reasons,
+        "normalized_fields": {
+            "id": provider_object.is_none_or(|object| {
+                object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| value.trim().is_empty())
+            }),
+            "object": provider_object.is_none_or(|object| {
+                object
+                    .get("object")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| value.trim().is_empty())
+            }),
+            "created": provider_object
+                .and_then(|object| object.get("created"))
+                .is_none_or(|value| !value.is_number()),
+            "model": provider_object.is_none_or(|object| {
+                object
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| value.trim().is_empty())
+            }),
+            "choice_index_or_finish_reason": true,
+        },
+        "usage": {
+            "provider_usage_present": provider_payload.get("usage").is_some(),
+            "input_tokens_recorded": usage.input_tokens.is_some(),
+            "output_tokens_recorded": usage.output_tokens.is_some(),
+        },
+        "raw_payload_omitted": true,
+        "raw_stream_chunks_omitted": true,
+    })
+}
+
+fn openai_embeddings_compat_metadata(
+    request: &OpenAiEmbeddingRequest,
+    response_payload: &Value,
+    request_id: uuid::Uuid,
+    response_body_hash: &str,
+    usage: RequestUsageUpdate,
+) -> Value {
+    let data_count = response_payload
+        .get("data")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let response_shape =
+        OpenAiCompatibleClient::embeddings_response_shape_summary(response_payload);
+    let input_shape = request.input_shape_summary();
+    let expected_input_count = input_shape
+        .get("item_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let response_object = response_payload.get("object").and_then(Value::as_str);
+    let all_embedding_objects = response_payload
+        .get("data")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().all(|item| {
+                item.get("object").and_then(Value::as_str) == Some("embedding")
+                    && item.get("index").and_then(Value::as_i64).is_some()
+                    && item.get("embedding").and_then(Value::as_array).is_some()
+            })
+        });
+
+    json!({
+        "schema": "gateway_openai_embeddings_compat_v1",
+        "secret_safe": true,
+        "mode": "non_stream",
+        "endpoint": "embeddings",
+        "response_body_hash": response_body_hash,
+        "x_request_id": request_id.to_string(),
+        "model": response_payload.get("model").and_then(Value::as_str),
+        "object": response_object,
+        "data_count": data_count,
+        "input_shape": input_shape,
+        "normalized_fields": {
+            "object_list_present": response_object == Some("list"),
+            "data_embedding_shape_present": all_embedding_objects,
+            "embedding_count_matches_input": expected_input_count == data_count as u64,
+            "embedding_dimension_consistent": response_shape
+                .get("data")
+                .and_then(|data| data.get("dimension_consistent"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "usage_prompt_or_input_tokens_present": response_payload
+                .get("usage")
+                .is_some_and(|usage| usage.get("prompt_tokens").is_some() || usage.get("input_tokens").is_some()),
+        },
+        "response_shape": response_shape,
+        "usage": {
+            "provider_usage_present": response_payload.get("usage").is_some(),
+            "input_tokens_recorded": usage.input_tokens.is_some(),
+            "output_tokens_recorded": usage.output_tokens.is_some(),
+            "output_tokens_zero_for_embeddings": usage.output_tokens == Some(0),
+        },
+        "ledger": {
+            "settle_metadata_source": "confirmed_settle_ledger_metadata",
+            "billable_usage_source": "provider_explicit_usage",
+            "input_tokens_source": "prompt_tokens_or_input_tokens",
+            "output_tokens_source": "embeddings_zero_output"
+        },
+        "raw_payload_omitted": true,
+        "raw_input_omitted": true,
+    })
+}
+
+fn openai_responses_compat_metadata(
+    response_payload: &Value,
+    request_id: uuid::Uuid,
+    response_body_hash: &str,
+    usage: RequestUsageUpdate,
+) -> Value {
+    let protocol = OpenAiCompatibleClient::responses_protocol_metadata(response_payload);
+
+    json!({
+        "schema": "gateway_openai_responses_compat_v1",
+        "secret_safe": true,
+        "mode": "non_stream",
+        "endpoint": "responses",
+        "response_body_hash": response_body_hash,
+        "x_request_id": request_id.to_string(),
+        "response_id_present": response_payload
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+        "object": response_payload.get("object").and_then(Value::as_str),
+        "status": response_payload.get("status").and_then(Value::as_str),
+        "output_count": protocol.get("output_count").cloned().unwrap_or(Value::from(0)),
+        "output_item_counts": protocol
+            .get("output_item_counts")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "protocol_metadata": protocol,
+        "usage": {
+            "provider_usage_present": response_payload.get("usage").is_some(),
+            "input_tokens_recorded": usage.input_tokens.is_some(),
+            "output_tokens_recorded": usage.output_tokens.is_some(),
+        },
+        "raw_payload_omitted": true,
+        "raw_prompt_omitted": true,
+        "raw_messages_omitted": true,
+        "raw_provider_payload_omitted": true
+    })
+}
+
+fn insert_string_if_missing_or_empty(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: impl Into<String>,
+) {
+    let should_insert = object
+        .get(key)
+        .and_then(Value::as_str)
+        .is_none_or(|current| current.trim().is_empty());
+    if should_insert {
+        object.insert(key.to_string(), Value::String(value.into()));
+    }
+}
+
+fn insert_i64_if_missing_or_non_numeric(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    value: i64,
+) {
+    if object.get(key).and_then(Value::as_i64).is_none() {
+        object.insert(key.to_string(), Value::from(value));
+    }
+}
+
+fn unix_timestamp_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
 fn gateway_error_response_with_metrics(started_at: Instant, error: GatewayApiError) -> Response {
     gateway_error_response_with_endpoint_metrics(
         METRICS_ENDPOINT_CHAT_COMPLETIONS,
@@ -8005,6 +9715,64 @@ fn gateway_error_response_with_endpoint_metrics(
         currency: None,
     });
     error.into_response()
+}
+
+fn virtual_key_concurrency_limit(auth: &AuthContext) -> Option<i32> {
+    positive_i32_from_value(auth.rate_limit_policy.get("concurrency_limit")).or_else(|| {
+        auth.rate_limit_policy.get("concurrency").and_then(|value| {
+            positive_i32_from_value(Some(value))
+                .or_else(|| positive_i32_from_value(value.get("limit")))
+        })
+    })
+}
+
+fn virtual_key_rpm_limit(auth: &AuthContext) -> Option<i32> {
+    positive_i32_from_value(auth.rate_limit_policy.get("rpm_limit")).or_else(|| {
+        auth.rate_limit_policy.get("rpm").and_then(|value| {
+            positive_i32_from_value(Some(value))
+                .or_else(|| positive_i32_from_value(value.get("limit")))
+        })
+    })
+}
+
+fn virtual_key_tpm_limit(auth: &AuthContext) -> Option<i32> {
+    positive_i32_from_value(auth.rate_limit_policy.get("tpm_limit")).or_else(|| {
+        auth.rate_limit_policy.get("tpm").and_then(|value| {
+            positive_i32_from_value(Some(value))
+                .or_else(|| positive_i32_from_value(value.get("limit")))
+        })
+    })
+}
+
+fn positive_i32_from_value(value: Option<&Value>) -> Option<i32> {
+    let value = value?;
+    let parsed = value.as_i64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|raw| raw.trim().parse::<i64>().ok())
+    })?;
+    if parsed > 0 && parsed <= i64::from(i32::MAX) {
+        Some(parsed as i32)
+    } else {
+        None
+    }
+}
+
+pub(crate) async fn release_virtual_key_concurrency_if_needed(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    acquired: bool,
+) {
+    if !acquired {
+        return;
+    }
+
+    if let Err(error) = repository.release_virtual_key_concurrency_slot(auth).await {
+        tracing::warn!(
+            error_code = %error.code,
+            "failed to release virtual key concurrency slot"
+        );
+    }
 }
 
 struct EndpointRequestFinalMetrics<'a> {
@@ -8124,6 +9892,199 @@ async fn start_and_finish_request_error_for_endpoint(
         endpoint, repository, auth, request_id, started_at, summary,
     )
     .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_audit_and_finish_prompt_protection_rejection(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    requested_model: Option<&str>,
+    request_body_hash: &str,
+    payload_log: RequestPayloadLog,
+    route: RequestRouteLog<'_>,
+    started_at: Instant,
+    summary: ErrorLogSummary,
+    rejection: &PromptProtectionRejection,
+) {
+    start_audit_and_finish_prompt_protection_rejection_for_endpoint(
+        METRICS_ENDPOINT_CHAT_COMPLETIONS,
+        repository,
+        auth,
+        requested_model,
+        request_body_hash,
+        payload_log,
+        route,
+        started_at,
+        summary,
+        rejection,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_audit_and_finish_prompt_protection_rejection_for_endpoint(
+    endpoint: &'static str,
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    requested_model: Option<&str>,
+    request_body_hash: &str,
+    payload_log: RequestPayloadLog,
+    route: RequestRouteLog<'_>,
+    started_at: Instant,
+    summary: ErrorLogSummary,
+    rejection: &PromptProtectionRejection,
+) {
+    let request_id = match repository
+        .create_request_started(
+            auth,
+            requested_model,
+            Some(request_body_hash),
+            payload_log,
+            route,
+        )
+        .await
+    {
+        Ok(request_id) => request_id,
+        Err(error) => {
+            tracing::warn!(
+                message = %error.message,
+                "failed to start prompt-protection rejected request log"
+            );
+            record_endpoint_request_final_metrics(EndpointRequestFinalMetrics {
+                endpoint,
+                outcome: request_status_for_http(summary.http_status),
+                http_status: summary.http_status,
+                error_owner: Some(&summary.error_owner),
+                error_code: Some(&summary.error_code),
+                retryable: summary.retryable,
+                latency_ms: elapsed_ms(started_at),
+                ttft_ms: None,
+                final_cost: None,
+                currency: None,
+            });
+            return;
+        }
+    };
+
+    insert_prompt_protection_runtime_audit_log(
+        repository,
+        auth,
+        request_id,
+        endpoint,
+        request_body_hash,
+        rejection,
+    )
+    .await;
+    finish_request_with_error_for_endpoint(
+        endpoint, repository, auth, request_id, started_at, summary,
+    )
+    .await;
+}
+
+async fn insert_prompt_protection_runtime_audit_log(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    request_id: uuid::Uuid,
+    endpoint: &'static str,
+    request_body_hash: &str,
+    rejection: &PromptProtectionRejection,
+) {
+    let audit =
+        prompt_protection_runtime_audit_log(request_id, endpoint, request_body_hash, rejection);
+    if let Err(error) = repository
+        .insert_prompt_protection_runtime_audit_log(auth, audit)
+        .await
+    {
+        tracing::warn!(
+            message = %error.message,
+            request_id = %request_id,
+            "failed to insert prompt-protection runtime audit log"
+        );
+    }
+}
+
+fn prompt_protection_runtime_audit_log(
+    request_id: uuid::Uuid,
+    endpoint: &'static str,
+    request_body_hash: &str,
+    rejection: &PromptProtectionRejection,
+) -> PromptProtectionRuntimeAuditLog {
+    let prompt_protection =
+        prompt_protection_runtime_audit_summary(endpoint, request_body_hash, rejection);
+
+    PromptProtectionRuntimeAuditLog {
+        request_id,
+        action: PROMPT_PROTECTION_RUNTIME_AUDIT_ACTION.to_string(),
+        resource_type: PROMPT_PROTECTION_RUNTIME_AUDIT_RESOURCE_TYPE.to_string(),
+        after_snapshot: json!({
+            "promptProtection": prompt_protection.clone(),
+        }),
+        metadata: json!({
+            "schema": PROMPT_PROTECTION_RUNTIME_AUDIT_SCHEMA,
+            "runtime_owned": true,
+            "proof_owned": false,
+            "row_owner": "gateway_runtime",
+            "source": "gateway_runtime",
+            "writer": "gateway_runtime",
+            "request_id": request_id.to_string(),
+            "request_body_hash": request_body_hash,
+            "endpoint": endpoint,
+            "promptProtection": prompt_protection,
+            "provenance": {
+                "kind": "runtime",
+                "source": "gateway_runtime",
+                "writer": "gateway_runtime",
+                "policy_version": PROMPT_PROTECTION_POLICY_VERSION,
+            },
+            "secret_safe_omissions": {
+                "raw_prompt_omitted": true,
+                "raw_request_body_omitted": true,
+                "raw_headers_omitted": true,
+                "credential_values_omitted": true,
+                "database_connection_values_omitted": true,
+                "provider_secret_values_omitted": true,
+                "raw_pattern_values_omitted": true,
+                "proof_raw_id_omitted": true,
+            },
+        }),
+    }
+}
+
+fn prompt_protection_runtime_audit_summary(
+    endpoint: &'static str,
+    request_body_hash: &str,
+    rejection: &PromptProtectionRejection,
+) -> Value {
+    let scopes = rejection
+        .metadata
+        .get("scopes")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+
+    json!({
+        "schema": PROMPT_PROTECTION_EVIDENCE_READBACK_SCHEMA,
+        "policy_schema": PROMPT_PROTECTION_POLICY_VERSION,
+        "endpoint": endpoint,
+        "mode": rejection.metadata.get("mode").cloned().unwrap_or_else(|| json!("enforce")),
+        "action": rejection.action,
+        "reason": rejection.reason,
+        "hit_count": rejection.hit_count,
+        "scopes": scopes,
+        "request_body_hash": request_body_hash,
+        "provider_attempts_count": 0,
+        "has_provider_key": false,
+        "has_resolved_provider": false,
+        "has_resolved_channel": false,
+        "raw_payload_omitted": true,
+        "raw_pattern_values_omitted": true,
+        "runtime_owned": true,
+        "proof_owned": false,
+        "provenance": {
+            "kind": "runtime",
+            "source": "gateway_runtime",
+            "writer": "gateway_runtime",
+        },
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8288,6 +10249,25 @@ pub(crate) async fn finish_request_with_error_for_endpoint(
     if let Err(error) = repository.finish_request(auth, request_id, update).await {
         tracing::warn!(message = %error.message, "failed to finish request error log");
     }
+    release_paid_hot_path_reserve_if_needed(repository, auth, request_id, "request_error").await;
+}
+
+pub(crate) async fn release_paid_hot_path_reserve_if_needed(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    request_id: uuid::Uuid,
+    reason: &'static str,
+) {
+    if let Err(error) = repository
+        .release_pending_paid_reserve(auth, request_id, reason)
+        .await
+    {
+        tracing::warn!(
+            message = %error.message,
+            request_id = %request_id,
+            "failed to release paid hot-path beta reserve"
+        );
+    }
 }
 
 async fn finish_provider_attempt_success(
@@ -8425,6 +10405,32 @@ async fn finish_provider_attempt_with_adapter_error_and_fallback(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn finish_provider_attempt_with_gemini_adapter_error_with_metadata(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    route: &ResolvedChatRoute,
+    attempt_id: uuid::Uuid,
+    started_at: Instant,
+    error: &GeminiAdapterError,
+    summary: ErrorLogSummary,
+    metadata: Value,
+) {
+    finish_provider_attempt_with_gemini_adapter_error_and_fallback_for_endpoint(
+        METRICS_ENDPOINT_CHAT_COMPLETIONS,
+        repository,
+        auth,
+        route,
+        attempt_id,
+        started_at,
+        error,
+        summary,
+        None,
+        metadata,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn finish_provider_attempt_with_error_and_fallback_for_endpoint(
     endpoint: &'static str,
     repository: &GatewayRepository,
@@ -8473,6 +10479,10 @@ pub(crate) async fn finish_provider_attempt_with_adapter_error_and_fallback_for_
     fallback_reason: Option<&str>,
     metadata: Value,
 ) {
+    let metadata = provider_attempt_metadata_with_normalized_error(
+        metadata,
+        adapter_error_diagnostic_metadata(error),
+    );
     finish_provider_attempt_with_error_and_fallback_for_endpoint(
         endpoint,
         repository,
@@ -8502,6 +10512,10 @@ pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error_and_fal
     fallback_reason: Option<&str>,
     metadata: Value,
 ) {
+    let metadata = provider_attempt_metadata_with_normalized_error(
+        metadata,
+        anthropic_adapter_error_diagnostic_metadata(error),
+    );
     finish_provider_attempt_with_error_and_fallback_for_endpoint(
         endpoint,
         repository,
@@ -8515,6 +10529,41 @@ pub(crate) async fn finish_provider_attempt_with_anthropic_adapter_error_and_fal
     .await;
 
     update_provider_key_runtime_status_for_anthropic_adapter_error(
+        repository, auth, route, error, &summary,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_provider_attempt_with_gemini_adapter_error_and_fallback_for_endpoint(
+    endpoint: &'static str,
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    route: &ResolvedChatRoute,
+    attempt_id: uuid::Uuid,
+    started_at: Instant,
+    error: &GeminiAdapterError,
+    summary: ErrorLogSummary,
+    fallback_reason: Option<&str>,
+    metadata: Value,
+) {
+    let metadata = provider_attempt_metadata_with_normalized_error(
+        metadata,
+        gemini_adapter_error_diagnostic_metadata(error),
+    );
+    finish_provider_attempt_with_error_and_fallback_for_endpoint(
+        endpoint,
+        repository,
+        auth,
+        attempt_id,
+        started_at,
+        summary.clone(),
+        fallback_reason,
+        metadata,
+    )
+    .await;
+
+    update_provider_key_runtime_status_for_gemini_adapter_error(
         repository, auth, route, error, &summary,
     )
     .await;
@@ -8587,6 +10636,42 @@ async fn update_provider_key_runtime_status_for_anthropic_adapter_error(
             channel_id = %route.channel_id,
             provider_key_id = %route.provider_key_id,
             "failed to update anthropic provider key runtime status"
+        );
+    }
+}
+
+async fn update_provider_key_runtime_status_for_gemini_adapter_error(
+    repository: &GatewayRepository,
+    auth: &AuthContext,
+    route: &ResolvedChatRoute,
+    error: &GeminiAdapterError,
+    summary: &ErrorLogSummary,
+) {
+    let Some(patch) = provider_key_runtime_status_patch_for_gemini_adapter_error(error, summary)
+    else {
+        return;
+    };
+
+    let update = ProviderKeyRuntimeStatusUpdate {
+        provider_key_id: route.provider_key_id,
+        provider_id: route.provider_id,
+        channel_id: route.channel_id,
+        status: patch.status,
+        cooldown_ms: patch.cooldown_ms,
+        last_error_code: patch.last_error_code,
+        metadata: patch.metadata,
+    };
+
+    if let Err(error) = repository
+        .update_provider_key_runtime_status(auth, update)
+        .await
+    {
+        tracing::warn!(
+            message = %error.message,
+            provider_id = %route.provider_id,
+            channel_id = %route.channel_id,
+            provider_key_id = %route.provider_key_id,
+            "failed to update Gemini provider key runtime status"
         );
     }
 }
@@ -8677,6 +10762,104 @@ mod tests {
             upstream_call_marker,
             section_name,
         );
+    }
+
+    fn assert_prompt_protection_runtime_audit_log(
+        audit_log: &PromptProtectionRejectRuntimeAuditLog,
+        request_id: uuid::Uuid,
+        request_body_hash: &str,
+        endpoint: &str,
+        reason: &str,
+        expected_scope: &str,
+    ) {
+        assert_eq!(audit_log.request_id, request_id);
+        assert_eq!(audit_log.action, PROMPT_PROTECTION_RUNTIME_AUDIT_ACTION);
+        assert_eq!(
+            audit_log.resource_type,
+            PROMPT_PROTECTION_RUNTIME_AUDIT_RESOURCE_TYPE
+        );
+        assert_eq!(
+            audit_log.metadata["schema"],
+            PROMPT_PROTECTION_RUNTIME_AUDIT_SCHEMA
+        );
+        assert_eq!(audit_log.metadata["runtime_owned"], json!(true));
+        assert_eq!(audit_log.metadata["proof_owned"], json!(false));
+        assert_eq!(audit_log.metadata["source"], "gateway_runtime");
+        assert_eq!(audit_log.metadata["writer"], "gateway_runtime");
+        assert_eq!(audit_log.metadata["row_owner"], "gateway_runtime");
+        assert_eq!(audit_log.metadata["request_id"], request_id.to_string());
+        assert_eq!(audit_log.metadata["request_body_hash"], request_body_hash);
+        assert_eq!(audit_log.metadata["endpoint"], endpoint);
+        assert_eq!(audit_log.metadata["provenance"]["kind"], "runtime");
+        assert_eq!(
+            audit_log.metadata["provenance"]["source"],
+            "gateway_runtime"
+        );
+        assert_eq!(
+            audit_log.metadata["provenance"]["writer"],
+            "gateway_runtime"
+        );
+        assert_eq!(
+            audit_log.metadata["promptProtection"]["schema"],
+            PROMPT_PROTECTION_EVIDENCE_READBACK_SCHEMA
+        );
+        assert_eq!(audit_log.metadata["promptProtection"]["action"], "reject");
+        assert_eq!(audit_log.metadata["promptProtection"]["reason"], reason);
+        assert_eq!(
+            audit_log.metadata["promptProtection"]["provider_attempts_count"],
+            json!(0)
+        );
+        assert_eq!(
+            audit_log.metadata["promptProtection"]["has_provider_key"],
+            json!(false)
+        );
+        assert_eq!(
+            audit_log.metadata["promptProtection"]["runtime_owned"],
+            json!(true)
+        );
+        assert_eq!(
+            audit_log.metadata["promptProtection"]["proof_owned"],
+            json!(false)
+        );
+        assert!(
+            audit_log.metadata["promptProtection"]["scopes"]
+                .as_array()
+                .expect("runtime audit scopes array")
+                .iter()
+                .any(|scope| scope == expected_scope)
+        );
+        assert_eq!(
+            audit_log.after_snapshot["promptProtection"]["schema"],
+            PROMPT_PROTECTION_EVIDENCE_READBACK_SCHEMA
+        );
+        assert_eq!(
+            audit_log.after_snapshot["promptProtection"]["provenance"]["kind"],
+            "runtime"
+        );
+
+        let audit_text = json!({
+            "action": audit_log.action,
+            "resource_type": audit_log.resource_type,
+            "after_snapshot": audit_log.after_snapshot,
+            "metadata": audit_log.metadata,
+        })
+        .to_string();
+        for forbidden in [
+            "Project Raven",
+            "Authorization",
+            "Bearer",
+            "sk-live-secret",
+            "Cookie",
+            "session=secret",
+            "session=secret-cookie",
+            "provider-secret-value",
+            "prompt_protection.audit_readback",
+        ] {
+            assert!(
+                !audit_text.contains(forbidden),
+                "runtime audit log leaked forbidden marker: {forbidden}"
+            );
+        }
     }
 
     #[test]
@@ -8818,6 +11001,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id,
             payload_policy_mode: payload_policy_mode.map(str::to_string),
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         }
     }
@@ -9154,6 +11338,7 @@ mod tests {
             endpoint: "http://127.0.0.1:18080".to_string(),
             protocol_mode: "openai_compatible".to_string(),
             upstream_model: "mock-upstream".to_string(),
+            timeout_policy: json!({}),
             channel_status: channel_status.to_string(),
             fallback_allowed,
             association_priority,
@@ -9632,6 +11817,69 @@ mod tests {
     }
 
     #[test]
+    fn gemini_native_protocol_metadata_records_usage_finish_and_safety_without_payload() {
+        let body = Bytes::from_static(
+            br#"{"model":"gemini-public","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#,
+        );
+        let parsed = parse_native_json_body(&body).expect("valid native body");
+        let prepared = prepare_native_passthrough_body(&body, &parsed, "gemini-upstream")
+            .expect("prepared native body");
+        let response = br#"{
+            "candidates": [{
+                "index": 0,
+                "finishReason": "STOP",
+                "safetyRatings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT"}]
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 5,
+                "totalTokenCount": 8
+            }
+        }"#;
+
+        let metadata = gemini_native_protocol_metadata(response, &prepared, false);
+        assert_eq!(
+            metadata["gemini_generate_content"]["schema"],
+            "gateway_gemini_generate_content_native_v1"
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["request"]["model_rewritten"],
+            true
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["response"]["terminal_status"],
+            "completed"
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["response"]["finish_reason"]["mapped"],
+            "stop"
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["response"]["usage"]["prompt_tokens"],
+            3
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["response"]["safety"]["safety_rating_count"],
+            1
+        );
+
+        let serialized = metadata.to_string().to_ascii_lowercase();
+        for forbidden in [
+            "authorization",
+            "provider_key",
+            "sk-live",
+            "secret",
+            "raw_payload",
+            "raw prompt",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "Gemini native protocol metadata leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn native_passthrough_rejects_unparseable_body_without_snapshot_payload_or_secret() {
         let auth = AuthContext {
             tenant_id: uuid::Uuid::from_u128(1),
@@ -9640,6 +11888,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let payload = br#"{"contents":[{"parts":[{"text":"secret sk-live-secret"}]}]"#;
@@ -9858,6 +12107,9 @@ mod tests {
         assert!(anthropic_section.contains("anthropic_messages_request_for_upstream("));
         assert!(anthropic_section.contains("open_provider_key_for_route("));
         assert!(anthropic_section.contains("send_anthropic_messages_request("));
+        assert!(anthropic_section.contains(".with_protocol_metadata("));
+        assert!(anthropic_section.contains("\"anthropic\""));
+        assert!(anthropic_section.contains("selected_route.protocol_mode.as_str()"));
         assert!(anthropic_section.contains("request_usage_from_adapter_usage("));
         assert!(anthropic_section.contains("rate_request_usage("));
         assert!(anthropic_section.contains("finish_request_success_for_endpoint("));
@@ -9919,6 +12171,14 @@ mod tests {
         assert_eq!(
             fixture["runtime_contract"]["upstream_call"],
             "send_anthropic_messages_request"
+        );
+        assert_eq!(
+            fixture["runtime_contract"]["request_log_protocol_metadata"]["inbound_protocol"],
+            "anthropic"
+        );
+        assert_eq!(
+            fixture["runtime_contract"]["request_log_protocol_metadata"]["outbound_protocol"],
+            "anthropic"
         );
         assert_eq!(
             fixture["streaming_contract"]["implemented"],
@@ -9986,7 +12246,7 @@ mod tests {
             serde_json::Value::Bool(false)
         );
         assert_eq!(
-            fixture["provider_contract"]["x_api_key_logged"],
+            fixture["provider_contract"]["api_key_header_value_logged"],
             serde_json::Value::Bool(false)
         );
 
@@ -10146,6 +12406,8 @@ mod tests {
         assert!(embeddings_section.contains("embeddings_request_for_upstream("));
         assert!(embeddings_section.contains(".embeddings_with_provider_key("));
         assert!(embeddings_section.contains("request_usage_from_embedding_adapter_usage("));
+        assert!(embeddings_section.contains("openai_embeddings_compat_metadata("));
+        assert!(embeddings_section.contains("route_snapshot_with_openai_compat("));
         assert!(embeddings_section.contains("rate_request_usage("));
         assert!(embeddings_section.contains("finish_request_success_for_endpoint("));
         assert!(embeddings_section.contains("settle_request_ledger("));
@@ -10289,6 +12551,145 @@ mod tests {
     }
 
     #[test]
+    fn embeddings_openai_compat_metadata_is_secret_safe_and_ledger_aware() {
+        let request = OpenAiEmbeddingRequest::from_slice(
+            br#"{"model":"mock-embedding","input":["sk-live-secret raw embedding input","second raw input"]}"#,
+        )
+        .expect("valid embeddings request");
+        let payload = json!({
+            "object": "list",
+            "model": "mock-embedding",
+            "data": [
+                {"object": "embedding", "embedding": [0.1, -0.2], "index": 0},
+                {"object": "embedding", "embedding": [0.3, -0.4], "index": 1}
+            ],
+            "usage": {"prompt_tokens": 12, "total_tokens": 12}
+        });
+        let metadata = openai_embeddings_compat_metadata(
+            &request,
+            &payload,
+            uuid::Uuid::from_u128(42),
+            "response-hash",
+            RequestUsageUpdate {
+                input_tokens: Some(12),
+                output_tokens: Some(0),
+            },
+        );
+
+        assert_eq!(metadata["schema"], "gateway_openai_embeddings_compat_v1");
+        assert_eq!(metadata["endpoint"], "embeddings");
+        assert_eq!(metadata["object"], "list");
+        assert_eq!(metadata["data_count"], 2);
+        assert_eq!(metadata["input_shape"]["kind"], "string_array");
+        assert_eq!(metadata["input_shape"]["item_count"], 2);
+        assert_eq!(
+            metadata["normalized_fields"]["data_embedding_shape_present"],
+            true
+        );
+        assert_eq!(
+            metadata["normalized_fields"]["embedding_count_matches_input"],
+            true
+        );
+        assert_eq!(
+            metadata["normalized_fields"]["embedding_dimension_consistent"],
+            true
+        );
+        assert_eq!(
+            metadata["response_shape"]["schema"],
+            "openai_embeddings_response_shape_v1"
+        );
+        assert_eq!(metadata["response_shape"]["data"]["embedding_count"], 2);
+        assert_eq!(metadata["response_shape"]["data"]["first_dimension"], 2);
+        assert_eq!(
+            metadata["response_shape"]["data"]["unique_dimensions"],
+            json!([2])
+        );
+        assert_eq!(metadata["usage"]["provider_usage_present"], true);
+        assert_eq!(metadata["usage"]["output_tokens_zero_for_embeddings"], true);
+        assert_eq!(
+            metadata["ledger"]["billable_usage_source"],
+            "provider_explicit_usage"
+        );
+        assert_eq!(metadata["raw_payload_omitted"], true);
+        assert_eq!(metadata["raw_input_omitted"], true);
+
+        let serialized = serde_json::to_string(&metadata).expect("metadata should serialize");
+        for marker in ["sk-live-secret", "raw embedding input", "second raw input"] {
+            assert!(
+                !serialized.contains(marker),
+                "embeddings compat metadata leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_openai_compat_metadata_is_shape_only_and_secret_safe() {
+        let response_payload = json!({
+            "id": "resp_fixture",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "raw assistant text sk-live-secret"}]
+                },
+                {
+                    "type": "function_call",
+                    "name": "lookup",
+                    "arguments": "{\"secret\":\"raw arguments\"}"
+                },
+                {"type": "tool_call", "name": "lookup"},
+                {"type": "refusal", "refusal": "raw refusal text"},
+                {"type": "error", "message": "raw provider error"},
+                {"type": "reasoning", "summary": [{"text": "raw reasoning text"}]}
+            ],
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "total_tokens": 15
+            }
+        });
+        let metadata = openai_responses_compat_metadata(
+            &response_payload,
+            uuid::Uuid::from_u128(42),
+            "response-hash",
+            RequestUsageUpdate {
+                input_tokens: Some(12),
+                output_tokens: Some(3),
+            },
+        );
+        let metadata_text = metadata.to_string();
+
+        assert_eq!(metadata["schema"], "gateway_openai_responses_compat_v1");
+        assert_eq!(metadata["output_item_counts"]["message"], 1);
+        assert_eq!(metadata["output_item_counts"]["function_call"], 1);
+        assert_eq!(metadata["output_item_counts"]["tool_call"], 1);
+        assert_eq!(metadata["output_item_counts"]["refusal"], 1);
+        assert_eq!(metadata["output_item_counts"]["error"], 1);
+        assert_eq!(
+            metadata["protocol_metadata"]["reasoning"]["summary_count"],
+            1
+        );
+        assert_eq!(metadata["raw_prompt_omitted"], true);
+        assert_eq!(metadata["raw_messages_omitted"], true);
+        assert_eq!(metadata["raw_provider_payload_omitted"], true);
+
+        for forbidden in [
+            "raw assistant text",
+            "sk-live-secret",
+            "raw arguments",
+            "raw refusal text",
+            "raw provider error",
+            "raw reasoning text",
+        ] {
+            assert!(
+                !metadata_text.contains(forbidden),
+                "Responses readback leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
     fn oversize_rejection_snapshot_skips_body_parse_and_hash() {
         let auth = AuthContext {
             tenant_id: uuid::Uuid::from_u128(1),
@@ -10297,6 +12698,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
 
@@ -10510,6 +12912,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let snapshot = route_snapshot_for_prompt_protection_rejection(
@@ -10595,6 +12998,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let spy = Arc::new(PromptProtectionRejectHttpSpy::new(auth));
@@ -10649,10 +13053,20 @@ mod tests {
         assert_eq!(response_json["gateway"]["error_stage"], "request_preflight");
         assert_eq!(spy.authenticate_count(), 1);
         assert_eq!(spy.request_started_count(), 1);
+        assert_eq!(spy.runtime_audit_count(), 1);
         assert_eq!(spy.request_finished_count(), 1);
         assert_eq!(spy.provider_attempt_started_count(), 0);
         assert_eq!(spy.provider_key_open_count(), 0);
         assert_eq!(spy.upstream_call_count(), 0);
+        let runtime_audit_log = spy.last_runtime_audit_log();
+        assert_prompt_protection_runtime_audit_log(
+            &runtime_audit_log,
+            spy.request_id,
+            &request_body_hash,
+            METRICS_ENDPOINT_CHAT_COMPLETIONS,
+            "configured_prompt_rule_rejected",
+            "messages",
+        );
         assert_eq!(request_log.requested_model.as_deref(), Some("mock-gpt"));
         assert_eq!(
             request_log.request_body_hash.as_deref(),
@@ -10764,6 +13178,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let spy = Arc::new(PromptProtectionRejectHttpSpy::new(auth));
@@ -10818,10 +13233,20 @@ mod tests {
         assert_eq!(response_json["gateway"]["error_stage"], "request_preflight");
         assert_eq!(spy.authenticate_count(), 1);
         assert_eq!(spy.request_started_count(), 1);
+        assert_eq!(spy.runtime_audit_count(), 1);
         assert_eq!(spy.request_finished_count(), 1);
         assert_eq!(spy.provider_attempt_started_count(), 0);
         assert_eq!(spy.provider_key_open_count(), 0);
         assert_eq!(spy.upstream_call_count(), 0);
+        let runtime_audit_log = spy.last_runtime_audit_log();
+        assert_prompt_protection_runtime_audit_log(
+            &runtime_audit_log,
+            spy.request_id,
+            &request_body_hash,
+            METRICS_ENDPOINT_RESPONSES,
+            "configured_prompt_rule_rejected",
+            "input",
+        );
         assert_eq!(request_log.requested_model.as_deref(), Some("mock-gpt"));
         assert_eq!(
             request_log.request_body_hash.as_deref(),
@@ -10940,6 +13365,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let spy = Arc::new(PromptProtectionRejectHttpSpy::new(auth));
@@ -10994,10 +13420,20 @@ mod tests {
         assert_eq!(response_json["gateway"]["error_stage"], "request_preflight");
         assert_eq!(spy.authenticate_count(), 1);
         assert_eq!(spy.request_started_count(), 1);
+        assert_eq!(spy.runtime_audit_count(), 1);
         assert_eq!(spy.request_finished_count(), 1);
         assert_eq!(spy.provider_attempt_started_count(), 0);
         assert_eq!(spy.provider_key_open_count(), 0);
         assert_eq!(spy.upstream_call_count(), 0);
+        let runtime_audit_log = spy.last_runtime_audit_log();
+        assert_prompt_protection_runtime_audit_log(
+            &runtime_audit_log,
+            spy.request_id,
+            &request_body_hash,
+            METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
+            "configured_prompt_rule_rejected",
+            "messages",
+        );
         assert_eq!(request_log.requested_model.as_deref(), Some("mock-claude"));
         assert_eq!(
             request_log.request_body_hash.as_deref(),
@@ -11117,6 +13553,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let spy = Arc::new(PromptProtectionRejectHttpSpy::new(auth));
@@ -11172,10 +13609,20 @@ mod tests {
         assert_eq!(response_json["gateway"]["error_stage"], "request_preflight");
         assert_eq!(spy.authenticate_count(), 1);
         assert_eq!(spy.request_started_count(), 1);
+        assert_eq!(spy.runtime_audit_count(), 1);
         assert_eq!(spy.request_finished_count(), 1);
         assert_eq!(spy.provider_attempt_started_count(), 0);
         assert_eq!(spy.provider_key_open_count(), 0);
         assert_eq!(spy.upstream_call_count(), 0);
+        let runtime_audit_log = spy.last_runtime_audit_log();
+        assert_prompt_protection_runtime_audit_log(
+            &runtime_audit_log,
+            spy.request_id,
+            &request_body_hash,
+            METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
+            "configured_prompt_rule_rejected",
+            "contents",
+        );
         assert_eq!(
             request_log.requested_model.as_deref(),
             Some("gemini-public")
@@ -11893,6 +14340,7 @@ mod tests {
             api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
             payload_policy_id: None,
             payload_policy_mode: None,
+            rate_limit_policy: json!({}),
             key_prefix: "dev_test".to_string(),
         };
         let snapshot = route_snapshot_for_prompt_protection_rejection(
@@ -12558,6 +15006,86 @@ mod tests {
     }
 
     #[test]
+    fn provider_key_runtime_fixture_locks_safe_status_and_multi_key_retry_contract() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/provider_key_runtime_smoke.json"
+        ))
+        .expect("provider key runtime fixture should be valid json");
+
+        assert_eq!(
+            fixture["contract_only_checks"]["encrypted_at_rest_and_fingerprint_only"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["contract_only_checks"]["runtime_status_mapping_safe"],
+            json!(true)
+        );
+        assert_eq!(
+            fixture["contract_only_checks"]["multi_key_retry_safety"],
+            json!(true)
+        );
+
+        let checks = fixture["live_checks"]
+            .as_array()
+            .expect("live_checks should be an array");
+        let multi_key_retry = checks
+            .iter()
+            .find(|check| check["name"] == "multi_key_retry_does_not_reuse_failed_key")
+            .expect("multi-key retry check should be declared");
+        assert_eq!(
+            multi_key_retry["contract_schema"],
+            "gateway_provider_key_multi_key_retry_v1"
+        );
+        assert_eq!(
+            multi_key_retry["expected"]["failed_provider_key_id_must_differ_from_next_provider_key_id"],
+            json!(true)
+        );
+
+        let fixture_text = fixture.to_string().to_ascii_lowercase();
+        for forbidden in ["sk-", "bearer ", "authorization:"] {
+            assert!(
+                !fixture_text.contains(forbidden),
+                "provider key runtime fixture must not contain secret-like marker {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_key_retry_metadata_uses_next_distinct_provider_key() {
+        let mut failed_route = test_route(uuid::Uuid::from_u128(71), "enabled", 0, 0, 100, 1.0);
+        failed_route.provider_key_id = uuid::Uuid::from_u128(75);
+        let mut next_route = test_route(uuid::Uuid::from_u128(72), "enabled", 0, 1, 100, 1.0);
+        next_route.provider_key_id = uuid::Uuid::from_u128(76);
+        let summary = error_summary_for(429, "provider_429");
+
+        let event = fallback_event(1, &summary, &failed_route, &next_route);
+        let metadata = provider_attempt_fallback_metadata(&event);
+        let snapshot = route_snapshot_with_final_attempt(json!({}), &next_route, 2, &[event]);
+
+        assert_ne!(
+            metadata["fallback"]["event"]["failed_provider_key_id"],
+            metadata["fallback"]["event"]["next_provider_key_id"],
+            "fallback metadata must not reuse a failed provider key when an alternative key exists"
+        );
+        assert_eq!(
+            metadata["fallback"]["event"]["failed_provider_key_id"],
+            failed_route.provider_key_id.to_string()
+        );
+        assert_eq!(
+            metadata["fallback"]["event"]["next_provider_key_id"],
+            next_route.provider_key_id.to_string()
+        );
+        assert_eq!(
+            snapshot["fallback"]["final"]["provider_key_id"],
+            next_route.provider_key_id.to_string()
+        );
+        assert_eq!(
+            snapshot["fallback"]["final"]["selected_after_fallback"],
+            true
+        );
+    }
+
+    #[test]
     fn pre_authorize_decision_blocks_provider_attempt_on_insufficient_balance() {
         let error = pre_authorize_error_for_decision(PreAuthorizeDecision::Reject(
             PreAuthorizeRejectReason::InsufficientWalletBalance,
@@ -12569,6 +15097,114 @@ mod tests {
         assert_eq!(error.owner, "billing");
         assert_eq!(error.stage, "preauth");
         assert_eq!(error.retryable, Some(false));
+    }
+
+    #[test]
+    fn paid_hot_path_beta_env_truthy_is_explicit_opt_in_only() {
+        assert!(env_truthy("1"));
+        assert!(env_truthy("true"));
+        assert!(env_truthy("paid_controlled_beta"));
+        assert!(!env_truthy(""));
+        assert!(!env_truthy("usage_only_beta"));
+        assert!(!env_truthy("false"));
+    }
+
+    #[test]
+    fn paid_hot_path_smoke_refund_endpoint_is_explicit_opt_in_only() {
+        let source = include_str!("main.rs");
+        let router_section = source_section(source, "let app = Router::new()", "let listener");
+
+        assert!(router_section.contains("\"/__e8/paid-hot-path/refund-after-settle\""));
+        assert!(source.contains("paid_hot_path_smoke_refund_enabled(&headers)"));
+        assert!(source.contains("GATEWAY_PAID_HOT_PATH_SMOKE_REFUND_ENABLED"));
+        assert!(source.contains("x-e8-paid-hot-path-smoke-refund"));
+        assert!(source.contains("paid_hot_path_beta_enabled(repository, &auth).await"));
+        assert!(!env_truthy("usage_only_beta"));
+        assert!(env_truthy("paid_controlled_beta"));
+    }
+
+    #[test]
+    fn paid_hot_path_refund_after_settle_outcome_labels_are_stable() {
+        assert_eq!(
+            paid_settled_refund_outcome_label(PaidSettledRefundOutcome::Applied),
+            "applied"
+        );
+        assert_eq!(
+            paid_settled_refund_outcome_label(PaidSettledRefundOutcome::Idempotent),
+            "idempotent"
+        );
+        assert_eq!(
+            paid_settled_refund_outcome_label(PaidSettledRefundOutcome::SourceNotSettled),
+            "source_not_settled"
+        );
+        assert_eq!(
+            paid_settled_refund_outcome_label(PaidSettledRefundOutcome::NothingRefundable),
+            "nothing_refundable"
+        );
+    }
+
+    #[test]
+    fn paid_hot_path_reserve_amount_prefers_positive_price_minimum() {
+        let estimate = PreAuthorizeEstimate {
+            minimum_cost: FixedDecimal::parse("0.01000000", 8).expect("valid money"),
+            billable_if_usage_present: true,
+        };
+
+        assert_eq!(
+            paid_hot_path_reserve_amount(estimate)
+                .expect("positive fixed minimum should be used")
+                .to_string(),
+            "0.01000000"
+        );
+    }
+
+    #[test]
+    fn paid_hot_path_runtime_orders_reserve_before_rate_limit_and_provider_side_effects() {
+        let source = include_str!("main.rs");
+        let preauth_section = source_section(
+            source,
+            "pub(crate) async fn pre_authorize_before_provider_attempt(",
+            "fn pre_authorize_estimate_from_price_version(",
+        );
+        assert!(preauth_section.contains("insert_pending_paid_reserve_ledger_entry("));
+
+        for (start, end, section_name) in [
+            (
+                "async fn chat_completions(",
+                "async fn responses(",
+                "chat completions",
+            ),
+            ("async fn responses(", "async fn embeddings(", "responses"),
+            (
+                "async fn embeddings(",
+                "async fn anthropic_messages(",
+                "embeddings",
+            ),
+            (
+                "async fn anthropic_messages(",
+                "async fn gemini_generate_content_native_passthrough(",
+                "anthropic messages",
+            ),
+            (
+                "async fn gemini_generate_content_native_passthrough(",
+                "async fn models(",
+                "gemini native",
+            ),
+        ] {
+            let section = source_section(source, start, end);
+            assert_marker_before(
+                section,
+                "pre_authorize_before_provider_attempt(",
+                "acquire_gateway_rate_limit_reservation_for_attempt(",
+                section_name,
+            );
+            assert_marker_before(
+                section,
+                "pre_authorize_before_provider_attempt(",
+                ".create_provider_attempt_started(",
+                section_name,
+            );
+        }
     }
 
     #[test]
@@ -12927,6 +15563,135 @@ mod tests {
     }
 
     #[test]
+    fn api_distribution_protocol_contract_covers_models_gateway_filtering() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/api_distribution_protocol_contract.json"
+        ))
+        .expect("Gateway API distribution protocol contract fixture should be valid json");
+        let main_source = include_str!("main.rs");
+        let db_source = include_str!("db.rs");
+
+        assert_eq!(
+            fixture["scenario"],
+            "gateway_api_distribution_protocol_contract_v1"
+        );
+
+        let endpoints = fixture["endpoints"]
+            .as_array()
+            .expect("endpoints should be an array");
+        for required in [
+            "openai_chat_stream",
+            "openai_responses_stream_terminal",
+            "anthropic_messages",
+            "gemini_generate_content",
+            "models_gateway_filtering",
+        ] {
+            assert_eq!(
+                endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint["name"] == required)
+                    .count(),
+                1,
+                "protocol contract should define endpoint {required} exactly once"
+            );
+        }
+
+        let models_contract = endpoints
+            .iter()
+            .find(|endpoint| endpoint["name"] == "models_gateway_filtering")
+            .expect("models contract should be present");
+        assert_eq!(models_contract["method"], "GET");
+        assert_eq!(models_contract["path"], "/v1/models");
+        assert_eq!(models_contract["expected_status"], "pass");
+        assert_eq!(
+            models_contract["gateway_contract"]["does_not_require_control_plane_change"],
+            serde_json::Value::Bool(true)
+        );
+
+        let router_section = source_section(main_source, "let app = Router::new()", "let listener");
+        assert!(
+            router_section.contains(".route(\"/v1/models\", get(models))"),
+            "router must expose GET /v1/models"
+        );
+
+        let models_section = source_section(main_source, "async fn models(", "fn bearer_token(");
+        assert!(models_section.contains("bearer_token(&headers)"));
+        assert!(models_section.contains("ai_profile_header(&headers)"));
+        assert!(models_section.contains("client_ip_for_auth("));
+        assert!(models_section.contains(".authenticate_virtual_key("));
+        assert!(models_section.contains(".list_visible_models(&auth)"));
+        assert_marker_before(
+            models_section,
+            ".authenticate_virtual_key(",
+            ".list_visible_models(&auth)",
+            "models_gateway_filtering",
+        );
+
+        let response_section =
+            source_section(main_source, "fn models_response(", "fn native_http_client(");
+        assert!(response_section.contains("\"object\": \"list\""));
+        assert!(response_section.contains("\"data\": models"));
+        assert!(response_section.contains("\"model_source\": \"database\""));
+        assert!(response_section.contains("\"authorization\": \"virtual_key\""));
+        assert!(response_section.contains("\"profile_filtering\""));
+        assert!(response_section.contains("\"profile_id\": auth.api_key_profile_id"));
+
+        let list_models_section = source_section(
+            db_source,
+            "pub async fn list_visible_models(",
+            "pub async fn resolve_canonical_model(",
+        );
+        for marker in [
+            "with active_profile as",
+            "cm.tenant_id = $1",
+            "cm.status = 'active'",
+            "cm.deleted_at is null",
+            "cm.visibility in ('public', 'internal')",
+            "p.project_id = $3",
+            "p.id = $2",
+            "p.status = 'active'",
+            "p.allowed_models ? cm.model_key",
+            "p.denied_models",
+            "p.model_aliases",
+            "jsonb_each_text",
+            "alias.alias_key = cm.model_key",
+            "coalesce(alias.canonical_key, '') <> cm.model_key",
+            "p.allowed_channel_tags",
+            "p.blocked_provider_ids",
+            "from model_associations ma",
+            "c.protocol_mode in ('openai_compatible', 'gemini_generate_content', 'gemini', 'anthropic', 'anthropic_messages', 'claude_compatible')",
+            "pr.status = 'enabled'",
+            "join provider_keys pk",
+            "pk.status in ('enabled', 'degraded', 'recovery_probe')",
+            "jsonb_array_elements_text(p.allowed_channel_tags)",
+            "not (coalesce(p.blocked_provider_ids, '[]'::jsonb) ? c.provider_id::text)",
+            "order by cm.model_key asc",
+        ] {
+            assert!(
+                list_models_section.contains(marker),
+                "list_visible_models SQL should contain filter marker: {marker}"
+            );
+        }
+
+        let mut fixture_without_markers = fixture.clone();
+        fixture_without_markers
+            .as_object_mut()
+            .expect("fixture object")
+            .remove("forbidden_markers");
+        let fixture_text = fixture_without_markers.to_string();
+        for marker in fixture["forbidden_markers"]
+            .as_array()
+            .expect("forbidden markers")
+        {
+            let marker = marker.as_str().expect("forbidden marker string");
+            assert!(
+                !fixture_text.contains(marker),
+                "protocol contract fixture leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
     fn pre_authorize_decision_allows_provider_attempt_when_balances_are_sufficient() {
         assert!(pre_authorize_error_for_decision(PreAuthorizeDecision::Allow).is_none());
     }
@@ -13187,6 +15952,171 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_openai_chat_completion_shape_without_fabricating_usage() {
+        let request_id = uuid::Uuid::from_u128(0x1234);
+        let payload = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "hello"
+                },
+                "finish_reason": null
+            }],
+            "debug": {
+                "redacted_marker": "not-a-secret"
+            }
+        });
+
+        let normalized =
+            normalize_openai_chat_completion_payload(payload, "mock-gpt-4o-mini", request_id);
+        let text = normalized.to_string();
+
+        assert_eq!(
+            normalized["id"],
+            format!("chatcmpl-{}", request_id.simple())
+        );
+        assert_eq!(normalized["object"], "chat.completion");
+        assert_eq!(normalized["model"], "mock-gpt-4o-mini");
+        assert!(normalized["created"].as_i64().is_some());
+        assert_eq!(normalized["choices"][0]["index"], 0);
+        assert_eq!(normalized["choices"][0]["finish_reason"], "stop");
+        assert!(normalized.get("usage").is_none());
+        assert!(!text.contains("Authorization"));
+        assert!(!text.contains("provider_key"));
+    }
+
+    #[test]
+    fn preserves_openai_chat_completion_finish_reason_and_usage() {
+        let request_id = uuid::Uuid::from_u128(0x5678);
+        let payload = json!({
+            "id": "chatcmpl-provider",
+            "object": "chat.completion",
+            "created": 1710000000,
+            "model": "upstream-model",
+            "choices": [{
+                "index": 3,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": []
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 34,
+                "total_tokens": 46
+            }
+        });
+
+        let normalized =
+            normalize_openai_chat_completion_payload(payload, "requested-model", request_id);
+
+        assert_eq!(normalized["id"], "chatcmpl-provider");
+        assert_eq!(normalized["model"], "upstream-model");
+        assert_eq!(normalized["choices"][0]["index"], 3);
+        assert_eq!(normalized["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(normalized["usage"]["prompt_tokens"], 12);
+        assert_eq!(normalized["usage"]["completion_tokens"], 34);
+        assert_eq!(normalized["usage"]["total_tokens"], 46);
+    }
+
+    #[test]
+    fn openai_chat_completion_compat_metadata_is_secret_safe_request_log_handoff() {
+        let request_id = uuid::Uuid::from_u128(0x6789);
+        let provider_payload = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "raw answer must not appear in compat metadata"
+                },
+                "finish_reason": null
+            }],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 34,
+                "total_tokens": 46
+            }
+        });
+        let usage = request_usage_from_adapter_usage(Some(AdapterUsage {
+            prompt_tokens: Some(12),
+            completion_tokens: Some(34),
+            total_tokens: Some(46),
+        }));
+        let normalized = normalize_openai_chat_completion_payload(
+            provider_payload.clone(),
+            "requested-model",
+            request_id,
+        );
+        let response_body_hash = sha256_hex(normalized.to_string().as_bytes());
+
+        let metadata = openai_chat_completion_compat_metadata(
+            &provider_payload,
+            &normalized,
+            request_id,
+            &response_body_hash,
+            usage,
+        );
+        let snapshot =
+            route_snapshot_with_openai_compat(json!({"routing_slice": "db_route_v1"}), metadata);
+        let metadata_text = snapshot["openai_compat"].to_string();
+
+        assert_eq!(
+            snapshot["openai_compat"]["schema"],
+            "gateway_openai_chat_completion_compat_v1"
+        );
+        assert_eq!(
+            snapshot["openai_compat"]["x_request_id"],
+            request_id.to_string()
+        );
+        assert_eq!(
+            snapshot["openai_compat"]["response_body_hash"],
+            response_body_hash
+        );
+        assert_eq!(snapshot["openai_compat"]["finish_reasons"][0], "stop");
+        assert_eq!(
+            snapshot["openai_compat"]["usage"]["provider_usage_present"],
+            true
+        );
+        assert_eq!(
+            snapshot["openai_compat"]["usage"]["input_tokens_recorded"],
+            true
+        );
+        assert_eq!(
+            snapshot["openai_compat"]["usage"]["output_tokens_recorded"],
+            true
+        );
+        assert!(
+            snapshot["openai_compat"]["raw_payload_omitted"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(!metadata_text.contains("raw answer must not appear"));
+        assert!(!metadata_text.contains("Authorization"));
+        assert!(!metadata_text.contains("provider_key"));
+        assert!(!metadata_text.contains("sk-"));
+    }
+
+    #[tokio::test]
+    async fn openai_json_success_response_includes_request_id_header() {
+        let request_id = uuid::Uuid::from_u128(0x9001);
+        let response =
+            openai_json_response_with_request_id(StatusCode::OK, request_id, json!({"ok": true}));
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(X_REQUEST_ID_HEADER).unwrap(),
+            request_id.to_string().as_str()
+        );
+        let response_body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("response body");
+        let response_json: Value =
+            serde_json::from_slice(&response_body).expect("json response body");
+        assert_eq!(response_json["ok"], true);
+    }
+
+    #[test]
     fn runtime_usage_for_rating_splits_cache_and_reasoning_without_double_counting() {
         let usage = request_usage_from_adapter_usage(Some(AdapterUsage {
             prompt_tokens: Some(1_000_000),
@@ -13376,6 +16306,66 @@ mod tests {
     }
 
     #[test]
+    fn virtual_key_tpm_limit_accepts_top_level_and_nested_policy_shapes() {
+        let mut auth = AuthContext {
+            tenant_id: uuid::Uuid::from_u128(1),
+            project_id: uuid::Uuid::from_u128(2),
+            virtual_key_id: uuid::Uuid::from_u128(3),
+            api_key_profile_id: Some(uuid::Uuid::from_u128(4)),
+            payload_policy_id: None,
+            payload_policy_mode: None,
+            rate_limit_policy: json!({}),
+            key_prefix: "dev_test".to_string(),
+        };
+
+        auth.rate_limit_policy = json!({ "tpm_limit": 1200 });
+        assert_eq!(virtual_key_tpm_limit(&auth), Some(1200));
+
+        auth.rate_limit_policy = json!({ "tpm": { "limit": "2400" } });
+        assert_eq!(virtual_key_tpm_limit(&auth), Some(2400));
+
+        auth.rate_limit_policy = json!({ "tpm": 3600 });
+        assert_eq!(virtual_key_tpm_limit(&auth), Some(3600));
+
+        auth.rate_limit_policy = json!({ "tpm_limit": 0, "tpm": { "limit": -1 } });
+        assert_eq!(virtual_key_tpm_limit(&auth), None);
+    }
+
+    #[test]
+    fn chat_non_stream_key_tpm_acquire_runs_before_provider_attempt_side_effects() {
+        let section = source_section(
+            include_str!("main.rs"),
+            "async fn chat_completions(",
+            "async fn responses(",
+        );
+
+        assert_marker_before(
+            section,
+            "if request.is_streaming()",
+            "acquire_virtual_key_tpm_capacity(",
+            "chat_key_tpm_non_stream_only",
+        );
+        assert_marker_before(
+            section,
+            "acquire_virtual_key_tpm_capacity(",
+            ".create_provider_attempt_started(",
+            "chat_key_tpm_before_provider_attempt",
+        );
+        assert_marker_before(
+            section,
+            "acquire_virtual_key_tpm_capacity(",
+            "open_provider_key_for_route(",
+            "chat_key_tpm_before_provider_key_open",
+        );
+        assert_marker_before(
+            section,
+            "acquire_virtual_key_tpm_capacity(",
+            "chat_completions_with_provider_key(",
+            "chat_key_tpm_before_upstream",
+        );
+    }
+
+    #[test]
     fn rates_request_usage_from_resolved_price_version() {
         let price_version_id = uuid::Uuid::from_u128(31);
         let price_version = ResolvedPriceVersion {
@@ -13549,7 +16539,7 @@ mod tests {
         );
         assert_marker_before(
             stream_finalizer,
-            "end_reason != StreamEndReason::Completed",
+            "paid_hot_path_stream_release_reason(end_reason)",
             "stream_provider_attempt_final_update(",
             "stream_rate_limit_db_release_finalizer",
         );
@@ -16788,6 +19778,11 @@ mod tests {
                 evidence["tpm_estimate"]["used_conservative_fallback"], true,
                 "{endpoint}"
             );
+            assert_eq!(evidence["tpm_estimate"]["estimated"], true, "{endpoint}");
+            assert_eq!(
+                evidence["tpm_estimate"]["trusted_numeric_source_present"], false,
+                "{endpoint}"
+            );
             assert_eq!(
                 evidence["trusted_signal"]["status"], endpoint_contract["trusted_signal_status"],
                 "{endpoint}"
@@ -17858,6 +20853,116 @@ mod tests {
             assert!(
                 !snapshot_text.contains(marker),
                 "rate-limit snapshot leaked forbidden marker: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn virtual_key_rate_limit_runtime_records_safe_acquire_summary() {
+        let mut auth = test_auth_with_payload_policy(None, None);
+        auth.rate_limit_policy = json!({
+            "concurrency_limit": 2,
+            "rpm": { "limit": 60, "current_window_state": "sk-live-secret" },
+            "tpm_limit": 1200,
+            "authorization": "Bearer sk-live-secret",
+            "request_body": "raw payload"
+        });
+        let mut runtime = VirtualKeyRateLimitRuntime::from_auth(&auth);
+        runtime.record_attempt("concurrency");
+        runtime.record_applied(
+            "concurrency",
+            &VirtualKeyRateLimitAcquire {
+                applied: true,
+                used_after: Some(1),
+                remaining: Some(1),
+            },
+        );
+        runtime.record_attempt("rpm");
+        runtime.record_applied(
+            "rpm",
+            &VirtualKeyRateLimitAcquire {
+                applied: true,
+                used_after: Some(11),
+                remaining: Some(49),
+            },
+        );
+        runtime.record_attempt("tpm");
+        runtime.record_required("tpm", 1000);
+        runtime.record_refused("tpm");
+
+        let snapshot = route_snapshot_with_virtual_key_rate_limit(json!({}), &runtime);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/virtual_key_rate_limit_runtime_contract.json"
+        ))
+        .expect("virtual key rate-limit runtime fixture should be valid json");
+
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["schema"],
+            fixture["runtime_schema"]
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["configured_dimensions"],
+            fixture["expected"]["configured_dimensions"]
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["acquire"]["attempted_dimensions"],
+            fixture["expected"]["attempted_dimensions"]
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["acquire"]["applied_dimensions"],
+            fixture["expected"]["applied_dimensions"]
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["acquire"]["refused_dimension"],
+            fixture["expected"]["refused_dimension"]
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["policy_material_in_output"],
+            false
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["window_material_in_output"],
+            false
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["rpm"]["limit"],
+            json!(60)
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["rpm"]["used"],
+            json!(11)
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["rpm"]["remaining"],
+            json!(49)
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["rpm"]["window_seconds"],
+            json!(60)
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["tpm"]["status"],
+            json!("limited")
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["tpm"]["limit"],
+            json!(1200)
+        );
+        assert_eq!(
+            snapshot["virtual_key_rate_limit"]["dimensions"]["tpm"]["window_status"],
+            json!("summary_only")
+        );
+
+        let snapshot_text = snapshot.to_string().to_ascii_lowercase();
+        for marker in fixture["forbidden_snapshot_markers"]
+            .as_array()
+            .expect("forbidden snapshot markers")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !snapshot_text.contains(marker),
+                "virtual key rate-limit snapshot leaked forbidden marker: {marker}"
             );
         }
     }

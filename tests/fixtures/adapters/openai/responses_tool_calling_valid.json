@@ -1,0 +1,257 @@
+{
+  "name": "openai_responses_tool_calling_valid",
+  "request": {
+    "model": "mock-gpt",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is the weather in London?"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "additionalProperties": false
+        },
+        "strict": true
+      }
+    ],
+    "tool_choice": {
+      "type": "function",
+      "name": "get_weather"
+    },
+    "parallel_tool_calls": true,
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "weather_answer",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "answer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer"
+          ],
+          "additionalProperties": false
+        },
+        "strict": true
+      }
+    },
+    "text": {
+      "format": {
+        "type": "json_schema",
+        "name": "weather_answer",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "answer": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer"
+          ],
+          "additionalProperties": false
+        },
+        "strict": true
+      }
+    },
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1/responses",
+    "stream": false,
+    "body": {
+      "model": "mock-gpt",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "What is the weather in London?"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_weather",
+          "description": "Get current weather for a city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      ],
+      "tool_choice": {
+        "type": "function",
+        "name": "get_weather"
+      },
+      "parallel_tool_calls": true,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "weather_answer",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      },
+      "text": {
+        "format": {
+          "type": "json_schema",
+          "name": "weather_answer",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      },
+      "stream": false
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "resp_tool_fixture_ok",
+      "object": "response",
+      "model": "mock-gpt",
+      "output": [
+        {
+          "id": "msg_weather_1",
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"answer\":\"Checking the weather tool.\"}"
+            }
+          ]
+        },
+        {
+          "id": "reasoning_weather_1",
+          "type": "reasoning",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "Need current weather data before answering."
+            }
+          ]
+        },
+        {
+          "id": "fc_weather_1",
+          "type": "function_call",
+          "call_id": "call_weather_1",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"London\"}",
+          "status": "completed"
+        },
+        {
+          "id": "tc_weather_compat_1",
+          "type": "tool_call",
+          "call_id": "call_weather_compat_1",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"London\"}",
+          "status": "completed"
+        },
+        {
+          "id": "refusal_weather_1",
+          "type": "refusal",
+          "status": "completed"
+        },
+        {
+          "id": "error_weather_1",
+          "type": "error",
+          "status": "failed",
+          "code": "tool_unavailable"
+        },
+        {
+          "id": "img_weather_1",
+          "type": "image_generation_call",
+          "status": "completed",
+          "result": {
+            "type": "image_reference",
+            "file_id": "file_image_weather_map_1"
+          }
+        },
+        {
+          "id": "file_weather_1",
+          "type": "file_search_call",
+          "status": "completed",
+          "queries": [
+            "London weather"
+          ],
+          "results": [
+            {
+              "type": "file_reference",
+              "file_id": "file_weather_report_1",
+              "filename": "weather-summary.txt"
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 31,
+        "output_tokens": 9,
+        "total_tokens": 40
+      }
+    }
+  },
+  "expected_usage": {
+    "prompt_tokens": 31,
+    "completion_tokens": 9,
+    "total_tokens": 40
+  }
+}

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fmt, io,
     sync::{
         Arc,
@@ -10,8 +11,9 @@ use std::{
 use ai_gateway_adapters::{
     AdapterUpstreamRequest, AdapterUsage, AnthropicAdapter, AnthropicAdapterError,
     AnthropicMessagesRequest, AnthropicStreamTerminalKind, ChatCompletionRequest, GeminiAdapter,
-    GeminiStreamTerminalKind, OpenAiAdapterError, OpenAiChatStream, OpenAiCompatibleClient,
-    OpenAiResponseRequest, OpenAiResponsesStreamTerminalKind,
+    GeminiAdapterError, GeminiGenerateContentRequest, GeminiStreamTerminalKind, OpenAiAdapterError,
+    OpenAiChatStream, OpenAiCompatibleClient, OpenAiResponseRequest,
+    OpenAiResponsesStreamTerminalKind,
 };
 use ai_gateway_billing_ledger::{TokenUsage, rate_usage_from_json};
 use ai_gateway_stream::{
@@ -21,7 +23,7 @@ use ai_gateway_stream::{
 use axum::{
     body::{Body, Bytes},
     http::{
-        HeaderMap, HeaderValue, StatusCode,
+        HeaderMap, HeaderName, HeaderValue, StatusCode,
         header::{CACHE_CONTROL, CONTENT_TYPE},
     },
     response::{IntoResponse, Response},
@@ -40,20 +42,25 @@ use crate::{
     elapsed_ms,
     errors::{adapter_error_response, summarize_adapter_error},
     errors::{anthropic_adapter_error_response, summarize_anthropic_adapter_error},
+    errors::{gemini_adapter_error_response, summarize_gemini_adapter_error},
     fallback_event, finish_provider_attempt_with_adapter_error_and_fallback,
     finish_provider_attempt_with_adapter_error_and_fallback_for_endpoint,
     finish_provider_attempt_with_adapter_error_with_metadata,
     finish_provider_attempt_with_anthropic_adapter_error_and_fallback_for_endpoint,
     finish_provider_attempt_with_anthropic_adapter_error_with_metadata,
-    finish_provider_attempt_with_error_with_metadata, finish_request_with_error,
+    finish_provider_attempt_with_error_with_metadata,
+    finish_provider_attempt_with_gemini_adapter_error_and_fallback_for_endpoint,
+    finish_provider_attempt_with_gemini_adapter_error_with_metadata, finish_request_with_error,
     finish_request_with_error_for_endpoint, gateway_rate_limit_reservation_for_attempt,
-    open_provider_key_for_route, pre_authorize_before_provider_attempt,
-    provider_attempt_fallback_metadata, provider_attempt_metadata_with_rate_limit_reservation,
-    provider_error_can_fallback, rate_limit_reservation_rejected_error,
-    rate_limit_reservation_skip_event, record_endpoint_request_final_metrics,
-    record_request_final_route, record_request_rate_limit_reservation_rejection,
-    release_gateway_rate_limit_reservation_if_needed, request_for_upstream,
-    responses_request_for_upstream, route_snapshot_with_final_attempt,
+    gemini_provider_error_can_fallback, open_provider_key_for_route,
+    pre_authorize_before_provider_attempt, provider_attempt_fallback_metadata,
+    provider_attempt_metadata_with_rate_limit_reservation, provider_error_can_fallback,
+    rate_limit_reservation_rejected_error, rate_limit_reservation_skip_event,
+    record_endpoint_request_final_metrics, record_request_final_route,
+    record_request_rate_limit_reservation_rejection,
+    release_gateway_rate_limit_reservation_if_needed, release_paid_hot_path_reserve_if_needed,
+    release_virtual_key_concurrency_if_needed, request_for_upstream,
+    responses_request_for_upstream, route_snapshot_with_final_attempt, route_uses_gemini_adapter,
     tpm_estimate::GatewayTpmEstimatePlan,
     validate_anthropic_route_endpoint_for_provider_call, validate_route_endpoint_for_provider_call,
 };
@@ -73,10 +80,12 @@ pub(crate) struct StreamingChatContext<'a> {
     pub(crate) request: &'a ChatCompletionRequest,
     pub(crate) attempt_routes: &'a [ResolvedChatRoute],
     pub(crate) upstream_clients: &'a mut OpenAiClientCache,
+    pub(crate) native_http: &'a reqwest::Client,
     pub(crate) upstream_timeout: Duration,
     pub(crate) stream_idle_timeout: Duration,
     pub(crate) route_snapshot: Value,
     pub(crate) rate_limit_tpm_estimate: Option<&'a GatewayTpmEstimatePlan>,
+    pub(crate) virtual_key_concurrency_acquired: bool,
 }
 
 pub(crate) struct StreamingResponsesContext<'a> {
@@ -130,10 +139,12 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         request,
         attempt_routes,
         upstream_clients,
+        native_http,
         upstream_timeout,
         stream_idle_timeout,
         route_snapshot,
         rate_limit_tpm_estimate,
+        virtual_key_concurrency_acquired,
     } = context;
 
     debug_assert!(request.is_streaming());
@@ -153,6 +164,12 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         )
         .await
         {
+            release_virtual_key_concurrency_if_needed(
+                repository,
+                auth,
+                virtual_key_concurrency_acquired,
+            )
+            .await;
             return response;
         }
 
@@ -169,6 +186,12 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         )
         .await
         {
+            release_virtual_key_concurrency_if_needed(
+                repository,
+                auth,
+                virtual_key_concurrency_acquired,
+            )
+            .await;
             return response;
         }
         if !rate_limit_reservation.executable() {
@@ -213,11 +236,290 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                     error.log_summary(),
                 )
                 .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
                 return error.into_response();
             }
         };
 
         let provider_started_at = Instant::now();
+        if route_uses_gemini_adapter(route) {
+            let adapter = GeminiAdapter::new();
+            let upstream_request = match gemini_chat_completions_stream_request_for_upstream(
+                &adapter,
+                request,
+                &route.upstream_model,
+            ) {
+                Ok(upstream_request) => upstream_request,
+                Err(error) => {
+                    let summary = summarize_gemini_adapter_error(&error);
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_gemini_adapter_error_with_metadata(
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "stream_pre_response_error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(
+                        repository,
+                        auth,
+                        request_id,
+                        request_started_at,
+                        summary,
+                    )
+                    .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return gemini_adapter_error_response(error);
+                }
+            };
+
+            if let Err(error) = validate_route_endpoint_for_provider_call(route).await {
+                let summary = summarize_adapter_error(&error);
+                release_gateway_rate_limit_reservation_if_needed(
+                    repository,
+                    auth,
+                    route,
+                    &mut rate_limit_reservation,
+                )
+                .await;
+                finish_provider_attempt_with_adapter_error_with_metadata(
+                    repository,
+                    auth,
+                    route,
+                    attempt_id,
+                    provider_started_at,
+                    &error,
+                    summary.clone(),
+                    provider_attempt_metadata_with_rate_limit_reservation(
+                        json!({}),
+                        &rate_limit_reservation,
+                        "stream_pre_response_error",
+                    ),
+                )
+                .await;
+                finish_request_with_error(
+                    repository,
+                    auth,
+                    request_id,
+                    request_started_at,
+                    summary,
+                )
+                .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
+                return adapter_error_response(error);
+            }
+
+            let provider_key = match open_provider_key_for_route(repository, auth, route).await {
+                Ok(provider_key) => provider_key,
+                Err(error) => {
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_error_with_metadata(
+                        repository,
+                        auth,
+                        attempt_id,
+                        provider_started_at,
+                        error.log_summary(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "stream_pre_response_error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(
+                        repository,
+                        auth,
+                        request_id,
+                        request_started_at,
+                        error.log_summary(),
+                    )
+                    .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return error.into_response();
+                }
+            };
+
+            match send_gemini_chat_completions_stream_request(
+                native_http,
+                route,
+                &upstream_request,
+                provider_key.secret.expose_secret(),
+            )
+            .await
+            {
+                Ok(upstream_stream) => {
+                    if !upstream_stream
+                        .content_type()
+                        .is_some_and(|content_type| content_type.starts_with("text/event-stream"))
+                    {
+                        tracing::warn!(
+                            provider_id = %route.provider_id,
+                            channel_id = %route.channel_id,
+                            content_type = upstream_stream.content_type().unwrap_or("<missing>"),
+                            "upstream Gemini chat stream did not declare text/event-stream"
+                        );
+                    }
+
+                    record_request_final_route(
+                        repository,
+                        auth,
+                        request_id,
+                        route,
+                        route_snapshot_with_final_attempt(
+                            route_snapshot.clone(),
+                            route,
+                            attempt_no,
+                            &fallback_events,
+                        ),
+                    )
+                    .await;
+
+                    return stream_response(
+                        upstream_stream,
+                        StreamLogContext {
+                            repository: repository.clone(),
+                            auth: auth.clone(),
+                            request_id,
+                            attempt_id,
+                            canonical_model_id: route.canonical_model_id,
+                            canonical_model_key: route.canonical_model_key.clone(),
+                            route: route.clone(),
+                            protocol: GatewayStreamProtocol::OpenAiChatCompletions,
+                            provider_protocol: Some(GatewayStreamProtocol::GeminiGenerateContent),
+                            metrics_endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
+                            request_started_at,
+                            provider_started_at,
+                            stream_idle_timeout,
+                            rate_limit_reservation,
+                            virtual_key_concurrency_acquired,
+                        },
+                    );
+                }
+                Err(error) => {
+                    let summary = summarize_gemini_adapter_error(&error);
+
+                    if attempt_index + 1 < attempt_routes.len()
+                        && gemini_provider_error_can_fallback(&error)
+                    {
+                        let next_route = &attempt_routes[attempt_index + 1];
+                        let event = fallback_event(attempt_no, &summary, route, next_route);
+                        release_gateway_rate_limit_reservation_if_needed(
+                            repository,
+                            auth,
+                            route,
+                            &mut rate_limit_reservation,
+                        )
+                        .await;
+                        finish_provider_attempt_with_gemini_adapter_error_and_fallback_for_endpoint(
+                            crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
+                            repository,
+                            auth,
+                            route,
+                            attempt_id,
+                            provider_started_at,
+                            &error,
+                            summary.clone(),
+                            Some(summary.error_code.as_str()),
+                            provider_attempt_metadata_with_rate_limit_reservation(
+                                provider_attempt_fallback_metadata(&event),
+                                &rate_limit_reservation,
+                                "fallback",
+                            ),
+                        )
+                        .await;
+                        fallback_events.push(event);
+
+                        tracing::warn!(
+                            attempt_no,
+                            provider_id = %route.provider_id,
+                            channel_id = %route.channel_id,
+                            error_code = %summary.error_code,
+                            "Gemini provider stream attempt failed before response started; trying fallback route"
+                        );
+                        continue;
+                    }
+
+                    release_gateway_rate_limit_reservation_if_needed(
+                        repository,
+                        auth,
+                        route,
+                        &mut rate_limit_reservation,
+                    )
+                    .await;
+                    finish_provider_attempt_with_gemini_adapter_error_with_metadata(
+                        repository,
+                        auth,
+                        route,
+                        attempt_id,
+                        provider_started_at,
+                        &error,
+                        summary.clone(),
+                        provider_attempt_metadata_with_rate_limit_reservation(
+                            json!({}),
+                            &rate_limit_reservation,
+                            "stream_pre_response_error",
+                        ),
+                    )
+                    .await;
+                    finish_request_with_error(
+                        repository,
+                        auth,
+                        request_id,
+                        request_started_at,
+                        summary,
+                    )
+                    .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        auth,
+                        virtual_key_concurrency_acquired,
+                    )
+                    .await;
+                    return gemini_adapter_error_response(error);
+                }
+            }
+        }
+
         let upstream_client =
             match cached_openai_client(upstream_clients, &route.endpoint, upstream_timeout).await {
                 Ok(client) => client,
@@ -251,6 +553,12 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         request_id,
                         request_started_at,
                         summary,
+                    )
+                    .await;
+                    release_virtual_key_concurrency_if_needed(
+                        repository,
+                        auth,
+                        virtual_key_concurrency_acquired,
                     )
                     .await;
                     return adapter_error_response(error);
@@ -287,6 +595,12 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                     request_id,
                     request_started_at,
                     error.log_summary(),
+                )
+                .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    auth,
+                    virtual_key_concurrency_acquired,
                 )
                 .await;
                 return error.into_response();
@@ -338,11 +652,13 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                         canonical_model_key: route.canonical_model_key.clone(),
                         route: route.clone(),
                         protocol: GatewayStreamProtocol::OpenAiChatCompletions,
+                        provider_protocol: None,
                         metrics_endpoint: crate::METRICS_ENDPOINT_CHAT_COMPLETIONS,
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
                         rate_limit_reservation,
+                        virtual_key_concurrency_acquired,
                     },
                 );
             }
@@ -417,6 +733,12 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
                     summary,
                 )
                 .await;
+                release_virtual_key_concurrency_if_needed(
+                    repository,
+                    auth,
+                    virtual_key_concurrency_acquired,
+                )
+                .await;
                 return adapter_error_response(error);
             }
         }
@@ -445,6 +767,8 @@ pub(crate) async fn chat_completions_streaming(context: StreamingChatContext<'_>
         error.log_summary(),
     )
     .await;
+    release_virtual_key_concurrency_if_needed(repository, auth, virtual_key_concurrency_acquired)
+        .await;
     error.into_response()
 }
 
@@ -665,11 +989,13 @@ pub(crate) async fn responses_streaming(context: StreamingResponsesContext<'_>) 
                         canonical_model_key: route.canonical_model_key.clone(),
                         route: route.clone(),
                         protocol: GatewayStreamProtocol::OpenAiResponses,
+                        provider_protocol: None,
                         metrics_endpoint: crate::METRICS_ENDPOINT_RESPONSES,
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
                         rate_limit_reservation,
+                        virtual_key_concurrency_acquired: false,
                     },
                 );
             }
@@ -1026,11 +1352,13 @@ pub(crate) async fn anthropic_messages_streaming(
                         canonical_model_key: route.canonical_model_key.clone(),
                         route: route.clone(),
                         protocol: GatewayStreamProtocol::AnthropicMessages,
+                        provider_protocol: Some(GatewayStreamProtocol::AnthropicMessages),
                         metrics_endpoint: crate::METRICS_ENDPOINT_ANTHROPIC_MESSAGES,
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
                         rate_limit_reservation,
+                        virtual_key_concurrency_acquired: false,
                     },
                 );
             }
@@ -1445,11 +1773,13 @@ pub(crate) async fn gemini_generate_content_streaming(
                         canonical_model_key: route.canonical_model_key.clone(),
                         route: route.clone(),
                         protocol: GatewayStreamProtocol::GeminiGenerateContent,
+                        provider_protocol: Some(GatewayStreamProtocol::GeminiGenerateContent),
                         metrics_endpoint: crate::METRICS_ENDPOINT_GEMINI_GENERATE_CONTENT,
                         request_started_at,
                         provider_started_at,
                         stream_idle_timeout,
                         rate_limit_reservation,
+                        virtual_key_concurrency_acquired: false,
                     },
                 );
             }
@@ -1570,11 +1900,13 @@ struct StreamLogContext {
     canonical_model_key: String,
     route: ResolvedChatRoute,
     protocol: GatewayStreamProtocol,
+    provider_protocol: Option<GatewayStreamProtocol>,
     metrics_endpoint: &'static str,
     request_started_at: Instant,
     provider_started_at: Instant,
     stream_idle_timeout: Duration,
     rate_limit_reservation: GatewayRateLimitReservationAttempt,
+    virtual_key_concurrency_acquired: bool,
 }
 
 fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -> Response {
@@ -1582,6 +1914,9 @@ fn stream_response(upstream: GatewayUpstreamStream, context: StreamLogContext) -
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    if let Ok(value) = HeaderValue::from_str(&context.request_id.to_string()) {
+        headers.insert(HeaderName::from_static(crate::X_REQUEST_ID_HEADER), value);
+    }
 
     let state = ForwardStreamState::new(upstream, context);
     // Hyper polls this stream under socket backpressure, so each downstream poll performs at
@@ -1717,8 +2052,19 @@ impl ForwardStreamState {
             request_ttft_ms: self.progress.request_ttft_ms,
             provider_ttft_ms: self.progress.provider_ttft_ms,
             usage: self.progress.usage,
+            protocol_metadata: self.progress.protocol_metadata.clone(),
+            openai_compat: self.progress.openai_compat,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OpenAiStreamCompatProgress {
+    done_sent: bool,
+    final_chunk_seen: bool,
+    final_chunk_sent: bool,
+    finish_reason_present: bool,
+    choices_count: usize,
 }
 
 struct StreamProgress {
@@ -1730,6 +2076,8 @@ struct StreamProgress {
     provider_ttft_ms: Option<i32>,
     terminal_kind: TerminalEventKind,
     usage: StreamUsageUpdate,
+    protocol_metadata: Option<Value>,
+    openai_compat: OpenAiStreamCompatProgress,
 }
 
 impl StreamProgress {
@@ -1747,6 +2095,8 @@ impl StreamProgress {
             provider_ttft_ms: None,
             terminal_kind: TerminalEventKind::None,
             usage: StreamUsageUpdate::default(),
+            protocol_metadata: None,
+            openai_compat: OpenAiStreamCompatProgress::default(),
         }
     }
 
@@ -1791,9 +2141,15 @@ impl StreamProgress {
         provider_started_at: Instant,
     ) -> Result<(), StreamChunkError> {
         let observation = self.protocol.observe_event(event)?;
+        if matches!(self.protocol, GatewayStreamProtocol::OpenAiChatCompletions) {
+            self.openai_compat.observe_chat_event(event, &observation);
+        }
 
         if let Some(usage) = observation.usage {
             self.usage = usage;
+        }
+        if let Some(protocol_metadata) = observation.protocol_metadata {
+            self.protocol_metadata = Some(protocol_metadata);
         }
 
         let terminal_kind = observation.terminal_kind;
@@ -1812,6 +2168,44 @@ impl StreamProgress {
     }
 }
 
+impl OpenAiStreamCompatProgress {
+    fn observe_chat_event(&mut self, event: &SseEvent, observation: &StreamEventObservation) {
+        if observation.terminal_kind == TerminalEventKind::Completed {
+            self.done_sent = true;
+        }
+
+        let Some(payload) = openai_stream_json_payload(event) else {
+            return;
+        };
+
+        let choices_count = payload
+            .get("choices")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        self.choices_count = self.choices_count.max(choices_count);
+
+        let finish_reason_present = payload
+            .get("choices")
+            .and_then(Value::as_array)
+            .map(|choices| {
+                choices.iter().any(|choice| {
+                    choice
+                        .get("finish_reason")
+                        .and_then(Value::as_str)
+                        .is_some_and(|reason| !reason.trim().is_empty())
+                })
+            })
+            .unwrap_or(false);
+
+        if finish_reason_present {
+            self.final_chunk_seen = true;
+            self.final_chunk_sent = true;
+            self.finish_reason_present = true;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GatewayStreamProtocol {
     OpenAiChatCompletions,
@@ -1821,15 +2215,6 @@ enum GatewayStreamProtocol {
 }
 
 impl GatewayStreamProtocol {
-    const fn stream_protocol(self) -> StreamProtocol {
-        match self {
-            Self::OpenAiChatCompletions => StreamProtocol::OpenAiChatCompletions,
-            Self::OpenAiResponses => StreamProtocol::OpenAiResponses,
-            Self::AnthropicMessages => StreamProtocol::AnthropicMessages,
-            Self::GeminiGenerateContent => StreamProtocol::GeminiGenerateContent,
-        }
-    }
-
     const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAiChatCompletions => "openai_chat_completions",
@@ -1841,10 +2226,7 @@ impl GatewayStreamProtocol {
 
     fn observe_event(self, event: &SseEvent) -> Result<StreamEventObservation, StreamChunkError> {
         match self {
-            Self::OpenAiChatCompletions => Ok(StreamEventObservation {
-                terminal_kind: terminal_event_kind(self.stream_protocol(), event),
-                usage: openai_chat_stream_usage_from_event(event),
-            }),
+            Self::OpenAiChatCompletions => openai_chat_stream_event_observation(event),
             Self::OpenAiResponses => openai_responses_stream_event_observation(event),
             Self::AnthropicMessages => anthropic_messages_stream_event_observation(event),
             Self::GeminiGenerateContent => gemini_generate_content_stream_event_observation(event),
@@ -1861,6 +2243,7 @@ impl From<OpenAiChatStream> for GatewayUpstreamStream {
 enum GatewayUpstreamStream {
     OpenAi(OpenAiChatStream),
     Anthropic(NativeSseStream),
+    GeminiOpenAiChat(NormalizedGeminiChatStream),
     Gemini(NativeSseStream),
 }
 
@@ -1869,6 +2252,7 @@ impl GatewayUpstreamStream {
         match self {
             Self::OpenAi(stream) => stream.status(),
             Self::Anthropic(stream) => stream.status,
+            Self::GeminiOpenAiChat(stream) => stream.status(),
             Self::Gemini(stream) => stream.status,
         }
     }
@@ -1877,6 +2261,7 @@ impl GatewayUpstreamStream {
         match self {
             Self::OpenAi(stream) => stream.content_type(),
             Self::Anthropic(stream) => stream.content_type.as_deref(),
+            Self::GeminiOpenAiChat(stream) => stream.content_type(),
             Self::Gemini(stream) => stream.content_type.as_deref(),
         }
     }
@@ -1885,9 +2270,107 @@ impl GatewayUpstreamStream {
         match self {
             Self::OpenAi(stream) => stream.next_chunk().await.map_err(|error| error.to_string()),
             Self::Anthropic(stream) => stream.next_chunk().await,
+            Self::GeminiOpenAiChat(stream) => stream.next_chunk().await,
             Self::Gemini(stream) => stream.next_chunk().await,
         }
     }
+}
+
+struct NormalizedGeminiChatStream {
+    inner: NativeSseStream,
+    decoder: SseDecoder,
+    pending: VecDeque<Vec<u8>>,
+    done_sent: bool,
+}
+
+impl NormalizedGeminiChatStream {
+    fn status(&self) -> u16 {
+        self.inner.status
+    }
+
+    fn content_type(&self) -> Option<&str> {
+        self.inner.content_type.as_deref()
+    }
+
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+        loop {
+            if let Some(chunk) = self.pending.pop_front() {
+                return Ok(Some(chunk));
+            }
+
+            let Some(chunk) = self.inner.next_chunk().await? else {
+                for event in self
+                    .decoder
+                    .finish()
+                    .map_err(|error| format!("Gemini stream decode error: {error}"))?
+                {
+                    self.push_normalized_event(&event)?;
+                }
+                return Ok(self.pending.pop_front());
+            };
+
+            for event in self
+                .decoder
+                .push(&chunk)
+                .map_err(|error| format!("Gemini stream decode error: {error}"))?
+            {
+                self.push_normalized_event(&event)?;
+            }
+        }
+    }
+
+    fn push_normalized_event(&mut self, event: &SseEvent) -> Result<(), String> {
+        for chunk in normalized_gemini_chat_sse_chunks(event, &mut self.done_sent)? {
+            self.pending.push_back(chunk);
+        }
+
+        Ok(())
+    }
+}
+
+fn normalized_gemini_chat_sse_chunks(
+    event: &SseEvent,
+    done_sent: &mut bool,
+) -> Result<Vec<Vec<u8>>, String> {
+    if event.data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chunk = GeminiAdapter::parse_chat_completions_stream_event(&event.data)
+        .map_err(|error| format!("Gemini stream normalization error: {error}"))?;
+    let terminal = openai_chat_chunk_has_finish_reason(&chunk);
+    let bytes = serde_json::to_vec(&chunk)
+        .map_err(|error| format!("Gemini stream normalization error: {error}"))?;
+    let mut chunks = vec![sse_data_chunk(bytes)];
+
+    if terminal && !*done_sent {
+        *done_sent = true;
+        chunks.push(Bytes::from_static(b"data: [DONE]\n\n").to_vec());
+    }
+
+    Ok(chunks)
+}
+
+fn sse_data_chunk(data: Vec<u8>) -> Vec<u8> {
+    let mut chunk = Vec::with_capacity(data.len() + 8);
+    chunk.extend_from_slice(b"data: ");
+    chunk.extend_from_slice(&data);
+    chunk.extend_from_slice(b"\n\n");
+    chunk
+}
+
+fn openai_chat_chunk_has_finish_reason(chunk: &Value) -> bool {
+    chunk
+        .get("choices")
+        .and_then(Value::as_array)
+        .is_some_and(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reason| !reason.trim().is_empty())
+            })
+        })
 }
 
 struct NativeSseStream {
@@ -1971,6 +2454,120 @@ async fn send_anthropic_messages_stream_request(
     }))
 }
 
+fn gemini_chat_completions_stream_request_for_upstream(
+    adapter: &GeminiAdapter,
+    request: &ChatCompletionRequest,
+    upstream_model: &str,
+) -> Result<AdapterUpstreamRequest, GeminiAdapterError> {
+    let mut request = request_for_upstream(request, upstream_model);
+    request.stream = Some(true);
+    let request = GeminiGenerateContentRequest::from_openai_chat_request(&request)?;
+    adapter.build_generate_content_request(&request)
+}
+
+async fn send_gemini_chat_completions_stream_request(
+    http: &reqwest::Client,
+    route: &ResolvedChatRoute,
+    upstream_request: &AdapterUpstreamRequest,
+    provider_key: &str,
+) -> Result<GatewayUpstreamStream, GeminiAdapterError> {
+    let url = crate::native_upstream_url(&route.endpoint, &upstream_request.path)
+        .map_err(|error| GeminiAdapterError::RequestSerialize(error.to_string()))?;
+    let response = http
+        .post(url)
+        .header(
+            crate::GEMINI_API_KEY_HEADER,
+            gemini_provider_key_header(provider_key)?,
+        )
+        .header(reqwest::header::CONTENT_TYPE, APPLICATION_JSON_CONTENT_TYPE)
+        .json(&upstream_request.body)
+        .send()
+        .await
+        .map_err(gemini_reqwest_error)?;
+
+    let status = response.status();
+    let retry_after = crate::native_retry_after_from_headers(response.headers());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
+    if !status.is_success() {
+        let body = response
+            .bytes()
+            .await
+            .map_err(|_| GeminiAdapterError::UpstreamInvalidJson {
+                status: status.as_u16(),
+                message: "failed to read upstream response body".to_string(),
+                retry_after: retry_after.clone(),
+            })?;
+        return Err(gemini_stream_upstream_status_error(
+            status.as_u16(),
+            &body,
+            retry_after,
+            provider_key,
+        ));
+    }
+
+    Ok(GatewayUpstreamStream::GeminiOpenAiChat(
+        NormalizedGeminiChatStream {
+            inner: NativeSseStream {
+                status: status.as_u16(),
+                content_type,
+                response,
+            },
+            decoder: SseDecoder::new(OPENAI_STREAM_MAX_EVENT_BYTES),
+            pending: VecDeque::new(),
+            done_sent: false,
+        },
+    ))
+}
+
+fn gemini_provider_key_header(
+    provider_key: &str,
+) -> Result<reqwest::header::HeaderValue, GeminiAdapterError> {
+    reqwest::header::HeaderValue::from_str(provider_key).map_err(|_| {
+        GeminiAdapterError::RequestSerialize("provider authorization credential is invalid".into())
+    })
+}
+
+fn gemini_reqwest_error(error: reqwest::Error) -> GeminiAdapterError {
+    let status = error
+        .status()
+        .map(|status| status.as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY.as_u16());
+    GeminiAdapterError::UpstreamInvalidJson {
+        status,
+        message: error.to_string(),
+        retry_after: None,
+    }
+}
+
+fn gemini_stream_upstream_status_error(
+    status: u16,
+    body: &[u8],
+    retry_after: Option<ai_gateway_adapters::AdapterRetryAfter>,
+    provider_key: &str,
+) -> GeminiAdapterError {
+    let body = serde_json::from_slice::<Value>(body)
+        .map(|value| {
+            crate::redact_provider_key_from_value(crate::redact_payload_value(&value), provider_key)
+        })
+        .unwrap_or_else(|_| {
+            json!({
+                "provider_error_body_hash": crate::sha256_hex(body),
+                "provider_error_body": "non_json_redacted"
+            })
+        });
+
+    GeminiAdapterError::UpstreamStatus {
+        status,
+        body,
+        retry_after,
+    }
+}
+
 fn gemini_stream_generate_content_upstream_path(
     upstream_model: &str,
 ) -> Result<String, OpenAiAdapterError> {
@@ -2049,10 +2646,11 @@ fn anthropic_provider_key_header(
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StreamEventObservation {
     terminal_kind: TerminalEventKind,
     usage: Option<StreamUsageUpdate>,
+    protocol_metadata: Option<Value>,
 }
 
 impl Default for StreamEventObservation {
@@ -2060,6 +2658,7 @@ impl Default for StreamEventObservation {
         Self {
             terminal_kind: TerminalEventKind::None,
             usage: None,
+            protocol_metadata: None,
         }
     }
 }
@@ -2206,6 +2805,8 @@ struct StreamFinalizationSnapshot {
     request_ttft_ms: Option<i32>,
     provider_ttft_ms: Option<i32>,
     usage: StreamUsageUpdate,
+    protocol_metadata: Option<Value>,
+    openai_compat: OpenAiStreamCompatProgress,
 }
 
 impl StreamFinalizationSnapshot {
@@ -2222,12 +2823,19 @@ impl StreamFinalizationSnapshot {
             }
             _ => None,
         };
-        if end_reason != StreamEndReason::Completed {
+        if let Some(paid_release_reason) = paid_hot_path_stream_release_reason(end_reason) {
             release_gateway_rate_limit_reservation_if_needed(
                 &self.context.repository,
                 &self.context.auth,
                 &self.context.route,
                 &mut self.context.rate_limit_reservation,
+            )
+            .await;
+            release_paid_hot_path_reserve_if_needed(
+                &self.context.repository,
+                &self.context.auth,
+                self.context.request_id,
+                paid_release_reason,
             )
             .await;
         }
@@ -2261,6 +2869,77 @@ impl StreamFinalizationSnapshot {
             tracing::warn!(message = %error.message, "failed to finish stream request log");
         }
 
+        let openai_compat_progress = if matches!(
+            self.context.protocol,
+            GatewayStreamProtocol::OpenAiChatCompletions
+        ) {
+            Some(self.openai_compat)
+        } else {
+            None
+        };
+        let finalizer_metadata = stream_finalizer_metadata(
+            self.context.protocol,
+            self.context.provider_protocol,
+            self.partial_sent,
+            self.request_ttft_ms,
+            self.provider_ttft_ms,
+            self.usage,
+            self.protocol_metadata.clone(),
+            end_reason,
+            rating.as_ref(),
+            openai_compat_progress,
+        );
+
+        if matches!(
+            self.context.protocol,
+            GatewayStreamProtocol::OpenAiChatCompletions
+        ) {
+            let metadata = openai_chat_stream_compat_metadata(
+                self.context.request_id,
+                self.partial_sent,
+                self.usage,
+                end_reason,
+                self.openai_compat,
+            );
+            if let Err(error) = self
+                .context
+                .repository
+                .merge_request_route_metadata(
+                    &self.context.auth,
+                    self.context.request_id,
+                    merge_stream_request_route_metadata(
+                        finalizer_metadata.clone(),
+                        json!({ "openai_compat": metadata }),
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    message = %error.message,
+                    "failed to merge OpenAI stream compat request log metadata"
+                );
+            }
+        } else if matches!(
+            self.context.protocol,
+            GatewayStreamProtocol::GeminiGenerateContent
+        ) {
+            if let Err(error) = self
+                .context
+                .repository
+                .merge_request_route_metadata(
+                    &self.context.auth,
+                    self.context.request_id,
+                    finalizer_metadata.clone(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    message = %error.message,
+                    "failed to merge Gemini stream protocol request log metadata"
+                );
+            }
+        }
+
         settle_stream_request_ledger(
             &self.context.repository,
             &self.context.auth,
@@ -2277,7 +2956,7 @@ impl StreamFinalizationSnapshot {
             end_reason,
             self.provider_ttft_ms,
             provider_attempt_metadata_with_rate_limit_reservation(
-                json!({}),
+                finalizer_metadata,
                 &self.context.rate_limit_reservation,
                 rate_limit_reservation_stream_outcome(end_reason),
             ),
@@ -2294,6 +2973,13 @@ impl StreamFinalizationSnapshot {
         {
             tracing::warn!(message = %error.message, "failed to finish stream provider attempt log");
         }
+
+        release_virtual_key_concurrency_if_needed(
+            &self.context.repository,
+            &self.context.auth,
+            self.context.virtual_key_concurrency_acquired,
+        )
+        .await;
     }
 }
 
@@ -2304,6 +2990,10 @@ struct StreamUsageUpdate {
 }
 
 impl StreamUsageUpdate {
+    fn observed(self) -> bool {
+        self.input_tokens.is_some() || self.output_tokens.is_some()
+    }
+
     fn is_complete(self) -> bool {
         self.input_tokens.is_some() && self.output_tokens.is_some()
     }
@@ -2324,12 +3014,41 @@ struct StreamRatingUpdate {
 }
 
 fn openai_chat_stream_usage_from_event(event: &SseEvent) -> Option<StreamUsageUpdate> {
+    let payload = openai_stream_json_payload(event)?;
+    openai_stream_usage_from_value(&payload)
+}
+
+fn openai_stream_json_payload(event: &SseEvent) -> Option<Value> {
     if event.data.is_empty() {
         return None;
     }
 
-    let payload: Value = serde_json::from_slice(&event.data).ok()?;
-    openai_stream_usage_from_value(&payload)
+    serde_json::from_slice(&event.data).ok()
+}
+
+fn openai_chat_stream_event_observation(
+    event: &SseEvent,
+) -> Result<StreamEventObservation, StreamChunkError> {
+    let terminal_kind = terminal_event_kind(StreamProtocol::OpenAiChatCompletions, event);
+    if event.data.is_empty() || terminal_kind.is_terminal() {
+        return Ok(StreamEventObservation {
+            terminal_kind,
+            usage: None,
+            protocol_metadata: None,
+        });
+    }
+
+    let payload: Value =
+        serde_json::from_slice(&event.data).map_err(|error| StreamChunkError::ProtocolParser {
+            protocol: GatewayStreamProtocol::OpenAiChatCompletions,
+            message: error.to_string(),
+        })?;
+
+    Ok(StreamEventObservation {
+        terminal_kind,
+        usage: openai_stream_usage_from_value(&payload),
+        protocol_metadata: None,
+    })
 }
 
 fn openai_responses_stream_event_observation(
@@ -2356,6 +3075,9 @@ fn openai_responses_stream_event_observation(
         usage: adapter_event
             .usage()
             .and_then(stream_usage_from_adapter_usage),
+        protocol_metadata: Some(json!({
+            "openai_responses": adapter_event.protocol_metadata()
+        })),
     })
 }
 
@@ -2382,6 +3104,7 @@ fn anthropic_messages_stream_event_observation(
         usage: adapter_event
             .usage()
             .and_then(stream_usage_from_adapter_usage),
+        protocol_metadata: None,
     })
 }
 
@@ -2409,6 +3132,11 @@ fn gemini_generate_content_stream_event_observation(
         usage: adapter_event
             .usage()
             .and_then(stream_usage_from_adapter_usage),
+        protocol_metadata: Some(json!({
+            "gemini_generate_content": GeminiAdapter::generate_content_protocol_metadata(
+                &adapter_event.data
+            )
+        })),
     })
 }
 
@@ -2632,6 +3360,139 @@ fn stream_ledger_settle_entry<'a>(
         input_tokens,
         output_tokens,
     })
+}
+
+fn stream_finalizer_metadata(
+    protocol: GatewayStreamProtocol,
+    provider_protocol: Option<GatewayStreamProtocol>,
+    partial_sent: bool,
+    request_ttft_ms: Option<i32>,
+    provider_ttft_ms: Option<i32>,
+    observed_usage: StreamUsageUpdate,
+    protocol_metadata: Option<Value>,
+    end_reason: StreamEndReason,
+    rating: Option<&StreamRatingUpdate>,
+    openai_compat: Option<OpenAiStreamCompatProgress>,
+) -> Value {
+    let usage_complete = observed_usage.is_complete();
+    let usage_recorded = matches!(end_reason, StreamEndReason::Completed) && usage_complete;
+    let rating_recorded = usage_recorded && rating.is_some();
+    let total_tokens = match (observed_usage.input_tokens, observed_usage.output_tokens) {
+        (Some(input_tokens), Some(output_tokens)) => input_tokens.checked_add(output_tokens),
+        _ => None,
+    };
+    let provider_protocol = provider_protocol.unwrap_or(protocol);
+
+    json!({
+        "stream_finalizer": {
+            "schema": "gateway_stream_finalizer_v1",
+            "protocol": protocol.as_str(),
+            "downstream_protocol": protocol.as_str(),
+            "provider_protocol": provider_protocol.as_str(),
+            "partial_sent": partial_sent,
+            "end_reason": end_reason.as_str(),
+            "request_ttft_ms": request_ttft_ms,
+            "provider_ttft_ms": provider_ttft_ms,
+            "usage": {
+                "observed": observed_usage.observed(),
+                "complete": usage_complete,
+                "recorded": usage_recorded,
+                "input_tokens_observed": observed_usage.input_tokens.is_some(),
+                "output_tokens_observed": observed_usage.output_tokens.is_some(),
+                "input_tokens": observed_usage.input_tokens,
+                "output_tokens": observed_usage.output_tokens,
+                "prompt_tokens": observed_usage.input_tokens,
+                "completion_tokens": observed_usage.output_tokens,
+                "total_tokens": total_tokens
+            },
+            "protocol_metadata": protocol_metadata,
+            "billing": {
+                "rating_recorded": rating_recorded,
+                "ledger_settle_eligible": rating_recorded,
+                "reserve_release_reason": paid_hot_path_stream_release_reason(end_reason)
+            },
+            "concurrency": {
+                "virtual_key_slot_release": "finalizer"
+            },
+            "openai_compat": openai_compat.map(|progress| {
+                json!({
+                    "schema": "gateway_openai_chat_completion_stream_compat_v1",
+                    "mode": "stream",
+                    "summary_location": "request_log.route_decision_snapshot.openai_compat",
+                    "done_sent": progress.done_sent,
+                    "final_chunk_seen": progress.final_chunk_seen,
+                    "final_chunk_sent": progress.final_chunk_sent,
+                    "finish_reason_present": progress.finish_reason_present,
+                    "usage_observed": observed_usage.observed(),
+                    "usage_recorded": matches!(end_reason, StreamEndReason::Completed)
+                        && observed_usage.is_complete(),
+                    "raw_stream_chunks_omitted": true,
+                    "raw_payload_omitted": true
+                })
+            })
+        }
+    })
+}
+
+fn merge_stream_request_route_metadata(mut left: Value, right: Value) -> Value {
+    let Some(left_object) = left.as_object_mut() else {
+        return right;
+    };
+    if let Some(right_object) = right.as_object() {
+        for (key, value) in right_object {
+            left_object.insert(key.clone(), value.clone());
+        }
+    }
+    left
+}
+
+fn openai_chat_stream_compat_metadata(
+    request_id: uuid::Uuid,
+    partial_sent: bool,
+    observed_usage: StreamUsageUpdate,
+    end_reason: StreamEndReason,
+    progress: OpenAiStreamCompatProgress,
+) -> Value {
+    let usage_recorded =
+        matches!(end_reason, StreamEndReason::Completed) && observed_usage.is_complete();
+
+    json!({
+        "schema": "gateway_openai_chat_completion_stream_compat_v1",
+        "secret_safe": true,
+        "mode": "stream",
+        "endpoint": "chat_completions",
+        "x_request_id": request_id.to_string(),
+        "x_request_id_present": true,
+        "partial_sent": partial_sent,
+        "stream_end_reason": end_reason.as_str(),
+        "done_sent": progress.done_sent,
+        "final_chunk_seen": progress.final_chunk_seen,
+        "final_chunk_sent": progress.final_chunk_sent,
+        "finish_reason_present": progress.finish_reason_present,
+        "choices_count": progress.choices_count,
+        "usage": {
+            "provider_usage_present": observed_usage.observed(),
+            "observed": observed_usage.observed(),
+            "recorded": usage_recorded,
+            "input_tokens_recorded": usage_recorded && observed_usage.input_tokens.is_some(),
+            "output_tokens_recorded": usage_recorded && observed_usage.output_tokens.is_some()
+        },
+        "stream_finalizer": {
+            "schema": "gateway_stream_finalizer_v1",
+            "relation": "same_request_finalization",
+            "end_reason": end_reason.as_str()
+        },
+        "raw_payload_omitted": true,
+        "raw_stream_chunks_omitted": true
+    })
+}
+
+fn paid_hot_path_stream_release_reason(end_reason: StreamEndReason) -> Option<&'static str> {
+    match end_reason {
+        StreamEndReason::Completed => None,
+        StreamEndReason::ClientCancel => Some("stream_client_cancel"),
+        _ => Some("stream_not_completed"),
+    }
 }
 
 fn stream_request_status(
@@ -2936,6 +3797,131 @@ mod tests {
     }
 
     #[test]
+    fn stream_finalizer_metadata_explains_cancel_release_without_usage_or_secrets() {
+        let metadata = stream_finalizer_metadata(
+            GatewayStreamProtocol::OpenAiChatCompletions,
+            None,
+            false,
+            None,
+            None,
+            StreamUsageUpdate {
+                input_tokens: Some(12),
+                output_tokens: Some(34),
+            },
+            None,
+            StreamEndReason::ClientCancel,
+            Some(&StreamRatingUpdate {
+                final_cost: "0.00012345".to_string(),
+                currency: "USD".to_string(),
+                price_version_id: uuid::Uuid::from_u128(43),
+            }),
+            None,
+        );
+
+        assert_eq!(
+            metadata["stream_finalizer"]["schema"],
+            "gateway_stream_finalizer_v1"
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["protocol"],
+            "openai_chat_completions"
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["provider_protocol"],
+            "openai_chat_completions"
+        );
+        assert_eq!(metadata["stream_finalizer"]["partial_sent"], false);
+        assert_eq!(metadata["stream_finalizer"]["end_reason"], "client_cancel");
+        assert_eq!(
+            metadata["stream_finalizer"]["usage"]["observed"], true,
+            "observed tokens may be noted without recording or billing them"
+        );
+        assert_eq!(metadata["stream_finalizer"]["usage"]["complete"], true);
+        assert_eq!(metadata["stream_finalizer"]["usage"]["recorded"], false);
+        assert_eq!(
+            metadata["stream_finalizer"]["billing"]["rating_recorded"],
+            false
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["billing"]["ledger_settle_eligible"],
+            false
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["billing"]["reserve_release_reason"],
+            "stream_client_cancel"
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["concurrency"]["virtual_key_slot_release"],
+            "finalizer"
+        );
+
+        let metadata_text = metadata.to_string().to_ascii_lowercase();
+        for forbidden in [
+            "authorization",
+            "bearer",
+            "sk-live",
+            "provider key",
+            "provider_key",
+            "raw_payload",
+            "messages",
+        ] {
+            assert!(
+                !metadata_text.contains(forbidden),
+                "stream finalizer metadata leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_finalizer_metadata_records_completed_usage_and_ttft() {
+        let rating = StreamRatingUpdate {
+            final_cost: "0.00012345".to_string(),
+            currency: "USD".to_string(),
+            price_version_id: uuid::Uuid::from_u128(44),
+        };
+        let metadata = stream_finalizer_metadata(
+            GatewayStreamProtocol::OpenAiChatCompletions,
+            None,
+            true,
+            Some(12),
+            Some(7),
+            StreamUsageUpdate {
+                input_tokens: Some(12),
+                output_tokens: Some(34),
+            },
+            None,
+            StreamEndReason::Completed,
+            Some(&rating),
+            None,
+        );
+
+        assert_eq!(
+            metadata["stream_finalizer"]["request_ttft_ms"],
+            serde_json::json!(12)
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["provider_ttft_ms"],
+            serde_json::json!(7)
+        );
+        assert_eq!(metadata["stream_finalizer"]["usage"]["recorded"], true);
+        assert_eq!(metadata["stream_finalizer"]["usage"]["prompt_tokens"], 12);
+        assert_eq!(
+            metadata["stream_finalizer"]["usage"]["completion_tokens"],
+            34
+        );
+        assert_eq!(metadata["stream_finalizer"]["usage"]["total_tokens"], 46);
+        assert_eq!(
+            metadata["stream_finalizer"]["billing"]["rating_recorded"],
+            true
+        );
+        assert_eq!(
+            metadata["stream_finalizer"]["billing"]["ledger_settle_eligible"],
+            true
+        );
+        assert!(metadata["stream_finalizer"]["billing"]["reserve_release_reason"].is_null());
+    }
+
+    #[test]
     fn stream_final_update_payload_records_partial_then_upstream_failure() {
         let request = stream_request_final_update(
             29,
@@ -3014,6 +4000,158 @@ mod tests {
                 .expect("clean EOF should classify"),
             StreamEndReason::Completed
         );
+    }
+
+    #[test]
+    fn openai_stream_compat_metadata_projects_done_final_usage_and_request_id() {
+        let request_started_at = Instant::now();
+        let provider_started_at = Instant::now();
+        let request_id = uuid::Uuid::from_u128(82);
+        let mut progress =
+            StreamProgress::new(GatewayStreamProtocol::OpenAiChatCompletions, 4096, 4096);
+
+        progress
+            .observe_chunk(
+                br#"data: {"id":"chatcmpl-safe","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-safe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}
+
+data: [DONE]
+
+"#,
+                request_started_at,
+                provider_started_at,
+            )
+            .expect("OpenAI stream chunks should parse");
+        let end_reason = progress
+            .observe_eof(request_started_at, provider_started_at)
+            .expect("OpenAI stream EOF should classify");
+
+        assert_eq!(end_reason, StreamEndReason::Completed);
+        assert!(progress.openai_compat.done_sent);
+        assert!(progress.openai_compat.final_chunk_seen);
+        assert!(progress.openai_compat.final_chunk_sent);
+        assert!(progress.openai_compat.finish_reason_present);
+
+        let compat = openai_chat_stream_compat_metadata(
+            request_id,
+            progress.partial_sent,
+            progress.usage,
+            end_reason,
+            progress.openai_compat,
+        );
+        let finalizer = stream_finalizer_metadata(
+            GatewayStreamProtocol::OpenAiChatCompletions,
+            Some(GatewayStreamProtocol::GeminiGenerateContent),
+            progress.partial_sent,
+            progress.request_ttft_ms,
+            progress.provider_ttft_ms,
+            progress.usage,
+            None,
+            end_reason,
+            None,
+            Some(progress.openai_compat),
+        );
+        let snapshot =
+            merge_stream_request_route_metadata(finalizer, json!({ "openai_compat": compat }));
+        let projection = ai_gateway_db::request_log_openai_compat_projection(
+            progress.partial_sent,
+            Some(end_reason.as_str()),
+            progress.request_ttft_ms,
+            2,
+            3,
+            None,
+            &snapshot,
+        );
+        let finalizer_projection = ai_gateway_db::request_log_stream_finalizer_projection(
+            progress.partial_sent,
+            Some(end_reason.as_str()),
+            progress.request_ttft_ms,
+            &snapshot,
+        );
+
+        assert_eq!(projection["status"], "recorded");
+        assert_eq!(projection["mode"], "stream");
+        assert_eq!(finalizer_projection["status"], "recorded");
+        assert_eq!(finalizer_projection["usage_observed"], true);
+        assert_eq!(finalizer_projection["usage_recorded"], true);
+        assert_eq!(
+            snapshot["stream_finalizer"]["downstream_protocol"],
+            "openai_chat_completions"
+        );
+        assert_eq!(
+            snapshot["stream_finalizer"]["provider_protocol"],
+            "gemini_generate_content"
+        );
+        assert_eq!(snapshot["stream_finalizer"]["usage"]["prompt_tokens"], 2);
+        assert_eq!(
+            snapshot["stream_finalizer"]["usage"]["completion_tokens"],
+            3
+        );
+        assert_eq!(snapshot["stream_finalizer"]["usage"]["total_tokens"], 5);
+        assert_eq!(projection["x_request_id_present"], true);
+        assert_eq!(projection["request_id_header_present"], true);
+        assert_eq!(projection["done_sent"], true);
+        assert_eq!(projection["final_chunk_seen"], true);
+        assert_eq!(projection["final_chunk_sent"], true);
+        assert_eq!(projection["finish_reason_present"], true);
+        assert_eq!(projection["usage_observed"], true);
+        assert_eq!(projection["usage_recorded"], true);
+
+        let serialized = projection.to_string().to_ascii_lowercase();
+        for forbidden in [
+            "authorization",
+            "bearer",
+            "sk-live",
+            "provider_key",
+            "raw_stream_chunk:",
+            "messages",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "OpenAI stream compat projection leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn openai_stream_compat_cancel_observes_usage_without_recording() {
+        let request_id = uuid::Uuid::from_u128(83);
+        let progress = OpenAiStreamCompatProgress {
+            done_sent: false,
+            final_chunk_seen: false,
+            final_chunk_sent: false,
+            finish_reason_present: false,
+            choices_count: 0,
+        };
+        let usage = StreamUsageUpdate {
+            input_tokens: Some(2),
+            output_tokens: Some(3),
+        };
+
+        let compat = openai_chat_stream_compat_metadata(
+            request_id,
+            false,
+            usage,
+            StreamEndReason::ClientCancel,
+            progress,
+        );
+        let projection = ai_gateway_db::request_log_openai_compat_projection(
+            false,
+            Some(StreamEndReason::ClientCancel.as_str()),
+            None,
+            0,
+            0,
+            None,
+            &json!({ "openai_compat": compat }),
+        );
+
+        assert_eq!(projection["mode"], "stream");
+        assert_eq!(projection["done_sent"], false);
+        assert_eq!(projection["usage_observed"], true);
+        assert_eq!(projection["usage_recorded"], false);
+        assert_eq!(projection["input_tokens_recorded"], false);
+        assert_eq!(projection["output_tokens_recorded"], false);
     }
 
     #[test]
@@ -3324,6 +4462,22 @@ data: {"type":"message_stop"}
                 output_tokens: Some(2),
             }
         );
+        let metadata = completed
+            .protocol_metadata
+            .as_ref()
+            .expect("Gemini terminal event should record protocol metadata");
+        assert_eq!(
+            metadata["gemini_generate_content"]["terminal_status"],
+            "completed"
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["finish_reason"]["mapped"],
+            "stop"
+        );
+        assert_eq!(
+            metadata["gemini_generate_content"]["usage"]["prompt_tokens"],
+            9
+        );
         assert_eq!(
             completed
                 .observe_eof(request_started_at, provider_started_at)
@@ -3366,6 +4520,39 @@ data: {"type":"message_stop"}
                 .end_reason,
             StreamEndReason::ParserError
         );
+    }
+
+    #[test]
+    fn gemini_chat_stream_normalizer_emits_openai_chunks_and_done() {
+        let fixture = load_gemini_stream_fixture("chat_completion_stream_normalized.sse");
+        let mut decoder = SseDecoder::new(4096);
+        let events = decoder
+            .push(&fixture)
+            .expect("Gemini chat stream fixture should decode");
+        assert_eq!(events.len(), 2);
+
+        let mut done_sent = false;
+        let mut normalized = Vec::new();
+        for event in events {
+            normalized.extend(
+                normalized_gemini_chat_sse_chunks(&event, &mut done_sent)
+                    .expect("Gemini chat stream event should normalize"),
+            );
+        }
+
+        assert_eq!(normalized.len(), 3);
+        let first = String::from_utf8(normalized[0].clone()).expect("utf8 first chunk");
+        let second = String::from_utf8(normalized[1].clone()).expect("utf8 terminal chunk");
+        let done = String::from_utf8(normalized[2].clone()).expect("utf8 done chunk");
+
+        assert!(first.starts_with("data: {"));
+        assert!(first.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(first.contains("\"content\":\"Hel\""));
+        assert!(second.contains("\"content\":\"lo\""));
+        assert!(second.contains("\"finish_reason\":\"stop\""));
+        assert!(second.contains("\"usage\""));
+        assert_eq!(done, "data: [DONE]\n\n");
+        assert!(done_sent);
     }
 
     #[test]
@@ -3472,6 +4659,27 @@ data: {"type":"message_stop"}
         assert_eq!(null_usage, None);
         assert_eq!(no_usage, None);
         assert_eq!(invalid_json, None);
+    }
+
+    #[test]
+    fn openai_chat_stream_progress_maps_invalid_json_to_parser_error() {
+        let mut progress = StreamProgress::new(
+            GatewayStreamProtocol::OpenAiChatCompletions,
+            OPENAI_STREAM_MAX_EVENT_BYTES,
+            OPENAI_STREAM_MAX_CHUNK_BYTES,
+        );
+
+        let error = progress
+            .observe_chunk(b"data: {not-json}\n\n", Instant::now(), Instant::now())
+            .expect_err("invalid OpenAI chat stream JSON must fail");
+
+        assert!(matches!(
+            error,
+            StreamChunkError::ProtocolParser {
+                protocol: GatewayStreamProtocol::OpenAiChatCompletions,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3658,6 +4866,68 @@ data: {"type":"message_stop"}
                 Some(&zero_rating)
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn paid_hot_path_stream_negative_guard_releases_cancel_and_never_settles() {
+        let request_id = uuid::Uuid::from_u128(39);
+        let price_version_id = uuid::Uuid::from_u128(40);
+        let usage = StreamUsageUpdate {
+            input_tokens: Some(12),
+            output_tokens: Some(34),
+        };
+        let rating = StreamRatingUpdate {
+            final_cost: "0.00012345".to_string(),
+            currency: "USD".to_string(),
+            price_version_id,
+        };
+
+        assert_eq!(
+            paid_hot_path_stream_release_reason(StreamEndReason::Completed),
+            None
+        );
+        assert_eq!(
+            paid_hot_path_stream_release_reason(StreamEndReason::ClientCancel),
+            Some("stream_client_cancel")
+        );
+        assert_eq!(
+            paid_hot_path_stream_release_reason(StreamEndReason::UpstreamError),
+            Some("stream_not_completed")
+        );
+
+        assert!(
+            stream_ledger_settle_entry(
+                request_id,
+                "chat-model",
+                StreamEndReason::ClientCancel,
+                usage,
+                Some(&rating)
+            )
+            .is_none(),
+            "client cancel must release the paid reserve instead of settling it"
+        );
+        assert!(
+            stream_ledger_settle_entry(
+                request_id,
+                "chat-model",
+                StreamEndReason::UpstreamError,
+                usage,
+                Some(&rating)
+            )
+            .is_none(),
+            "provider stream error must release the paid reserve instead of settling it"
+        );
+        assert!(
+            stream_ledger_settle_entry(
+                request_id,
+                "chat-model",
+                StreamEndReason::Completed,
+                usage,
+                Some(&rating)
+            )
+            .is_some(),
+            "completed stream with complete usage and nonzero rating remains settle-eligible"
         );
     }
 

@@ -46,7 +46,49 @@
       "name": "provider_error_redaction",
       "request": "POST /v1/chat/completions with mock_scenario=429",
       "expected": "error response does not include sealed provider key payload, provider key fingerprint, or raw provider key"
+    },
+    {
+      "name": "provider_error_status_mapping_safe",
+      "expected": [
+        "provider 401 maps provider key to auth_failed without cooldown",
+        "quota-like 429 maps provider key to quota_exhausted without cooldown",
+        "rate-limit 429 with retry-after maps provider key to cooldown with bounded cooldown_ms",
+        "timeout maps provider key to degraded"
+      ],
+      "forbidden_output": [
+        "raw provider key",
+        "sealed provider key payload",
+        "provider key fingerprint",
+        "authorization header"
+      ]
+    },
+    {
+      "name": "multi_key_retry_does_not_reuse_failed_key",
+      "contract_schema": "gateway_provider_key_multi_key_retry_v1",
+      "expected": {
+        "same_channel_alternatives_allowed": true,
+        "failed_provider_key_id_must_differ_from_next_provider_key_id": true,
+        "fallback_event_records_failed_and_next_provider_key_ids": true,
+        "failed_key_is_not_reopened_when_alternative_exists": true
+      },
+      "example": {
+        "attempt_1": {
+          "provider_key_id": "00000000-0000-0000-0000-000000000075",
+          "status": "failed",
+          "error_code": "provider_429"
+        },
+        "attempt_2": {
+          "provider_key_id": "00000000-0000-0000-0000-000000000076",
+          "status": "selected_after_fallback"
+        }
+      }
     }
   ],
+  "contract_only_checks": {
+    "encrypted_at_rest_and_fingerprint_only": true,
+    "runtime_status_mapping_safe": true,
+    "multi_key_retry_safety": true,
+    "live_strict_smoke_requires_external_env": true
+  },
   "notes": "Dry-run validates dev seed, compose env, fixture, and script structure only. Live mode requires the local compose stack and postgres to be available."
 }

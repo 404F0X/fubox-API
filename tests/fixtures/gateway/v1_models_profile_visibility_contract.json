@@ -1,0 +1,103 @@
+{
+  "scenario": "gateway_v1_models_profile_visibility_contract",
+  "scope": "/v1/models visible model list is filtered by the authenticated virtual key profile",
+  "endpoint": {
+    "method": "GET",
+    "path": "/v1/models",
+    "auth": "virtual_key_bearer",
+    "profile_header": "x-ai-profile"
+  },
+  "implementation_evidence": {
+    "route_source": "apps/gateway/src/main.rs:621",
+    "handler_source": "apps/gateway/src/main.rs:4625",
+    "response_source": "apps/gateway/src/main.rs:4798",
+    "repository_source": "apps/gateway/src/db.rs:799",
+    "smoke_verifier": "scripts/verify_gateway_profile_smoke.ps1",
+    "smoke_fixture": "tests/fixtures/gateway/profile_switching.json"
+  },
+  "filter_contract": {
+    "auth_resolution": [
+      "Bearer virtual key is authenticated before listing models.",
+      "When x-ai-profile is omitted, the virtual key default profile is used.",
+      "When x-ai-profile is present, it must resolve to an active profile bound to the same virtual key.",
+      "An unbound profile is rejected with error.code=api_key_profile_forbidden."
+    ],
+    "model_sql_predicates": [
+      "canonical_models.tenant_id = auth.tenant_id",
+      "canonical_models.status = active",
+      "canonical_models.deleted_at is null",
+      "canonical_models.visibility in public, internal",
+      "auth.api_key_profile_id requires a matching active api_key_profiles row for the auth project",
+      "empty allowed_models means no profile allowlist restriction",
+      "non-empty allowed_models must contain canonical_models.model_key",
+      "denied_models containing canonical_models.model_key excludes the model",
+      "allowed_channel_tags must match at least one enabled OpenAI-compatible route channel when configured",
+      "blocked_provider_ids excludes models whose only candidate routes use blocked providers",
+      "a model is listed only when at least one enabled model_association, non-deleted OpenAI-compatible channel, enabled provider, and currently usable provider_key exists",
+      "model_aliases keys are request aliases only and are not returned as data[].id",
+      "canonical model keys shadowed by model_aliases to a different canonical key are excluded from data[].id"
+    ],
+    "response_markers": {
+      "object": "list",
+      "data_items_use_canonical_model_key_as_id": true,
+      "gateway.model_source": "database",
+      "gateway.authorization": "virtual_key",
+      "gateway.profile_filtering_when_profile_bound": "api_key_profile",
+      "gateway.profile_id_is_bounded_uuid": true
+    }
+  },
+  "acceptance_cases": [
+    {
+      "name": "default_profile_models",
+      "request": "GET /v1/models without x-ai-profile",
+      "expected": "HTTP 200; response.gateway.profile_filtering=api_key_profile; data[].id contains the default profile model set"
+    },
+    {
+      "name": "switched_profile_models",
+      "request": "GET /v1/models with x-ai-profile bound to the same virtual key",
+      "expected": "HTTP 200; response.gateway.profile_id differs from default profile_id; data[].id differs from the default profile model set"
+    },
+    {
+      "name": "denied_model_hidden",
+      "request": "GET /v1/models for a profile whose denied_models contains a canonical model key",
+      "expected": "HTTP 200; denied model key is absent from data[].id"
+    },
+    {
+      "name": "unroutable_or_provider_blocked_model_hidden",
+      "request": "GET /v1/models for a profile whose otherwise allowed model has no profile-allowed enabled OpenAI-compatible route with a usable provider key",
+      "expected": "HTTP 200; the model key is absent from data[].id"
+    },
+    {
+      "name": "unbound_profile_rejected",
+      "request": "GET /v1/models with x-ai-profile not bound to the virtual key",
+      "expected": "HTTP 403 with error.code=api_key_profile_forbidden"
+    }
+  ],
+  "control_plane_link": {
+    "admin_profile_routes": [
+      "GET /admin/api-key-profiles",
+      "POST /admin/api-key-profiles",
+      "PATCH /admin/api-key-profiles/{id}"
+    ],
+    "admin_model_routes": [
+      "GET /admin/models",
+      "POST /admin/models",
+      "PATCH /admin/models/{id}",
+      "POST /admin/model-associations/dry-run"
+    ],
+    "contract_fixture": "tests/fixtures/control-plane/model_profile_visibility_contract.json"
+  },
+  "secret_safety": {
+    "full_virtual_key_returned": false,
+    "authorization_header_returned": false,
+    "provider_key_returned": false,
+    "raw_request_body_required": false,
+    "db_url_returned": false
+  },
+  "verification": {
+    "offline_contract_command": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_gateway_profile_smoke.ps1 -DryRun -SkipNetwork",
+    "live_smoke_command": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_gateway_profile_smoke.ps1",
+    "live_smoke_requires_preseeded_multi_profile_virtual_key": true
+  },
+  "notes": "This fixture records source-backed contract evidence. The dry-run verifier validates fixture intent only; live profile switching still requires a seeded virtual key with at least two active profile bindings."
+}

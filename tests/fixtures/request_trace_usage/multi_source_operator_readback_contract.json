@@ -1,0 +1,315 @@
+{
+  "schema": "request_trace_usage_operator_multisource_readback_contract_v1",
+  "scenario": "synthetic_operator_readback_mapping_after_api_distribution",
+  "synthetic": true,
+  "non_live": true,
+  "not_real_user": true,
+  "purpose": "Map E8, E11, and E13 request ids to the Admin/API fields an operator needs for post-distribution troubleshooting without claiming live readback.",
+  "live_readback_status": {
+    "overall": "open",
+    "current_smoke_request_ids_present": false,
+    "missing_current_smoke_ids_classification": "runtime_input_required",
+    "global_api_distribution_blocker": false,
+    "resume_when": [
+      "current E8 gateway rate-limit request id is captured",
+      "current E11 billing or ledger mutation request id is captured",
+      "current E13 prompt-protection request ids are captured or refreshed",
+      "control-plane Admin session handoff is available for request-log, trace, audit, ledger, and balance readback"
+    ],
+    "do_not_close_todo_14_without": [
+      "live Admin/API readback for at least one current request id from each available lane",
+      "provider-attempt summary proving routed, fallback, rejected, or refused outcome",
+      "metadata-only ledger and balance readback",
+      "redaction proof showing no raw prompt, raw body, credential, provider secret, voucher code, or full virtual key"
+    ]
+  },
+  "operator_surfaces": [
+    "request_log_detail",
+    "trace_request_summary",
+    "audit_logs",
+    "ledger_entries",
+    "remaining_balance"
+  ],
+  "operator_need_coverage": [
+    "route_decision",
+    "fallback_or_reject",
+    "usage_cost",
+    "ledger_billing_refusal",
+    "guardrail_audit",
+    "provider_attempt_summary",
+    "redaction"
+  ],
+  "source_lanes": [
+    {
+      "lane": "E8",
+      "source": "gateway rate-limit reservation/readback",
+      "request_id_kind": "runtime_smoke_request_id_required",
+      "current_request_id": null,
+      "expected_outcomes": [
+        "routed_when_within_limit",
+        "rejected_before_provider_when_limit_exceeded"
+      ],
+      "operator_question": "Was the request routed, rate-limited before provider, or otherwise rejected by gateway policy?"
+    },
+    {
+      "lane": "E11",
+      "source": "billing price mutation plus ledger/readback",
+      "request_id_kind": "runtime_smoke_request_id_required",
+      "current_request_id": null,
+      "expected_outcomes": [
+        "usage_cost_settled",
+        "ledger_refusal_or_no_debit_explained_when_billing_denies_charge"
+      ],
+      "operator_question": "Did the request produce usage and cost, and did the ledger accept, refuse, or omit billing mutation?"
+    },
+    {
+      "lane": "E13",
+      "source": "prompt protection request rejection bridge",
+      "request_id_kind": "current_bridge_or_runtime_smoke_request_id_required",
+      "current_request_id": null,
+      "expected_outcomes": [
+        "prompt_protection_rejected_before_provider",
+        "provider_attempts_zero"
+      ],
+      "operator_question": "Was the request rejected by guardrail before any provider attempt?"
+    }
+  ],
+  "expected_admin_api_field_map": [
+    {
+      "lane": "E8",
+      "request_id": "<runtime-e8-request-id>",
+      "request_log_detail": {
+        "required_fields": [
+          "id",
+          "trace_id",
+          "status",
+          "http_status",
+          "error_owner",
+          "error_code",
+          "retryable",
+          "requested_model",
+          "canonical_model_id",
+          "route_policy_version",
+          "resolved_provider_id",
+          "resolved_channel_id",
+          "payload_stored",
+          "redaction_status",
+          "request_body_hash",
+          "created_at",
+          "completed_at"
+        ],
+        "route_decision": "route_policy_version plus resolved provider/channel when routed",
+        "fallback_or_reject": "http_status/error_owner/error_code identify rate-limit rejection before provider or routed outcome",
+        "usage_cost": "input_tokens/output_tokens/final_cost/currency metadata only"
+      },
+      "trace_request_summary": {
+        "required_fields": [
+          "trace_id",
+          "request_count",
+          "error_count",
+          "last_error",
+          "requests[].id",
+          "requests[].status",
+          "requests[].http_status",
+          "requests[].route_policy_version",
+          "requests[].resolved_provider_id",
+          "requests[].resolved_channel_id"
+        ]
+      },
+      "provider_attempt_summary": {
+        "required_fields": [
+          "attempt_count",
+          "attempted_provider_ids",
+          "terminal_status",
+          "fallback_count"
+        ],
+        "limit_exceeded_expectation": "attempt_count=0 when E8 rejects before provider"
+      },
+      "ledger_billing_refusal": {
+        "required_fields": [
+          "ledger.returned_count",
+          "ledger.entries[].request_id",
+          "ledger.entries[].entry_type",
+          "ledger.entries[].amount",
+          "ledger.entries[].currency",
+          "ledger.entries[].status"
+        ],
+        "rate_limit_rejection_expectation": "no debit or explicit metadata-only refusal/exemption"
+      },
+      "guardrail_audit": {
+        "required_fields": [
+          "audit.request_id",
+          "audit.resource_type",
+          "audit.action",
+          "audit.created_at"
+        ],
+        "expected_owner": "gateway_policy"
+      },
+      "redaction": "hash_only payload metadata; no raw payload or secret values"
+    },
+    {
+      "lane": "E11",
+      "request_id": "<runtime-e11-request-id>",
+      "request_log_detail": {
+        "required_fields": [
+          "id",
+          "trace_id",
+          "status",
+          "http_status",
+          "input_tokens",
+          "output_tokens",
+          "final_cost",
+          "currency",
+          "route_policy_version",
+          "resolved_provider_id",
+          "resolved_channel_id",
+          "payload_stored",
+          "redaction_status",
+          "request_body_hash",
+          "response_body_hash"
+        ],
+        "route_decision": "route_policy_version plus resolved provider/channel for costed request",
+        "fallback_or_reject": "status/http_status/error fields distinguish successful, failed, or refused billing path",
+        "usage_cost": "input_tokens/output_tokens/final_cost/currency are operator-facing metadata"
+      },
+      "trace_request_summary": {
+        "required_fields": [
+          "trace_id",
+          "total_input_tokens",
+          "total_output_tokens",
+          "currencies",
+          "ledger",
+          "requests[].final_cost",
+          "requests[].currency"
+        ]
+      },
+      "provider_attempt_summary": {
+        "required_fields": [
+          "attempt_count",
+          "attempts[].provider_id",
+          "attempts[].channel_id",
+          "attempts[].status",
+          "terminal_status"
+        ],
+        "metadata_only": true
+      },
+      "ledger_billing_refusal": {
+        "required_fields": [
+          "ledger.entries[].request_id",
+          "ledger.entries[].entry_type",
+          "ledger.entries[].amount",
+          "ledger.entries[].currency",
+          "ledger.entries[].status",
+          "remaining_balance"
+        ],
+        "billing_refusal_expectation": "refused, omitted, or zero-debit state must be explainable without raw ledger metadata"
+      },
+      "guardrail_audit": {
+        "required_fields": [
+          "audit.request_id",
+          "audit.action",
+          "audit.resource_type",
+          "audit.actor",
+          "audit.created_at"
+        ],
+        "expected_owner": "control_plane_or_billing"
+      },
+      "redaction": "metadata-only ledger entries; no idempotency key, raw metadata, prompt, response, or secret material"
+    },
+    {
+      "lane": "E13",
+      "request_id": "<runtime-e13-request-id>",
+      "request_log_detail": {
+        "required_fields": [
+          "id",
+          "trace_id",
+          "status",
+          "http_status",
+          "error_owner",
+          "error_code",
+          "payload_stored",
+          "redaction_status",
+          "request_body_hash",
+          "created_at"
+        ],
+        "route_decision": "route fields may be absent when rejected at request_preflight",
+        "fallback_or_reject": "prompt_protection_rejected at request_preflight",
+        "usage_cost": "no provider usage; no provider cost claim"
+      },
+      "trace_request_summary": {
+        "required_fields": [
+          "trace_id",
+          "request_count",
+          "error_count",
+          "last_error",
+          "requests[].id",
+          "requests[].status",
+          "requests[].http_status",
+          "requests[].error_code"
+        ]
+      },
+      "provider_attempt_summary": {
+        "required_fields": [
+          "attempt_count",
+          "terminal_status"
+        ],
+        "prompt_rejection_expectation": "attempt_count=0"
+      },
+      "ledger_billing_refusal": {
+        "required_fields": [
+          "ledger.returned_count",
+          "ledger.entries[].request_id",
+          "remaining_balance"
+        ],
+        "prompt_rejection_expectation": "no debit; balance unchanged by guardrail rejection"
+      },
+      "guardrail_audit": {
+        "required_fields": [
+          "audit.request_id",
+          "audit.resource_type",
+          "audit.action",
+          "audit.created_at",
+          "audit.runtime_owned"
+        ],
+        "expected_owner": "prompt_protection"
+      },
+      "redaction": "hash_only request log and metadata-only guardrail/audit readback"
+    }
+  ],
+  "redaction_contract": {
+    "payload_stored": false,
+    "redaction_status": "hash_only",
+    "allowed_material": [
+      "opaque ids",
+      "tenant-scoped metadata",
+      "route policy version",
+      "provider/channel ids",
+      "usage token counts",
+      "decimal cost",
+      "ledger amount/status",
+      "audit timestamps",
+      "request and response body hashes"
+    ],
+    "forbidden_fields": [
+      "raw_prompt",
+      "raw_request_body",
+      "raw_response_body",
+      "credential_values",
+      "provider_secret_values",
+      "full_virtual_key",
+      "authorization_header",
+      "cookie_header",
+      "voucher_code",
+      "raw_idempotency_key",
+      "db_url"
+    ]
+  },
+  "resume_contract": {
+    "live_readback_must_write_artifact_under": ".tmp/launch/request_trace_usage_*",
+    "expected_live_artifact_statuses": [
+      "pass",
+      "blocked_runtime_input_required"
+    ],
+    "blocked_runtime_input_required_means": "No current E8/E11/E13 smoke request ids were provided or discoverable; this is not a global API distribution blocker."
+  }
+}

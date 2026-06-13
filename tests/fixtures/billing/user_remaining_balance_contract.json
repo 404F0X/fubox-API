@@ -1,0 +1,356 @@
+{
+  "schema": "user_remaining_balance_contract.v1",
+  "status": "contract_enforced_not_runtime_wired",
+  "runtime_implemented": false,
+  "contract_only": true,
+  "control_plane_endpoint_present": false,
+  "paid_gate_changed": false,
+  "read_only": true,
+  "secret_safe": true,
+  "money_contract": {
+    "format": "decimal_string_with_currency",
+    "scale": 8,
+    "float_allowed": false
+  },
+  "ownership_scope_contract": {
+    "tenant_scope_required": true,
+    "project_scope_required": true,
+    "user_scope_or_developer_token_required": true,
+    "wallet_scope_check_required": true,
+    "currency_check_required": true
+  },
+  "read_model_formula": {
+    "formula": "active_credit_grant_total + pending_confirmed_ledger_window - wallet_balance_floor",
+    "wallet_balance_floor_sign": "subtract",
+    "active_grants_only": true,
+    "expired_grants_counted": false,
+    "revoked_grants_counted": false,
+    "pending_ledger_window_included": true,
+    "confirmed_ledger_window_included": true,
+    "budget_remaining_included": true
+  },
+  "bounded_output_contract": {
+    "max_credit_grant_ids": 5,
+    "max_ledger_entry_ids": 10,
+    "raw_metadata_output_allowed": false,
+    "raw_request_payload_output_allowed": false,
+    "forbidden_output_terms": [
+      "authorization",
+      "bearer",
+      "provider_key",
+      "virtual_key",
+      "database_url",
+      "postgres://",
+      "password",
+      "raw_secret",
+      "raw_metadata",
+      "raw_request_payload"
+    ]
+  },
+  "allowed_consistency_markers": [
+    "strong",
+    "stale",
+    "estimated"
+  ],
+  "required_cases": [
+    "strong_summary_applies_formula",
+    "expired_and_revoked_grants_excluded",
+    "currency_mismatch_refusal",
+    "missing_wallet_refusal",
+    "ownership_mismatch_refusal",
+    "stale_summary_marks_staleness",
+    "estimated_summary_marks_estimate",
+    "bounded_ids_and_secret_safe_output",
+    "read_only_no_mutations"
+  ],
+  "cases": [
+    {
+      "name": "strong_summary_applies_formula",
+      "decision": "summary_returned",
+      "read_only": true,
+      "ownership_scope": {
+        "tenant_id": "00000000-0000-0000-0000-000000340101",
+        "project_id": "00000000-0000-0000-0000-000000340102",
+        "user_id": "00000000-0000-0000-0000-000000340103",
+        "developer_token_scope": "project_wallet_read",
+        "wallet_id": "00000000-0000-0000-0000-000000340201",
+        "wallet_scope_checked": true,
+        "ownership_checked": true
+      },
+      "request": {
+        "wallet_id": "00000000-0000-0000-0000-000000340201",
+        "tenant_id": "00000000-0000-0000-0000-000000340101",
+        "project_id": "00000000-0000-0000-0000-000000340102",
+        "currency": "USD"
+      },
+      "inputs": {
+        "currency": "USD",
+        "wallet_balance_floor": "2.00000000",
+        "active_credit_grant_total": "30.00000000",
+        "expired_credit_grant_total": "10.00000000",
+        "revoked_credit_grant_total": "5.00000000",
+        "pending_ledger_effect": "-4.00000000",
+        "confirmed_ledger_effect": "-6.00000000",
+        "pending_confirmed_ledger_window": "-10.00000000",
+        "budget_remaining": "100.00000000"
+      },
+      "response": {
+        "wallet_id": "00000000-0000-0000-0000-000000340201",
+        "tenant_id": "00000000-0000-0000-0000-000000340101",
+        "project_id": "00000000-0000-0000-0000-000000340102",
+        "currency": "USD",
+        "active_credit_grant_total": "30.00000000",
+        "pending_ledger_effect": "-4.00000000",
+        "confirmed_ledger_effect": "-6.00000000",
+        "wallet_balance_floor": "2.00000000",
+        "budget_remaining": "100.00000000",
+        "available_to_spend": "18.00000000",
+        "calculation": "30.00000000 + -10.00000000 - 2.00000000 = 18.00000000",
+        "consistency": "strong",
+        "staleness": "strong",
+        "readback": "strong",
+        "read_only": true,
+        "secret_safe": true,
+        "bounded_credit_grant_ids": [
+          "00000000-0000-0000-0000-000000340301",
+          "00000000-0000-0000-0000-000000340302"
+        ],
+        "bounded_ledger_entry_ids": [
+          "00000000-0000-0000-0000-000000340401",
+          "00000000-0000-0000-0000-000000340402",
+          "00000000-0000-0000-0000-000000340403"
+        ]
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "expired_and_revoked_grants_excluded",
+      "decision": "summary_returned",
+      "read_only": true,
+      "inputs": {
+        "currency": "USD",
+        "active_credit_grant_total": "12.50000000",
+        "expired_credit_grant_total": "20.00000000",
+        "revoked_credit_grant_total": "7.50000000",
+        "pending_confirmed_ledger_window": "-1.00000000",
+        "wallet_balance_floor": "0.50000000"
+      },
+      "response": {
+        "currency": "USD",
+        "active_credit_grant_total": "12.50000000",
+        "excluded_expired_credit_grant_total": "20.00000000",
+        "excluded_revoked_credit_grant_total": "7.50000000",
+        "available_to_spend": "11.00000000",
+        "budget_remaining": "50.00000000",
+        "consistency": "strong",
+        "read_only": true,
+        "secret_safe": true,
+        "bounded_credit_grant_ids": [
+          "00000000-0000-0000-0000-000000340303"
+        ],
+        "bounded_ledger_entry_ids": [
+          "00000000-0000-0000-0000-000000340404"
+        ]
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "currency_mismatch_refusal",
+      "decision": "refused",
+      "refusal_code": "currency_mismatch",
+      "read_only": true,
+      "request": {
+        "wallet_currency": "USD",
+        "requested_currency": "EUR"
+      },
+      "response": {
+        "status": "refused",
+        "refusal_code": "currency_mismatch",
+        "read_only": true,
+        "secret_safe": true
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "missing_wallet_refusal",
+      "decision": "refused",
+      "refusal_code": "wallet_not_found",
+      "read_only": true,
+      "response": {
+        "status": "refused",
+        "refusal_code": "wallet_not_found",
+        "read_only": true,
+        "secret_safe": true
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "ownership_mismatch_refusal",
+      "decision": "refused",
+      "refusal_code": "ownership_scope_mismatch",
+      "read_only": true,
+      "ownership_scope": {
+        "tenant_scope_checked": true,
+        "project_scope_checked": true,
+        "user_scope_or_developer_token_checked": true,
+        "wallet_scope_checked": true,
+        "ownership_checked": false
+      },
+      "response": {
+        "status": "refused",
+        "refusal_code": "ownership_scope_mismatch",
+        "read_only": true,
+        "secret_safe": true
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "stale_summary_marks_staleness",
+      "decision": "summary_returned",
+      "read_only": true,
+      "response": {
+        "currency": "USD",
+        "available_to_spend": "17.00000000",
+        "active_credit_grant_total": "20.00000000",
+        "pending_confirmed_ledger_window": "-1.00000000",
+        "wallet_balance_floor": "2.00000000",
+        "budget_remaining": "80.00000000",
+        "consistency": "stale",
+        "staleness": "stale",
+        "stale_as_of_utc": "2026-06-06T00:00:00Z",
+        "read_only": true,
+        "secret_safe": true,
+        "bounded_credit_grant_ids": [
+          "00000000-0000-0000-0000-000000340304"
+        ],
+        "bounded_ledger_entry_ids": []
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "estimated_summary_marks_estimate",
+      "decision": "summary_returned",
+      "read_only": true,
+      "response": {
+        "currency": "USD",
+        "available_to_spend": "15.00000000",
+        "active_credit_grant_total": "20.00000000",
+        "pending_confirmed_ledger_window": "-3.00000000",
+        "wallet_balance_floor": "2.00000000",
+        "budget_remaining": "80.00000000",
+        "consistency": "estimated",
+        "staleness": "estimated",
+        "estimate_reason": "read_model_lag",
+        "read_only": true,
+        "secret_safe": true,
+        "bounded_credit_grant_ids": [
+          "00000000-0000-0000-0000-000000340305"
+        ],
+        "bounded_ledger_entry_ids": [
+          "00000000-0000-0000-0000-000000340405"
+        ]
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "bounded_ids_and_secret_safe_output",
+      "decision": "summary_returned",
+      "read_only": true,
+      "response": {
+        "currency": "USD",
+        "available_to_spend": "1.00000000",
+        "active_credit_grant_total": "1.00000000",
+        "pending_confirmed_ledger_window": "0.00000000",
+        "wallet_balance_floor": "0.00000000",
+        "budget_remaining": "1.00000000",
+        "consistency": "strong",
+        "read_only": true,
+        "secret_safe": true,
+        "bounded_credit_grant_ids": [
+          "00000000-0000-0000-0000-000000340306",
+          "00000000-0000-0000-0000-000000340307",
+          "00000000-0000-0000-0000-000000340308",
+          "00000000-0000-0000-0000-000000340309",
+          "00000000-0000-0000-0000-000000340310"
+        ],
+        "bounded_ledger_entry_ids": [
+          "00000000-0000-0000-0000-000000340406",
+          "00000000-0000-0000-0000-000000340407",
+          "00000000-0000-0000-0000-000000340408",
+          "00000000-0000-0000-0000-000000340409",
+          "00000000-0000-0000-0000-000000340410",
+          "00000000-0000-0000-0000-000000340411",
+          "00000000-0000-0000-0000-000000340412",
+          "00000000-0000-0000-0000-000000340413",
+          "00000000-0000-0000-0000-000000340414",
+          "00000000-0000-0000-0000-000000340415"
+        ]
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    },
+    {
+      "name": "read_only_no_mutations",
+      "decision": "summary_returned",
+      "read_only": true,
+      "response": {
+        "currency": "USD",
+        "available_to_spend": "0.00000000",
+        "active_credit_grant_total": "0.00000000",
+        "pending_confirmed_ledger_window": "0.00000000",
+        "wallet_balance_floor": "0.00000000",
+        "budget_remaining": "0.00000000",
+        "consistency": "strong",
+        "read_only": true,
+        "secret_safe": true,
+        "bounded_credit_grant_ids": [],
+        "bounded_ledger_entry_ids": []
+      },
+      "mutations": {
+        "ledger_entries_written": false,
+        "credit_grants_written": false,
+        "audit_logs_written": false,
+        "wallet_snapshot_mutated": false
+      }
+    }
+  ]
+}

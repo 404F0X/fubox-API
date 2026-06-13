@@ -12,9 +12,10 @@ use crate::{
         NewCanonicalModel, NewChannel, NewModelAssociation, NewProvider, NewProviderAttempt,
         NewProviderKey, NewRequestLogStarted, NewVirtualKey, PriceVersion, PriceVersionListFilter,
         Provider, ProviderAttempt, ProviderAttemptRead, ProviderKey, RecoveryProbeCandidate,
-        RequestLog, RequestLogFinalUpdate, RequestLogListFilter, RequestLogSummary,
-        RequestTraceFilter, RouteCandidate, RouteCandidates, UpdateApiKeyProfile,
-        UpdateCanonicalModel, UpdateChannel, UpdateModelAssociation, UpdateProvider, VirtualKey,
+        RecoveryProbeProviderKeyUpdate, RecoveryProbeSecretMaterial, RequestLog,
+        RequestLogFinalUpdate, RequestLogListFilter, RequestLogSummary, RequestTraceFilter,
+        RouteCandidate, RouteCandidates, UpdateApiKeyProfile, UpdateCanonicalModel, UpdateChannel,
+        UpdateModelAssociation, UpdateProvider, VirtualKey,
     },
     pool::{DbError, PgPool},
     rate_limit_reservation::{
@@ -363,7 +364,7 @@ impl DbRepository {
         virtual_key_id: Uuid,
         status: &str,
         audit_builder: F,
-    ) -> Result<Option<VirtualKey>, DbError>
+    ) -> Result<Option<(VirtualKey, Uuid)>, DbError>
     where
         F: FnOnce(&VirtualKey, &VirtualKey) -> NewAuditLog,
     {
@@ -409,10 +410,11 @@ impl DbRepository {
         .map_err(DbError::Query)?;
 
         let after = virtual_key_from_row(after_row).map_err(DbError::Query)?;
-        Self::insert_audit_log_in_tx(&mut tx, audit_builder(&before, &after)).await?;
+        let audit_log =
+            Self::insert_audit_log_in_tx(&mut tx, audit_builder(&before, &after)).await?;
         tx.commit().await.map_err(DbError::Query)?;
 
-        Ok(Some(after))
+        Ok(Some((after, audit_log.id)))
     }
 
     pub async fn api_key_profile_has_active_virtual_keys(
@@ -1887,6 +1889,114 @@ impl DbRepository {
         Ok(provider_key)
     }
 
+    pub async fn rotate_provider_key_with_audit<F>(
+        &self,
+        tenant_id: Uuid,
+        old_provider_key_id: Uuid,
+        new_provider_key: NewProviderKey,
+        build_audit: F,
+    ) -> Result<Option<(ProviderKey, ProviderKey)>, DbError>
+    where
+        F: FnOnce(&ProviderKey, &ProviderKey, &ProviderKey) -> NewAuditLog,
+    {
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+        let before_row = sqlx::query(
+            r#"
+            select
+              id, tenant_id, channel_id, key_alias,
+              secret_fingerprint is not null as has_secret_fingerprint,
+              status,
+              health_score::double precision as health_score,
+              cooldown_until::text as cooldown_until, last_error_code, rpm_limit,
+              tpm_limit, concurrency_limit, current_window_state, metadata,
+              true as secret_redacted
+            from provider_keys
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            for update
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(old_provider_key_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let Some(before_row) = before_row else {
+            return Ok(None);
+        };
+        let before = provider_key_from_row(before_row).map_err(DbError::Query)?;
+
+        let old_after_row = sqlx::query(
+            r#"
+            update provider_keys
+            set status = 'manual_disabled',
+                metadata = jsonb_set(
+                  coalesce(metadata, '{}'::jsonb),
+                  '{rotation}',
+                  jsonb_build_object(
+                    'status', 'rotated',
+                    'new_id', $3::text,
+                    'disabled_by_rotate_endpoint', true
+                  ),
+                  true
+                ),
+                updated_at = now()
+            where tenant_id = $1 and id = $2 and deleted_at is null
+            returning
+              id, tenant_id, channel_id, key_alias,
+              secret_fingerprint is not null as has_secret_fingerprint,
+              status,
+              health_score::double precision as health_score,
+              cooldown_until::text as cooldown_until, last_error_code, rpm_limit,
+              tpm_limit, concurrency_limit, current_window_state, metadata,
+              true as secret_redacted
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(old_provider_key_id)
+        .bind(new_provider_key.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+        let old_after = provider_key_from_row(old_after_row).map_err(DbError::Query)?;
+
+        let new_row = sqlx::query(
+            r#"
+            insert into provider_keys (
+              id, tenant_id, channel_id, key_alias, encrypted_secret,
+              secret_fingerprint, status, metadata
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+            returning
+              id, tenant_id, channel_id, key_alias,
+              secret_fingerprint is not null as has_secret_fingerprint,
+              status,
+              health_score::double precision as health_score,
+              cooldown_until::text as cooldown_until, last_error_code, rpm_limit,
+              tpm_limit, concurrency_limit, current_window_state, metadata,
+              true as secret_redacted
+            "#,
+        )
+        .bind(new_provider_key.id)
+        .bind(new_provider_key.tenant_id)
+        .bind(new_provider_key.channel_id)
+        .bind(new_provider_key.key_alias)
+        .bind(new_provider_key.encrypted_secret)
+        .bind(new_provider_key.secret_fingerprint)
+        .bind(new_provider_key.status)
+        .bind(new_provider_key.metadata)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)?;
+
+        let new_after = provider_key_from_row(new_row).map_err(DbError::Query)?;
+        let audit = build_audit(&before, &old_after, &new_after);
+        Self::insert_audit_log_in_tx(&mut tx, audit).await?;
+        tx.commit().await.map_err(DbError::Query)?;
+
+        Ok(Some((old_after, new_after)))
+    }
+
     pub async fn list_provider_keys(&self, tenant_id: Uuid) -> Result<Vec<ProviderKey>, DbError> {
         let rows = sqlx::query(
             r#"
@@ -2019,6 +2129,104 @@ impl DbRepository {
         .map_err(DbError::Query)?;
 
         map_rows(rows, recovery_probe_candidate_from_row)
+    }
+
+    pub async fn get_recovery_probe_secret_material(
+        &self,
+        tenant_id: Uuid,
+        provider_id: Uuid,
+        channel_id: Uuid,
+        provider_key_id: Uuid,
+    ) -> Result<Option<RecoveryProbeSecretMaterial>, DbError> {
+        let row = sqlx::query(
+            r#"
+            select
+              pk.tenant_id,
+              pr.id as provider_id,
+              ch.id as channel_id,
+              pk.id as provider_key_id,
+              ch.endpoint as channel_endpoint,
+              ch.protocol_mode as channel_protocol_mode,
+              pk.encrypted_secret
+            from provider_keys pk
+            join channels ch
+              on ch.tenant_id = pk.tenant_id
+             and ch.id = pk.channel_id
+             and ch.deleted_at is null
+             and ch.status in ('enabled', 'degraded', 'cooldown', 'recovery_probe')
+            join providers pr
+              on pr.tenant_id = ch.tenant_id
+             and pr.id = ch.provider_id
+             and pr.status = 'enabled'
+             and pr.deleted_at is null
+            where pk.tenant_id = $1
+              and pr.id = $2
+              and ch.id = $3
+              and pk.id = $4
+              and pk.deleted_at is null
+              and pk.status in ('cooldown', 'recovery_probe')
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(provider_id)
+        .bind(channel_id)
+        .bind(provider_key_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DbError::Query)?;
+
+        row.map(recovery_probe_secret_material_from_row)
+            .transpose()
+            .map_err(DbError::Query)
+    }
+
+    pub async fn update_provider_key_recovery_probe_result(
+        &self,
+        update: RecoveryProbeProviderKeyUpdate,
+    ) -> Result<Option<ProviderKey>, DbError> {
+        let row = sqlx::query(
+            r#"
+            update provider_keys
+            set status = $3,
+                health_score = ($4::double precision)::numeric,
+                last_error_code = $5,
+                metadata = jsonb_set(
+                  coalesce(metadata, '{}'::jsonb),
+                  '{recovery_probe}',
+                  $6::jsonb || jsonb_build_object(
+                    'checked_at',
+                    to_char(timezone('UTC', now()), 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                  ),
+                  true
+                ),
+                updated_at = now()
+            where tenant_id = $1
+              and id = $2
+              and deleted_at is null
+              and status not in ('manual_disabled', 'deleted')
+            returning
+              id, tenant_id, channel_id, key_alias,
+              secret_fingerprint is not null as has_secret_fingerprint,
+              status,
+              health_score::double precision as health_score,
+              cooldown_until::text as cooldown_until, last_error_code, rpm_limit,
+              tpm_limit, concurrency_limit, current_window_state, metadata,
+              true as secret_redacted
+            "#,
+        )
+        .bind(update.tenant_id)
+        .bind(update.provider_key_id)
+        .bind(update.status)
+        .bind(update.health_score.clamp(0.0, 1.0))
+        .bind(update.last_error_code)
+        .bind(update.recovery_probe_summary)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DbError::Query)?;
+
+        row.map(provider_key_from_row)
+            .transpose()
+            .map_err(DbError::Query)
     }
 
     pub async fn update_provider_key_admin(
@@ -3339,15 +3547,34 @@ impl DbRepository {
               stream_end_reason, input_tokens, output_tokens, final_cost::text as final_cost,
               currency, latency_ms, ttft_ms, payload_policy_id, payload_stored,
               redaction_status, request_body_hash, response_body_hash,
-              created_at::text as created_at, completed_at::text as completed_at
+              created_at::text as created_at, completed_at::text as completed_at,
+              route_decision_snapshot
             from request_logs
             where tenant_id = $1
               and ($2::text is null or status = $2)
               and ($3::text is null or requested_model = $3 or upstream_model = $3)
               and ($4::uuid is null or canonical_model_id = $4)
               and ($5::uuid is null or resolved_channel_id = $5)
+              and ($6::uuid is null or virtual_key_id = $6)
+              and ($7::uuid is null or api_key_profile_id = $7)
+              and ($8::timestamptz is null or created_at >= $8)
+              and ($9::timestamptz is null or created_at <= $9)
+              and (
+                $10::boolean is null
+                or ($10 = true and (partial_sent = true or stream_end_reason is not null))
+                or ($10 = false and partial_sent = false and stream_end_reason is null)
+              )
+              and (
+                $11::text is null
+                or error_code = $11
+                or error_owner = $11
+                or status = $11
+                or ($11 = 'rate_limit' and (error_code ilike '%rate%limit%' or error_code ilike '%too_many_requests%' or http_status = 429))
+                or ($11 = 'insufficient_balance' and (error_code ilike '%insufficient%balance%' or error_code ilike '%wallet%' or error_code ilike '%credit%'))
+                or ($11 = 'reject' and (status = 'rejected' or error_code ilike '%reject%' or error_code ilike '%denied%' or error_code ilike '%forbidden%'))
+              )
             order by created_at desc
-            limit $6
+            limit $12
             "#,
         )
         .bind(tenant_id)
@@ -3355,6 +3582,12 @@ impl DbRepository {
         .bind(filter.model)
         .bind(filter.canonical_model_id)
         .bind(filter.channel_id)
+        .bind(filter.virtual_key_id)
+        .bind(filter.api_key_profile_id)
+        .bind(filter.created_from)
+        .bind(filter.created_to)
+        .bind(filter.stream)
+        .bind(filter.error_type)
         .bind(filter.limit)
         .fetch_all(&self.pool)
         .await
@@ -3379,7 +3612,8 @@ impl DbRepository {
               stream_end_reason, input_tokens, output_tokens, final_cost::text as final_cost,
               currency, latency_ms, ttft_ms, payload_policy_id, payload_stored,
               redaction_status, request_body_hash, response_body_hash,
-              created_at::text as created_at, completed_at::text as completed_at
+              created_at::text as created_at, completed_at::text as completed_at,
+              route_decision_snapshot
             from request_logs
             where tenant_id = $1
               and trace_id = $2
@@ -3619,6 +3853,7 @@ impl DbRepository {
         let rows = sqlx::query(BILLING_RECONCILIATION_INPUT_SELECT)
             .bind(tenant_id)
             .bind(filter.day)
+            .bind(filter.request_id)
             .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)?;
@@ -3831,6 +4066,7 @@ request_usage as (
   from request_logs r
   join periods p on p.tenant_id = r.tenant_id
   where r.tenant_id = $1
+    and ($3::uuid is null or r.id = $3)
     and r.status in ('succeeded', 'partial')
     and coalesce(r.completed_at, r.created_at) >= p.period_start
     and coalesce(r.completed_at, r.created_at) < p.period_end
@@ -3840,9 +4076,9 @@ ledger_rollup as (
     le.tenant_id,
     le.request_id,
     case when le.request_id is null then le.id else null end as null_request_ledger_id,
-    min(le.project_id) as project_id,
-    min(le.virtual_key_id) as virtual_key_id,
-    min(le.trace_id) as trace_id,
+    (array_agg(le.project_id order by le.created_at, le.id) filter (where le.project_id is not null))[1] as project_id,
+    (array_agg(le.virtual_key_id order by le.created_at, le.id) filter (where le.virtual_key_id is not null))[1] as virtual_key_id,
+    (array_agg(le.trace_id order by le.created_at, le.id) filter (where le.trace_id is not null))[1] as trace_id,
     array_agg(le.id order by le.created_at, le.id) as ledger_entry_ids,
     count(*)::bigint as ledger_entry_count,
     sum(le.amount)::text as ledger_amount,
@@ -3855,6 +4091,7 @@ ledger_rollup as (
   from ledger_entries le
   join periods p on p.tenant_id = le.tenant_id
   where le.tenant_id = $1
+    and ($3::uuid is null or le.request_id = $3)
     and le.entry_type in ('settle', 'refund')
     and le.status in ('pending', 'confirmed')
     and le.occurred_at >= p.period_start
@@ -4086,6 +4323,20 @@ fn recovery_probe_candidate_from_row(row: PgRow) -> Result<RecoveryProbeCandidat
     })
 }
 
+fn recovery_probe_secret_material_from_row(
+    row: PgRow,
+) -> Result<RecoveryProbeSecretMaterial, sqlx::Error> {
+    Ok(RecoveryProbeSecretMaterial {
+        tenant_id: row.try_get("tenant_id")?,
+        provider_id: row.try_get("provider_id")?,
+        channel_id: row.try_get("channel_id")?,
+        provider_key_id: row.try_get("provider_key_id")?,
+        channel_endpoint: row.try_get("channel_endpoint")?,
+        channel_protocol_mode: row.try_get("channel_protocol_mode")?,
+        encrypted_secret: row.try_get("encrypted_secret")?,
+    })
+}
+
 fn canonical_model_from_row(row: PgRow) -> Result<CanonicalModel, sqlx::Error> {
     Ok(CanonicalModel {
         id: row.try_get("id")?,
@@ -4216,6 +4467,13 @@ fn request_log_from_row(row: PgRow) -> Result<RequestLog, sqlx::Error> {
 }
 
 fn request_log_summary_from_row(row: PgRow) -> Result<RequestLogSummary, sqlx::Error> {
+    let partial_sent = row.try_get("partial_sent")?;
+    let stream_end_reason: Option<String> = row.try_get("stream_end_reason")?;
+    let ttft_ms = row.try_get("ttft_ms")?;
+    let route_decision_snapshot: serde_json::Value = row.try_get("route_decision_snapshot")?;
+    let input_tokens = row.try_get("input_tokens")?;
+    let output_tokens = row.try_get("output_tokens")?;
+    let response_body_hash: Option<String> = row.try_get("response_body_hash")?;
     Ok(RequestLogSummary {
         id: row.try_get("id")?,
         tenant_id: row.try_get("tenant_id")?,
@@ -4240,19 +4498,42 @@ fn request_log_summary_from_row(row: PgRow) -> Result<RequestLogSummary, sqlx::E
         error_owner: row.try_get("error_owner")?,
         error_code: row.try_get("error_code")?,
         retryable: row.try_get("retryable")?,
-        partial_sent: row.try_get("partial_sent")?,
-        stream_end_reason: row.try_get("stream_end_reason")?,
-        input_tokens: row.try_get("input_tokens")?,
-        output_tokens: row.try_get("output_tokens")?,
+        partial_sent,
+        stream_end_reason: stream_end_reason.clone(),
+        stream_finalizer: crate::request_log_stream_finalizer_projection(
+            partial_sent,
+            stream_end_reason.as_deref(),
+            ttft_ms,
+            &route_decision_snapshot,
+        ),
+        provider_protocol_summary: crate::request_log_provider_protocol_summary_projection(
+            partial_sent,
+            stream_end_reason.as_deref(),
+            &route_decision_snapshot,
+        ),
+        rate_limit_metadata: crate::request_log_rate_limit_metadata_projection(
+            &route_decision_snapshot,
+        ),
+        openai_compat: crate::request_log_openai_compat_projection(
+            partial_sent,
+            stream_end_reason.as_deref(),
+            ttft_ms,
+            input_tokens,
+            output_tokens,
+            response_body_hash.as_deref(),
+            &route_decision_snapshot,
+        ),
+        input_tokens,
+        output_tokens,
         final_cost: row.try_get("final_cost")?,
         currency: row.try_get("currency")?,
         latency_ms: row.try_get("latency_ms")?,
-        ttft_ms: row.try_get("ttft_ms")?,
+        ttft_ms,
         payload_policy_id: row.try_get("payload_policy_id")?,
         payload_stored: row.try_get("payload_stored")?,
         redaction_status: row.try_get("redaction_status")?,
         request_body_hash: row.try_get("request_body_hash")?,
-        response_body_hash: row.try_get("response_body_hash")?,
+        response_body_hash,
         created_at: row.try_get("created_at")?,
         completed_at: row.try_get("completed_at")?,
     })

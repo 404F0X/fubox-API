@@ -1,0 +1,31 @@
+{
+  "schema_version": "clickhouse_log_store_production_smoke_artifact_v1",
+  "generated_at_utc": "2026-06-05T00:00:00Z",
+  "current_commit": "commit-current",
+  "runtime_commit": "commit-current",
+  "writer_insert_count": 12,
+  "writer_readback_count": 12,
+  "cursor_position": "request_logs:0000000000000012",
+  "cursor_lag_rows": 0,
+  "wal_append_count": 12,
+  "wal_replay_count": 12,
+  "wal_send_count": 12,
+  "wal_ack_count": 12,
+  "dedup_hit_count": 3,
+  "dedup_miss_count": 12,
+  "dedup_journal_persisted": true,
+  "retention_readback_count": 2,
+  "load_smoke_duration_ms": 240,
+  "load_smoke_record_count": 12,
+  "secret_safe_omissions": [
+    "clickhouse_password",
+    "clickhouse_token",
+    "authorization_header",
+    "payload_body",
+    "env_values"
+  ],
+  "simulated": true,
+  "network_attempted_without_opt_in": false,
+  "raw_dsn_present": false,
+  "secret_echo_present": false
+}

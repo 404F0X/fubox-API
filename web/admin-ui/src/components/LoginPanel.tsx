@@ -17,9 +17,10 @@ export type AdminSession = {
 
 type Props = {
   onLogin: (session: AdminSession) => void;
+  onUserMode?: () => void;
 };
 
-export function LoginPanel({ onLogin }: Props) {
+export function LoginPanel({ onLogin, onUserMode }: Props) {
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -50,15 +51,15 @@ export function LoginPanel({ onLogin }: Props) {
     <main className="auth-shell">
       <section className="auth-panel" aria-labelledby="login-title">
         <div className="auth-brand">
-          <span className="brand-mark">AG</span>
-          <span>AI Gateway</span>
+          <span className="brand-mark">FB</span>
+          <span>Fubox API</span>
         </div>
-        <p className="eyebrow">Admin Console</p>
-        <h1 id="login-title">Admin sign in</h1>
+        <p className="eyebrow">管理控制台</p>
+        <h1 id="login-title">管理员登录</h1>
 
         <form className="login-form" onSubmit={handleSubmit}>
           <label>
-            Email
+            邮箱
             <input
               autoComplete="username"
               name="email"
@@ -70,7 +71,7 @@ export function LoginPanel({ onLogin }: Props) {
           </label>
 
           <label>
-            Password
+            密码
             <input
               autoComplete="current-password"
               name="password"
@@ -83,29 +84,35 @@ export function LoginPanel({ onLogin }: Props) {
 
           <button className="primary-button" type="submit" disabled={loading}>
             <LogIn aria-hidden="true" size={18} />
-            {loading ? "Signing in" : "Sign in"}
+            {loading ? "正在登录" : "登录"}
           </button>
 
           {error ? <p className="form-status form-status--error">{error}</p> : null}
         </form>
+
+        {onUserMode ? (
+          <button className="secondary-button" type="button" onClick={onUserMode}>
+            用户门户
+          </button>
+        ) : null}
       </section>
 
-      <section className="auth-context" aria-label="Access scope">
+      <section className="auth-context" aria-label="访问范围">
         <ShieldCheck aria-hidden="true" size={26} />
         <div>
-          <h2>Scoped operations</h2>
+          <h2>受限操作</h2>
           <dl>
             <div>
-              <dt>Navigation</dt>
-              <dd>Role labels</dd>
+              <dt>导航</dt>
+              <dd>角色标签</dd>
             </div>
             <div>
-              <dt>Health</dt>
-              <dd>Read probes</dd>
+              <dt>健康</dt>
+              <dd>只读探针</dd>
             </div>
             <div>
-              <dt>Recovery</dt>
-              <dd>Local request state</dd>
+              <dt>恢复</dt>
+              <dd>本地请求状态</dd>
             </div>
           </dl>
         </div>
@@ -129,7 +136,7 @@ export function adminSessionFromMe(me: AdminMeResponse): AdminSession {
 }
 
 function displayNameFromEmail(email: string): string {
-  return email.split("@")[0]?.replace(/[._-]/g, " ") || "Admin Operator";
+  return email.split("@")[0]?.replace(/[._-]/g, " ") || "管理员";
 }
 
 function uiRole(user: AdminUser): AdminSession["role"] {

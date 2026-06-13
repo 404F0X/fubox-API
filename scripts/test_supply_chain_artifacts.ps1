@@ -42,6 +42,16 @@ function Get-Sha256Digest {
   return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Write-Utf8NoBomFile {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Content
+  )
+
+  $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
+  [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 if (-not (Test-Path -LiteralPath $generator -PathType Leaf)) {
   throw ("Supply-chain artifact generator not found: {0}" -f $generator)
 }
@@ -53,11 +63,11 @@ New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 try {
   $runner = Get-PowerShellRunner
-  $arguments = @("-NoLogo", "-NoProfile")
+  $baseArguments = @("-NoLogo", "-NoProfile")
   if ($runner.IsWindowsPowerShell) {
-    $arguments += @("-ExecutionPolicy", "Bypass")
+    $baseArguments += @("-ExecutionPolicy", "Bypass")
   }
-  $arguments += @("-File", $generator, "-OutputDirectory", $outputDir)
+  $arguments = @($baseArguments + @("-File", $generator, "-OutputDirectory", $outputDir))
 
   $output = & $runner.Path @arguments 2>&1
   $exitCode = $LASTEXITCODE
@@ -126,6 +136,71 @@ try {
     $expected = "{0}  {1}" -f (Get-Sha256Digest $file.FullName), $file.Name
     Assert-True (($checksumLines -contains $expected)) ("SHA256SUMS missing or mismatched entry for {0}" -f $file.Name)
   }
+
+  $planOutput = & $runner.Path @($baseArguments + @("-File", $generator, "-Plan")) 2>&1
+  $planExitCode = $LASTEXITCODE
+  if ($null -eq $planExitCode) {
+    $planExitCode = 0
+  }
+  Assert-True ($planExitCode -eq 0) "manifest freshness plan exited non-zero"
+  $plan = (($planOutput | ForEach-Object { $_.ToString() }) -join "`n") | ConvertFrom-Json -ErrorAction Stop
+  Assert-True ([string]::Equals([string]$plan.schemaVersion, "manifest-freshness-plan/v1", [System.StringComparison]::Ordinal)) "plan schema version is unexpected"
+  Assert-True ((@($plan.requiredArtifacts | ForEach-Object { $_.path }) -contains "sbom.cyclonedx.json")) "plan does not require SBOM"
+  Assert-True ((@($plan.sourceFiles) -contains "Cargo.lock")) "plan does not include Cargo.lock as a source file"
+  Assert-True (((@($plan.stalenessRules) | Where-Object { $_.id -eq "operator_evidence_not_implied" }).Count) -eq 1) "plan does not preserve operator evidence boundary"
+  Assert-True ([string]$plan.purpose -match "does not execute clean-clone") "plan purpose does not state clean-clone boundary"
+
+  $templatePath = Join-Path $outputDir "manifest.freshness.template.json"
+  $templateOutput = & $runner.Path @($baseArguments + @("-File", $generator, "-Plan", "-WriteManifestTemplate", $templatePath)) 2>&1
+  $templateExitCode = $LASTEXITCODE
+  if ($null -eq $templateExitCode) {
+    $templateExitCode = 0
+  }
+  Assert-True ($templateExitCode -eq 0) "manifest freshness template write exited non-zero"
+  Assert-True (Test-Path -LiteralPath $templatePath -PathType Leaf) "manifest freshness template was not written"
+  $template = (Get-Content -LiteralPath $templatePath -Raw) | ConvertFrom-Json -ErrorAction Stop
+  Assert-True ([string]::Equals([string]$template.schemaVersion, "manifest-freshness-plan/v1", [System.StringComparison]::Ordinal)) "manifest freshness template schema is unexpected"
+
+  $gateOutput = & $runner.Path @($baseArguments + @("-File", $generator, "-OutputDirectory", $outputDir, "-CheckManifestFreshness", $templatePath, "-DryRunGate")) 2>&1
+  $gateExitCode = $LASTEXITCODE
+  if ($null -eq $gateExitCode) {
+    $gateExitCode = 0
+  }
+  Assert-True ($gateExitCode -eq 0) "manifest freshness dry-run gate accepted path exited non-zero"
+  $gate = (($gateOutput | ForEach-Object { $_.ToString() }) -join "`n") | ConvertFrom-Json -ErrorAction Stop
+  Assert-True ([string]::Equals([string]$gate.schemaVersion, "manifest-freshness-dry-run-gate/v1", [System.StringComparison]::Ordinal)) "manifest freshness dry-run gate schema is unexpected"
+  Assert-True ([string]::Equals([string]$gate.classification, "accepted", [System.StringComparison]::Ordinal)) "manifest freshness dry-run gate did not accept matching template"
+  Assert-True ([bool]$gate.accepted) "manifest freshness dry-run gate did not mark accepted=true"
+  Assert-True ([bool]$gate.dryRunOnly) "manifest freshness dry-run gate must be dry-run only"
+  Assert-True (-not [bool]$gate.releaseEvidenceClosure) "manifest freshness dry-run gate must not close release evidence"
+  Assert-True (-not [bool]$gate.fullSbomApproval) "manifest freshness dry-run gate must not approve full SBOM"
+  Assert-True (-not [bool]$gate.cleanCloneExecuted) "manifest freshness dry-run gate must not execute clean clone"
+  Assert-True ([bool]$gate.readback.requiredArtifacts.match) "manifest freshness dry-run gate required artifact readback did not match"
+  Assert-True ([bool]$gate.readback.sourceFiles.match) "manifest freshness dry-run gate source file readback did not match"
+  Assert-True ([bool]$gate.readback.sourceFileGroups.groupNames.match) "manifest freshness dry-run gate source group names did not match"
+  Assert-True ([bool]$gate.readback.stalenessRules.match) "manifest freshness dry-run gate staleness rules did not match"
+  Assert-True ((@($gate.reasons.accepted | ForEach-Object { [string]$_.code }) -contains "manifest_freshness_contract_matches")) "manifest freshness dry-run gate missing accepted reason"
+
+  $pendingOutput = & $runner.Path @($baseArguments + @("-File", $generator, "-OutputDirectory", $outputDir, "-DryRunGate")) 2>&1
+  $pendingExitCode = $LASTEXITCODE
+  if ($null -eq $pendingExitCode) {
+    $pendingExitCode = 0
+  }
+  Assert-True ($pendingExitCode -eq 0) "manifest freshness dry-run gate pending path exited non-zero"
+  $pendingGate = (($pendingOutput | ForEach-Object { $_.ToString() }) -join "`n") | ConvertFrom-Json -ErrorAction Stop
+  Assert-True ([string]::Equals([string]$pendingGate.classification, "pending", [System.StringComparison]::Ordinal)) "manifest freshness dry-run gate did not mark missing template as pending"
+  Assert-True ((@($pendingGate.reasons.pending | ForEach-Object { [string]$_.code }) -contains "manifest_template_not_supplied")) "manifest freshness dry-run gate missing pending reason"
+
+  $blockedTemplatePath = Join-Path $outputDir "manifest.freshness.blocked-template.json"
+  $blockedTemplate = (Get-Content -LiteralPath $templatePath -Raw) | ConvertFrom-Json -ErrorAction Stop
+  $blockedTemplate.sourceFiles = @()
+  Write-Utf8NoBomFile -Path $blockedTemplatePath -Content (($blockedTemplate | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+  $blockedOutput = & $runner.Path @($baseArguments + @("-File", $generator, "-OutputDirectory", $outputDir, "-CheckManifestFreshness", $blockedTemplatePath, "-DryRunGate")) 2>&1
+  $blockedExitCode = $LASTEXITCODE
+  Assert-True ($blockedExitCode -eq 2) "manifest freshness dry-run gate blocked path did not exit 2"
+  $blockedGate = (($blockedOutput | ForEach-Object { $_.ToString() }) -join "`n") | ConvertFrom-Json -ErrorAction Stop
+  Assert-True ([string]::Equals([string]$blockedGate.classification, "blocked", [System.StringComparison]::Ordinal)) "manifest freshness dry-run gate did not block stale template"
+  Assert-True ((@($blockedGate.reasons.blocked | ForEach-Object { [string]$_.code }) -contains "missing_source_files")) "manifest freshness dry-run gate missing blocked reason"
 
   Write-Host "[OK] supply-chain artifact self-test passed"
 } finally {

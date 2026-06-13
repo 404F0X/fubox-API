@@ -1,0 +1,51 @@
+{
+  "contract": "clickhouse_log_store_local_compose_contract.v1",
+  "input": {
+    "tenant_id": "00000000-0000-0000-0000-000000000001",
+    "env": {
+      "AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED": "true",
+      "AI_GATEWAY_CLICKHOUSE_ENDPOINT": "http://clickhouse:8123",
+      "AI_GATEWAY_CLICKHOUSE_DATABASE": "ai_gateway",
+      "AI_GATEWAY_CLICKHOUSE_TABLE": "gateway_events",
+      "AI_GATEWAY_CLICKHOUSE_WAL_SERVICE_ENABLED": "true",
+      "AI_GATEWAY_CLICKHOUSE_WAL_DIR": "/var/lib/ai-gateway/clickhouse-log-store/wal",
+      "AI_GATEWAY_CLICKHOUSE_PAYLOAD_POLICY": "redacted"
+    },
+    "wal_dry_run_readback": {
+      "wal_root": ".tmp/clickhouse-log-store/wal",
+      "segment_name": "wal-0000000000000001.jsonl",
+      "reference_time_utc": "2026-06-05T00:00:00Z",
+      "records": [
+        {
+          "wal_sequence": 1,
+          "sink": "request_logs",
+          "source_relation": "request_logs",
+          "source_record_id": "req_local_0001",
+          "request_id": "req_local_0001",
+          "dedup_key": "request_logs:req_local_0001",
+          "payload_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "payload_policy": "redacted",
+          "status": "pending",
+          "attempt": 0,
+          "simulate_operation": "ack",
+          "age_seconds": 90000
+        },
+        {
+          "wal_sequence": 2,
+          "sink": "provider_attempts",
+          "source_relation": "provider_attempts",
+          "source_record_id": "attempt_local_0001",
+          "request_id": "req_local_0001",
+          "provider_attempt_id": "pa_local_0001",
+          "dedup_key": "provider_attempts:req_local_0001:pa_local_0001",
+          "payload_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "payload_policy": "redacted",
+          "status": "pending",
+          "attempt": 0,
+          "simulate_operation": "write",
+          "age_seconds": 0
+        }
+      ]
+    }
+  }
+}

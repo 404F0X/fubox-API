@@ -1,3 +1,13 @@
+x-staging-security-env: &staging-security-env
+  AI_GATEWAY_TRUSTED_PROXY_ALLOWLIST_STATUS: ${AI_GATEWAY_TRUSTED_PROXY_ALLOWLIST_STATUS:-config-needed}
+  AI_GATEWAY_IP_ALLOWLIST_STATUS: ${AI_GATEWAY_IP_ALLOWLIST_STATUS:-config-needed}
+  AI_GATEWAY_RATE_LIMIT_STATUS: ${AI_GATEWAY_RATE_LIMIT_STATUS:-config-needed}
+
+x-staging-external-env: &staging-external-env
+  AI_GATEWAY_CLICKHOUSE_CONFIG_STATUS: ${AI_GATEWAY_CLICKHOUSE_CONFIG_STATUS:-config-needed}
+  AI_GATEWAY_PROVIDER_ADAPTER_STATUS: ${AI_GATEWAY_PROVIDER_ADAPTER_STATUS:-config-needed}
+  AI_GATEWAY_PAYMENT_PROVIDER_STATUS: ${AI_GATEWAY_PAYMENT_PROVIDER_STATUS:-config-needed}
+
 services:
   postgres:
     image: postgres:16
@@ -22,7 +32,7 @@ services:
       context: ../..
       dockerfile: deploy/docker-compose/mock-provider.Dockerfile
     ports:
-      - "127.0.0.1:18080:18080"
+      - "127.0.0.1:${MOCK_PROVIDER_HOST_PORT:-18080}:18080"
 
   gateway:
     build:
@@ -35,16 +45,19 @@ services:
       - redis
       - mock-provider
     environment:
+      <<:
+        - *staging-security-env
+        - *staging-external-env
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
-      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: ${AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64:?AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64 must be set}
       AI_GATEWAY_LISTEN: 0.0.0.0:8080
       AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
-      AI_GATEWAY_CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      AI_GATEWAY_CORS_ALLOWED_ORIGINS: http://localhost:${ADMIN_UI_HOST_PORT:-5173},http://127.0.0.1:${ADMIN_UI_HOST_PORT:-5173}
     volumes:
       - ../../examples/config.example.yaml:/app/config/config.yaml:ro
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${GATEWAY_HOST_PORT:-8080}:8080"
 
   control-plane:
     build:
@@ -56,18 +69,21 @@ services:
       - postgres
       - redis
     environment:
+      <<:
+        - *staging-security-env
+        - *staging-external-env
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
-      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: ${AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64:?AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64 must be set}
       AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_ID: dev-seed-v1
       AI_GATEWAY_CONTROL_LISTEN: 0.0.0.0:8081
-      AI_GATEWAY_CONTROL_CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      AI_GATEWAY_CONTROL_CORS_ALLOWED_ORIGINS: http://localhost:${ADMIN_UI_HOST_PORT:-5173},http://127.0.0.1:${ADMIN_UI_HOST_PORT:-5173}
       AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
       AI_GATEWAY_ADMIN_COOKIE_SECURE: "false"
     volumes:
       - ../../examples/config.example.yaml:/app/config/config.yaml:ro
     ports:
-      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:${CONTROL_PLANE_HOST_PORT:-8081}:8081"
 
   worker:
     build:
@@ -79,8 +95,42 @@ services:
       - postgres
       - redis
     environment:
+      <<:
+        - *staging-security-env
+        - *staging-external-env
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: ${AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64:?AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64 must be set}
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_ID: dev-seed-v1
+    volumes:
+      - ../../examples/config.example.yaml:/app/config/config.yaml:ro
+
+  worker-recovery-probe:
+    profiles:
+      - ops
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile
+      args:
+        BIN: ai-worker
+    depends_on:
+      - postgres
+      - redis
+      - mock-provider
+    command:
+      - recovery-probe
+      - --execute
+      - --limit
+      - ${RECOVERY_PROBE_LIMIT:-50}
+    environment:
+      <<:
+        - *staging-security-env
+        - *staging-external-env
+      AI_GATEWAY_CONFIG: /app/config/config.yaml
+      AI_GATEWAY_MASTER_KEY: change-me-in-dev-only
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64: ${AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64:?AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_BASE64 must be set}
+      AI_GATEWAY_PROVIDER_KEY_MASTER_KEY_ID: dev-seed-v1
+      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
     volumes:
       - ../../examples/config.example.yaml:/app/config/config.yaml:ro
 
@@ -97,7 +147,7 @@ services:
       CONTROL_PLANE_UPSTREAM: http://control-plane:8081
       MOCK_PROVIDER_UPSTREAM: http://mock-provider:18080
     ports:
-      - "127.0.0.1:5173:8080"
+      - "127.0.0.1:${ADMIN_UI_HOST_PORT:-5173}:8080"
 
 volumes:
   pg_data:

@@ -1,0 +1,220 @@
+{
+  "contract": "payment_provider_stripe_like_source_of_truth_summary.v1",
+  "status": "crate_parser_seam_only",
+  "runtime": {
+    "network_call_enabled": false,
+    "network_call_performed": false,
+    "source": "provider_response_json_value_supplied_by_caller"
+  },
+  "objects": [
+    {
+      "name": "captured_event",
+      "provider": "stripe_like",
+      "object": {
+        "id": "evt_fixture_secret_raw",
+        "object": "event",
+        "type": "payment_intent.succeeded",
+        "data": {
+          "object": {
+            "id": "pi_fixture_secret_raw",
+            "object": "payment_intent",
+            "status": "succeeded",
+            "amount": 1299,
+            "amount_received": 1299,
+            "currency": "usd",
+            "customer": "cus_fixture_secret_raw",
+            "metadata": {
+              "tenant_id": "00000000-0000-0000-0000-000000000003",
+              "order_id": "00000000-0000-0000-0000-000000000001",
+              "payment_intent_id": "00000000-0000-0000-0000-000000000002"
+            }
+          }
+        }
+      },
+      "expected": {
+        "type": "event",
+        "status": "payment_intent.succeeded",
+        "amount": "12.99000000",
+        "currency": "USD",
+        "captured": true,
+        "refunded": false,
+        "disputed": false,
+        "local_ref_count": 3
+      }
+    },
+    {
+      "name": "captured_payment_intent",
+      "provider": "stripe_like",
+      "object": {
+        "id": "pi_fixture_secret_raw",
+        "object": "payment_intent",
+        "status": "succeeded",
+        "amount": 1299,
+        "amount_received": 1299,
+        "currency": "usd",
+        "customer": "cus_fixture_secret_raw",
+        "payment_method": "pm_fixture_secret_raw",
+        "receipt_email": "customer@example.test",
+        "metadata": {
+          "tenant_id": "00000000-0000-0000-0000-000000000003",
+          "order_id": "00000000-0000-0000-0000-000000000001",
+          "payment_intent_id": "00000000-0000-0000-0000-000000000002"
+        }
+      },
+      "expected": {
+        "type": "payment_intent",
+        "status": "succeeded",
+        "amount": "12.99000000",
+        "currency": "USD",
+        "captured": true,
+        "refunded": false,
+        "disputed": false,
+        "local_ref_count": 3
+      }
+    },
+    {
+      "name": "refunded_disputed_charge",
+      "provider": "stripe_like",
+      "object": {
+        "id": "ch_fixture_secret_raw",
+        "object": "charge",
+        "status": "succeeded",
+        "amount": 1299,
+        "amount_refunded": 500,
+        "captured": true,
+        "refunded": true,
+        "disputed": true,
+        "currency": "usd",
+        "receipt_url": "https://pay.example.test/receipt/ch_fixture_secret_raw",
+        "billing_details": {
+          "email": "billing@example.test"
+        },
+        "payment_method_details": {
+          "card": {
+            "last4": "4242"
+          }
+        },
+        "metadata": {
+          "payment_capture_id": "00000000-0000-0000-0000-000000000004",
+          "ledger_entry_id": "00000000-0000-0000-0000-000000000005"
+        }
+      },
+      "expected": {
+        "type": "charge",
+        "status": "succeeded",
+        "amount": "12.99000000",
+        "currency": "USD",
+        "captured": true,
+        "refunded": true,
+        "disputed": true,
+        "local_ref_count": 2
+      }
+    },
+    {
+      "name": "refund_object",
+      "provider": "stripe_like",
+      "object": {
+        "id": "re_fixture_secret_raw",
+        "object": "refund",
+        "status": "succeeded",
+        "amount": 500,
+        "currency": "usd",
+        "charge": "ch_fixture_secret_raw",
+        "payment_intent": "pi_fixture_secret_raw",
+        "metadata": {
+          "refund_id": "00000000-0000-0000-0000-000000000006",
+          "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000000007"
+        }
+      },
+      "expected": {
+        "type": "refund",
+        "status": "succeeded",
+        "amount": "5.00000000",
+        "currency": "USD",
+        "captured": false,
+        "refunded": true,
+        "disputed": false,
+        "local_ref_count": 2
+      }
+    },
+    {
+      "name": "dispute_object",
+      "provider": "stripe_like",
+      "object": {
+        "id": "dp_fixture_secret_raw",
+        "object": "dispute",
+        "status": "needs_response",
+        "amount": 1299,
+        "currency": "usd",
+        "charge": "ch_fixture_secret_raw",
+        "evidence": {
+          "customer_email_address": "dispute@example.test"
+        },
+        "metadata": {
+          "payment_capture_id": "00000000-0000-0000-0000-000000000004",
+          "audit_id": "00000000-0000-0000-0000-000000000008"
+        }
+      },
+      "expected": {
+        "type": "dispute",
+        "status": "needs_response",
+        "amount": "12.99000000",
+        "currency": "USD",
+        "captured": false,
+        "refunded": false,
+        "disputed": true,
+        "local_ref_count": 2
+      }
+    }
+  ],
+  "negative_objects": [
+    {
+      "name": "missing_amount_and_unknown_type",
+      "provider": "stripe_like",
+      "object": {
+        "id": "xx_fixture_secret_raw",
+        "object": "customer_balance_transaction",
+        "status": "posted",
+        "currency": "usd",
+        "customer": "cus_fixture_secret_raw"
+      },
+      "expected_missing": [
+        "amount_missing"
+      ],
+      "expected_unsupported": [
+        "object_type_unsupported"
+      ]
+    }
+  ],
+  "secret_safety": {
+    "raw_provider_payload_allowed": false,
+    "raw_customer_allowed": false,
+    "raw_email_allowed": false,
+    "raw_payment_method_allowed": false,
+    "raw_receipt_url_allowed": false,
+    "raw_billing_details_allowed": false,
+    "local_refs_policy": "presence_and_sha256_hash_only",
+    "provider_object_id_policy": "presence_and_sha256_hash_only"
+  },
+  "forbidden_terms": [
+    "evt_fixture_secret_raw",
+    "pi_fixture_secret_raw",
+    "ch_fixture_secret_raw",
+    "re_fixture_secret_raw",
+    "dp_fixture_secret_raw",
+    "cus_fixture_secret_raw",
+    "pm_fixture_secret_raw",
+    "customer@example.test",
+    "billing@example.test",
+    "dispute@example.test",
+    "https://pay.example.test/receipt/ch_fixture_secret_raw",
+    "00000000-0000-0000-0000-000000000001",
+    "00000000-0000-0000-0000-000000000002",
+    "00000000-0000-0000-0000-000000000003",
+    "00000000-0000-0000-0000-000000000004",
+    "00000000-0000-0000-0000-000000000005",
+    "00000000-0000-0000-0000-000000000006",
+    "00000000-0000-0000-0000-000000000007",
+    "00000000-0000-0000-0000-000000000008"
+  ]
+}

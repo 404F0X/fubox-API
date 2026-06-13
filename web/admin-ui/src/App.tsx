@@ -1,207 +1,40 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useState } from "react";
+
+import { AppRouter } from "./app/AppRouter";
+import { SessionRestorePanel } from "./app/SessionRestorePanel";
+import { useAdminSessionRestore } from "./app/session";
 import {
-  clearAdminSessionToken,
-  getAdminMe,
-  getProviderHealthSummary,
-  type HealthSummary,
-  logoutAdmin,
-  type ProbeResult,
-  probeServices,
-  requestProviderKeyRecovery,
-} from "./api/client";
-import { errorMessage } from "./components/adminUtils";
-import { HealthDashboard } from "./components/HealthDashboard";
-import { Activity, Database, Key, Network, ScrollText, ShieldCheck } from "./components/icons";
-import { adminSessionFromMe, type AdminSession, LoginPanel } from "./components/LoginPanel";
-import { Navigation, type NavItem } from "./components/Navigation";
-
-type AppView =
-  | "overview"
-  | "requestLogs"
-  | "auditLogs"
-  | "billing"
-  | "providerKeys"
-  | "providers"
-  | "models"
-  | "routing"
-  | "keys";
-type AdminCapability =
-  | "provider.read"
-  | "provider.manage"
-  | "key.read"
-  | "key.manage"
-  | "provider_key.recovery"
-  | "request_log.read"
-  | "trace.read"
-  | "audit.read"
-  | "billing.read"
-  | "price.read"
-  | "reconciliation.read"
-  | "price_version.create"
-  | "manual_test.run"
-  | "provider_health.read"
-  | "alert_webhook.validate"
-  | "health.liveness"
-  | "health.readiness";
-
-const BillingPage = lazy(() => import("./components/BillingPage"));
-const AuditLogsPage = lazy(() => import("./components/AuditLogsPage"));
-const ModelsPage = lazy(() => import("./components/ModelsPage"));
-const ProviderKeysPage = lazy(() =>
-  import("./components/ProviderKeysPage").then((module) => ({ default: module.ProviderKeysPage })),
-);
-const ProvidersPage = lazy(() => import("./components/ProvidersPage").then((module) => ({ default: module.ProvidersPage })));
-const RequestLogsPage = lazy(() =>
-  import("./components/RequestLogsPage").then((module) => ({ default: module.RequestLogsPage })),
-);
-const RoutingPage = lazy(() => import("./components/RoutingPage"));
-const VirtualKeysPage = lazy(() => import("./components/VirtualKeysPage"));
-
-const navItems: NavItem<AppView>[] = [
-  { id: "overview", label: "Overview", icon: Activity, permission: "Operations", capabilities: ["provider_health.read"] },
-  {
-    id: "requestLogs",
-    label: "Request/Trace",
-    icon: ScrollText,
-    permission: "Audit",
-    capabilities: ["request_log.read", "trace.read"],
-  },
-  {
-    id: "auditLogs",
-    label: "Audit Logs",
-    icon: ShieldCheck,
-    permission: "Audit",
-    capabilities: ["audit.read"],
-  },
-  {
-    id: "billing",
-    label: "Billing",
-    icon: Database,
-    permission: "Billing",
-    capabilities: ["billing.read", "price.read", "reconciliation.read"],
-  },
-  { id: "providerKeys", label: "Provider Keys", icon: Key, permission: "Credentials", capabilities: ["key.manage"] },
-  { id: "providers", label: "Providers", icon: Network, permission: "Providers", capabilities: ["provider.read"] },
-  { id: "models", label: "Models", icon: Database, permission: "Models", capabilities: ["provider.manage"] },
-  { id: "routing", label: "Routing", icon: Network, permission: "Routing", capabilities: ["provider.manage"] },
-  { id: "keys", label: "Virtual Keys", icon: Key, permission: "Keys", capabilities: ["key.manage"] },
-];
+  replaceUserPortalRouteTarget,
+  resolveUserPortalRouteTarget,
+  type UserPortalRouteTarget,
+} from "./app/userPortalRoute";
+import { LoginPanel } from "./components/LoginPanel";
+import {
+  type UserPortalSession,
+  UserPortalDashboard,
+  UserPortalLoginPanel,
+} from "./components/UserPortalPanel";
 
 export function App() {
-  const [session, setSession] = useState<AdminSession | null>(null);
-  const [activeView, setActiveView] = useState<AppView>("overview");
-  const [authChecking, setAuthChecking] = useState(true);
-  const [results, setResults] = useState<ProbeResult[]>([]);
-  const [healthSummary, setHealthSummary] = useState<HealthSummary | null>(null);
-  const [healthSummaryError, setHealthSummaryError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [lastChecked, setLastChecked] = useState<string | null>(null);
-  const [recoveryRequests, setRecoveryRequests] = useState<Record<string, "pending" | "succeeded" | "failed">>({});
-  const [recoveryErrors, setRecoveryErrors] = useState<Record<string, string>>({});
+  const [initialUserPortalRouteTarget] = useState<UserPortalRouteTarget | null>(() => resolveUserPortalRouteTarget());
+  const { authChecking, session, setSession } = useAdminSessionRestore({
+    enabled: initialUserPortalRouteTarget === null,
+  });
+  const [userSession, setUserSession] = useState<UserPortalSession | null>(null);
+  const [authMode, setAuthMode] = useState<"user" | "admin">(() =>
+    initialUserPortalRouteTarget ? "user" : "admin",
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function restoreSession() {
-      try {
-        const me = await getAdminMe();
-
-        if (!cancelled) {
-          setSession(adminSessionFromMe(me));
-        }
-      } catch {
-        clearAdminSessionToken();
-
-        if (!cancelled) {
-          setSession(null);
-        }
-      } finally {
-        if (!cancelled) {
-          setAuthChecking(false);
-        }
-      }
-    }
-
-    void restoreSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function refresh() {
-    setLoading(true);
-    try {
-      const [probeResult, summaryResult] = await Promise.allSettled([probeServices(), getProviderHealthSummary()]);
-
-      if (probeResult.status === "fulfilled") {
-        setResults(probeResult.value);
-      } else {
-        setResults([]);
-      }
-
-      if (summaryResult.status === "fulfilled") {
-        setHealthSummary(summaryResult.value);
-        setHealthSummaryError(null);
-      } else {
-        setHealthSummary(null);
-        setHealthSummaryError(errorMessage(summaryResult.reason));
-      }
-
-      setLastChecked(
-        new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      );
-    } finally {
-      setLoading(false);
-    }
+  function openUserPortal(target: UserPortalRouteTarget = "developer-console") {
+    replaceUserPortalRouteTarget(target);
+    setSession(null);
+    setUserSession(null);
+    setAuthMode("user");
   }
 
-  useEffect(() => {
-    if (!session || !hasSessionCapability(session, "provider_health.read")) {
-      return;
-    }
-
-    void refresh();
-  }, [session]);
-
-  async function requestRecovery(providerKeyId: string) {
-    setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "pending" }));
-    setRecoveryErrors((current) => {
-      const next = { ...current };
-      delete next[providerKeyId];
-      return next;
-    });
-
-    try {
-      await requestProviderKeyRecovery(providerKeyId, {
-        reason: "overview manual recovery request",
-        target_status: "recovery_probe",
-      });
-      setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "succeeded" }));
-      void refresh();
-    } catch (error) {
-      setRecoveryRequests((current) => ({ ...current, [providerKeyId]: "failed" }));
-      setRecoveryErrors((current) => ({ ...current, [providerKeyId]: errorMessage(error) }));
-    }
-  }
-
-  async function signOut() {
-    try {
-      await logoutAdmin();
-    } finally {
-      clearAdminSessionToken();
-      setSession(null);
-      setActiveView("overview");
-      setHealthSummary(null);
-      setHealthSummaryError(null);
-      setLastChecked(null);
-      setRecoveryErrors({});
-      setRecoveryRequests({});
-      setResults([]);
-    }
+  function openAdminWorkbench() {
+    replaceUserPortalRouteTarget(null);
+    setAuthMode("admin");
   }
 
   if (authChecking) {
@@ -209,231 +42,34 @@ export function App() {
   }
 
   if (!session) {
-    return <LoginPanel onLogin={setSession} />;
+    if (userSession) {
+      return <UserPortalDashboard session={userSession} onLogout={() => setUserSession(null)} />;
+    }
+
+    if (authMode === "admin") {
+      return <LoginPanel onLogin={setSession} onUserMode={() => openUserPortal()} />;
+    }
+
+    return (
+      <UserPortalLoginPanel
+        onAdminMode={openAdminWorkbench}
+        onLogin={(nextSession) => {
+          setUserSession(nextSession);
+          setSession(null);
+        }}
+      />
+    );
   }
 
-  const capabilityAccess = capabilityAccessFromSession(session);
-  const visibleNavItems = navItems.filter((item) =>
-    item.capabilities.some((capability) => isAdminCapability(capability) && capabilityAccess.has(capability)),
-  );
-  const selectedNavItem = visibleNavItems.find((item) => item.id === activeView);
-  const activeNavItem = selectedNavItem ?? visibleNavItems[0];
-  const selectedView = activeNavItem?.id;
-  const activeTitle =
-    selectedView === "overview"
-      ? "Gateway Control"
-      : selectedView === "requestLogs"
-        ? "Request/Trace"
-        : selectedView === "auditLogs"
-          ? "Audit Logs"
-          : selectedView === "billing"
-            ? "Billing / Prices"
-            : selectedView === "providerKeys"
-              ? "Provider Keys"
-              : selectedView === "providers"
-                ? "Providers"
-                : selectedView === "models"
-                  ? "Models"
-                  : selectedView === "routing"
-                    ? "Routing"
-                    : "Virtual Keys";
-
   return (
-    <main className="shell">
-      <Navigation
-        activeView={selectedView ?? activeView}
-        items={visibleNavItems}
-        session={session}
-        onLogout={() => void signOut()}
-        onSelect={setActiveView}
-      />
-
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">{activeNavItem?.permission ?? "Scoped"} workspace</p>
-            <h1>{activeNavItem ? activeTitle : "No Admin Workspace"}</h1>
-          </div>
-        </header>
-
-        {!activeNavItem ? (
-          <section className="admin-panel" aria-label="No available admin sections">
-            <h2>No available sections</h2>
-            <p className="muted-copy">Your current admin access does not include any console sections.</p>
-          </section>
-        ) : selectedView === "overview" ? (
-          <HealthDashboard
-            canRequestRecovery={hasSessionCapability(session, "provider_key.recovery")}
-            lastChecked={lastChecked}
-            healthSummary={healthSummary}
-            healthSummaryError={healthSummaryError}
-            loading={loading || (results.length === 0 && lastChecked === null)}
-            recoveryErrors={recoveryErrors}
-            recoveryRequests={recoveryRequests}
-            results={results}
-            onRecoveryRequest={(providerKeyId) => void requestRecovery(providerKeyId)}
-            onRefresh={refresh}
-          />
-        ) : selectedView === "requestLogs" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading request/trace.</p>
-              </section>
-            }
-          >
-            <RequestLogsPage />
-          </Suspense>
-        ) : selectedView === "auditLogs" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading audit logs.</p>
-              </section>
-            }
-          >
-            <AuditLogsPage />
-          </Suspense>
-        ) : selectedView === "billing" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading billing.</p>
-              </section>
-            }
-          >
-            <BillingPage />
-          </Suspense>
-        ) : selectedView === "providerKeys" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading provider keys.</p>
-              </section>
-            }
-          >
-            <ProviderKeysPage />
-          </Suspense>
-        ) : selectedView === "providers" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading providers.</p>
-              </section>
-            }
-          >
-            <ProvidersPage
-              canManageProviders={capabilityAccess.has("provider.manage")}
-              canRunManualTest={capabilityAccess.has("manual_test.run")}
-            />
-          </Suspense>
-        ) : selectedView === "models" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading models.</p>
-              </section>
-            }
-          >
-            <ModelsPage />
-          </Suspense>
-        ) : selectedView === "routing" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading routing.</p>
-              </section>
-            }
-          >
-            <RoutingPage />
-          </Suspense>
-        ) : selectedView === "keys" ? (
-          <Suspense
-            fallback={
-              <section className="admin-panel">
-                <p className="muted-copy">Loading virtual keys.</p>
-              </section>
-            }
-          >
-            <VirtualKeysPage />
-          </Suspense>
-        ) : null}
-      </section>
-    </main>
+    <AppRouter
+      session={session}
+      onAdminSessionCleared={() => {
+        setSession(null);
+        setUserSession(null);
+        openAdminWorkbench();
+      }}
+      onOpenUserPortal={() => openUserPortal()}
+    />
   );
 }
-
-function SessionRestorePanel() {
-  return (
-    <main className="auth-shell">
-      <section className="auth-panel" aria-label="Restoring admin session">
-        <div className="auth-brand">
-          <span className="brand-mark">AG</span>
-          <span>AI Gateway</span>
-        </div>
-        <p className="eyebrow">Admin Console</p>
-        <h1>Restoring session</h1>
-        <p className="muted-copy">Checking existing admin access.</p>
-      </section>
-
-      <section className="auth-context" aria-label="Access scope">
-        <ShieldCheck aria-hidden="true" size={26} />
-        <div>
-          <h2>Scoped operations</h2>
-          <dl>
-            <div>
-              <dt>Session</dt>
-              <dd>HttpOnly cookie</dd>
-            </div>
-            <div>
-              <dt>Navigation</dt>
-              <dd>Capability gated</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>Checking</dd>
-            </div>
-          </dl>
-        </div>
-      </section>
-    </main>
-  );
-}
-
-function capabilityAccessFromSession(session: AdminSession): Set<AdminCapability> {
-  const denied = new Set(session.capabilitySummary.denied_capabilities);
-
-  return new Set(
-    session.capabilitySummary.capabilities.filter(
-      (capability): capability is AdminCapability => isAdminCapability(capability) && !denied.has(capability),
-    ),
-  );
-}
-
-function hasSessionCapability(session: AdminSession, capability: AdminCapability): boolean {
-  return capabilityAccessFromSession(session).has(capability);
-}
-
-function isAdminCapability(capability: string): capability is AdminCapability {
-  return knownCapabilities.has(capability as AdminCapability);
-}
-
-const knownCapabilities = new Set<AdminCapability>([
-  "provider.read",
-  "provider.manage",
-  "key.read",
-  "key.manage",
-  "provider_key.recovery",
-  "request_log.read",
-  "trace.read",
-  "audit.read",
-  "billing.read",
-  "price.read",
-  "reconciliation.read",
-  "price_version.create",
-  "manual_test.run",
-  "provider_health.read",
-  "alert_webhook.validate",
-  "health.liveness",
-  "health.readiness",
-]);

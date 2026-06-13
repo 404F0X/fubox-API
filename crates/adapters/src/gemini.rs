@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     Adapter, AdapterCapabilities, AdapterErrorMapping, AdapterOperation,
     AdapterProviderErrorSignal, AdapterRetryAfter, AdapterRoutingFields, AdapterStreamPolicy,
-    AdapterUpstreamRequest, AdapterUsage, ProtocolMode,
+    AdapterUpstreamRequest, AdapterUsage, ChatCompletionRequest, ChatMessage, ProtocolMode,
 };
 
 const GENERATE_CONTENT_PATH_PREFIX: &str = "/v1beta/models/";
@@ -144,6 +144,10 @@ impl GeminiAdapter {
         gemini_generate_content_terminal(response, 200, None)
     }
 
+    pub fn generate_content_protocol_metadata(response: &Value) -> Value {
+        gemini_generate_content_protocol_metadata(response)
+    }
+
     pub fn build_generate_content_request(
         &self,
         request: &GeminiGenerateContentRequest,
@@ -158,10 +162,31 @@ impl GeminiAdapter {
         Self::parse_generate_content_response_with_retry_after(status, body, None)
     }
 
+    pub fn parse_chat_completions_response(
+        status: u16,
+        body: &[u8],
+    ) -> Result<Value, GeminiAdapterError> {
+        Self::parse_chat_completions_response_with_retry_after(status, body, None)
+    }
+
+    fn parse_chat_completions_response_with_retry_after(
+        status: u16,
+        body: &[u8],
+        retry_after: Option<AdapterRetryAfter>,
+    ) -> Result<Value, GeminiAdapterError> {
+        let json = parse_gemini_json_response(status, body, retry_after.clone())?;
+        gemini_generate_content_to_openai_chat_completion(&json, status, retry_after)
+    }
+
     pub fn parse_generate_content_stream_event(
         data: &[u8],
     ) -> Result<GeminiGenerateContentStreamEvent, GeminiAdapterError> {
         GeminiGenerateContentStreamEvent::from_data_slice(data)
+    }
+
+    pub fn parse_chat_completions_stream_event(data: &[u8]) -> Result<Value, GeminiAdapterError> {
+        let event = GeminiGenerateContentStreamEvent::from_data_slice(data)?;
+        gemini_stream_event_to_openai_chat_completion_chunk(&event.data, 200, None)
     }
 
     fn parse_generate_content_response_with_retry_after(
@@ -169,25 +194,7 @@ impl GeminiAdapter {
         body: &[u8],
         retry_after: Option<AdapterRetryAfter>,
     ) -> Result<Value, GeminiAdapterError> {
-        let json = match serde_json::from_slice::<Value>(body) {
-            Ok(json) => json,
-            Err(error) => {
-                return Err(GeminiAdapterError::UpstreamInvalidJson {
-                    status,
-                    message: error.to_string(),
-                    retry_after,
-                });
-            }
-        };
-
-        if !(200..300).contains(&status) {
-            return Err(GeminiAdapterError::UpstreamStatus {
-                status,
-                body: json,
-                retry_after,
-            });
-        }
-
+        let json = parse_gemini_json_response(status, body, retry_after.clone())?;
         gemini_generate_content_terminal(&json, status, retry_after.clone())?;
 
         Ok(json)
@@ -323,6 +330,74 @@ impl GeminiGenerateContentRequest {
             body: serde_json::to_value(self)
                 .map_err(|error| GeminiAdapterError::RequestSerialize(error.to_string()))?,
             stream,
+        })
+    }
+
+    pub fn from_openai_chat_request(
+        request: &ChatCompletionRequest,
+    ) -> Result<Self, GeminiAdapterError> {
+        request.validate().map_err(|error| {
+            GeminiAdapterError::invalid_request(error.to_string(), Some("body"))
+        })?;
+
+        let mut contents = Vec::new();
+        let mut system_parts = Vec::new();
+
+        for (index, message) in request.messages.iter().enumerate() {
+            let parts = gemini_text_parts_from_openai_message(message, index)?;
+
+            match message.role.as_str() {
+                "system" | "developer" => system_parts.extend(parts),
+                "assistant" => contents.push(GeminiContent {
+                    role: Some("model".to_string()),
+                    parts,
+                    extra: Map::new(),
+                }),
+                "user" => contents.push(GeminiContent {
+                    role: Some("user".to_string()),
+                    parts,
+                    extra: Map::new(),
+                }),
+                role if role.trim().is_empty() => {
+                    return Err(GeminiAdapterError::invalid_request(
+                        format!("messages[{index}].role must be a non-empty string"),
+                        Some("messages"),
+                    ));
+                }
+                role => {
+                    return Err(GeminiAdapterError::invalid_request(
+                        format!(
+                            "messages[{index}].role '{role}' is not supported by Gemini text conversion"
+                        ),
+                        Some("messages"),
+                    ));
+                }
+            }
+        }
+
+        if contents.is_empty() {
+            return Err(GeminiAdapterError::invalid_request(
+                "messages must contain at least one user or assistant message",
+                Some("messages"),
+            ));
+        }
+
+        Ok(Self {
+            model: request.model.clone(),
+            contents,
+            system_instruction: if system_parts.is_empty() {
+                None
+            } else {
+                Some(json!({ "parts": system_parts }))
+            },
+            tools: None,
+            tool_config: None,
+            safety_settings: None,
+            generation_config: gemini_generation_config_from_openai_chat(request)?,
+            cached_content: None,
+            stream: request.stream,
+            stream_generate_content: None,
+            extra: Map::new(),
         })
     }
 }
@@ -522,7 +597,10 @@ impl Adapter for GeminiAdapter {
 
     fn capabilities(&self) -> AdapterCapabilities {
         AdapterCapabilities {
-            operations: vec![AdapterOperation::GenerateContent],
+            operations: vec![
+                AdapterOperation::GenerateContent,
+                AdapterOperation::ChatCompletions,
+            ],
             stream_policy: AdapterStreamPolicy::Parse,
         }
     }
@@ -548,6 +626,19 @@ impl Adapter for GeminiAdapter {
                 self.build_generate_content_request(&request)
                     .map_err(|error| error.to_gateway_error())
             }
+            AdapterOperation::ChatCompletions => {
+                let request = ChatCompletionRequest::from_slice(body).map_err(|error| {
+                    GatewayError::new(
+                        GatewayErrorOwner::Client,
+                        error.to_adapter_error_mapping().code,
+                        error.to_string(),
+                    )
+                })?;
+                let request = GeminiGenerateContentRequest::from_openai_chat_request(&request)
+                    .map_err(|error| error.to_gateway_error())?;
+                self.build_generate_content_request(&request)
+                    .map_err(|error| error.to_gateway_error())
+            }
             _ => Err(unsupported_gemini_operation(
                 operation,
                 "build_upstream_request",
@@ -566,6 +657,10 @@ impl Adapter for GeminiAdapter {
                 Self::parse_generate_content_response(status, body)
                     .map_err(|error| error.to_gateway_error())
             }
+            AdapterOperation::ChatCompletions => {
+                Self::parse_chat_completions_response(status, body)
+                    .map_err(|error| error.to_gateway_error())
+            }
             _ => Err(unsupported_gemini_operation(operation, "parse_response")),
         }
     }
@@ -579,6 +674,8 @@ impl Adapter for GeminiAdapter {
             AdapterOperation::GenerateContent => Self::parse_generate_content_stream_event(event)
                 .map(|event| event.data)
                 .map_err(|error| error.to_gateway_error()),
+            AdapterOperation::ChatCompletions => Self::parse_chat_completions_stream_event(event)
+                .map_err(|error| error.to_gateway_error()),
             _ => Err(unsupported_gemini_operation(
                 operation,
                 "parse_stream_event",
@@ -587,7 +684,7 @@ impl Adapter for GeminiAdapter {
     }
 
     fn extract_usage(&self, response: &Value) -> Option<AdapterUsage> {
-        gemini_usage(response)
+        gemini_usage(response).or_else(|| openai_chat_usage(response))
     }
 }
 
@@ -684,6 +781,107 @@ fn optional_bool_field(
     }
 }
 
+fn gemini_text_parts_from_openai_message(
+    message: &ChatMessage,
+    index: usize,
+) -> Result<Vec<Value>, GeminiAdapterError> {
+    let Some(content) = message
+        .content
+        .as_ref()
+        .filter(|content| !content.is_null())
+    else {
+        return Err(GeminiAdapterError::invalid_request(
+            format!("messages[{index}].content is required for Gemini text conversion"),
+            Some("messages"),
+        ));
+    };
+
+    match content {
+        Value::String(text) => gemini_text_part(text, index).map(|part| vec![part]),
+        Value::Array(items) => {
+            let mut parts = Vec::new();
+
+            for item in items {
+                let part_type = item.get("type").and_then(Value::as_str);
+                if part_type.is_some_and(|kind| kind != "text") {
+                    return Err(GeminiAdapterError::invalid_request(
+                        format!("messages[{index}].content only supports text parts"),
+                        Some("messages"),
+                    ));
+                }
+
+                let text = item.get("text").and_then(Value::as_str).ok_or_else(|| {
+                    GeminiAdapterError::invalid_request(
+                        format!("messages[{index}].content text parts require text"),
+                        Some("messages"),
+                    )
+                })?;
+                parts.push(gemini_text_part(text, index)?);
+            }
+
+            if parts.is_empty() {
+                return Err(GeminiAdapterError::invalid_request(
+                    format!("messages[{index}].content must include at least one text part"),
+                    Some("messages"),
+                ));
+            }
+
+            Ok(parts)
+        }
+        _ => Err(GeminiAdapterError::invalid_request(
+            format!("messages[{index}].content must be a string or text part array"),
+            Some("messages"),
+        )),
+    }
+}
+
+fn gemini_text_part(text: &str, index: usize) -> Result<Value, GeminiAdapterError> {
+    if text.trim().is_empty() {
+        return Err(GeminiAdapterError::invalid_request(
+            format!("messages[{index}].content text must be non-empty"),
+            Some("messages"),
+        ));
+    }
+
+    Ok(json!({ "text": text }))
+}
+
+fn gemini_generation_config_from_openai_chat(
+    request: &ChatCompletionRequest,
+) -> Result<Option<Value>, GeminiAdapterError> {
+    let mut config = Map::new();
+
+    if let Some(temperature) = request.extra.get("temperature") {
+        if !temperature.is_number() {
+            return Err(GeminiAdapterError::invalid_request(
+                "temperature must be a number",
+                Some("temperature"),
+            ));
+        }
+        config.insert("temperature".to_string(), temperature.clone());
+    }
+
+    let max_tokens = request
+        .extra
+        .get("max_tokens")
+        .or_else(|| request.extra.get("max_completion_tokens"));
+    if let Some(max_tokens) = max_tokens {
+        let Some(max_tokens) = max_tokens.as_u64().filter(|value| *value > 0) else {
+            return Err(GeminiAdapterError::invalid_request(
+                "max_tokens must be a positive integer",
+                Some("max_tokens"),
+            ));
+        };
+        config.insert("maxOutputTokens".to_string(), json!(max_tokens));
+    }
+
+    if config.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(config)))
+    }
+}
+
 fn generate_content_path(model: &str) -> String {
     let model = normalized_generate_content_model(model)
         .expect("GeminiGenerateContentRequest::validate checks model path safety");
@@ -761,6 +959,285 @@ fn provider_error_code(status: u16) -> &'static str {
     }
 }
 
+fn parse_gemini_json_response(
+    status: u16,
+    body: &[u8],
+    retry_after: Option<AdapterRetryAfter>,
+) -> Result<Value, GeminiAdapterError> {
+    let json = match serde_json::from_slice::<Value>(body) {
+        Ok(json) => json,
+        Err(error) => {
+            return Err(GeminiAdapterError::UpstreamInvalidJson {
+                status,
+                message: error.to_string(),
+                retry_after,
+            });
+        }
+    };
+
+    if !(200..300).contains(&status) {
+        return Err(GeminiAdapterError::UpstreamStatus {
+            status,
+            body: json,
+            retry_after,
+        });
+    }
+
+    Ok(json)
+}
+
+fn gemini_generate_content_to_openai_chat_completion(
+    response: &Value,
+    status: u16,
+    retry_after: Option<AdapterRetryAfter>,
+) -> Result<Value, GeminiAdapterError> {
+    let candidates = response
+        .get("candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| GeminiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: "response.candidates must be an array".to_string(),
+            retry_after: retry_after.clone(),
+        })?;
+
+    let choices = candidates
+        .iter()
+        .enumerate()
+        .map(|(fallback_index, candidate)| {
+            gemini_candidate_to_openai_chat_choice(
+                candidate,
+                fallback_index,
+                status,
+                retry_after.clone(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let model = response
+        .get("modelVersion")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "gemini".to_string());
+    let id = response
+        .get("responseId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!("chatcmpl_{id}"))
+        .unwrap_or_else(|| "chatcmpl_gemini".to_string());
+
+    let mut completion = json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": 0,
+        "model": model,
+        "choices": choices,
+    });
+
+    if let Some(usage) = gemini_usage(response) {
+        completion["usage"] = json!({
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        });
+    }
+
+    Ok(completion)
+}
+
+fn gemini_stream_event_to_openai_chat_completion_chunk(
+    event: &Value,
+    status: u16,
+    retry_after: Option<AdapterRetryAfter>,
+) -> Result<Value, GeminiAdapterError> {
+    if let Some(error) = event.get("error").filter(|error| error.is_object()) {
+        let status = error
+            .get("code")
+            .and_then(Value::as_u64)
+            .and_then(|code| u16::try_from(code).ok())
+            .unwrap_or(502);
+        return Err(GeminiAdapterError::UpstreamStatus {
+            status,
+            body: event.clone(),
+            retry_after,
+        });
+    }
+
+    if let Some(block_reason) = event
+        .get("promptFeedback")
+        .and_then(|feedback| feedback.get("blockReason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|block_reason| !block_reason.is_empty())
+    {
+        return Err(GeminiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: format!("Gemini stream prompt was blocked: {block_reason}"),
+            retry_after,
+        });
+    }
+
+    let candidates = event
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let choices = candidates
+        .iter()
+        .enumerate()
+        .map(|(fallback_index, candidate)| {
+            gemini_stream_candidate_to_openai_chat_chunk_choice(
+                candidate,
+                fallback_index,
+                status,
+                retry_after.clone(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let model = event
+        .get("modelVersion")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "gemini".to_string());
+    let id = event
+        .get("responseId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!("chatcmpl_{id}"))
+        .unwrap_or_else(|| "chatcmpl_gemini".to_string());
+
+    let mut chunk = json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": model,
+        "choices": choices,
+    });
+
+    if let Some(usage) = gemini_usage(event) {
+        chunk["usage"] = json!({
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        });
+    }
+
+    Ok(chunk)
+}
+
+fn gemini_stream_candidate_to_openai_chat_chunk_choice(
+    candidate: &Value,
+    fallback_index: usize,
+    status: u16,
+    retry_after: Option<AdapterRetryAfter>,
+) -> Result<Value, GeminiAdapterError> {
+    if !candidate.is_object() {
+        return Err(GeminiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: "response.candidates entries must be objects".to_string(),
+            retry_after,
+        });
+    }
+
+    let index = candidate
+        .get("index")
+        .and_then(Value::as_u64)
+        .unwrap_or(fallback_index as u64);
+    let mut delta = Map::new();
+
+    if candidate
+        .get("content")
+        .and_then(|content| content.get("role"))
+        .and_then(Value::as_str)
+        .is_some_and(|role| role == "model")
+    {
+        delta.insert("role".to_string(), Value::String("assistant".to_string()));
+    }
+
+    let content = gemini_candidate_text(candidate);
+    if !content.is_empty() {
+        delta.insert("content".to_string(), Value::String(content));
+    }
+
+    let finish_reason = match candidate
+        .get("finishReason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|finish_reason| !finish_reason.is_empty())
+    {
+        Some(raw_finish_reason) => {
+            let mapped_finish_reason =
+                gemini_finish_reason(raw_finish_reason).ok_or_else(|| {
+                    GeminiAdapterError::UpstreamInvalidResponse {
+                        status,
+                        message: format!("unsupported Gemini finishReason '{raw_finish_reason}'"),
+                        retry_after,
+                    }
+                })?;
+            Value::String(mapped_finish_reason.to_string())
+        }
+        None => Value::Null,
+    };
+
+    Ok(json!({
+        "index": index,
+        "delta": Value::Object(delta),
+        "finish_reason": finish_reason,
+    }))
+}
+
+fn gemini_candidate_to_openai_chat_choice(
+    candidate: &Value,
+    fallback_index: usize,
+    status: u16,
+    retry_after: Option<AdapterRetryAfter>,
+) -> Result<Value, GeminiAdapterError> {
+    let raw_finish_reason = candidate
+        .get("finishReason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|finish_reason| !finish_reason.is_empty())
+        .ok_or_else(|| GeminiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: "response.candidates must include a terminal finishReason".to_string(),
+            retry_after: retry_after.clone(),
+        })?;
+    let finish_reason = gemini_finish_reason(raw_finish_reason).ok_or_else(|| {
+        GeminiAdapterError::UpstreamInvalidResponse {
+            status,
+            message: format!("unsupported Gemini finishReason '{raw_finish_reason}'"),
+            retry_after: retry_after.clone(),
+        }
+    })?;
+    let index = candidate
+        .get("index")
+        .and_then(Value::as_u64)
+        .unwrap_or(fallback_index as u64);
+    let content = gemini_candidate_text(candidate);
+
+    Ok(json!({
+        "index": index,
+        "message": {
+            "role": "assistant",
+            "content": content,
+        },
+        "finish_reason": finish_reason,
+    }))
+}
+
+fn gemini_candidate_text(candidate: &Value) -> String {
+    candidate
+        .get("content")
+        .and_then(|content| content.get("parts"))
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
 fn gemini_generate_content_terminal(
     response: &Value,
     status: u16,
@@ -815,6 +1292,86 @@ fn gemini_finish_reason(finish_reason: &str) -> Option<&'static str> {
     }
 }
 
+fn gemini_generate_content_protocol_metadata(response: &Value) -> Value {
+    let raw_finish_reason = response
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|candidates| {
+            candidates.iter().find_map(|candidate| {
+                candidate
+                    .get("finishReason")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|finish_reason| !finish_reason.is_empty())
+            })
+        });
+    let mapped_finish_reason = raw_finish_reason.and_then(gemini_finish_reason);
+    let error = response.get("error").filter(|error| error.is_object());
+    let block_reason = response
+        .get("promptFeedback")
+        .and_then(|feedback| feedback.get("blockReason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty());
+    let candidate_count = response
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let safety_rating_count = response
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|candidates| {
+            candidates
+                .iter()
+                .filter_map(|candidate| candidate.get("safetyRatings").and_then(Value::as_array))
+                .map(Vec::len)
+                .sum::<usize>()
+        })
+        .unwrap_or_default();
+    let terminal_status = if error.is_some() {
+        "error"
+    } else if block_reason.is_some() {
+        "blocked"
+    } else if raw_finish_reason.is_some() && mapped_finish_reason.is_some() {
+        "completed"
+    } else if raw_finish_reason.is_some() {
+        "unsupported_finish_reason"
+    } else {
+        "missing_terminal"
+    };
+    let usage = gemini_usage(response);
+
+    json!({
+        "schema": "gemini_generate_content_protocol_metadata_v1",
+        "protocol": "gemini_generate_content",
+        "terminal_status": terminal_status,
+        "candidate_count": candidate_count,
+        "finish_reason": {
+            "present": raw_finish_reason.is_some(),
+            "raw": raw_finish_reason,
+            "mapped": mapped_finish_reason,
+        },
+        "error": {
+            "present": error.is_some(),
+            "code": error.and_then(|error| error.get("code")).and_then(Value::as_u64),
+            "status": error.and_then(|error| error.get("status")).and_then(Value::as_str),
+        },
+        "safety": {
+            "prompt_block_reason": block_reason,
+            "blocked": block_reason.is_some() || matches!(mapped_finish_reason, Some("content_filter")),
+            "safety_rating_count": safety_rating_count,
+        },
+        "usage": {
+            "usage_metadata_present": response.get("usageMetadata").is_some(),
+            "prompt_tokens": usage.as_ref().and_then(|usage| usage.prompt_tokens),
+            "completion_tokens": usage.as_ref().and_then(|usage| usage.completion_tokens),
+            "total_tokens": usage.as_ref().and_then(|usage| usage.total_tokens),
+        },
+        "payload_body_omitted": true,
+    })
+}
+
 fn error_body(
     error_type: &str,
     code: &str,
@@ -866,6 +1423,16 @@ fn gemini_usage(response: &Value) -> Option<AdapterUsage> {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+    })
+}
+
+fn openai_chat_usage(response: &Value) -> Option<AdapterUsage> {
+    let usage = response.get("usage")?;
+
+    Some(AdapterUsage {
+        prompt_tokens: usage.get("prompt_tokens").and_then(Value::as_u64),
+        completion_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
+        total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
     })
 }
 
@@ -1033,6 +1600,7 @@ mod tests {
 
         assert_eq!(adapter.protocol_mode(), ProtocolMode::Gemini);
         assert!(capabilities.supports(AdapterOperation::GenerateContent));
+        assert!(capabilities.supports(AdapterOperation::ChatCompletions));
         assert_eq!(capabilities.stream_policy, AdapterStreamPolicy::Parse);
     }
 
@@ -1256,6 +1824,121 @@ mod tests {
     }
 
     #[test]
+    fn openai_chat_fixture_converts_to_gemini_generate_content_shape() {
+        let adapter = GeminiAdapter::new();
+        let fixture = load_gemini_fixture("openai_chat_to_generate_content_valid.json");
+        let request = serde_json::to_vec(&fixture["request"]).expect("fixture request");
+
+        let routing = adapter
+            .extract_routing_fields(&request)
+            .expect("OpenAI-compatible chat routing fields should parse");
+        assert_eq!(routing.model.as_deref(), Some("gemini-1.5-flash"));
+        assert!(routing.stream);
+
+        let upstream = adapter
+            .build_upstream_request(AdapterOperation::ChatCompletions, &request)
+            .expect("OpenAI-compatible chat fixture should convert to Gemini upstream request");
+        let expected = &fixture["expected_upstream"];
+
+        assert_eq!(
+            upstream.method,
+            expected["method"].as_str().expect("method")
+        );
+        assert_eq!(upstream.path, expected["path"].as_str().expect("path"));
+        assert_eq!(
+            upstream.stream,
+            expected["stream"].as_bool().expect("stream")
+        );
+        assert_eq!(&upstream.body, &expected["body"]);
+    }
+
+    #[test]
+    fn gemini_generate_content_response_normalizes_to_openai_chat_completion_shape() {
+        let adapter = GeminiAdapter::new();
+
+        for fixture_name in [
+            "openai_chat_response_from_generate_content_valid.json",
+            "openai_chat_response_empty_candidates.json",
+        ] {
+            let fixture = load_gemini_fixture(fixture_name);
+            let parsed = adapter
+                .parse_response(
+                    AdapterOperation::ChatCompletions,
+                    fixture_response_status(&fixture),
+                    &fixture_response_body(&fixture),
+                )
+                .expect("Gemini response should normalize to OpenAI chat response");
+
+            assert_eq!(&parsed, &fixture["expected_response"]);
+
+            let usage = adapter
+                .extract_usage(&parsed)
+                .expect("normalized OpenAI chat response should expose usage");
+            let actual_usage = serde_json::to_value(usage).expect("usage should serialize");
+            assert_eq!(&actual_usage, &fixture["expected_usage"]);
+        }
+    }
+
+    #[test]
+    fn gemini_chat_response_normalization_rejects_invalid_candidate_terminal() {
+        let adapter = GeminiAdapter::new();
+
+        for fixture_name in [
+            "generate_content_missing_candidate_terminal.json",
+            "generate_content_invalid_candidate_terminal.json",
+        ] {
+            let fixture = load_gemini_fixture(fixture_name);
+            let error = adapter
+                .parse_response(
+                    AdapterOperation::ChatCompletions,
+                    fixture_response_status(&fixture),
+                    &fixture_response_body(&fixture),
+                )
+                .expect_err("invalid Gemini terminal should fail chat response normalization");
+
+            assert_eq!(error.owner, GatewayErrorOwner::Gateway);
+            assert_eq!(error.code, "provider_invalid_response");
+        }
+    }
+
+    #[test]
+    fn openai_chat_to_gemini_rejects_unsupported_non_text_shapes() {
+        let adapter = GeminiAdapter::new();
+
+        for (body, param) in [
+            (
+                br#"{"model":"gemini-fixture","messages":[{"role":"tool","content":"result"}]}"#
+                    .as_slice(),
+                "messages",
+            ),
+            (
+                br#"{"model":"gemini-fixture","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}]}]}"#,
+                "messages",
+            ),
+            (
+                br#"{"model":"gemini-fixture","messages":[{"role":"user","content":"hi"}],"temperature":"low"}"#,
+                "temperature",
+            ),
+            (
+                br#"{"model":"gemini-fixture","messages":[{"role":"user","content":"hi"}],"max_tokens":0}"#,
+                "max_tokens",
+            ),
+        ] {
+            let error = adapter
+                .build_upstream_request(AdapterOperation::ChatCompletions, body)
+                .expect_err("unsupported OpenAI-compatible chat shape should fail conversion");
+
+            assert_eq!(error.owner, GatewayErrorOwner::Client);
+            assert_eq!(error.code, "invalid_request");
+            assert!(
+                error.message.contains(param),
+                "error message should name {param}: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
     fn stream_fixture_parses_generate_content_event_json_only() {
         let adapter = GeminiAdapter::new();
         let fixture = load_gemini_fixture("stream_generate_content_event.json");
@@ -1265,6 +1948,109 @@ mod tests {
             .expect("stream event JSON should parse");
 
         assert_eq!(&parsed, &fixture["expected_event"]);
+    }
+
+    #[test]
+    fn chat_completion_stream_fixtures_normalize_to_openai_chunks() {
+        let adapter = GeminiAdapter::new();
+        let events = sse_fixture_events("chat_completion_stream_normalized.sse");
+        assert_eq!(events.len(), 2);
+
+        let first = adapter
+            .parse_stream_event(AdapterOperation::ChatCompletions, &events[0])
+            .expect("first Gemini chat stream event should normalize");
+        assert_eq!(
+            first,
+            json!({
+                "id": "chatcmpl_stream-1",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "gemini-1.5-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "content": "Hel"
+                        },
+                        "finish_reason": null
+                    }
+                ]
+            })
+        );
+
+        let second = adapter
+            .parse_stream_event(AdapterOperation::ChatCompletions, &events[1])
+            .expect("terminal Gemini chat stream event should normalize");
+        assert_eq!(
+            second,
+            json!({
+                "id": "chatcmpl_stream-1",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "gemini-1.5-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": "lo"
+                        },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "total_tokens": 5
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn chat_completion_stream_empty_blocked_error_and_unsupported_finish_are_explicit() {
+        let adapter = GeminiAdapter::new();
+
+        let empty = adapter
+            .parse_stream_event(AdapterOperation::ChatCompletions, br#"{}"#)
+            .expect("empty Gemini stream event should normalize to an empty OpenAI chunk");
+        assert_eq!(
+            empty,
+            json!({
+                "id": "chatcmpl_gemini",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "gemini",
+                "choices": []
+            })
+        );
+
+        let blocked = sse_fixture_events("chat_completion_stream_blocked.sse");
+        let error = adapter
+            .parse_stream_event(AdapterOperation::ChatCompletions, &blocked[0])
+            .expect_err("blocked Gemini prompt should map to a structured adapter error");
+        assert_eq!(error.owner, GatewayErrorOwner::Gateway);
+        assert_eq!(error.code, "provider_invalid_response");
+        assert!(error.message.contains("blocked"));
+
+        let error = adapter
+            .parse_stream_event(
+                AdapterOperation::ChatCompletions,
+                br#"{"candidates":[{"index":0,"finishReason":"UNEXPECTED_REASON"}]}"#,
+            )
+            .expect_err("unsupported Gemini finish reason should map to an adapter error");
+        assert_eq!(error.owner, GatewayErrorOwner::Gateway);
+        assert_eq!(error.code, "provider_invalid_response");
+        assert!(error.message.contains("unsupported Gemini finishReason"));
+
+        let error = adapter
+            .parse_stream_event(
+                AdapterOperation::ChatCompletions,
+                br#"{"error":{"code":429,"message":"quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#,
+            )
+            .expect_err("Gemini stream error event should map to a provider error");
+        assert_eq!(error.owner, GatewayErrorOwner::Provider);
+        assert_eq!(error.code, "provider_429");
     }
 
     #[test]
@@ -1348,5 +2134,52 @@ mod tests {
             GeminiAdapter::finish_reason_for_finish_reason("UNEXPECTED_REASON"),
             None
         );
+    }
+
+    #[test]
+    fn gemini_generate_content_protocol_metadata_reads_terminal_usage_safety_and_error() {
+        let completed = GeminiAdapter::generate_content_protocol_metadata(&json!({
+            "candidates": [{
+                "index": 0,
+                "finishReason": "SAFETY",
+                "safetyRatings": [
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "probability": "MEDIUM"}
+                ]
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 7,
+                "totalTokenCount": 11
+            }
+        }));
+        assert_eq!(completed["terminal_status"], "completed");
+        assert_eq!(completed["finish_reason"]["raw"], "SAFETY");
+        assert_eq!(completed["finish_reason"]["mapped"], "content_filter");
+        assert_eq!(completed["safety"]["blocked"], true);
+        assert_eq!(completed["safety"]["safety_rating_count"], 1);
+        assert_eq!(completed["usage"]["prompt_tokens"], 7);
+        assert_eq!(completed["usage"]["completion_tokens"], 4);
+        assert_eq!(completed["payload_body_omitted"], true);
+
+        let blocked = GeminiAdapter::generate_content_protocol_metadata(&json!({
+            "promptFeedback": {"blockReason": "SAFETY"}
+        }));
+        assert_eq!(blocked["terminal_status"], "blocked");
+        assert_eq!(blocked["safety"]["prompt_block_reason"], "SAFETY");
+
+        let error = GeminiAdapter::generate_content_protocol_metadata(&json!({
+            "error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "quota"}
+        }));
+        assert_eq!(error["terminal_status"], "error");
+        assert_eq!(error["error"]["present"], true);
+        assert_eq!(error["error"]["code"], 429);
+        assert_eq!(error["error"]["status"], "RESOURCE_EXHAUSTED");
+
+        let serialized = completed.to_string() + &blocked.to_string() + &error.to_string();
+        for forbidden in ["Authorization", "provider_key", "raw_payload", "secret"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "Gemini protocol metadata leaked forbidden marker: {forbidden}"
+            );
+        }
     }
 }

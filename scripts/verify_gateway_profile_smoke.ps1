@@ -19,10 +19,12 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $fixturePath = Join-Path $repoRoot "tests\fixtures\gateway\profile_switching.json"
+$v1ModelsFixturePath = Join-Path $repoRoot "tests\fixtures\gateway\v1_models_profile_visibility_contract.json"
 $script:Failures = @()
 $script:Pending = @()
 $script:SwitchProfileWasProvided = -not [string]::IsNullOrWhiteSpace($SwitchProfile)
 $script:SwitchModelWasProvided = -not [string]::IsNullOrWhiteSpace($SwitchModel)
+$script:SelectedSwitchModel = $SwitchModel
 
 function Test-TruthyEnv {
   param([string]$Value)
@@ -40,6 +42,7 @@ if ($env:PROFILE_SMOKE_SWITCH_PROFILE) {
 }
 if ($env:PROFILE_SMOKE_SWITCH_MODEL) {
   $SwitchModel = $env:PROFILE_SMOKE_SWITCH_MODEL
+  $script:SelectedSwitchModel = $SwitchModel
   $script:SwitchModelWasProvided = $true
 }
 if ($env:PROFILE_SMOKE_INVALID_PROFILE) { $InvalidProfile = $env:PROFILE_SMOKE_INVALID_PROFILE }
@@ -220,6 +223,18 @@ function Read-Fixture {
   }
 }
 
+function Read-V1ModelsFixture {
+  if (-not (Test-Path $v1ModelsFixturePath)) {
+    throw "missing tests\fixtures\gateway\v1_models_profile_visibility_contract.json"
+  }
+
+  try {
+    return Get-Content -Raw $v1ModelsFixturePath | ConvertFrom-Json
+  } catch {
+    throw "v1_models_profile_visibility_contract.json is not valid JSON: $($_.Exception.Message)"
+  }
+}
+
 function Assert-FixtureEndpointIntent {
   param([Parameter(Mandatory = $true)]$Fixture)
 
@@ -301,6 +316,44 @@ function Assert-FixtureVisibilityContract {
   }
   if ($contract.internal_models_require_profile_binding -ne $true) {
     throw "model_visibility_contract.internal_models_require_profile_binding must be true"
+  }
+}
+
+function Assert-V1ModelsFixtureContract {
+  param([Parameter(Mandatory = $true)]$Fixture)
+
+  if ($Fixture.scenario -ne "gateway_v1_models_profile_visibility_contract") {
+    throw "v1 models fixture scenario must be gateway_v1_models_profile_visibility_contract"
+  }
+  if ($Fixture.endpoint.method -ne "GET" -or $Fixture.endpoint.path -ne "/v1/models") {
+    throw "v1 models fixture must declare GET /v1/models"
+  }
+  if ($Fixture.endpoint.profile_header -ne "x-ai-profile") {
+    throw "v1 models fixture profile_header must be x-ai-profile"
+  }
+
+  $predicates = @($Fixture.filter_contract.model_sql_predicates | ForEach-Object { [string]$_ })
+  foreach ($required in @(
+      "empty allowed_models means no profile allowlist restriction",
+      "non-empty allowed_models must contain canonical_models.model_key",
+      "denied_models containing canonical_models.model_key excludes the model",
+      "allowed_channel_tags must match at least one enabled OpenAI-compatible route channel when configured",
+      "blocked_provider_ids excludes models whose only candidate routes use blocked providers",
+      "a model is listed only when at least one enabled model_association, non-deleted OpenAI-compatible channel, enabled provider, and currently usable provider_key exists"
+    )) {
+    if ($predicates -notcontains $required) {
+      throw "v1 models fixture is missing predicate: $required"
+    }
+  }
+
+  $negativeCase = @($Fixture.acceptance_cases | Where-Object { $_.name -eq "unroutable_or_provider_blocked_model_hidden" })
+  if ($negativeCase.Count -ne 1) {
+    throw "v1 models fixture must include unroutable_or_provider_blocked_model_hidden acceptance case"
+  }
+  if ($Fixture.secret_safety.full_virtual_key_returned -ne $false -or
+      $Fixture.secret_safety.authorization_header_returned -ne $false -or
+      $Fixture.secret_safety.provider_key_returned -ne $false) {
+    throw "v1 models fixture secret_safety must forbid key/header/provider secret echoes"
   }
 }
 
@@ -509,6 +562,107 @@ function Invoke-ComposePsql {
   }
 }
 
+function Reset-DefaultProfileRuntimeState {
+  $prefix = Escape-SqlLiteral (Get-VirtualKeyPrefix $GatewayAuthToken)
+  $hash = Escape-SqlLiteral (Get-Sha256Hex $GatewayAuthToken)
+  $model = Escape-SqlLiteral $DefaultModel
+
+  $sql = @"
+with key_info as (
+  select tenant_id, project_id, id as virtual_key_id
+  from virtual_keys
+  where key_prefix = '$prefix'
+    and secret_hash = '$hash'
+    and status <> 'deleted'
+    and deleted_at is null
+),
+default_profile as (
+  select p.*
+  from key_info ki
+  join virtual_key_profile_bindings b
+    on b.tenant_id = ki.tenant_id
+   and b.project_id = ki.project_id
+   and b.virtual_key_id = ki.virtual_key_id
+   and b.is_default = true
+  join api_key_profiles p
+    on p.tenant_id = b.tenant_id
+   and p.project_id = b.project_id
+   and p.id = b.profile_id
+   and p.status = 'active'
+   and p.deleted_at is null
+),
+canonical as (
+  select m.*
+  from default_profile p
+  join canonical_models m
+    on m.tenant_id = p.tenant_id
+   and m.model_key = coalesce(nullif(p.model_aliases ->> '$model', ''), '$model')
+   and m.status = 'active'
+   and m.visibility in ('public', 'internal')
+   and m.deleted_at is null
+  where (
+      coalesce(jsonb_array_length(p.allowed_models), 0) = 0
+      or p.allowed_models ? m.model_key
+    )
+    and not (coalesce(p.denied_models, '[]'::jsonb) ? m.model_key)
+),
+candidate_channels as (
+  select distinct ch.tenant_id, ch.id as channel_id
+  from default_profile p
+  join canonical m on m.tenant_id = p.tenant_id
+  join model_associations ma
+    on ma.tenant_id = p.tenant_id
+   and ma.canonical_model_id = m.id
+   and ma.status = 'enabled'
+   and ma.deleted_at is null
+  join channels ch
+    on ch.tenant_id = ma.tenant_id
+   and (
+     (ma.association_type = 'explicit_channel' and ch.id = ma.channel_id)
+     or (ma.association_type = 'channel_tag' and ma.channel_tag is not null and ch.tags ? ma.channel_tag)
+     or ma.association_type = 'global'
+     or (ma.association_type = 'model_pattern' and ma.model_pattern is not null and m.model_key ~ ma.model_pattern)
+   )
+   and ch.status <> 'deleted'
+   and ch.deleted_at is null
+  join providers pr
+    on pr.tenant_id = ch.tenant_id
+   and pr.id = ch.provider_id
+   and pr.status = 'enabled'
+   and pr.deleted_at is null
+  where (
+      coalesce(jsonb_array_length(p.allowed_channel_tags), 0) = 0
+      or exists (
+        select 1
+        from jsonb_array_elements_text(p.allowed_channel_tags) allowed(tag)
+        where ch.tags ? allowed.tag
+      )
+    )
+    and not (coalesce(p.blocked_provider_ids, '[]'::jsonb) ? pr.id::text)
+),
+updated as (
+  update provider_keys pk
+     set status = 'enabled',
+         cooldown_until = null,
+         last_error_code = null,
+         health_score = 1.0,
+         updated_at = now()
+    from candidate_channels ch
+   where pk.tenant_id = ch.tenant_id
+     and pk.channel_id = ch.channel_id
+     and pk.deleted_at is null
+     and pk.status in ('enabled', 'cooldown', 'degraded', 'auth_failed', 'quota_exhausted', 'recovery_probe')
+  returning pk.id::text
+)
+select coalesce(jsonb_agg(id), '[]'::jsonb)::text from updated;
+"@
+
+  $updated = @(Invoke-ComposePsql $sql | ConvertFrom-Json)
+  if ($updated.Count -lt 1) {
+    throw "default profile runtime reset did not find an eligible provider key for model '$DefaultModel'"
+  }
+}
+
 function Get-BoundProfilesForToken {
   $prefix = Escape-SqlLiteral (Get-VirtualKeyPrefix $GatewayAuthToken)
   $hash = Escape-SqlLiteral (Get-Sha256Hex $GatewayAuthToken)
@@ -588,7 +742,10 @@ function Assert-BoundProfilePreconditions {
       )
     })
   if ($switch.Count -eq 0) {
-    throw "switch profile '$SwitchProfile' is not an active profile binding for the supplied virtual key"
+    if (-not $script:SwitchProfileWasProvided) {
+      throw "switch profile '$SwitchProfile' is not an active profile binding for the supplied virtual key"
+    }
+    return
   }
 
   if ($Profiles.Count -lt 2) {
@@ -717,7 +874,8 @@ try {
     foreach ($relativePath in @(
         "scripts\verify_gateway_profile_smoke.ps1",
         "scripts\common.ps1",
-        "tests\fixtures\gateway\profile_switching.json"
+        "tests\fixtures\gateway\profile_switching.json",
+        "tests\fixtures\gateway\v1_models_profile_visibility_contract.json"
       )) {
       $path = Join-Path $repoRoot $relativePath
       if (-not (Test-Path $path)) {
@@ -730,6 +888,7 @@ try {
     $script:fixture = Read-Fixture
     Assert-FixtureEndpointIntent $script:fixture
     Assert-FixtureVisibilityContract $script:fixture
+    Assert-V1ModelsFixtureContract (Read-V1ModelsFixture)
     Assert-DryRunHeaderConstruction $script:fixture
   }
 
@@ -762,6 +921,10 @@ try {
         $profiles = @(Get-BoundProfilesForToken)
         Set-DiscoveredSwitchProfile -Profiles $profiles
         Assert-BoundProfilePreconditions -Profiles $profiles
+      }
+
+      Check "default profile runtime route state reset" {
+        Reset-DefaultProfileRuntimeState
       }
     }
 
@@ -802,31 +965,31 @@ try {
       }
 
       Check "select switched chat model" {
-        if ([string]::IsNullOrWhiteSpace($SwitchModel)) {
+        if ([string]::IsNullOrWhiteSpace($script:SelectedSwitchModel)) {
           $uniqueSwitchModels = @($script:SwitchModels.ModelIds | Where-Object { @($script:DefaultModels.ModelIds) -notcontains $_ })
           if ($uniqueSwitchModels.Count -gt 0) {
-            $SwitchModel = [string]$uniqueSwitchModels[0]
+            $script:SelectedSwitchModel = [string]$uniqueSwitchModels[0]
           } elseif ($script:SwitchModels.ModelIds.Count -gt 0) {
-            $SwitchModel = [string]$script:SwitchModels.ModelIds[0]
+            $script:SelectedSwitchModel = [string]$script:SwitchModels.ModelIds[0]
           }
         }
 
-        if ([string]::IsNullOrWhiteSpace($SwitchModel) -and $script:fixture) {
+        if ([string]::IsNullOrWhiteSpace($script:SelectedSwitchModel) -and $script:fixture) {
           $fixtureModels = @($script:fixture.profiles.switch.example_expected_visible_models)
           if ($fixtureModels.Count -gt 0) {
-            $SwitchModel = [string]$fixtureModels[0]
+            $script:SelectedSwitchModel = [string]$fixtureModels[0]
           }
         }
 
-        if ([string]::IsNullOrWhiteSpace($SwitchModel)) {
+        if ([string]::IsNullOrWhiteSpace($script:SelectedSwitchModel)) {
           throw "could not determine a switched profile chat model; set -SwitchModel or PROFILE_SMOKE_SWITCH_MODEL"
         }
-        if (-not (Test-ModelListContains -ModelIds $script:SwitchModels.ModelIds -ExpectedModel $SwitchModel)) {
-          throw "selected switched profile chat model '$SwitchModel' is not visible in switched /v1/models"
+        if (-not (Test-ModelListContains -ModelIds $script:SwitchModels.ModelIds -ExpectedModel $script:SelectedSwitchModel)) {
+          throw "selected switched profile chat model '$script:SelectedSwitchModel' is not visible in switched /v1/models"
         }
-        $script:SwitchModelVisibleInDefault = Test-ModelListContains -ModelIds $script:DefaultModels.ModelIds -ExpectedModel $SwitchModel
+        $script:SwitchModelVisibleInDefault = Test-ModelListContains -ModelIds $script:DefaultModels.ModelIds -ExpectedModel $script:SelectedSwitchModel
         if ($SkipDbLog -and $script:SwitchModelVisibleInDefault) {
-          throw "selected switched profile chat model '$SwitchModel' is also visible in the default profile; disable -SkipDbLog or choose a switch-only model"
+          throw "selected switched profile chat model '$script:SelectedSwitchModel' is also visible in the default profile; disable -SkipDbLog or choose a switch-only model"
         }
       }
 
@@ -834,14 +997,14 @@ try {
         Write-SafeHost "[SKIP] default profile rejects switch-only chat model - selected switched model is also visible in the default profile"
       } else {
         Check "default profile rejects switch-only chat model" {
-          $body = New-ChatBodyJson -RequestModel $SwitchModel -Content "gateway profile smoke default rejects switched model $suffix"
+          $body = New-ChatBodyJson -RequestModel $script:SelectedSwitchModel -Content "gateway profile smoke default rejects switched model $suffix"
           $response = Invoke-ProfileRequest `
             -Method POST `
             -Uri (Join-Url $GatewayBaseUrl "/v1/chat/completions") `
             -Headers (New-GatewayHeaders) `
             -JsonBody $body
           if ($response.StatusCode -eq 200) {
-            throw "default profile accepted switch-only model '$SwitchModel'"
+            throw "default profile accepted switch-only model '$script:SelectedSwitchModel'"
           }
           Assert-Contains $response.Content "error"
         }
@@ -863,7 +1026,7 @@ try {
         $switchChat = Invoke-ChatCompletionProbe `
           -Name "switched profile chat" `
           -Headers (New-GatewayHeaders -ProfileRef $SwitchProfile) `
-          -Model $SwitchModel `
+          -Model $script:SelectedSwitchModel `
           -Content "gateway profile smoke switched route $suffix"
         $script:SwitchChat = $switchChat
       }
@@ -883,7 +1046,7 @@ try {
           Assert-ChatLogProfile `
             -RequestHash $script:SwitchChat.RequestHash `
             -ExpectedProfileId $script:SwitchModels.ProfileId `
-            -ExpectedModel $SwitchModel `
+            -ExpectedModel $script:SelectedSwitchModel `
             -Name "switched profile chat"
         }
 

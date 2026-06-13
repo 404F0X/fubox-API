@@ -6,7 +6,8 @@ use std::{
 
 use ai_gateway_auth::{
     DEFAULT_LOGIN_FAILURE_LIMIT, DEFAULT_LOGIN_FAILURE_WINDOW_SECONDS, LoginFailureRateLimitPolicy,
-    Role, generate_session_token, require_permission, verify_admin_password,
+    Role, generate_session_token, parse_session_token, parse_virtual_key, require_permission,
+    verify_admin_password,
 };
 use axum::{
     Json, Router,
@@ -21,6 +22,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::{
@@ -62,6 +64,131 @@ pub(crate) async fn authenticate_headers(
         .ok_or_else(AuthError::unauthorized)?;
 
     Ok(AdminSession { inner: session })
+}
+
+pub(crate) async fn authenticate_remaining_balance_principal(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    wallet_id: Uuid,
+) -> Result<RemainingBalancePrincipal, AuthError> {
+    if let Some(candidate) = session_token_from_headers(headers)?
+        && matches!(candidate.source, SessionTokenSource::AuthorizationBearer)
+        && let Ok(parsed) = parse_session_token(&candidate.token)
+        && let Some(principal) =
+            find_remaining_balance_user_session_principal(state, &parsed, wallet_id).await?
+    {
+        return Ok(principal);
+    }
+
+    if let Some(token) = bearer_token(headers)?
+        && let Ok(parsed) = parse_virtual_key(&token)
+        && let Some(principal) =
+            find_remaining_balance_developer_token_principal(state, &parsed, wallet_id).await?
+    {
+        return Ok(principal);
+    }
+
+    Err(AuthError::forbidden())
+}
+
+async fn find_remaining_balance_user_session_principal(
+    state: &ControlPlaneState,
+    parsed: &ai_gateway_auth::ParsedSessionToken,
+    wallet_id: Uuid,
+) -> Result<Option<RemainingBalancePrincipal>, AuthError> {
+    let row = sqlx::query(REMAINING_BALANCE_USER_SESSION_SCOPE_SQL)
+        .bind(&parsed.prefix)
+        .bind(&parsed.token_hash)
+        .bind(wallet_id)
+        .fetch_optional(state.db())
+        .await
+        .map_err(|_| AuthError::service_unavailable())?;
+
+    row.map(|row| {
+        Ok(RemainingBalancePrincipal {
+            source: RemainingBalancePrincipalSource::UserSession,
+            tenant_id: row
+                .try_get("tenant_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            project_id: row
+                .try_get("project_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            user_id: row
+                .try_get("user_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            virtual_key_id: None,
+            wallet_id: row
+                .try_get("wallet_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            currency: row
+                .try_get("currency")
+                .map_err(|_| AuthError::service_unavailable())?,
+        })
+    })
+    .transpose()
+}
+
+async fn find_remaining_balance_developer_token_principal(
+    state: &ControlPlaneState,
+    parsed: &ai_gateway_auth::ParsedVirtualKey,
+    wallet_id: Uuid,
+) -> Result<Option<RemainingBalancePrincipal>, AuthError> {
+    let row = sqlx::query(REMAINING_BALANCE_DEVELOPER_TOKEN_SCOPE_SQL)
+        .bind(&parsed.prefix)
+        .bind(&parsed.secret_hash)
+        .bind(wallet_id)
+        .fetch_optional(state.db())
+        .await
+        .map_err(|_| AuthError::service_unavailable())?;
+
+    row.map(|row| {
+        Ok(RemainingBalancePrincipal {
+            source: RemainingBalancePrincipalSource::DeveloperToken,
+            tenant_id: row
+                .try_get("tenant_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            project_id: row
+                .try_get("project_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            user_id: None,
+            virtual_key_id: row
+                .try_get("virtual_key_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            wallet_id: row
+                .try_get("wallet_id")
+                .map_err(|_| AuthError::service_unavailable())?,
+            currency: row
+                .try_get("currency")
+                .map_err(|_| AuthError::service_unavailable())?,
+        })
+    })
+    .transpose()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemainingBalancePrincipal {
+    pub(crate) source: RemainingBalancePrincipalSource,
+    pub(crate) tenant_id: Uuid,
+    pub(crate) project_id: Uuid,
+    pub(crate) user_id: Option<Uuid>,
+    pub(crate) virtual_key_id: Option<Uuid>,
+    pub(crate) wallet_id: Uuid,
+    pub(crate) currency: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemainingBalancePrincipalSource {
+    UserSession,
+    DeveloperToken,
+}
+
+impl RemainingBalancePrincipalSource {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserSession => "control_plane_user_session",
+            Self::DeveloperToken => "control_plane_developer_token",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +236,26 @@ impl AdminSession {
             user: self.user_response(),
             session: self.session_response(),
             capability_summary: capability_summary_for_roles(self.roles()),
+        }
+    }
+}
+
+#[cfg(test)]
+impl AdminSession {
+    pub(crate) fn test_for_tenant(tenant_id: Uuid, roles: Vec<Role>) -> Self {
+        Self {
+            inner: StoredAdminSession {
+                id: Uuid::from_u128(10),
+                expires_at: "2026-06-05T12:00:00Z".to_string(),
+                user: StoredAdminUser {
+                    id: Uuid::from_u128(20),
+                    tenant_id,
+                    email: "admin@example.local".to_string(),
+                    display_name: "Admin".to_string(),
+                    password_hash: None,
+                    roles,
+                },
+            },
         }
     }
 }
@@ -356,7 +503,7 @@ fn session_ttl_seconds() -> i32 {
         .unwrap_or(DEFAULT_SESSION_TTL_SECONDS)
 }
 
-fn login_failure_rate_limit_policy() -> LoginFailureRateLimitPolicy {
+pub(crate) fn login_failure_rate_limit_policy() -> LoginFailureRateLimitPolicy {
     LoginFailureRateLimitPolicy::new(
         env_u32(ADMIN_LOGIN_FAILURE_LIMIT_ENV, DEFAULT_LOGIN_FAILURE_LIMIT),
         env_u64(
@@ -1590,7 +1737,17 @@ impl AuthError {
         }
     }
 
-    fn invalid_credentials() -> Self {
+    pub(crate) fn not_found(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found",
+            message,
+            details: None,
+            retry_after_seconds: None,
+        }
+    }
+
+    pub(crate) fn invalid_credentials() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
             code: "invalid_credentials",
@@ -1600,7 +1757,7 @@ impl AuthError {
         }
     }
 
-    fn login_rate_limited(retry_after_seconds: u64) -> Self {
+    pub(crate) fn login_rate_limited(retry_after_seconds: u64) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
             code: "login_rate_limited",
@@ -1670,11 +1827,41 @@ impl AuthError {
         }
     }
 
-    fn service_unavailable() -> Self {
+    pub(crate) fn service_unavailable() -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "auth_service_error",
             message: "authentication service unavailable",
+            details: None,
+            retry_after_seconds: None,
+        }
+    }
+
+    pub(crate) fn bad_request() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_request",
+            message: "invalid request",
+            details: None,
+            retry_after_seconds: None,
+        }
+    }
+
+    pub(crate) fn bad_request_with_message(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code,
+            message,
+            details: None,
+            retry_after_seconds: None,
+        }
+    }
+
+    pub(crate) fn conflict(code: &'static str, message: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code,
+            message,
             details: None,
             retry_after_seconds: None,
         }
@@ -1720,6 +1907,142 @@ fn auth_error_body(code: &'static str, message: &'static str, details: Option<&V
     }
     body
 }
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemainingBalanceOwnershipTokenSource {
+    AdminSession,
+    UserSession,
+    DeveloperToken,
+    GatewayVirtualKey,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemainingBalanceOwnershipCandidate {
+    source: RemainingBalanceOwnershipTokenSource,
+    tenant_id: Uuid,
+    project_id: Option<Uuid>,
+    wallet_id: Option<Uuid>,
+    server_verified: bool,
+    raw_secret_echoed: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemainingBalanceOwnershipDecision {
+    accepted: bool,
+    user_api_runtime: bool,
+    ownership_scope_verified: bool,
+    refusal_code: Option<&'static str>,
+    secret_safe: bool,
+}
+
+#[cfg(test)]
+fn remaining_balance_ownership_contract_decision(
+    candidate: &RemainingBalanceOwnershipCandidate,
+    wallet_tenant_id: Uuid,
+    wallet_project_id: Option<Uuid>,
+    wallet_id: Uuid,
+) -> RemainingBalanceOwnershipDecision {
+    let mut decision = RemainingBalanceOwnershipDecision {
+        accepted: false,
+        user_api_runtime: false,
+        ownership_scope_verified: false,
+        refusal_code: None,
+        secret_safe: !candidate.raw_secret_echoed,
+    };
+
+    if candidate.raw_secret_echoed {
+        decision.refusal_code = Some("raw_token_or_secret_echoed");
+        return decision;
+    }
+
+    match candidate.source {
+        RemainingBalanceOwnershipTokenSource::AdminSession => {
+            decision.refusal_code = Some("admin_session_not_user_ownership_scope");
+            return decision;
+        }
+        RemainingBalanceOwnershipTokenSource::GatewayVirtualKey => {
+            decision.refusal_code = Some("gateway_virtual_key_not_control_plane_auth_boundary");
+            return decision;
+        }
+        RemainingBalanceOwnershipTokenSource::UserSession
+        | RemainingBalanceOwnershipTokenSource::DeveloperToken => {}
+    }
+
+    if !candidate.server_verified {
+        decision.refusal_code = Some("token_scope_not_server_verified");
+        return decision;
+    }
+    if candidate.tenant_id != wallet_tenant_id {
+        decision.refusal_code = Some("tenant_scope_mismatch");
+        return decision;
+    }
+    if candidate.project_id != wallet_project_id {
+        decision.refusal_code = Some("project_scope_mismatch");
+        return decision;
+    }
+    if candidate.wallet_id != Some(wallet_id) {
+        decision.refusal_code = Some("wallet_scope_mismatch");
+        return decision;
+    }
+
+    decision.accepted = true;
+    decision.user_api_runtime = true;
+    decision.ownership_scope_verified = true;
+    decision
+}
+
+const REMAINING_BALANCE_USER_SESSION_SCOPE_SQL: &str = r#"
+select
+  s.tenant_id,
+  s.user_id,
+  pm.project_id,
+  w.id as wallet_id,
+  w.currency
+from user_sessions s
+join users u
+  on u.tenant_id = s.tenant_id
+ and u.id = s.user_id
+join project_members pm
+  on pm.tenant_id = s.tenant_id
+ and pm.user_id = s.user_id
+join wallets w
+  on w.tenant_id = s.tenant_id
+ and w.project_id = pm.project_id
+where s.token_lookup_prefix = $1
+  and s.token_hash = $2
+  and s.status = 'active'
+  and s.revoked_at is null
+  and s.expires_at > now()
+  and u.status = 'active'
+  and u.deleted_at is null
+  and w.id = $3
+  and w.status = 'active'
+  and w.deleted_at is null
+"#;
+
+const REMAINING_BALANCE_DEVELOPER_TOKEN_SCOPE_SQL: &str = r#"
+select
+  vk.tenant_id,
+  vk.project_id,
+  vk.id as virtual_key_id,
+  w.id as wallet_id,
+  w.currency
+from virtual_keys vk
+join wallets w
+  on w.tenant_id = vk.tenant_id
+ and w.project_id = vk.project_id
+where vk.key_prefix = $1
+  and vk.secret_hash = $2
+  and vk.status = 'active'
+  and vk.deleted_at is null
+  and (vk.expires_at is null or vk.expires_at > now())
+  and w.id = $3
+  and w.status = 'active'
+  and w.deleted_at is null
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -1800,6 +2123,200 @@ mod tests {
             "../../../tests/fixtures/control-plane/oidc_saml_auth_contract.json"
         ))
         .expect("fixture should be valid json")
+    }
+
+    #[test]
+    fn remaining_balance_ownership_contract_rejects_admin_and_gateway_boundaries() {
+        let wallet_id = Uuid::from_u128(3201);
+        let project_id = Some(Uuid::from_u128(3202));
+        let admin_candidate = RemainingBalanceOwnershipCandidate {
+            source: RemainingBalanceOwnershipTokenSource::AdminSession,
+            tenant_id: DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id: Some(wallet_id),
+            server_verified: true,
+            raw_secret_echoed: false,
+        };
+        let admin_decision = remaining_balance_ownership_contract_decision(
+            &admin_candidate,
+            DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id,
+        );
+        assert!(!admin_decision.accepted);
+        assert!(!admin_decision.user_api_runtime);
+        assert!(!admin_decision.ownership_scope_verified);
+        assert_eq!(
+            admin_decision.refusal_code,
+            Some("admin_session_not_user_ownership_scope")
+        );
+        assert!(admin_decision.secret_safe);
+
+        let gateway_candidate = RemainingBalanceOwnershipCandidate {
+            source: RemainingBalanceOwnershipTokenSource::GatewayVirtualKey,
+            tenant_id: DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id: Some(wallet_id),
+            server_verified: true,
+            raw_secret_echoed: false,
+        };
+        let gateway_decision = remaining_balance_ownership_contract_decision(
+            &gateway_candidate,
+            DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id,
+        );
+        assert!(!gateway_decision.accepted);
+        assert_eq!(
+            gateway_decision.refusal_code,
+            Some("gateway_virtual_key_not_control_plane_auth_boundary")
+        );
+    }
+
+    #[test]
+    fn remaining_balance_ownership_contract_requires_server_verified_matching_scope() {
+        let wallet_id = Uuid::from_u128(3203);
+        let project_id = Some(Uuid::from_u128(3204));
+        let accepted_candidate = RemainingBalanceOwnershipCandidate {
+            source: RemainingBalanceOwnershipTokenSource::DeveloperToken,
+            tenant_id: DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id: Some(wallet_id),
+            server_verified: true,
+            raw_secret_echoed: false,
+        };
+        let accepted_decision = remaining_balance_ownership_contract_decision(
+            &accepted_candidate,
+            DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id,
+        );
+        assert!(accepted_decision.accepted);
+        assert!(accepted_decision.user_api_runtime);
+        assert!(accepted_decision.ownership_scope_verified);
+        assert_eq!(accepted_decision.refusal_code, None);
+        assert!(accepted_decision.secret_safe);
+
+        let unverified = RemainingBalanceOwnershipCandidate {
+            server_verified: false,
+            ..accepted_candidate.clone()
+        };
+        let unverified_decision = remaining_balance_ownership_contract_decision(
+            &unverified,
+            DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id,
+        );
+        assert_eq!(
+            unverified_decision.refusal_code,
+            Some("token_scope_not_server_verified")
+        );
+        assert!(!unverified_decision.user_api_runtime);
+
+        let wrong_project = RemainingBalanceOwnershipCandidate {
+            project_id: Some(Uuid::from_u128(3205)),
+            ..accepted_candidate.clone()
+        };
+        let wrong_project_decision = remaining_balance_ownership_contract_decision(
+            &wrong_project,
+            DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id,
+        );
+        assert_eq!(
+            wrong_project_decision.refusal_code,
+            Some("project_scope_mismatch")
+        );
+        assert!(!wrong_project_decision.ownership_scope_verified);
+
+        let raw_secret_echoed = RemainingBalanceOwnershipCandidate {
+            source: RemainingBalanceOwnershipTokenSource::UserSession,
+            raw_secret_echoed: true,
+            ..accepted_candidate
+        };
+        let raw_secret_decision = remaining_balance_ownership_contract_decision(
+            &raw_secret_echoed,
+            DEFAULT_TENANT_ID,
+            project_id,
+            wallet_id,
+        );
+        assert_eq!(
+            raw_secret_decision.refusal_code,
+            Some("raw_token_or_secret_echoed")
+        );
+        assert!(!raw_secret_decision.secret_safe);
+    }
+
+    #[test]
+    fn remaining_balance_user_session_resolver_sql_is_server_side_scoped() {
+        let sql = REMAINING_BALANCE_USER_SESSION_SCOPE_SQL;
+
+        for expected in [
+            "from user_sessions s",
+            "join project_members pm",
+            "join wallets w",
+            "s.token_lookup_prefix = $1",
+            "s.token_hash = $2",
+            "w.id = $3",
+            "w.project_id = pm.project_id",
+            "s.status = 'active'",
+            "s.revoked_at is null",
+            "w.status = 'active'",
+        ] {
+            assert!(
+                sql.contains(expected),
+                "user session resolver SQL missing {expected}"
+            );
+        }
+
+        for forbidden in [
+            "authorization",
+            "cookie",
+            "client_wallet_claim",
+            "raw_token",
+            "secret_hash as",
+        ] {
+            assert!(
+                !sql.to_ascii_lowercase().contains(forbidden),
+                "user session resolver SQL must not expose or trust {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn remaining_balance_developer_token_resolver_sql_uses_hash_lookup_and_wallet_scope() {
+        let sql = REMAINING_BALANCE_DEVELOPER_TOKEN_SCOPE_SQL;
+
+        for expected in [
+            "from virtual_keys vk",
+            "join wallets w",
+            "vk.key_prefix = $1",
+            "vk.secret_hash = $2",
+            "w.id = $3",
+            "w.project_id = vk.project_id",
+            "vk.status = 'active'",
+            "vk.deleted_at is null",
+            "w.status = 'active'",
+        ] {
+            assert!(
+                sql.contains(expected),
+                "developer token resolver SQL missing {expected}"
+            );
+        }
+
+        for forbidden in [
+            "gatewayrepository",
+            "client_wallet_claim",
+            "raw_token",
+            "authorization",
+            "cookie",
+            "select vk.secret_hash",
+        ] {
+            assert!(
+                !sql.to_ascii_lowercase().contains(forbidden),
+                "developer token resolver SQL must not expose or trust {forbidden}"
+            );
+        }
     }
 
     #[test]
@@ -2573,6 +3090,14 @@ mod tests {
             fixture["saml"]["remaining_gaps"][0],
             json!("saml_xml_signature_validation")
         );
+        assert_eq!(
+            fixture["enterprise_saml_xml_signature_parser_executor"]["schema"],
+            json!("saml_xml_signature_parser_executor.v1")
+        );
+        assert_eq!(
+            fixture["enterprise_saml_xml_signature_parser_executor"]["raw_xml_accepted"],
+            json!(false)
+        );
         assert!(openapi.contains("x-federated-auth-contract:"));
         assert!(
             openapi.contains("fixture: tests/fixtures/control-plane/oidc_saml_auth_contract.json")
@@ -2588,6 +3113,8 @@ mod tests {
         assert!(openapi.contains("SamlMetadataSummary"));
         assert!(openapi.contains("server_side_state_nonce_persistence_implemented: true"));
         assert!(openapi.contains("saml_xml_signature_validation"));
+        assert!(openapi.contains("saml_xml_signature_parser_executor.v1"));
+        assert!(openapi.contains("raw_xml_accepted: false"));
     }
 
     #[test]

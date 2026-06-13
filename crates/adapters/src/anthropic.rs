@@ -17,6 +17,11 @@ const MESSAGES_PATH: &str = "/v1/messages";
 #[derive(Debug, Clone, Default)]
 pub struct AnthropicAdapter;
 
+#[derive(Debug, Clone, Default)]
+pub struct ClaudeCompatibleAdapter {
+    inner: AnthropicAdapter,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnthropicMessagesRequest {
     #[serde(default)]
@@ -137,6 +142,14 @@ impl AnthropicAdapter {
         }
 
         Ok(json)
+    }
+}
+
+impl ClaudeCompatibleAdapter {
+    pub const fn new() -> Self {
+        Self {
+            inner: AnthropicAdapter,
+        }
     }
 }
 
@@ -540,6 +553,53 @@ impl Adapter for AnthropicAdapter {
 
     fn extract_usage(&self, response: &Value) -> Option<AdapterUsage> {
         anthropic_usage(response)
+    }
+}
+
+impl Adapter for ClaudeCompatibleAdapter {
+    fn protocol_mode(&self) -> ProtocolMode {
+        ProtocolMode::ClaudeCompatible
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn extract_model(&self, body: &[u8]) -> Result<Option<String>, GatewayError> {
+        self.extract_routing_fields(body).map(|fields| fields.model)
+    }
+
+    fn extract_routing_fields(&self, body: &[u8]) -> Result<AdapterRoutingFields, GatewayError> {
+        self.inner.extract_routing_fields(body)
+    }
+
+    fn build_upstream_request(
+        &self,
+        operation: AdapterOperation,
+        body: &[u8],
+    ) -> Result<AdapterUpstreamRequest, GatewayError> {
+        self.inner.build_upstream_request(operation, body)
+    }
+
+    fn parse_response(
+        &self,
+        operation: AdapterOperation,
+        status: u16,
+        body: &[u8],
+    ) -> Result<Value, GatewayError> {
+        self.inner.parse_response(operation, status, body)
+    }
+
+    fn parse_stream_event(
+        &self,
+        operation: AdapterOperation,
+        event: &[u8],
+    ) -> Result<Value, GatewayError> {
+        self.inner.parse_stream_event(operation, event)
+    }
+
+    fn extract_usage(&self, response: &Value) -> Option<AdapterUsage> {
+        self.inner.extract_usage(response)
     }
 }
 
@@ -968,6 +1028,52 @@ mod tests {
     }
 
     #[test]
+    fn claude_compatible_adapter_alias_uses_anthropic_messages_contract() {
+        let adapter = ClaudeCompatibleAdapter::new();
+        let capabilities = adapter.capabilities();
+        let fixture = load_anthropic_fixture("claude_compatible_messages_non_stream_valid.json");
+        let request = serde_json::to_vec(&fixture["request"]).expect("fixture request");
+
+        assert_eq!(adapter.protocol_mode(), ProtocolMode::ClaudeCompatible);
+        assert!(capabilities.supports(AdapterOperation::Messages));
+        assert_eq!(capabilities.stream_policy, AdapterStreamPolicy::Parse);
+
+        let routing = adapter
+            .extract_routing_fields(&request)
+            .expect("Claude-compatible routing fields should parse");
+        assert_eq!(routing.model.as_deref(), Some("claude-compatible-fixture"));
+        assert!(!routing.stream);
+
+        let upstream = adapter
+            .build_upstream_request(AdapterOperation::Messages, &request)
+            .expect("Claude-compatible fixture should build Anthropic messages upstream request");
+        assert_eq!(&upstream.body, &fixture["expected_upstream"]["body"]);
+        assert_eq!(
+            upstream.path,
+            fixture["expected_upstream"]["path"]
+                .as_str()
+                .expect("expected path")
+        );
+
+        let parsed = adapter
+            .parse_response(
+                AdapterOperation::Messages,
+                fixture_response_status(&fixture),
+                &fixture_response_body(&fixture),
+            )
+            .expect("Claude-compatible response should parse through Anthropic messages seam");
+        let usage = adapter
+            .extract_usage(&parsed)
+            .expect("Claude-compatible fixture should include usage");
+
+        assert_eq!(&parsed, &fixture["response"]["body"]);
+        assert_eq!(
+            serde_json::to_value(usage).expect("usage should serialize"),
+            fixture["expected_usage"]
+        );
+    }
+
+    #[test]
     fn extracts_routing_fields_without_full_request_validation() {
         let adapter = AnthropicAdapter::new();
         let fields = adapter
@@ -1128,6 +1234,85 @@ mod tests {
                 &fixture["expected_error_mapping"],
             );
         }
+    }
+
+    #[test]
+    fn tool_use_content_block_fixture_preserves_native_messages_shape() {
+        let adapter = AnthropicAdapter::new();
+        let fixture = load_anthropic_fixture("messages_tool_use_valid.json");
+        let request = serde_json::to_vec(&fixture["request"]).expect("fixture request");
+        let upstream = adapter
+            .build_upstream_request(AdapterOperation::Messages, &request)
+            .expect("tool_use fixture should build an upstream request");
+
+        assert_eq!(
+            upstream.method,
+            fixture["expected_upstream"]["method"]
+                .as_str()
+                .expect("expected method")
+        );
+        assert_eq!(
+            upstream.path,
+            fixture["expected_upstream"]["path"]
+                .as_str()
+                .expect("expected path")
+        );
+        assert_eq!(
+            upstream.stream,
+            fixture["expected_upstream"]["stream"]
+                .as_bool()
+                .expect("expected stream")
+        );
+        assert_eq!(&upstream.body, &fixture["expected_upstream"]["body"]);
+        assert_eq!(
+            &upstream.body["tools"],
+            &fixture["expected_upstream"]["body"]["tools"]
+        );
+        assert_eq!(
+            &upstream.body["tool_choice"],
+            &fixture["expected_upstream"]["body"]["tool_choice"]
+        );
+
+        let parsed = adapter
+            .parse_response(
+                AdapterOperation::Messages,
+                fixture_response_status(&fixture),
+                &fixture_response_body(&fixture),
+            )
+            .expect("tool_use response should parse");
+        assert_eq!(
+            &parsed["content"],
+            &fixture["expected_content_blocks"]["response_content"]
+        );
+        assert_eq!(
+            parsed["content"]
+                .as_array()
+                .expect("content blocks")
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+                .count(),
+            fixture["expected_content_blocks"]["tool_use_count"]
+                .as_u64()
+                .expect("tool use count") as usize
+        );
+        assert_eq!(
+            parsed["content"][0]["name"].as_str(),
+            fixture["expected_content_blocks"]["tool_use_name"].as_str()
+        );
+        assert_eq!(
+            AnthropicAdapter::finish_reason_for_stop_reason(
+                parsed["stop_reason"].as_str().expect("stop_reason")
+            ),
+            fixture["expected_finish_reason_mapping"]["finish_reason"].as_str()
+        );
+
+        let usage = adapter
+            .extract_usage(&parsed)
+            .expect("tool_use fixture should include usage");
+        assert_eq!(
+            serde_json::to_value(usage).expect("usage should serialize"),
+            fixture["expected_usage"]
+        );
     }
 
     #[test]

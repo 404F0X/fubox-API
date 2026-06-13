@@ -1,0 +1,4 @@
+data: {"responseId":"stream-1","modelVersion":"gemini-1.5-flash","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"Hel"}]}}]}
+
+data: {"responseId":"stream-1","modelVersion":"gemini-1.5-flash","candidates":[{"index":0,"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}
+

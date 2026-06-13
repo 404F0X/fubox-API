@@ -29,6 +29,20 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_IMPLEMENTATION_SLOT_SCHEMA: 
     "gateway_tpm_trusted_numeric_source_implementation_slot_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_HANDOFF_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_backend_handoff_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_PREFLIGHT_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_backend_preflight_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_SLOT_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_backend_adapter_slot_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_READINESS_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_backend_adapter_readiness_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_file_read_model_backend_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_LIVE_SMOKE_SCHEMA:
+    &str = "gateway_tpm_trusted_numeric_source_file_read_model_backend_live_smoke_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_DOD_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_production_dod_v1";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_RUNNER_ARTIFACT_SCHEMA: &str =
+    "gateway_tpm_trusted_numeric_source_production_runner_artifact_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_RUNTIME_ADAPTER_SCHEMA: &str =
     "gateway_tpm_trusted_numeric_source_runtime_adapter_boundary_v1";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_REQUEST_PATH_HANDOFF_SCHEMA: &str =
@@ -51,6 +65,10 @@ pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER: &str =
     "gateway_tpm_trusted_numeric_source_type";
 pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER: &str =
     "gateway_tpm_trusted_numeric_source_token_count";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER: &str =
+    "gateway_tpm_trusted_numeric_source_source_token_pair";
+pub(crate) const GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_LIVE_SMOKE_OPT_IN_ENV: &str =
+    "GATEWAY_TPM_READ_MODEL_BACKEND_HARNESS_LIVE_SMOKE";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum GatewayTpmEstimateEndpoint {
@@ -671,6 +689,297 @@ impl GatewayTrustedNumericSourceBackendKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendPreflightStatus {
+    Disabled,
+    Unavailable,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceBackendPreflightStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendReadbackStatus {
+    Skipped,
+    Missing,
+    Misaligned,
+    Invalid,
+    Available,
+}
+
+impl GatewayTrustedNumericSourceBackendReadbackStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skipped => "skipped",
+            Self::Missing => "missing",
+            Self::Misaligned => "misaligned",
+            Self::Invalid => "invalid",
+            Self::Available => "available",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendClosureBlocker {
+    ConfigDisabled,
+    BackendUnavailable,
+    BackendMissing,
+    ReadbackMissing,
+    ReadbackMisaligned,
+    NegativeTokens,
+    MaterialInOutput,
+    BackendSideEffectRequired,
+}
+
+impl GatewayTrustedNumericSourceBackendClosureBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigDisabled => "config_disabled",
+            Self::BackendUnavailable => "backend_unavailable",
+            Self::BackendMissing => "backend_missing",
+            Self::ReadbackMissing => "readback_missing",
+            Self::ReadbackMisaligned => "readback_misaligned",
+            Self::NegativeTokens => "negative_tokens",
+            Self::MaterialInOutput => "material_in_output",
+            Self::BackendSideEffectRequired => "backend_side_effect_required",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendAdapterSlotStatus {
+    Disabled,
+    Unavailable,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceBackendAdapterSlotStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceBackendAdapterBlocker {
+    ConfigDisabled,
+    AdapterUnavailable,
+    AdapterDetached,
+    PreflightUnavailable,
+    SourceTokenMismatch,
+    MaterialInOutput,
+    BackendSideEffectRequired,
+}
+
+impl GatewayTrustedNumericSourceBackendAdapterBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigDisabled => "config_disabled",
+            Self::AdapterUnavailable => "adapter_unavailable",
+            Self::AdapterDetached => "adapter_detached",
+            Self::PreflightUnavailable => "preflight_unavailable",
+            Self::SourceTokenMismatch => "source_token_mismatch",
+            Self::MaterialInOutput => "material_in_output",
+            Self::BackendSideEffectRequired => "backend_side_effect_required",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceFileReadModelBackendStatus {
+    Disabled,
+    Unavailable,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceFileReadModelBackendStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceFileReadModelBackendBlocker {
+    OptInMissing,
+    PathOutOfScope,
+    ReadFailed,
+    InvalidJson,
+    SourceTokenMismatch,
+    TokensMissing,
+    NegativeTokens,
+    MaterialInOutput,
+}
+
+impl GatewayTrustedNumericSourceFileReadModelBackendBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::OptInMissing => "opt_in_missing",
+            Self::PathOutOfScope => "path_out_of_scope",
+            Self::ReadFailed => "read_failed",
+            Self::InvalidJson => "invalid_json",
+            Self::SourceTokenMismatch => "source_token_mismatch",
+            Self::TokensMissing => "tokens_missing",
+            Self::NegativeTokens => "negative_tokens",
+            Self::MaterialInOutput => "material_in_output",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus {
+    Disabled,
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker {
+    OptInMissing,
+    BackendUnavailable,
+    ReadbackUnavailable,
+    AdapterReadinessUnavailable,
+    ReservationEvidenceUnaligned,
+}
+
+impl GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::OptInMissing => "opt_in_missing",
+            Self::BackendUnavailable => "backend_unavailable",
+            Self::ReadbackUnavailable => "readback_unavailable",
+            Self::AdapterReadinessUnavailable => "adapter_readiness_unavailable",
+            Self::ReservationEvidenceUnaligned => "reservation_evidence_unaligned",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProductionDodStatus {
+    Blocked,
+    Ready,
+}
+
+impl GatewayTrustedNumericSourceProductionDodStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::Ready => "ready",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProductionDodBlocker {
+    BackendUnavailable,
+    RuntimeOptInMissing,
+    CurrentRuntimeMarkerMissing,
+    TokenCountSourceMissing,
+    DurationEvidenceMissing,
+    ReservationCapacityProjectionMissing,
+    DbAcquireEvidenceMissing,
+    SecretSafeRawOmissionMissing,
+    LiveSmokeReadbackMissing,
+    SimulatedEvidence,
+    RepoFixtureOnly,
+}
+
+impl GatewayTrustedNumericSourceProductionDodBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::BackendUnavailable => "backend_unavailable",
+            Self::RuntimeOptInMissing => "runtime_opt_in_missing",
+            Self::CurrentRuntimeMarkerMissing => "current_runtime_marker_missing",
+            Self::TokenCountSourceMissing => "token_count_source_missing",
+            Self::DurationEvidenceMissing => "duration_evidence_missing",
+            Self::ReservationCapacityProjectionMissing => "reservation_capacity_projection_missing",
+            Self::DbAcquireEvidenceMissing => "db_acquire_evidence_missing",
+            Self::SecretSafeRawOmissionMissing => "secret_safe_raw_omission_missing",
+            Self::LiveSmokeReadbackMissing => "live_smoke_readback_missing",
+            Self::SimulatedEvidence => "simulated_evidence",
+            Self::RepoFixtureOnly => "repo_fixture_only",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProductionRunnerStatus {
+    ProductionReadyBlocked,
+    ProductionBackendLiveSmokePassed,
+}
+
+impl GatewayTrustedNumericSourceProductionRunnerStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ProductionReadyBlocked => "production_ready_blocked",
+            Self::ProductionBackendLiveSmokePassed => "production_backend_live_smoke_passed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayTrustedNumericSourceProductionRunnerBlocker {
+    MissingBackend,
+    StaleRuntime,
+    RepoFixtureOnly,
+    SimulatedRunner,
+    TokenMismatch,
+    MissingDbAcquire,
+    MissingDuration,
+    RawMaterialPresent,
+    ArtifactStale,
+    MissingRunnerProvenance,
+    MissingCurrentCommit,
+    MissingGeneratedAt,
+    MissingReservationProjection,
+    MissingLiveSmokeCommand,
+}
+
+impl GatewayTrustedNumericSourceProductionRunnerBlocker {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingBackend => "missing_backend",
+            Self::StaleRuntime => "stale_runtime",
+            Self::RepoFixtureOnly => "repo_fixture_only",
+            Self::SimulatedRunner => "simulated_runner",
+            Self::TokenMismatch => "token_mismatch",
+            Self::MissingDbAcquire => "missing_db_acquire",
+            Self::MissingDuration => "missing_duration",
+            Self::RawMaterialPresent => "raw_material_present",
+            Self::ArtifactStale => "artifact_stale",
+            Self::MissingRunnerProvenance => "missing_runner_provenance",
+            Self::MissingCurrentCommit => "missing_current_commit",
+            Self::MissingGeneratedAt => "missing_generated_at",
+            Self::MissingReservationProjection => "missing_reservation_projection",
+            Self::MissingLiveSmokeCommand => "missing_live_smoke_command",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GatewayTrustedNumericSourceReadiness {
     pub(crate) status: GatewayTrustedNumericSourceReadinessStatus,
     pub(crate) tokenizer_status: GatewayTrustedNumericSourceProviderReadinessStatus,
@@ -1087,6 +1396,914 @@ pub(crate) struct GatewayTrustedNumericSourceBackendHandoffSummary {
     pub(crate) estimate_duration_ms: u64,
     pub(crate) material_in_output: bool,
     pub(crate) provider_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceBackendPreflightInput<'a> {
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) handoff: &'a GatewayTrustedNumericSourceBackendHandoff,
+}
+
+impl<'a> GatewayTrustedNumericSourceBackendPreflightInput<'a> {
+    pub(crate) const fn new(
+        endpoint: GatewayTpmEstimateEndpoint,
+        handoff: &'a GatewayTrustedNumericSourceBackendHandoff,
+    ) -> Self {
+        Self { endpoint, handoff }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceBackendReadbackOutput {
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) tokens: Option<i128>,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceBackendReadbackOutput {
+    pub(crate) const fn new(
+        backend_kind: GatewayTrustedNumericSourceBackendKind,
+        source_type: GatewayTrustedNumericSourceType,
+        token_kind: GatewayTrustedNumericTokenKind,
+        tokens: Option<i128>,
+    ) -> Self {
+        Self {
+            backend_kind,
+            source_type,
+            token_kind,
+            tokens,
+            material_in_output: false,
+            backend_side_effect_required: false,
+        }
+    }
+}
+
+pub(crate) trait GatewayTrustedNumericSourceBackendReadback {
+    fn trusted_numeric_source_readback(
+        &self,
+        input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+    ) -> GatewayTrustedNumericSourceBackendReadbackOutput;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceBackendPreflight {
+    pub(crate) status: GatewayTrustedNumericSourceBackendPreflightStatus,
+    pub(crate) closure_blocker: Option<GatewayTrustedNumericSourceBackendClosureBlocker>,
+    pub(crate) endpoint: GatewayTpmEstimateEndpoint,
+    pub(crate) handoff_status: GatewayTrustedNumericSourceBackendHandoffStatus,
+    pub(crate) readiness_status: GatewayTrustedNumericSourceBackendPreflightStatus,
+    pub(crate) readback_status: GatewayTrustedNumericSourceBackendReadbackStatus,
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) readback_source_type: Option<GatewayTrustedNumericSourceType>,
+    pub(crate) readback_token_kind: Option<GatewayTrustedNumericTokenKind>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) config_enabled: bool,
+    pub(crate) backend_available: bool,
+    pub(crate) backend_attached: bool,
+    pub(crate) backend_invoked: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) preflight_duration_ms: u64,
+    pub(crate) estimate_duration_ms: u64,
+    pub(crate) handoff_estimate_duration_ms: u64,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceBackendPreflight {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceBackendPreflightSummary {
+        GatewayTrustedNumericSourceBackendPreflightSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_PREFLIGHT_SCHEMA,
+            status: self.status.as_str(),
+            closure_blocker: self
+                .closure_blocker
+                .map(GatewayTrustedNumericSourceBackendClosureBlocker::as_str),
+            endpoint: self.endpoint.as_str(),
+            handoff_status: self.handoff_status.as_str(),
+            readiness_status: self.readiness_status.as_str(),
+            readback_status: self.readback_status.as_str(),
+            backend_kind: self.backend_kind.as_str(),
+            source_type: self.source_type.as_str(),
+            token_kind: self.token_kind.as_str(),
+            readback_source_type: self
+                .readback_source_type
+                .map(GatewayTrustedNumericSourceType::as_str),
+            readback_token_kind: self
+                .readback_token_kind
+                .map(GatewayTrustedNumericTokenKind::as_str),
+            token_count: self.token_count,
+            config_enabled: self.config_enabled,
+            backend_available: self.backend_available,
+            backend_attached: self.backend_attached,
+            backend_invoked: self.backend_invoked,
+            fallback_required: self.fallback_required,
+            reservation_acquire_ready: self.reservation_acquire_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            preflight_duration_ms: self.preflight_duration_ms,
+            estimate_duration_ms: self.estimate_duration_ms,
+            handoff_estimate_duration_ms: self.handoff_estimate_duration_ms,
+            raw_value_omitted: true,
+            material_in_output: self.material_in_output,
+            backend_side_effect_required: self.backend_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceBackendPreflightSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) closure_blocker: Option<&'static str>,
+    pub(crate) endpoint: &'static str,
+    pub(crate) handoff_status: &'static str,
+    pub(crate) readiness_status: &'static str,
+    pub(crate) readback_status: &'static str,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) token_kind: &'static str,
+    pub(crate) readback_source_type: Option<&'static str>,
+    pub(crate) readback_token_kind: Option<&'static str>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) config_enabled: bool,
+    pub(crate) backend_available: bool,
+    pub(crate) backend_attached: bool,
+    pub(crate) backend_invoked: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) preflight_duration_ms: u64,
+    pub(crate) estimate_duration_ms: u64,
+    pub(crate) handoff_estimate_duration_ms: u64,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceBackendAdapterSlot {
+    pub(crate) status: GatewayTrustedNumericSourceBackendAdapterSlotStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceBackendAdapterBlocker>,
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) config_enabled: bool,
+    pub(crate) adapter_available: bool,
+    pub(crate) adapter_attached: bool,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceBackendAdapterSlot {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceBackendAdapterSlotSummary {
+        GatewayTrustedNumericSourceBackendAdapterSlotSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_SLOT_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceBackendAdapterBlocker::as_str),
+            backend_kind: self.backend_kind.as_str(),
+            source_type: self.source_type.as_str(),
+            token_kind: self.token_kind.as_str(),
+            config_enabled: self.config_enabled,
+            adapter_available: self.adapter_available,
+            adapter_attached: self.adapter_attached,
+            adapter_invocation_allowed: self.adapter_invocation_allowed,
+            fallback_required: self.fallback_required,
+            reservation_acquire_ready: self.reservation_acquire_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            raw_value_omitted: true,
+            material_in_output: self.material_in_output,
+            backend_side_effect_required: self.backend_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceBackendAdapterSlotSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) token_kind: &'static str,
+    pub(crate) config_enabled: bool,
+    pub(crate) adapter_available: bool,
+    pub(crate) adapter_attached: bool,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceBackendAdapterReadiness<'a> {
+    pub(crate) status: GatewayTrustedNumericSourceBackendAdapterSlotStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceBackendAdapterBlocker>,
+    pub(crate) slot: &'a GatewayTrustedNumericSourceBackendAdapterSlot,
+    pub(crate) preflight: &'a GatewayTrustedNumericSourceBackendPreflight,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+impl<'a> GatewayTrustedNumericSourceBackendAdapterReadiness<'a> {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceBackendAdapterReadinessSummary {
+        GatewayTrustedNumericSourceBackendAdapterReadinessSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_READINESS_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceBackendAdapterBlocker::as_str),
+            slot_status: self.slot.status.as_str(),
+            preflight_status: self.preflight.status.as_str(),
+            readback_status: self.preflight.readback_status.as_str(),
+            backend_kind: self.slot.backend_kind.as_str(),
+            source_type: self.slot.source_type.as_str(),
+            token_kind: self.slot.token_kind.as_str(),
+            token_count: self.preflight.token_count,
+            adapter_invocation_allowed: self.adapter_invocation_allowed,
+            fallback_required: self.fallback_required,
+            reservation_acquire_ready: self.reservation_acquire_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            preflight_duration_ms: self.preflight.preflight_duration_ms,
+            estimate_duration_ms: self.preflight.estimate_duration_ms,
+            raw_value_omitted: true,
+            material_in_output: self.material_in_output,
+            backend_side_effect_required: self.backend_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceBackendAdapterReadinessSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) slot_status: &'static str,
+    pub(crate) preflight_status: &'static str,
+    pub(crate) readback_status: &'static str,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) token_kind: &'static str,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) adapter_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) preflight_duration_ms: u64,
+    pub(crate) estimate_duration_ms: u64,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceFileReadModelBackend {
+    pub(crate) status: GatewayTrustedNumericSourceFileReadModelBackendStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceFileReadModelBackendBlocker>,
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) source_type: GatewayTrustedNumericSourceType,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) readback_source_type: Option<GatewayTrustedNumericSourceType>,
+    pub(crate) readback_token_kind: Option<GatewayTrustedNumericTokenKind>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) opt_in_enabled: bool,
+    pub(crate) artifact_path_allowed: bool,
+    pub(crate) artifact_read: bool,
+    pub(crate) backend_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) preflight_duration_ms: u64,
+    pub(crate) estimate_duration_ms: u64,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceFileReadModelBackend {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceFileReadModelBackendSummary {
+        GatewayTrustedNumericSourceFileReadModelBackendSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceFileReadModelBackendBlocker::as_str),
+            backend_kind: self.backend_kind.as_str(),
+            source_type: self.source_type.as_str(),
+            token_kind: self.token_kind.as_str(),
+            readback_source_type: self
+                .readback_source_type
+                .map(GatewayTrustedNumericSourceType::as_str),
+            readback_token_kind: self
+                .readback_token_kind
+                .map(GatewayTrustedNumericTokenKind::as_str),
+            token_count: self.token_count,
+            opt_in_enabled: self.opt_in_enabled,
+            artifact_path_scope: "tests/fixtures/gateway",
+            artifact_path_allowed: self.artifact_path_allowed,
+            artifact_read: self.artifact_read,
+            backend_invocation_allowed: self.backend_invocation_allowed,
+            fallback_required: self.fallback_required,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            preflight_duration_ms: self.preflight_duration_ms,
+            estimate_duration_ms: self.estimate_duration_ms,
+            raw_value_omitted: true,
+            material_in_output: self.material_in_output,
+            backend_side_effect_required: self.backend_side_effect_required,
+        }
+    }
+
+    pub(crate) fn readback_output(
+        &self,
+    ) -> Option<GatewayTrustedNumericSourceBackendReadbackOutput> {
+        if self.status != GatewayTrustedNumericSourceFileReadModelBackendStatus::Ready {
+            return None;
+        }
+        Some(GatewayTrustedNumericSourceBackendReadbackOutput::new(
+            self.backend_kind,
+            self.source_type,
+            self.token_kind,
+            self.token_count.map(i128::from),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceFileReadModelBackendSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) source_type: &'static str,
+    pub(crate) token_kind: &'static str,
+    pub(crate) readback_source_type: Option<&'static str>,
+    pub(crate) readback_token_kind: Option<&'static str>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) opt_in_enabled: bool,
+    pub(crate) artifact_path_scope: &'static str,
+    pub(crate) artifact_path_allowed: bool,
+    pub(crate) artifact_read: bool,
+    pub(crate) backend_invocation_allowed: bool,
+    pub(crate) fallback_required: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) preflight_duration_ms: u64,
+    pub(crate) estimate_duration_ms: u64,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceFileReadModelLiveSmokeInput<'a> {
+    pub(crate) command_opt_in_enabled: bool,
+    pub(crate) artifact_path: &'a Path,
+    pub(crate) token_kind: GatewayTrustedNumericTokenKind,
+    pub(crate) conservative_fallback_tokens: i64,
+}
+
+impl<'a> GatewayTrustedNumericSourceFileReadModelLiveSmokeInput<'a> {
+    pub(crate) const fn new(
+        command_opt_in_enabled: bool,
+        artifact_path: &'a Path,
+        token_kind: GatewayTrustedNumericTokenKind,
+        conservative_fallback_tokens: i64,
+    ) -> Self {
+        Self {
+            command_opt_in_enabled,
+            artifact_path,
+            token_kind,
+            conservative_fallback_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceFileReadModelLiveSmokeGate {
+    pub(crate) status: GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker>,
+    pub(crate) command_opt_in_enabled: bool,
+    pub(crate) command_would_read_artifact: bool,
+    pub(crate) file_backend: Option<GatewayTrustedNumericSourceFileReadModelBackendSummary>,
+    pub(crate) backend_preflight: Option<GatewayTrustedNumericSourceBackendPreflightSummary>,
+    pub(crate) adapter_readiness: Option<GatewayTrustedNumericSourceBackendAdapterReadinessSummary>,
+    pub(crate) tpm_estimate: Option<GatewayTpmEstimateSummary>,
+    pub(crate) reservation_projection:
+        Option<GatewayTrustedNumericSourceReservationProjectionSummary>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) required_capacity_tokens_per_minute: Option<i64>,
+    pub(crate) acquire_tpm_required_tokens: Option<i64>,
+    pub(crate) db_required_capacity_tokens_per_minute: Option<i64>,
+    pub(crate) capacity_evidence_aligned: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+impl GatewayTrustedNumericSourceFileReadModelLiveSmokeGate {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceFileReadModelLiveSmokeSummary {
+        GatewayTrustedNumericSourceFileReadModelLiveSmokeSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_LIVE_SMOKE_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker::as_str),
+            command: "cargo test -p ai-gateway tpm_estimate_mapper_trusted_numeric_source_file_read_model_backend_live_smoke_command_gate_is_secret_safe -- --nocapture",
+            opt_in_env: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_LIVE_SMOKE_OPT_IN_ENV,
+            command_opt_in_enabled: self.command_opt_in_enabled,
+            command_would_read_artifact: self.command_would_read_artifact,
+            artifact_path_scope: "tests/fixtures/gateway",
+            file_backend: self.file_backend.clone(),
+            backend_preflight: self.backend_preflight.clone(),
+            adapter_readiness: self.adapter_readiness.clone(),
+            tpm_estimate: self.tpm_estimate.clone(),
+            reservation_projection: self.reservation_projection.clone(),
+            token_count: self.token_count,
+            required_capacity_tokens_per_minute: self.required_capacity_tokens_per_minute,
+            acquire_tpm_required_tokens: self.acquire_tpm_required_tokens,
+            db_required_capacity_tokens_per_minute: self.db_required_capacity_tokens_per_minute,
+            capacity_evidence_aligned: self.capacity_evidence_aligned,
+            reservation_acquire_ready: self.reservation_acquire_ready,
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            raw_value_omitted: true,
+            external_service_required: false,
+            material_in_output: self.material_in_output,
+            backend_side_effect_required: self.backend_side_effect_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceFileReadModelLiveSmokeSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) command: &'static str,
+    pub(crate) opt_in_env: &'static str,
+    pub(crate) command_opt_in_enabled: bool,
+    pub(crate) command_would_read_artifact: bool,
+    pub(crate) artifact_path_scope: &'static str,
+    pub(crate) file_backend: Option<GatewayTrustedNumericSourceFileReadModelBackendSummary>,
+    pub(crate) backend_preflight: Option<GatewayTrustedNumericSourceBackendPreflightSummary>,
+    pub(crate) adapter_readiness: Option<GatewayTrustedNumericSourceBackendAdapterReadinessSummary>,
+    pub(crate) tpm_estimate: Option<GatewayTpmEstimateSummary>,
+    pub(crate) reservation_projection:
+        Option<GatewayTrustedNumericSourceReservationProjectionSummary>,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) required_capacity_tokens_per_minute: Option<i64>,
+    pub(crate) acquire_tpm_required_tokens: Option<i64>,
+    pub(crate) db_required_capacity_tokens_per_minute: Option<i64>,
+    pub(crate) capacity_evidence_aligned: bool,
+    pub(crate) reservation_acquire_ready: bool,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) external_service_required: bool,
+    pub(crate) material_in_output: bool,
+    pub(crate) backend_side_effect_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProductionDodInput {
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) production_backend_available: bool,
+    pub(crate) runtime_opt_in: bool,
+    pub(crate) current_runtime_marker_present: bool,
+    pub(crate) token_count_source_present: bool,
+    pub(crate) duration_evidence_present: bool,
+    pub(crate) reservation_capacity_projection_present: bool,
+    pub(crate) db_acquire_evidence_present: bool,
+    pub(crate) secret_safe_raw_omission_present: bool,
+    pub(crate) live_smoke_command_readback_present: bool,
+    pub(crate) simulated: bool,
+    pub(crate) repo_fixture_only: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+impl GatewayTrustedNumericSourceProductionDodInput {
+    pub(crate) const fn new(
+        backend_kind: GatewayTrustedNumericSourceBackendKind,
+        production_backend_available: bool,
+        runtime_opt_in: bool,
+        current_runtime_marker_present: bool,
+        token_count_source_present: bool,
+        duration_evidence_present: bool,
+        reservation_capacity_projection_present: bool,
+        db_acquire_evidence_present: bool,
+        secret_safe_raw_omission_present: bool,
+        live_smoke_command_readback_present: bool,
+        simulated: bool,
+        repo_fixture_only: bool,
+    ) -> Self {
+        Self {
+            backend_kind,
+            production_backend_available,
+            runtime_opt_in,
+            current_runtime_marker_present,
+            token_count_source_present,
+            duration_evidence_present,
+            reservation_capacity_projection_present,
+            db_acquire_evidence_present,
+            secret_safe_raw_omission_present,
+            live_smoke_command_readback_present,
+            simulated,
+            repo_fixture_only,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceProductionDodBlockerMatrixEntry {
+    pub(crate) evidence_class: &'static str,
+    pub(crate) closure_allowed: bool,
+    pub(crate) blocker: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProductionDodChecklist {
+    pub(crate) status: GatewayTrustedNumericSourceProductionDodStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceProductionDodBlocker>,
+    pub(crate) input: GatewayTrustedNumericSourceProductionDodInput,
+    pub(crate) live_gap_closure_ready: bool,
+}
+
+impl GatewayTrustedNumericSourceProductionDodChecklist {
+    pub(crate) fn safe_summary(&self) -> GatewayTrustedNumericSourceProductionDodSummary {
+        GatewayTrustedNumericSourceProductionDodSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_DOD_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceProductionDodBlocker::as_str),
+            backend_kind: self.input.backend_kind.as_str(),
+            production_backend_available: self.input.production_backend_available,
+            runtime_opt_in: self.input.runtime_opt_in,
+            current_runtime_marker_present: self.input.current_runtime_marker_present,
+            token_count_source_present: self.input.token_count_source_present,
+            duration_evidence_present: self.input.duration_evidence_present,
+            reservation_capacity_projection_present: self
+                .input
+                .reservation_capacity_projection_present,
+            db_acquire_evidence_present: self.input.db_acquire_evidence_present,
+            secret_safe_raw_omission_present: self.input.secret_safe_raw_omission_present,
+            live_smoke_command_readback_present: self.input.live_smoke_command_readback_present,
+            simulated: self.input.simulated,
+            repo_fixture_only: self.input.repo_fixture_only,
+            required_evidence: [
+                "backend_kind",
+                "runtime_opt_in",
+                "current_runtime_marker",
+                "token_count_source",
+                "latency_duration",
+                "reservation_capacity_projection",
+                "db_acquire_evidence",
+                "secret_safe_raw_omission",
+                "live_smoke_command_readback",
+            ],
+            blocker_matrix: [
+                GatewayTrustedNumericSourceProductionDodBlockerMatrixEntry {
+                    evidence_class: "blocked",
+                    closure_allowed: false,
+                    blocker: "backend_unavailable",
+                },
+                GatewayTrustedNumericSourceProductionDodBlockerMatrixEntry {
+                    evidence_class: "unavailable",
+                    closure_allowed: false,
+                    blocker: "backend_unavailable",
+                },
+                GatewayTrustedNumericSourceProductionDodBlockerMatrixEntry {
+                    evidence_class: "simulated",
+                    closure_allowed: false,
+                    blocker: "simulated_evidence",
+                },
+                GatewayTrustedNumericSourceProductionDodBlockerMatrixEntry {
+                    evidence_class: "repo_fixture_only",
+                    closure_allowed: false,
+                    blocker: "repo_fixture_only",
+                },
+            ],
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            live_gap_closure_marker: "gateway_tpm_trusted_numeric_source_live_gap_closure_ready",
+            live_gap_closure_ready: self.live_gap_closure_ready,
+            raw_value_omitted: true,
+            external_service_required: true,
+            material_in_output: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceProductionDodSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) production_backend_available: bool,
+    pub(crate) runtime_opt_in: bool,
+    pub(crate) current_runtime_marker_present: bool,
+    pub(crate) token_count_source_present: bool,
+    pub(crate) duration_evidence_present: bool,
+    pub(crate) reservation_capacity_projection_present: bool,
+    pub(crate) db_acquire_evidence_present: bool,
+    pub(crate) secret_safe_raw_omission_present: bool,
+    pub(crate) live_smoke_command_readback_present: bool,
+    pub(crate) simulated: bool,
+    pub(crate) repo_fixture_only: bool,
+    pub(crate) required_evidence: [&'static str; 9],
+    pub(crate) blocker_matrix: [GatewayTrustedNumericSourceProductionDodBlockerMatrixEntry; 4],
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) live_gap_closure_marker: &'static str,
+    pub(crate) live_gap_closure_ready: bool,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) external_service_required: bool,
+    pub(crate) material_in_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProductionRunnerArtifactInput<'a> {
+    pub(crate) runner_provenance_present: bool,
+    pub(crate) backend_kind: GatewayTrustedNumericSourceBackendKind,
+    pub(crate) backend_present: bool,
+    pub(crate) runtime_current_marker_present: bool,
+    pub(crate) runtime_commit: &'a str,
+    pub(crate) current_commit: &'a str,
+    pub(crate) artifact_current_commit: &'a str,
+    pub(crate) generated_at_present: bool,
+    pub(crate) artifact_fresh: bool,
+    pub(crate) token_source_kind_present: bool,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) expected_token_count: Option<u64>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) reservation_capacity_projected: bool,
+    pub(crate) db_acquire_evidence_present: bool,
+    pub(crate) db_acquire_result_present: bool,
+    pub(crate) live_smoke_command_present: bool,
+    pub(crate) raw_material_present: bool,
+    pub(crate) simulated_runner: bool,
+    pub(crate) repo_fixture_only: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+impl<'a> GatewayTrustedNumericSourceProductionRunnerArtifactInput<'a> {
+    pub(crate) const fn new(
+        runner_provenance_present: bool,
+        backend_kind: GatewayTrustedNumericSourceBackendKind,
+        backend_present: bool,
+        runtime_current_marker_present: bool,
+        runtime_commit: &'a str,
+        current_commit: &'a str,
+        artifact_current_commit: &'a str,
+        generated_at_present: bool,
+        artifact_fresh: bool,
+        token_source_kind_present: bool,
+        token_count: Option<u64>,
+        expected_token_count: Option<u64>,
+        duration_ms: Option<u64>,
+        reservation_capacity_projected: bool,
+        db_acquire_evidence_present: bool,
+        db_acquire_result_present: bool,
+        live_smoke_command_present: bool,
+        raw_material_present: bool,
+        simulated_runner: bool,
+        repo_fixture_only: bool,
+    ) -> Self {
+        Self {
+            runner_provenance_present,
+            backend_kind,
+            backend_present,
+            runtime_current_marker_present,
+            runtime_commit,
+            current_commit,
+            artifact_current_commit,
+            generated_at_present,
+            artifact_fresh,
+            token_source_kind_present,
+            token_count,
+            expected_token_count,
+            duration_ms,
+            reservation_capacity_projected,
+            db_acquire_evidence_present,
+            db_acquire_result_present,
+            live_smoke_command_present,
+            raw_material_present,
+            simulated_runner,
+            repo_fixture_only,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayTrustedNumericSourceProductionRunnerArtifactGate<'a> {
+    pub(crate) status: GatewayTrustedNumericSourceProductionRunnerStatus,
+    pub(crate) blocker: Option<GatewayTrustedNumericSourceProductionRunnerBlocker>,
+    pub(crate) input: GatewayTrustedNumericSourceProductionRunnerArtifactInput<'a>,
+}
+
+impl GatewayTrustedNumericSourceProductionRunnerArtifactGate<'_> {
+    pub(crate) fn safe_summary(
+        &self,
+    ) -> GatewayTrustedNumericSourceProductionRunnerArtifactSummary {
+        GatewayTrustedNumericSourceProductionRunnerArtifactSummary {
+            schema: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_RUNNER_ARTIFACT_SCHEMA,
+            status: self.status.as_str(),
+            blocker: self
+                .blocker
+                .map(GatewayTrustedNumericSourceProductionRunnerBlocker::as_str),
+            runner_provenance_present: self.input.runner_provenance_present,
+            backend_kind: self.input.backend_kind.as_str(),
+            backend_present: self.input.backend_present,
+            runtime_current_marker_present: self.input.runtime_current_marker_present,
+            runtime_commit_matches_current: self.input.runtime_commit == self.input.current_commit,
+            artifact_current_commit_matches_current: self.input.artifact_current_commit
+                == self.input.current_commit,
+            generated_at_present: self.input.generated_at_present,
+            artifact_fresh: self.input.artifact_fresh,
+            token_source_kind_present: self.input.token_source_kind_present,
+            token_count: self.input.token_count,
+            expected_token_count: self.input.expected_token_count,
+            token_count_matches_expected: self.input.token_count == self.input.expected_token_count,
+            duration_ms: self.input.duration_ms,
+            reservation_capacity_projected: self.input.reservation_capacity_projected,
+            db_acquire_evidence_present: self.input.db_acquire_evidence_present,
+            db_acquire_result_present: self.input.db_acquire_result_present,
+            live_smoke_command_present: self.input.live_smoke_command_present,
+            raw_material_present: self.input.raw_material_present,
+            simulated_runner: self.input.simulated_runner,
+            repo_fixture_only: self.input.repo_fixture_only,
+            artifact_schema_fields: [
+                "runner_provenance",
+                "backend_kind",
+                "runtime_current_marker",
+                "current_commit",
+                "generated_at",
+                "token_source_kind",
+                "token_count",
+                "duration_ms",
+                "reservation_capacity_projection",
+                "db_acquire_evidence",
+                "db_acquire_result",
+                "live_smoke_command",
+                "secret_safe_raw_omission",
+            ],
+            production_ready_blocked_evidence_classes: [
+                "missing_backend",
+                "stale_runtime",
+                "repo_fixture_only",
+                "simulated_runner",
+                "token_mismatch",
+                "missing_db_acquire",
+                "missing_duration",
+                "raw_material_present",
+                "artifact_stale",
+            ],
+            production_backend_live_smoke_passed_requires: [
+                "runner_provenance_present",
+                "backend_present",
+                "runtime_current_marker_present",
+                "runtime_commit_matches_current",
+                "artifact_current_commit_matches_current",
+                "generated_at_present",
+                "artifact_fresh",
+                "token_source_kind_present",
+                "token_count_matches_expected",
+                "duration_ms_present",
+                "reservation_capacity_projected",
+                "db_acquire_evidence_present",
+                "db_acquire_result_present",
+                "live_smoke_command_present",
+                "raw_material_present_false",
+                "simulated_runner_false",
+                "repo_fixture_only_false",
+            ],
+            availability_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER,
+            preflight_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER,
+            estimate_duration_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER,
+            source_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER,
+            token_count_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER,
+            source_token_marker: GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER,
+            raw_value_omitted: !self.input.raw_material_present,
+            material_in_output: self.input.raw_material_present,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct GatewayTrustedNumericSourceProductionRunnerArtifactSummary {
+    pub(crate) schema: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) blocker: Option<&'static str>,
+    pub(crate) runner_provenance_present: bool,
+    pub(crate) backend_kind: &'static str,
+    pub(crate) backend_present: bool,
+    pub(crate) runtime_current_marker_present: bool,
+    pub(crate) runtime_commit_matches_current: bool,
+    pub(crate) artifact_current_commit_matches_current: bool,
+    pub(crate) generated_at_present: bool,
+    pub(crate) artifact_fresh: bool,
+    pub(crate) token_source_kind_present: bool,
+    pub(crate) token_count: Option<u64>,
+    pub(crate) expected_token_count: Option<u64>,
+    pub(crate) token_count_matches_expected: bool,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) reservation_capacity_projected: bool,
+    pub(crate) db_acquire_evidence_present: bool,
+    pub(crate) db_acquire_result_present: bool,
+    pub(crate) live_smoke_command_present: bool,
+    pub(crate) raw_material_present: bool,
+    pub(crate) simulated_runner: bool,
+    pub(crate) repo_fixture_only: bool,
+    pub(crate) artifact_schema_fields: [&'static str; 13],
+    pub(crate) production_ready_blocked_evidence_classes: [&'static str; 9],
+    pub(crate) production_backend_live_smoke_passed_requires: [&'static str; 17],
+    pub(crate) availability_marker: &'static str,
+    pub(crate) preflight_duration_marker: &'static str,
+    pub(crate) estimate_duration_marker: &'static str,
+    pub(crate) source_marker: &'static str,
+    pub(crate) token_count_marker: &'static str,
+    pub(crate) source_token_marker: &'static str,
+    pub(crate) raw_value_omitted: bool,
+    pub(crate) material_in_output: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2268,6 +3485,819 @@ pub(crate) fn gateway_trusted_numeric_source_backend_handoff(
     }
 }
 
+pub(crate) fn gateway_trusted_numeric_source_backend_preflight(
+    input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+    backend: Option<&dyn GatewayTrustedNumericSourceBackendReadback>,
+) -> GatewayTrustedNumericSourceBackendPreflight {
+    let handoff = input.handoff;
+    if handoff.status == GatewayTrustedNumericSourceBackendHandoffStatus::Disabled {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Disabled,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::ConfigDisabled),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Skipped,
+            input,
+            None,
+            false,
+            0,
+        );
+    }
+    if handoff.status != GatewayTrustedNumericSourceBackendHandoffStatus::Ready
+        || !handoff.backend_available
+        || !handoff.backend_attached
+    {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::BackendUnavailable),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Skipped,
+            input,
+            None,
+            false,
+            0,
+        );
+    }
+
+    let Some(backend) = backend else {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::BackendMissing),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Missing,
+            input,
+            None,
+            false,
+            0,
+        );
+    };
+
+    let started_at = Instant::now();
+    let output = backend.trusted_numeric_source_readback(input);
+    let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
+    if output.backend_side_effect_required {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::BackendSideEffectRequired),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Invalid,
+            input,
+            Some(output),
+            true,
+            duration_ms,
+        );
+    }
+    if output.material_in_output {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::MaterialInOutput),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Invalid,
+            input,
+            Some(output),
+            true,
+            duration_ms,
+        );
+    }
+    if output.backend_kind != handoff.backend_kind
+        || output.source_type != handoff.source_type
+        || output.token_kind != handoff.token_kind
+    {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::ReadbackMisaligned),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Misaligned,
+            input,
+            Some(output),
+            true,
+            duration_ms,
+        );
+    }
+    let Some(tokens) = output.tokens else {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::ReadbackMissing),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Missing,
+            input,
+            Some(output),
+            true,
+            duration_ms,
+        );
+    };
+    if tokens < 0 {
+        return gateway_trusted_numeric_source_backend_preflight_fallback(
+            GatewayTrustedNumericSourceBackendPreflightStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendClosureBlocker::NegativeTokens),
+            GatewayTrustedNumericSourceBackendReadbackStatus::Invalid,
+            input,
+            Some(output),
+            true,
+            duration_ms,
+        );
+    }
+
+    let token_count = tokens.min(i128::from(i64::MAX)) as u64;
+    GatewayTrustedNumericSourceBackendPreflight {
+        status: GatewayTrustedNumericSourceBackendPreflightStatus::Ready,
+        closure_blocker: None,
+        endpoint: input.endpoint,
+        handoff_status: handoff.status,
+        readiness_status: GatewayTrustedNumericSourceBackendPreflightStatus::Ready,
+        readback_status: GatewayTrustedNumericSourceBackendReadbackStatus::Available,
+        backend_kind: handoff.backend_kind,
+        source_type: handoff.source_type,
+        token_kind: handoff.token_kind,
+        readback_source_type: Some(output.source_type),
+        readback_token_kind: Some(output.token_kind),
+        token_count: Some(token_count),
+        config_enabled: handoff.config_enabled,
+        backend_available: handoff.backend_available,
+        backend_attached: handoff.backend_attached,
+        backend_invoked: true,
+        fallback_required: false,
+        reservation_acquire_ready: true,
+        live_gap_closure_ready: true,
+        preflight_duration_ms: duration_ms,
+        estimate_duration_ms: duration_ms,
+        handoff_estimate_duration_ms: handoff.estimate_duration_ms,
+        material_in_output: false,
+        backend_side_effect_required: false,
+    }
+}
+
+fn gateway_trusted_numeric_source_backend_preflight_fallback(
+    status: GatewayTrustedNumericSourceBackendPreflightStatus,
+    closure_blocker: Option<GatewayTrustedNumericSourceBackendClosureBlocker>,
+    readback_status: GatewayTrustedNumericSourceBackendReadbackStatus,
+    input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+    output: Option<GatewayTrustedNumericSourceBackendReadbackOutput>,
+    backend_invoked: bool,
+    duration_ms: u64,
+) -> GatewayTrustedNumericSourceBackendPreflight {
+    let handoff = input.handoff;
+
+    GatewayTrustedNumericSourceBackendPreflight {
+        status,
+        closure_blocker,
+        endpoint: input.endpoint,
+        handoff_status: handoff.status,
+        readiness_status: status,
+        readback_status,
+        backend_kind: handoff.backend_kind,
+        source_type: handoff.source_type,
+        token_kind: handoff.token_kind,
+        readback_source_type: output.map(|output| output.source_type),
+        readback_token_kind: output.map(|output| output.token_kind),
+        token_count: None,
+        config_enabled: handoff.config_enabled,
+        backend_available: handoff.backend_available,
+        backend_attached: handoff.backend_attached,
+        backend_invoked,
+        fallback_required: true,
+        reservation_acquire_ready: false,
+        live_gap_closure_ready: false,
+        preflight_duration_ms: duration_ms,
+        estimate_duration_ms: duration_ms,
+        handoff_estimate_duration_ms: handoff.estimate_duration_ms,
+        material_in_output: output.is_some_and(|output| output.material_in_output),
+        backend_side_effect_required: output
+            .is_some_and(|output| output.backend_side_effect_required),
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_backend_adapter_slot(
+    source_type: GatewayTrustedNumericSourceType,
+    token_kind: GatewayTrustedNumericTokenKind,
+    config_enabled: bool,
+    adapter_available: bool,
+    adapter_attached: bool,
+) -> GatewayTrustedNumericSourceBackendAdapterSlot {
+    let backend_kind = match source_type {
+        GatewayTrustedNumericSourceType::Tokenizer => {
+            GatewayTrustedNumericSourceBackendKind::Tokenizer
+        }
+        GatewayTrustedNumericSourceType::ReadModel => {
+            GatewayTrustedNumericSourceBackendKind::ReadModel
+        }
+    };
+    let (status, blocker) = if !config_enabled {
+        (
+            GatewayTrustedNumericSourceBackendAdapterSlotStatus::Disabled,
+            Some(GatewayTrustedNumericSourceBackendAdapterBlocker::ConfigDisabled),
+        )
+    } else if !adapter_available {
+        (
+            GatewayTrustedNumericSourceBackendAdapterSlotStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendAdapterBlocker::AdapterUnavailable),
+        )
+    } else if !adapter_attached {
+        (
+            GatewayTrustedNumericSourceBackendAdapterSlotStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceBackendAdapterBlocker::AdapterDetached),
+        )
+    } else {
+        (
+            GatewayTrustedNumericSourceBackendAdapterSlotStatus::Ready,
+            None,
+        )
+    };
+    let ready = status == GatewayTrustedNumericSourceBackendAdapterSlotStatus::Ready;
+
+    GatewayTrustedNumericSourceBackendAdapterSlot {
+        status,
+        blocker,
+        backend_kind,
+        source_type,
+        token_kind,
+        config_enabled,
+        adapter_available,
+        adapter_attached,
+        adapter_invocation_allowed: ready,
+        fallback_required: !ready,
+        reservation_acquire_ready: false,
+        live_gap_closure_ready: false,
+        material_in_output: false,
+        backend_side_effect_required: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_backend_adapter_readiness<'a>(
+    slot: &'a GatewayTrustedNumericSourceBackendAdapterSlot,
+    preflight: &'a GatewayTrustedNumericSourceBackendPreflight,
+) -> GatewayTrustedNumericSourceBackendAdapterReadiness<'a> {
+    let source_token_aligned = slot.backend_kind == preflight.backend_kind
+        && slot.source_type == preflight.source_type
+        && slot.token_kind == preflight.token_kind;
+    let blocker = if slot.status == GatewayTrustedNumericSourceBackendAdapterSlotStatus::Disabled {
+        Some(GatewayTrustedNumericSourceBackendAdapterBlocker::ConfigDisabled)
+    } else if slot.status == GatewayTrustedNumericSourceBackendAdapterSlotStatus::Unavailable {
+        slot.blocker
+    } else if preflight.status != GatewayTrustedNumericSourceBackendPreflightStatus::Ready {
+        Some(GatewayTrustedNumericSourceBackendAdapterBlocker::PreflightUnavailable)
+    } else if !source_token_aligned {
+        Some(GatewayTrustedNumericSourceBackendAdapterBlocker::SourceTokenMismatch)
+    } else if preflight.material_in_output {
+        Some(GatewayTrustedNumericSourceBackendAdapterBlocker::MaterialInOutput)
+    } else if preflight.backend_side_effect_required {
+        Some(GatewayTrustedNumericSourceBackendAdapterBlocker::BackendSideEffectRequired)
+    } else {
+        None
+    };
+    let ready = blocker.is_none()
+        && slot.adapter_invocation_allowed
+        && preflight.reservation_acquire_ready
+        && preflight.live_gap_closure_ready;
+    let status = if slot.status == GatewayTrustedNumericSourceBackendAdapterSlotStatus::Disabled {
+        GatewayTrustedNumericSourceBackendAdapterSlotStatus::Disabled
+    } else if ready {
+        GatewayTrustedNumericSourceBackendAdapterSlotStatus::Ready
+    } else {
+        GatewayTrustedNumericSourceBackendAdapterSlotStatus::Unavailable
+    };
+
+    GatewayTrustedNumericSourceBackendAdapterReadiness {
+        status,
+        blocker,
+        slot,
+        preflight,
+        adapter_invocation_allowed: ready,
+        fallback_required: !ready,
+        reservation_acquire_ready: ready,
+        live_gap_closure_ready: ready,
+        material_in_output: slot.material_in_output || preflight.material_in_output,
+        backend_side_effect_required: slot.backend_side_effect_required
+            || preflight.backend_side_effect_required,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_file_read_model_backend_harness(
+    opt_in_enabled: bool,
+    artifact_path: &Path,
+    token_kind: GatewayTrustedNumericTokenKind,
+) -> GatewayTrustedNumericSourceFileReadModelBackend {
+    let started_at = Instant::now();
+    if !opt_in_enabled {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Disabled,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::OptInMissing),
+            token_kind,
+            false,
+            false,
+            0,
+            None,
+            None,
+            false,
+        );
+    }
+
+    let artifact_path_allowed = artifact_path.starts_with(Path::new("tests/fixtures/gateway"))
+        && artifact_path.is_relative();
+    if !artifact_path_allowed {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::PathOutOfScope),
+            token_kind,
+            true,
+            false,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            None,
+            None,
+            false,
+        );
+    }
+
+    let Some(resolved_artifact_path) = resolve_gateway_fixture_artifact_path(artifact_path) else {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::ReadFailed),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            None,
+            None,
+            true,
+        );
+    };
+    let Ok(contents) = fs::read_to_string(resolved_artifact_path) else {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::ReadFailed),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            None,
+            None,
+            true,
+        );
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&contents) else {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::InvalidJson),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            None,
+            None,
+            true,
+        );
+    };
+
+    let readback_source_type = value
+        .get("source_type")
+        .and_then(Value::as_str)
+        .and_then(GatewayTrustedNumericSourceType::from_str);
+    let readback_token_kind = match value.get("token_kind").and_then(Value::as_str) {
+        Some("prompt_tokens") => Some(GatewayTrustedNumericTokenKind::PromptTokens),
+        Some("input_tokens") => Some(GatewayTrustedNumericTokenKind::InputTokens),
+        _ => None,
+    };
+    if readback_source_type != Some(GatewayTrustedNumericSourceType::ReadModel)
+        || readback_token_kind != Some(token_kind)
+    {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::SourceTokenMismatch),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            readback_source_type,
+            readback_token_kind,
+            true,
+        );
+    }
+    if value
+        .get("material_in_output")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::MaterialInOutput),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            readback_source_type,
+            readback_token_kind,
+            true,
+        );
+    }
+    let Some(tokens) = value.get("tokens").and_then(json_integer_to_i64_saturating) else {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::TokensMissing),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            readback_source_type,
+            readback_token_kind,
+            true,
+        );
+    };
+    if tokens < 0 {
+        return gateway_trusted_numeric_source_file_read_model_backend_fallback(
+            GatewayTrustedNumericSourceFileReadModelBackendStatus::Unavailable,
+            Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::NegativeTokens),
+            token_kind,
+            true,
+            true,
+            started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            readback_source_type,
+            readback_token_kind,
+            true,
+        );
+    }
+
+    let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    GatewayTrustedNumericSourceFileReadModelBackend {
+        status: GatewayTrustedNumericSourceFileReadModelBackendStatus::Ready,
+        blocker: None,
+        backend_kind: GatewayTrustedNumericSourceBackendKind::ReadModel,
+        source_type: GatewayTrustedNumericSourceType::ReadModel,
+        token_kind,
+        readback_source_type,
+        readback_token_kind,
+        token_count: Some(tokens as u64),
+        opt_in_enabled: true,
+        artifact_path_allowed: true,
+        artifact_read: true,
+        backend_invocation_allowed: true,
+        fallback_required: false,
+        preflight_duration_ms: duration_ms,
+        estimate_duration_ms: duration_ms,
+        material_in_output: false,
+        backend_side_effect_required: false,
+    }
+}
+
+fn resolve_gateway_fixture_artifact_path(artifact_path: &Path) -> Option<std::path::PathBuf> {
+    if artifact_path.exists() {
+        return Some(artifact_path.to_path_buf());
+    }
+
+    let current_dir = std::env::current_dir().ok()?;
+    for ancestor in current_dir.ancestors() {
+        let candidate = ancestor.join(artifact_path);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn gateway_trusted_numeric_source_file_read_model_backend_fallback(
+    status: GatewayTrustedNumericSourceFileReadModelBackendStatus,
+    blocker: Option<GatewayTrustedNumericSourceFileReadModelBackendBlocker>,
+    token_kind: GatewayTrustedNumericTokenKind,
+    opt_in_enabled: bool,
+    artifact_path_allowed: bool,
+    duration_ms: u64,
+    readback_source_type: Option<GatewayTrustedNumericSourceType>,
+    readback_token_kind: Option<GatewayTrustedNumericTokenKind>,
+    artifact_read: bool,
+) -> GatewayTrustedNumericSourceFileReadModelBackend {
+    GatewayTrustedNumericSourceFileReadModelBackend {
+        status,
+        blocker,
+        backend_kind: GatewayTrustedNumericSourceBackendKind::ReadModel,
+        source_type: GatewayTrustedNumericSourceType::ReadModel,
+        token_kind,
+        readback_source_type,
+        readback_token_kind,
+        token_count: None,
+        opt_in_enabled,
+        artifact_path_allowed,
+        artifact_read,
+        backend_invocation_allowed: false,
+        fallback_required: true,
+        preflight_duration_ms: duration_ms,
+        estimate_duration_ms: duration_ms,
+        material_in_output: blocker
+            == Some(GatewayTrustedNumericSourceFileReadModelBackendBlocker::MaterialInOutput),
+        backend_side_effect_required: false,
+    }
+}
+
+struct GatewayTrustedNumericSourceFileReadModelBackendAdapter {
+    output: GatewayTrustedNumericSourceBackendReadbackOutput,
+}
+
+impl GatewayTrustedNumericSourceBackendReadback
+    for GatewayTrustedNumericSourceFileReadModelBackendAdapter
+{
+    fn trusted_numeric_source_readback(
+        &self,
+        _input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+    ) -> GatewayTrustedNumericSourceBackendReadbackOutput {
+        self.output
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_file_read_model_backend_live_smoke_command_gate(
+    input: GatewayTrustedNumericSourceFileReadModelLiveSmokeInput<'_>,
+) -> GatewayTrustedNumericSourceFileReadModelLiveSmokeGate {
+    if !input.command_opt_in_enabled {
+        return gateway_trusted_numeric_source_file_read_model_backend_live_smoke_fallback(
+            GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus::Disabled,
+            Some(GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker::OptInMissing),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    let file_backend = gateway_trusted_numeric_source_file_read_model_backend_harness(
+        true,
+        input.artifact_path,
+        input.token_kind,
+    );
+    if file_backend.status != GatewayTrustedNumericSourceFileReadModelBackendStatus::Ready {
+        return gateway_trusted_numeric_source_file_read_model_backend_live_smoke_fallback(
+            GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus::Blocked,
+            Some(GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker::BackendUnavailable),
+            true,
+            true,
+            Some(file_backend.safe_summary()),
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    let Some(readback_output) = file_backend.readback_output() else {
+        return gateway_trusted_numeric_source_file_read_model_backend_live_smoke_fallback(
+            GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus::Blocked,
+            Some(GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker::ReadbackUnavailable),
+            true,
+            true,
+            Some(file_backend.safe_summary()),
+            None,
+            None,
+            None,
+            None,
+        );
+    };
+
+    let handoff = gateway_trusted_numeric_source_backend_handoff(
+        GatewayTrustedNumericSourceType::ReadModel,
+        input.token_kind,
+        true,
+        true,
+        true,
+        file_backend.estimate_duration_ms,
+    );
+    let adapter = GatewayTrustedNumericSourceFileReadModelBackendAdapter {
+        output: readback_output,
+    };
+    let backend_preflight = gateway_trusted_numeric_source_backend_preflight(
+        GatewayTrustedNumericSourceBackendPreflightInput::new(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &handoff,
+        ),
+        Some(&adapter),
+    );
+    let adapter_slot = gateway_trusted_numeric_source_backend_adapter_slot(
+        GatewayTrustedNumericSourceType::ReadModel,
+        input.token_kind,
+        true,
+        true,
+        true,
+    );
+    let adapter_readiness =
+        gateway_trusted_numeric_source_backend_adapter_readiness(&adapter_slot, &backend_preflight);
+    if adapter_readiness.status != GatewayTrustedNumericSourceBackendAdapterSlotStatus::Ready {
+        return gateway_trusted_numeric_source_file_read_model_backend_live_smoke_fallback(
+            GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus::Blocked,
+            Some(
+                GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker::AdapterReadinessUnavailable,
+            ),
+            true,
+            true,
+            Some(file_backend.safe_summary()),
+            Some(backend_preflight.safe_summary()),
+            Some(adapter_readiness.safe_summary()),
+            None,
+            None,
+        );
+    }
+
+    let availability = gateway_trusted_numeric_source_availability_from_adapter(Some(
+        GatewayTrustedNumericSourceAdapterOutput::new(
+            GatewayTrustedNumericSourceType::ReadModel,
+            input.token_kind,
+            backend_preflight
+                .token_count
+                .map(|tokens| tokens.min(i64::MAX as u64) as i64),
+        ),
+    ));
+    let tpm_estimate = gateway_tpm_estimate_for_request(
+        GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+        &Value::Null,
+        gateway_tpm_signals_from_trusted_numeric_source(
+            &availability,
+            input.conservative_fallback_tokens,
+        ),
+    )
+    .with_trusted_source_backend_preflight(backend_preflight.safe_summary());
+    let required_tokens = tpm_estimate.estimate.required_tokens_i64();
+    let config_preflight = gateway_trusted_numeric_source_config_preflight(
+        GatewayTrustedNumericSourceConfigPreflightInput::new(false, false, true, true),
+    );
+    let opt_in_evidence = gateway_trusted_numeric_source_opt_in_evidence(
+        GatewayTrustedNumericSourceOptInEvidenceInput::new(
+            &config_preflight,
+            &availability,
+            required_tokens,
+            required_tokens,
+            required_tokens,
+            required_tokens,
+        ),
+    );
+    let reservation_projection =
+        gateway_trusted_numeric_source_reservation_projection(&opt_in_evidence);
+    let reservation_ready = adapter_readiness.reservation_acquire_ready
+        && reservation_projection.projection_ready
+        && reservation_projection.capacity_evidence_aligned;
+    if !reservation_ready {
+        return gateway_trusted_numeric_source_file_read_model_backend_live_smoke_fallback(
+            GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus::Blocked,
+            Some(
+                GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker::ReservationEvidenceUnaligned,
+            ),
+            true,
+            true,
+            Some(file_backend.safe_summary()),
+            Some(backend_preflight.safe_summary()),
+            Some(adapter_readiness.safe_summary()),
+            Some(tpm_estimate.safe_summary()),
+            Some(reservation_projection.safe_summary()),
+        );
+    }
+
+    GatewayTrustedNumericSourceFileReadModelLiveSmokeGate {
+        status: GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus::Ready,
+        blocker: None,
+        command_opt_in_enabled: true,
+        command_would_read_artifact: true,
+        file_backend: Some(file_backend.safe_summary()),
+        backend_preflight: Some(backend_preflight.safe_summary()),
+        adapter_readiness: Some(adapter_readiness.safe_summary()),
+        tpm_estimate: Some(tpm_estimate.safe_summary()),
+        reservation_projection: Some(reservation_projection.safe_summary()),
+        token_count: backend_preflight.token_count,
+        required_capacity_tokens_per_minute: Some(required_tokens),
+        acquire_tpm_required_tokens: Some(required_tokens),
+        db_required_capacity_tokens_per_minute: Some(required_tokens),
+        capacity_evidence_aligned: true,
+        reservation_acquire_ready: true,
+        live_gap_closure_ready: true,
+        material_in_output: file_backend.material_in_output
+            || backend_preflight.material_in_output
+            || adapter_readiness.material_in_output
+            || reservation_projection.material_in_output,
+        backend_side_effect_required: file_backend.backend_side_effect_required
+            || backend_preflight.backend_side_effect_required
+            || adapter_readiness.backend_side_effect_required,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gateway_trusted_numeric_source_file_read_model_backend_live_smoke_fallback(
+    status: GatewayTrustedNumericSourceFileReadModelLiveSmokeStatus,
+    blocker: Option<GatewayTrustedNumericSourceFileReadModelLiveSmokeBlocker>,
+    command_opt_in_enabled: bool,
+    command_would_read_artifact: bool,
+    file_backend: Option<GatewayTrustedNumericSourceFileReadModelBackendSummary>,
+    backend_preflight: Option<GatewayTrustedNumericSourceBackendPreflightSummary>,
+    adapter_readiness: Option<GatewayTrustedNumericSourceBackendAdapterReadinessSummary>,
+    tpm_estimate: Option<GatewayTpmEstimateSummary>,
+    reservation_projection: Option<GatewayTrustedNumericSourceReservationProjectionSummary>,
+) -> GatewayTrustedNumericSourceFileReadModelLiveSmokeGate {
+    GatewayTrustedNumericSourceFileReadModelLiveSmokeGate {
+        status,
+        blocker,
+        command_opt_in_enabled,
+        command_would_read_artifact,
+        file_backend,
+        backend_preflight,
+        adapter_readiness,
+        tpm_estimate,
+        reservation_projection,
+        token_count: None,
+        required_capacity_tokens_per_minute: None,
+        acquire_tpm_required_tokens: None,
+        db_required_capacity_tokens_per_minute: None,
+        capacity_evidence_aligned: false,
+        reservation_acquire_ready: false,
+        live_gap_closure_ready: false,
+        material_in_output: false,
+        backend_side_effect_required: false,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_production_dod_checklist(
+    input: GatewayTrustedNumericSourceProductionDodInput,
+) -> GatewayTrustedNumericSourceProductionDodChecklist {
+    let blocker = if !input.production_backend_available {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::BackendUnavailable)
+    } else if !input.runtime_opt_in {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::RuntimeOptInMissing)
+    } else if !input.current_runtime_marker_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::CurrentRuntimeMarkerMissing)
+    } else if !input.token_count_source_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::TokenCountSourceMissing)
+    } else if !input.duration_evidence_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::DurationEvidenceMissing)
+    } else if !input.reservation_capacity_projection_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::ReservationCapacityProjectionMissing)
+    } else if !input.db_acquire_evidence_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::DbAcquireEvidenceMissing)
+    } else if !input.secret_safe_raw_omission_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::SecretSafeRawOmissionMissing)
+    } else if !input.live_smoke_command_readback_present {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::LiveSmokeReadbackMissing)
+    } else if input.simulated {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::SimulatedEvidence)
+    } else if input.repo_fixture_only {
+        Some(GatewayTrustedNumericSourceProductionDodBlocker::RepoFixtureOnly)
+    } else {
+        None
+    };
+    let status = if blocker.is_none() {
+        GatewayTrustedNumericSourceProductionDodStatus::Ready
+    } else {
+        GatewayTrustedNumericSourceProductionDodStatus::Blocked
+    };
+
+    GatewayTrustedNumericSourceProductionDodChecklist {
+        status,
+        blocker,
+        input,
+        live_gap_closure_ready: status == GatewayTrustedNumericSourceProductionDodStatus::Ready,
+    }
+}
+
+pub(crate) fn gateway_trusted_numeric_source_production_runner_artifact_gate(
+    input: GatewayTrustedNumericSourceProductionRunnerArtifactInput<'_>,
+) -> GatewayTrustedNumericSourceProductionRunnerArtifactGate<'_> {
+    let blocker = if !input.runner_provenance_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingRunnerProvenance)
+    } else if !input.backend_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingBackend)
+    } else if !input.runtime_current_marker_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::StaleRuntime)
+    } else if input.runtime_commit != input.current_commit {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::StaleRuntime)
+    } else if input.artifact_current_commit.is_empty() {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingCurrentCommit)
+    } else if input.artifact_current_commit != input.current_commit {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::ArtifactStale)
+    } else if !input.generated_at_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingGeneratedAt)
+    } else if !input.artifact_fresh {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::ArtifactStale)
+    } else if input.repo_fixture_only {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::RepoFixtureOnly)
+    } else if input.simulated_runner {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::SimulatedRunner)
+    } else if !input.token_source_kind_present
+        || input.token_count.is_none()
+        || input.token_count != input.expected_token_count
+    {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::TokenMismatch)
+    } else if input.duration_ms.is_none() {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingDuration)
+    } else if !input.reservation_capacity_projected {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingReservationProjection)
+    } else if !input.db_acquire_evidence_present || !input.db_acquire_result_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingDbAcquire)
+    } else if !input.live_smoke_command_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::MissingLiveSmokeCommand)
+    } else if input.raw_material_present {
+        Some(GatewayTrustedNumericSourceProductionRunnerBlocker::RawMaterialPresent)
+    } else {
+        None
+    };
+    let status = if blocker.is_none() {
+        GatewayTrustedNumericSourceProductionRunnerStatus::ProductionBackendLiveSmokePassed
+    } else {
+        GatewayTrustedNumericSourceProductionRunnerStatus::ProductionReadyBlocked
+    };
+
+    GatewayTrustedNumericSourceProductionRunnerArtifactGate {
+        status,
+        blocker,
+        input,
+    }
+}
+
 pub(crate) fn gateway_trusted_numeric_source_provider_availability(
     evidence: &GatewayTrustedNumericSourceProviderEvidence,
 ) -> GatewayTrustedNumericSourceAvailability {
@@ -3144,14 +5174,27 @@ pub(crate) struct GatewayTpmEstimatePlan {
         Option<GatewayTrustedNumericSourceImplementationSlotSummary>,
     pub(crate) trusted_source_backend_handoff:
         Option<GatewayTrustedNumericSourceBackendHandoffSummary>,
+    pub(crate) trusted_source_backend_preflight:
+        Option<GatewayTrustedNumericSourceBackendPreflightSummary>,
 }
 
 impl GatewayTpmEstimatePlan {
     pub(crate) fn safe_summary(&self) -> GatewayTpmEstimateSummary {
+        let trusted_numeric_source_present =
+            self.trusted_source_provider
+                .as_ref()
+                .is_some_and(|provider| {
+                    provider.status == GatewayTrustedNumericSourceProviderStatus::Available.as_str()
+                        && provider.tokens.is_some()
+                        && !provider.material_in_output
+                        && !provider.provider_side_effect_required
+                });
         GatewayTpmEstimateSummary {
             schema: GATEWAY_TPM_ESTIMATE_MAPPER_SCHEMA,
             endpoint: self.endpoint.as_str(),
             source: self.estimate.source,
+            estimated: self.estimate.used_conservative_fallback || !trusted_numeric_source_present,
+            trusted_numeric_source_present,
             required_tokens: self.estimate.required_tokens,
             required_tokens_i64: self.estimate.required_tokens_i64(),
             prompt_tokens: self.estimate.prompt_tokens,
@@ -3165,6 +5208,7 @@ impl GatewayTpmEstimatePlan {
             trusted_source_provider: self.trusted_source_provider.clone(),
             trusted_source_implementation_slot: self.trusted_source_implementation_slot.clone(),
             trusted_source_backend_handoff: self.trusted_source_backend_handoff.clone(),
+            trusted_source_backend_preflight: self.trusted_source_backend_preflight.clone(),
         }
     }
 
@@ -3191,6 +5235,14 @@ impl GatewayTpmEstimatePlan {
         self.trusted_source_backend_handoff = Some(handoff);
         self
     }
+
+    pub(crate) fn with_trusted_source_backend_preflight(
+        mut self,
+        preflight: GatewayTrustedNumericSourceBackendPreflightSummary,
+    ) -> Self {
+        self.trusted_source_backend_preflight = Some(preflight);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3198,6 +5250,8 @@ pub(crate) struct GatewayTpmEstimateSummary {
     pub(crate) schema: &'static str,
     pub(crate) endpoint: &'static str,
     pub(crate) source: RateLimitTpmEstimateSource,
+    pub(crate) estimated: bool,
+    pub(crate) trusted_numeric_source_present: bool,
     pub(crate) required_tokens: u64,
     pub(crate) required_tokens_i64: i64,
     pub(crate) prompt_tokens: Option<u64>,
@@ -3213,6 +5267,8 @@ pub(crate) struct GatewayTpmEstimateSummary {
         Option<GatewayTrustedNumericSourceImplementationSlotSummary>,
     pub(crate) trusted_source_backend_handoff:
         Option<GatewayTrustedNumericSourceBackendHandoffSummary>,
+    pub(crate) trusted_source_backend_preflight:
+        Option<GatewayTrustedNumericSourceBackendPreflightSummary>,
 }
 
 pub(crate) fn gateway_tpm_estimate_for_request(
@@ -3237,6 +5293,7 @@ pub(crate) fn gateway_tpm_estimate_for_request(
         trusted_source_provider: None,
         trusted_source_implementation_slot: None,
         trusted_source_backend_handoff: None,
+        trusted_source_backend_preflight: None,
     }
 }
 
@@ -6469,6 +8526,2174 @@ mod tests {
             assert!(
                 !serialized.contains(&forbidden.to_ascii_lowercase()),
                 "backend handoff summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_backend_preflight_is_executable_secret_safe() {
+        use std::cell::Cell;
+
+        struct Backend {
+            calls: Cell<usize>,
+            output: GatewayTrustedNumericSourceBackendReadbackOutput,
+        }
+
+        impl GatewayTrustedNumericSourceBackendReadback for Backend {
+            fn trusted_numeric_source_readback(
+                &self,
+                input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+            ) -> GatewayTrustedNumericSourceBackendReadbackOutput {
+                self.calls.set(self.calls.get().saturating_add(1));
+                assert_eq!(input.endpoint, GatewayTpmEstimateEndpoint::OpenAiChat);
+                assert_eq!(
+                    input.handoff.status,
+                    GatewayTrustedNumericSourceBackendHandoffStatus::Ready
+                );
+                self.output
+            }
+        }
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("backend preflight states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing backend preflight state: {name}"))
+        }
+
+        fn assert_preflight(
+            summary: &GatewayTrustedNumericSourceBackendPreflightSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_PREFLIGHT_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(
+                summary.closure_blocker,
+                expected["closure_blocker"].as_str()
+            );
+            assert_eq!(
+                summary.handoff_status,
+                expected["handoff_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.readiness_status,
+                expected["readiness_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.readback_status,
+                expected["readback_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.backend_kind,
+                expected["backend_kind"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.source_type,
+                expected["source_type"].as_str().unwrap()
+            );
+            assert_eq!(summary.token_kind, expected["token_kind"].as_str().unwrap());
+            assert_eq!(
+                summary.readback_source_type,
+                expected["readback_source_type"].as_str()
+            );
+            assert_eq!(
+                summary.readback_token_kind,
+                expected["readback_token_kind"].as_str()
+            );
+            assert_eq!(summary.token_count, expected["token_count"].as_u64());
+            assert_eq!(
+                summary.backend_invoked,
+                expected["backend_invoked"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_ready,
+                expected["reservation_acquire_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.availability_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_AVAILABILITY_MARKER
+            );
+            assert_eq!(
+                summary.preflight_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PREFLIGHT_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.estimate_duration_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_ESTIMATE_DURATION_MARKER
+            );
+            assert_eq!(
+                summary.source_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TYPE_MARKER
+            );
+            assert_eq!(
+                summary.token_count_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_TOKEN_COUNT_MARKER
+            );
+            assert_eq!(
+                summary.source_token_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER
+            );
+            assert_eq!(summary.preflight_duration_ms, summary.estimate_duration_ms);
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+            assert!(!summary.backend_side_effect_required);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["backend_preflight_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_PREFLIGHT_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_backend_preflight")
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        for status in ["disabled", "unavailable", "ready"] {
+            assert!(
+                contract["allowed_statuses"]
+                    .as_array()
+                    .expect("allowed statuses should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(status)),
+                "backend preflight contract should allow {status}"
+            );
+        }
+        for field in [
+            "trusted_source_backend_preflight.closure_blocker",
+            "trusted_source_backend_preflight.readiness_status",
+            "trusted_source_backend_preflight.readback_status",
+            "trusted_source_backend_preflight.source_marker",
+            "trusted_source_backend_preflight.token_count_marker",
+            "trusted_source_backend_preflight.source_token_marker",
+            "trusted_source_backend_preflight.preflight_duration_ms",
+            "trusted_source_backend_preflight.raw_value_omitted",
+        ] {
+            assert!(
+                contract["safe_summary_fields"]
+                    .as_array()
+                    .expect("backend preflight fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "backend preflight summary should include {field}"
+            );
+        }
+        for field in [
+            "request_body",
+            "raw_prompt",
+            "raw_input",
+            "raw_header",
+            "provider_endpoint",
+            "current_window_state",
+        ] {
+            assert!(
+                contract["forbidden_input_fields"]
+                    .as_array()
+                    .expect("forbidden input fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "backend preflight input should forbid {field}"
+            );
+        }
+
+        let disabled_handoff = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            false,
+            false,
+            false,
+            0,
+        );
+        let read_model_handoff = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::ReadModel,
+            GatewayTrustedNumericTokenKind::InputTokens,
+            true,
+            true,
+            true,
+            7,
+        );
+        let tokenizer_handoff = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            true,
+            true,
+            true,
+            5,
+        );
+
+        let tokenizer_backend = Backend {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceBackendReadbackOutput::new(
+                GatewayTrustedNumericSourceBackendKind::Tokenizer,
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        };
+        let disabled = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &disabled_handoff,
+            ),
+            Some(&tokenizer_backend),
+        );
+        assert_preflight(
+            &disabled.safe_summary(),
+            state(contract, "tokenizer_disabled_default"),
+        );
+        assert_eq!(tokenizer_backend.calls.get(), 0);
+
+        let missing = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &read_model_handoff,
+            ),
+            None,
+        );
+        assert_preflight(
+            &missing.safe_summary(),
+            state(contract, "read_model_backend_missing_unavailable"),
+        );
+        assert_eq!(tokenizer_backend.calls.get(), 0);
+
+        let ready = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &tokenizer_handoff,
+            ),
+            Some(&tokenizer_backend),
+        );
+        assert_preflight(
+            &ready.safe_summary(),
+            state(contract, "tokenizer_readback_ready"),
+        );
+        assert_eq!(tokenizer_backend.calls.get(), 1);
+
+        let misaligned_backend = Backend {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceBackendReadbackOutput::new(
+                GatewayTrustedNumericSourceBackendKind::Tokenizer,
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        };
+        let misaligned = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &read_model_handoff,
+            ),
+            Some(&misaligned_backend),
+        );
+        assert_preflight(
+            &misaligned.safe_summary(),
+            state(contract, "read_model_misaligned_unavailable"),
+        );
+        assert_eq!(misaligned_backend.calls.get(), 1);
+
+        let plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiChat,
+            &json!({ "max_completion_tokens": 79 }),
+            GatewayTpmEstimateSignals::trusted_prompt_tokens(Some(321), 256),
+        )
+        .with_trusted_source_backend_handoff(tokenizer_handoff.safe_summary())
+        .with_trusted_source_backend_preflight(ready.safe_summary());
+        let plan_summary = plan.safe_summary();
+        assert_eq!(
+            plan_summary
+                .trusted_source_backend_preflight
+                .as_ref()
+                .map(|summary| summary.status),
+            Some("ready")
+        );
+        assert_eq!(plan_summary.required_tokens_i64, 400);
+
+        let serialized = serde_json::to_string(&json!({
+            "backend_preflight": [
+                disabled.safe_summary(),
+                missing.safe_summary(),
+                ready.safe_summary(),
+                misaligned.safe_summary()
+            ],
+            "plan": plan_summary
+        }))
+        .expect("backend preflight summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "backend preflight summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_backend_adapter_slot_is_secret_safe() {
+        use std::cell::Cell;
+
+        struct Backend {
+            calls: Cell<usize>,
+            output: GatewayTrustedNumericSourceBackendReadbackOutput,
+        }
+
+        impl GatewayTrustedNumericSourceBackendReadback for Backend {
+            fn trusted_numeric_source_readback(
+                &self,
+                input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+            ) -> GatewayTrustedNumericSourceBackendReadbackOutput {
+                self.calls.set(self.calls.get().saturating_add(1));
+                assert_eq!(input.endpoint, GatewayTpmEstimateEndpoint::OpenAiChat);
+                self.output
+            }
+        }
+
+        fn state<'a>(
+            contract: &'a serde_json::Value,
+            group: &str,
+            name: &str,
+        ) -> &'a serde_json::Value {
+            contract[group]
+                .as_array()
+                .unwrap_or_else(|| panic!("{group} should be an array"))
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing {group} state: {name}"))
+        }
+
+        fn assert_slot(
+            summary: &GatewayTrustedNumericSourceBackendAdapterSlotSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_SLOT_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.blocker, expected["blocker"].as_str());
+            assert_eq!(
+                summary.backend_kind,
+                expected["backend_kind"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.source_type,
+                expected["source_type"].as_str().unwrap()
+            );
+            assert_eq!(summary.token_kind, expected["token_kind"].as_str().unwrap());
+            assert_eq!(
+                summary.adapter_invocation_allowed,
+                expected["adapter_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_ready,
+                expected["reservation_acquire_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.source_token_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER
+            );
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+            assert!(!summary.backend_side_effect_required);
+        }
+
+        fn assert_readiness(
+            summary: &GatewayTrustedNumericSourceBackendAdapterReadinessSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_READINESS_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.blocker, expected["blocker"].as_str());
+            assert_eq!(
+                summary.slot_status,
+                expected["slot_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.preflight_status,
+                expected["preflight_status"].as_str().unwrap()
+            );
+            assert_eq!(
+                summary.readback_status,
+                expected["readback_status"].as_str().unwrap()
+            );
+            assert_eq!(summary.token_count, expected["token_count"].as_u64());
+            assert_eq!(
+                summary.adapter_invocation_allowed,
+                expected["adapter_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_ready,
+                expected["reservation_acquire_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.source_token_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER
+            );
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+            assert!(!summary.backend_side_effect_required);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["backend_adapter_implementation_slot_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_SLOT_SCHEMA)
+        );
+        assert_eq!(
+            contract["readiness_schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_BACKEND_ADAPTER_READINESS_SCHEMA)
+        );
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        for field in [
+            "request_body",
+            "raw_prompt",
+            "raw_input",
+            "raw_header",
+            "provider_endpoint",
+            "provider_key",
+            "env_secret",
+            "current_window_state",
+        ] {
+            assert!(
+                contract["forbidden_input_fields"]
+                    .as_array()
+                    .expect("forbidden input fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "adapter slot should forbid {field}"
+            );
+        }
+        for field in [
+            "trusted_source_backend_adapter_slot.adapter_invocation_allowed",
+            "trusted_source_backend_adapter_slot.source_token_marker",
+            "trusted_source_backend_adapter_slot.raw_value_omitted",
+        ] {
+            assert!(
+                contract["slot_safe_summary_fields"]
+                    .as_array()
+                    .expect("slot summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "adapter slot summary should include {field}"
+            );
+        }
+        for field in [
+            "trusted_source_backend_adapter_readiness.preflight_status",
+            "trusted_source_backend_adapter_readiness.readback_status",
+            "trusted_source_backend_adapter_readiness.token_count",
+            "trusted_source_backend_adapter_readiness.live_gap_closure_ready",
+        ] {
+            assert!(
+                contract["readiness_safe_summary_fields"]
+                    .as_array()
+                    .expect("readiness summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "adapter readiness summary should include {field}"
+            );
+        }
+
+        let disabled_slot = gateway_trusted_numeric_source_backend_adapter_slot(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            false,
+            false,
+            false,
+        );
+        let unavailable_slot = gateway_trusted_numeric_source_backend_adapter_slot(
+            GatewayTrustedNumericSourceType::ReadModel,
+            GatewayTrustedNumericTokenKind::InputTokens,
+            true,
+            false,
+            false,
+        );
+        let ready_slot = gateway_trusted_numeric_source_backend_adapter_slot(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            true,
+            true,
+            true,
+        );
+
+        assert_slot(
+            &disabled_slot.safe_summary(),
+            state(contract, "slot_states", "tokenizer_slot_disabled_default"),
+        );
+        assert_slot(
+            &unavailable_slot.safe_summary(),
+            state(
+                contract,
+                "slot_states",
+                "read_model_slot_adapter_unavailable",
+            ),
+        );
+        assert_slot(
+            &ready_slot.safe_summary(),
+            state(contract, "slot_states", "tokenizer_slot_ready"),
+        );
+
+        let disabled_handoff = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            false,
+            false,
+            false,
+            0,
+        );
+        let ready_handoff = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::Tokenizer,
+            GatewayTrustedNumericTokenKind::PromptTokens,
+            true,
+            true,
+            true,
+            5,
+        );
+        let backend = Backend {
+            calls: Cell::new(0),
+            output: GatewayTrustedNumericSourceBackendReadbackOutput::new(
+                GatewayTrustedNumericSourceBackendKind::Tokenizer,
+                GatewayTrustedNumericSourceType::Tokenizer,
+                GatewayTrustedNumericTokenKind::PromptTokens,
+                Some(321),
+            ),
+        };
+        let disabled_preflight = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &disabled_handoff,
+            ),
+            Some(&backend),
+        );
+        assert_eq!(backend.calls.get(), 0);
+        let missing_preflight = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &ready_handoff,
+            ),
+            None,
+        );
+        assert_eq!(backend.calls.get(), 0);
+        let ready_preflight = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiChat,
+                &ready_handoff,
+            ),
+            Some(&backend),
+        );
+        assert_eq!(backend.calls.get(), 1);
+
+        let disabled_readiness = gateway_trusted_numeric_source_backend_adapter_readiness(
+            &disabled_slot,
+            &disabled_preflight,
+        );
+        let blocked_readiness = gateway_trusted_numeric_source_backend_adapter_readiness(
+            &ready_slot,
+            &missing_preflight,
+        );
+        let ready_readiness =
+            gateway_trusted_numeric_source_backend_adapter_readiness(&ready_slot, &ready_preflight);
+
+        assert_readiness(
+            &disabled_readiness.safe_summary(),
+            state(contract, "readiness_states", "disabled_slot_stays_disabled"),
+        );
+        assert_readiness(
+            &blocked_readiness.safe_summary(),
+            state(
+                contract,
+                "readiness_states",
+                "ready_slot_preflight_unavailable_blocks",
+            ),
+        );
+        assert_readiness(
+            &ready_readiness.safe_summary(),
+            state(
+                contract,
+                "readiness_states",
+                "ready_slot_ready_preflight_passes",
+            ),
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "adapter_slot": [
+                disabled_slot.safe_summary(),
+                unavailable_slot.safe_summary(),
+                ready_slot.safe_summary()
+            ],
+            "adapter_readiness": [
+                disabled_readiness.safe_summary(),
+                blocked_readiness.safe_summary(),
+                ready_readiness.safe_summary()
+            ]
+        }))
+        .expect("backend adapter slot summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "backend adapter slot summary leaked forbidden marker: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_file_read_model_backend_harness_is_secret_safe() {
+        struct FileBackend {
+            output: GatewayTrustedNumericSourceBackendReadbackOutput,
+        }
+
+        impl GatewayTrustedNumericSourceBackendReadback for FileBackend {
+            fn trusted_numeric_source_readback(
+                &self,
+                input: GatewayTrustedNumericSourceBackendPreflightInput<'_>,
+            ) -> GatewayTrustedNumericSourceBackendReadbackOutput {
+                assert_eq!(input.endpoint, GatewayTpmEstimateEndpoint::OpenAiEmbeddings);
+                self.output
+            }
+        }
+
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("file read-model backend states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing file read-model backend state: {name}"))
+        }
+
+        fn assert_file_backend(
+            summary: &GatewayTrustedNumericSourceFileReadModelBackendSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.blocker, expected["blocker"].as_str());
+            assert_eq!(
+                summary.source_type,
+                expected["source_type"].as_str().unwrap()
+            );
+            assert_eq!(summary.token_kind, expected["token_kind"].as_str().unwrap());
+            assert_eq!(
+                summary.readback_source_type,
+                expected["readback_source_type"].as_str()
+            );
+            assert_eq!(
+                summary.readback_token_kind,
+                expected["readback_token_kind"].as_str()
+            );
+            assert_eq!(summary.token_count, expected["token_count"].as_u64());
+            assert_eq!(
+                summary.opt_in_enabled,
+                expected["opt_in_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_path_allowed,
+                expected["artifact_path_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_read,
+                expected["artifact_read"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.backend_invocation_allowed,
+                expected["backend_invocation_allowed"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.fallback_required,
+                expected["fallback_required"].as_bool().unwrap()
+            );
+            assert_eq!(summary.artifact_path_scope, "tests/fixtures/gateway");
+            assert_eq!(
+                summary.source_token_marker,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_SOURCE_TOKEN_MARKER
+            );
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.material_in_output);
+            assert!(!summary.backend_side_effect_required);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["file_read_model_backend_harness_contract"];
+
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_file_read_model_backend_harness")
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+        for field in [
+            "request_body",
+            "raw_prompt",
+            "raw_input",
+            "raw_header",
+            "provider_endpoint",
+            "provider_key",
+            "env_secret",
+            "current_window_state",
+        ] {
+            assert!(
+                contract["forbidden_input_fields"]
+                    .as_array()
+                    .expect("forbidden input fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "file read-model backend should forbid {field}"
+            );
+        }
+        for field in [
+            "trusted_source_file_read_model_backend.status",
+            "trusted_source_file_read_model_backend.token_count",
+            "trusted_source_file_read_model_backend.artifact_path_scope",
+            "trusted_source_file_read_model_backend.raw_value_omitted",
+        ] {
+            assert!(
+                contract["safe_summary_fields"]
+                    .as_array()
+                    .expect("file backend summary fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "file read-model backend summary should include {field}"
+            );
+        }
+
+        let ready_path =
+            Path::new("tests/fixtures/gateway/trusted_read_model_backend_harness_ready.json");
+        let disabled = gateway_trusted_numeric_source_file_read_model_backend_harness(
+            false,
+            ready_path,
+            GatewayTrustedNumericTokenKind::InputTokens,
+        );
+        let out_of_scope = gateway_trusted_numeric_source_file_read_model_backend_harness(
+            true,
+            Path::new("tests/fixtures/control-plane/not_gateway.json"),
+            GatewayTrustedNumericTokenKind::InputTokens,
+        );
+        let ready = gateway_trusted_numeric_source_file_read_model_backend_harness(
+            true,
+            ready_path,
+            GatewayTrustedNumericTokenKind::InputTokens,
+        );
+
+        assert_file_backend(
+            &disabled.safe_summary(),
+            state(contract, "disabled_default"),
+        );
+        assert_file_backend(
+            &out_of_scope.safe_summary(),
+            state(contract, "path_out_of_scope"),
+        );
+        assert_file_backend(
+            &ready.safe_summary(),
+            state(contract, "read_model_fixture_ready"),
+        );
+
+        let readback_output = ready
+            .readback_output()
+            .expect("ready file backend should expose readback output");
+        let handoff = gateway_trusted_numeric_source_backend_handoff(
+            GatewayTrustedNumericSourceType::ReadModel,
+            GatewayTrustedNumericTokenKind::InputTokens,
+            true,
+            true,
+            true,
+            ready.estimate_duration_ms,
+        );
+        let backend = FileBackend {
+            output: readback_output,
+        };
+        let preflight = gateway_trusted_numeric_source_backend_preflight(
+            GatewayTrustedNumericSourceBackendPreflightInput::new(
+                GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+                &handoff,
+            ),
+            Some(&backend),
+        );
+        assert_eq!(
+            preflight.status,
+            GatewayTrustedNumericSourceBackendPreflightStatus::Ready
+        );
+        assert_eq!(preflight.token_count, Some(222));
+        assert!(preflight.reservation_acquire_ready);
+
+        let availability = gateway_trusted_numeric_source_availability_from_adapter(Some(
+            GatewayTrustedNumericSourceAdapterOutput::new(
+                GatewayTrustedNumericSourceType::ReadModel,
+                GatewayTrustedNumericTokenKind::InputTokens,
+                preflight
+                    .token_count
+                    .map(|tokens| tokens.min(i64::MAX as u64) as i64),
+            ),
+        ));
+        let plan = gateway_tpm_estimate_for_request(
+            GatewayTpmEstimateEndpoint::OpenAiEmbeddings,
+            &json!({ "input": "raw input must not be counted" }),
+            gateway_tpm_signals_from_trusted_numeric_source(&availability, 256),
+        );
+        assert_eq!(plan.estimate.required_tokens, 222);
+        assert!(!plan.estimate.used_conservative_fallback);
+
+        let serialized = serde_json::to_string(&json!({
+            "file_backend": [
+                disabled.safe_summary(),
+                out_of_scope.safe_summary(),
+                ready.safe_summary()
+            ],
+            "preflight": preflight.safe_summary(),
+            "plan": plan.safe_summary()
+        }))
+        .expect("file read-model backend summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "file read-model backend summary leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in ["raw input", "must not be counted", "\"input\""] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "file read-model backend summary leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_file_read_model_backend_live_smoke_command_gate_is_secret_safe()
+     {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("file read-model live smoke states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing file read-model live smoke state: {name}"))
+        }
+
+        fn assert_gate(
+            summary: &GatewayTrustedNumericSourceFileReadModelLiveSmokeSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_LIVE_SMOKE_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.blocker, expected["blocker"].as_str());
+            assert_eq!(
+                summary.command_opt_in_enabled,
+                expected["command_opt_in_enabled"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.command_would_read_artifact,
+                expected["command_would_read_artifact"].as_bool().unwrap()
+            );
+            assert_eq!(summary.token_count, expected["token_count"].as_u64());
+            assert_eq!(
+                summary.capacity_evidence_aligned,
+                expected["capacity_evidence_aligned"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_acquire_ready,
+                expected["reservation_acquire_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.opt_in_env,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_LIVE_SMOKE_OPT_IN_ENV
+            );
+            assert_eq!(summary.artifact_path_scope, "tests/fixtures/gateway");
+            assert!(summary.raw_value_omitted);
+            assert!(!summary.external_service_required);
+            assert!(!summary.material_in_output);
+            assert!(!summary.backend_side_effect_required);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["file_read_model_backend_live_smoke_command_gate_contract"];
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_BACKEND_LIVE_SMOKE_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_file_read_model_backend_live_smoke_command_gate")
+        );
+        assert_eq!(contract["runtime_wiring_changed"].as_bool(), Some(false));
+        assert_eq!(contract["default_status"].as_str(), Some("disabled"));
+        assert_eq!(
+            contract["opt_in_env"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_FILE_READ_MODEL_LIVE_SMOKE_OPT_IN_ENV)
+        );
+        for field in [
+            "request_body",
+            "raw_prompt",
+            "raw_input",
+            "raw_header",
+            "provider_endpoint",
+            "provider_key",
+            "env_secret",
+            "current_window_state",
+        ] {
+            assert!(
+                contract["forbidden_input_fields"]
+                    .as_array()
+                    .expect("forbidden input fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(field)),
+                "file read-model live smoke gate should forbid {field}"
+            );
+        }
+
+        let ready_path =
+            Path::new("tests/fixtures/gateway/trusted_read_model_backend_harness_ready.json");
+        let disabled =
+            gateway_trusted_numeric_source_file_read_model_backend_live_smoke_command_gate(
+                GatewayTrustedNumericSourceFileReadModelLiveSmokeInput::new(
+                    false,
+                    ready_path,
+                    GatewayTrustedNumericTokenKind::InputTokens,
+                    256,
+                ),
+            );
+        let ready = gateway_trusted_numeric_source_file_read_model_backend_live_smoke_command_gate(
+            GatewayTrustedNumericSourceFileReadModelLiveSmokeInput::new(
+                true,
+                ready_path,
+                GatewayTrustedNumericTokenKind::InputTokens,
+                256,
+            ),
+        );
+
+        let disabled_summary = disabled.safe_summary();
+        let ready_summary = ready.safe_summary();
+        assert_gate(&disabled_summary, state(contract, "disabled_default"));
+        assert!(disabled_summary.file_backend.is_none());
+        assert!(disabled_summary.backend_preflight.is_none());
+        assert!(disabled_summary.tpm_estimate.is_none());
+        assert_gate(
+            &ready_summary,
+            state(contract, "read_model_fixture_drives_reservation_evidence"),
+        );
+        assert_eq!(ready_summary.token_count, Some(222));
+        assert_eq!(ready_summary.required_capacity_tokens_per_minute, Some(222));
+        assert_eq!(ready_summary.acquire_tpm_required_tokens, Some(222));
+        assert_eq!(
+            ready_summary.db_required_capacity_tokens_per_minute,
+            Some(222)
+        );
+        assert_eq!(
+            ready_summary
+                .file_backend
+                .as_ref()
+                .expect("ready gate should include file backend readback")
+                .token_count,
+            Some(222)
+        );
+        assert_eq!(
+            ready_summary
+                .backend_preflight
+                .as_ref()
+                .expect("ready gate should include backend preflight")
+                .readback_status,
+            "available"
+        );
+        assert_eq!(
+            ready_summary
+                .adapter_readiness
+                .as_ref()
+                .expect("ready gate should include adapter readiness")
+                .status,
+            "ready"
+        );
+        assert_eq!(
+            ready_summary
+                .tpm_estimate
+                .as_ref()
+                .expect("ready gate should include TPM estimate")
+                .required_tokens_i64,
+            222
+        );
+        assert!(
+            ready_summary
+                .reservation_projection
+                .as_ref()
+                .expect("ready gate should include reservation projection")
+                .projection_ready
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "disabled": disabled_summary,
+            "ready": ready_summary
+        }))
+        .expect("file read-model live smoke summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "file read-model live smoke command gate leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in ["raw input", "raw prompt", "request_body", "\"input\""] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "file read-model live smoke command gate leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_production_dod_checklist_blocks_non_production_evidence()
+     {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("production DoD states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing production DoD state: {name}"))
+        }
+
+        fn input_from_state(
+            expected: &serde_json::Value,
+        ) -> GatewayTrustedNumericSourceProductionDodInput {
+            GatewayTrustedNumericSourceProductionDodInput::new(
+                GatewayTrustedNumericSourceBackendKind::ReadModel,
+                expected["production_backend_available"]
+                    .as_bool()
+                    .expect("production_backend_available should be bool"),
+                expected["runtime_opt_in"]
+                    .as_bool()
+                    .expect("runtime_opt_in should be bool"),
+                expected["current_runtime_marker_present"]
+                    .as_bool()
+                    .expect("current_runtime_marker_present should be bool"),
+                expected["token_count_source_present"]
+                    .as_bool()
+                    .expect("token_count_source_present should be bool"),
+                expected["duration_evidence_present"]
+                    .as_bool()
+                    .expect("duration_evidence_present should be bool"),
+                expected["reservation_capacity_projection_present"]
+                    .as_bool()
+                    .expect("reservation_capacity_projection_present should be bool"),
+                expected["db_acquire_evidence_present"]
+                    .as_bool()
+                    .expect("db_acquire_evidence_present should be bool"),
+                expected["secret_safe_raw_omission_present"]
+                    .as_bool()
+                    .expect("secret_safe_raw_omission_present should be bool"),
+                expected["live_smoke_command_readback_present"]
+                    .as_bool()
+                    .expect("live_smoke_command_readback_present should be bool"),
+                expected["simulated"]
+                    .as_bool()
+                    .expect("simulated should be bool"),
+                expected["repo_fixture_only"]
+                    .as_bool()
+                    .expect("repo_fixture_only should be bool"),
+            )
+        }
+
+        fn assert_dod(
+            summary: &GatewayTrustedNumericSourceProductionDodSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_DOD_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.blocker, expected["blocker"].as_str());
+            assert_eq!(summary.backend_kind, "read_model_backend");
+            assert_eq!(
+                summary.production_backend_available,
+                expected["production_backend_available"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.runtime_opt_in,
+                expected["runtime_opt_in"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.current_runtime_marker_present,
+                expected["current_runtime_marker_present"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.token_count_source_present,
+                expected["token_count_source_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.duration_evidence_present,
+                expected["duration_evidence_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_capacity_projection_present,
+                expected["reservation_capacity_projection_present"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.db_acquire_evidence_present,
+                expected["db_acquire_evidence_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.secret_safe_raw_omission_present,
+                expected["secret_safe_raw_omission_present"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.live_smoke_command_readback_present,
+                expected["live_smoke_command_readback_present"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(summary.simulated, expected["simulated"].as_bool().unwrap());
+            assert_eq!(
+                summary.repo_fixture_only,
+                expected["repo_fixture_only"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_gap_closure_ready,
+                expected["live_gap_closure_ready"].as_bool().unwrap()
+            );
+            assert!(summary.raw_value_omitted);
+            assert!(summary.external_service_required);
+            assert!(!summary.material_in_output);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["production_backend_dod_checklist_contract"];
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_DOD_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_production_dod_checklist")
+        );
+
+        for required in [
+            "backend_kind",
+            "runtime_opt_in",
+            "current_runtime_marker",
+            "token_count_source",
+            "latency_duration",
+            "reservation_capacity_projection",
+            "db_acquire_evidence",
+            "secret_safe_raw_omission",
+            "live_smoke_command_readback",
+        ] {
+            assert!(
+                contract["required_evidence"]
+                    .as_array()
+                    .expect("required evidence should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(required)),
+                "production DoD should require {required}"
+            );
+        }
+
+        for (evidence_class, blocker) in [
+            ("blocked", "backend_unavailable"),
+            ("unavailable", "backend_unavailable"),
+            ("simulated", "simulated_evidence"),
+            ("repo_fixture_only", "repo_fixture_only"),
+        ] {
+            let entry = contract["blocker_matrix"]
+                .as_array()
+                .expect("blocker matrix should be an array")
+                .iter()
+                .find(|entry| entry["evidence_class"].as_str() == Some(evidence_class))
+                .unwrap_or_else(|| panic!("missing blocker matrix entry: {evidence_class}"));
+            assert_eq!(entry["closure_allowed"].as_bool(), Some(false));
+            assert_eq!(entry["blocker"].as_str(), Some(blocker));
+        }
+
+        for state_name in [
+            "repo_fixture_only_blocks_final_closure",
+            "simulated_evidence_blocks_final_closure",
+            "production_backend_live_smoke_ready",
+            "missing_db_acquire_evidence_blocks",
+        ] {
+            let expected = state(contract, state_name);
+            let summary =
+                gateway_trusted_numeric_source_production_dod_checklist(input_from_state(expected))
+                    .safe_summary();
+            assert_dod(&summary, expected);
+        }
+
+        let serialized = serde_json::to_string(&json!({
+            "repo_fixture_only": gateway_trusted_numeric_source_production_dod_checklist(
+                input_from_state(state(contract, "repo_fixture_only_blocks_final_closure")),
+            )
+            .safe_summary(),
+            "ready": gateway_trusted_numeric_source_production_dod_checklist(
+                input_from_state(state(contract, "production_backend_live_smoke_ready")),
+            )
+            .safe_summary()
+        }))
+        .expect("production DoD summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "production DoD summary leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in ["raw input", "raw prompt", "request_body", "\"input\""] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "production DoD summary leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_production_runner_artifact_gate_classifies_operator_evidence()
+     {
+        fn state<'a>(contract: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+            contract["states"]
+                .as_array()
+                .expect("production runner states should be an array")
+                .iter()
+                .find(|state| state["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing production runner state: {name}"))
+        }
+
+        fn input_from_state(
+            expected: &serde_json::Value,
+        ) -> GatewayTrustedNumericSourceProductionRunnerArtifactInput<'static> {
+            let runtime_commit = if expected["runtime_commit_matches_current"]
+                .as_bool()
+                .unwrap()
+            {
+                "commit-current"
+            } else {
+                "commit-stale"
+            };
+            let artifact_commit = if expected["artifact_current_commit_matches_current"]
+                .as_bool()
+                .unwrap()
+            {
+                "commit-current"
+            } else {
+                "commit-stale"
+            };
+            let token_count = if expected["token_count_matches_expected"].as_bool().unwrap() {
+                Some(222)
+            } else {
+                Some(221)
+            };
+            let duration_ms = if expected["duration_ms_present"].as_bool().unwrap() {
+                Some(17)
+            } else {
+                None
+            };
+
+            GatewayTrustedNumericSourceProductionRunnerArtifactInput::new(
+                true,
+                GatewayTrustedNumericSourceBackendKind::ReadModel,
+                expected["backend_present"].as_bool().unwrap(),
+                expected["runtime_current_marker_present"]
+                    .as_bool()
+                    .unwrap(),
+                runtime_commit,
+                "commit-current",
+                artifact_commit,
+                expected["generated_at_present"].as_bool().unwrap(),
+                expected["artifact_fresh"].as_bool().unwrap(),
+                true,
+                token_count,
+                Some(222),
+                duration_ms,
+                expected["reservation_capacity_projected"]
+                    .as_bool()
+                    .unwrap(),
+                expected["db_acquire_evidence_present"].as_bool().unwrap(),
+                expected["db_acquire_result_present"].as_bool().unwrap(),
+                expected["live_smoke_command_present"].as_bool().unwrap(),
+                expected["raw_material_present"].as_bool().unwrap(),
+                expected["simulated_runner"].as_bool().unwrap(),
+                expected["repo_fixture_only"].as_bool().unwrap(),
+            )
+        }
+
+        fn assert_runner(
+            summary: &GatewayTrustedNumericSourceProductionRunnerArtifactSummary,
+            expected: &serde_json::Value,
+        ) {
+            assert_eq!(
+                summary.schema,
+                GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_RUNNER_ARTIFACT_SCHEMA
+            );
+            assert_eq!(summary.status, expected["status"].as_str().unwrap());
+            assert_eq!(summary.blocker, expected["blocker"].as_str());
+            assert!(summary.runner_provenance_present);
+            assert_eq!(summary.backend_kind, "read_model_backend");
+            assert_eq!(
+                summary.backend_present,
+                expected["backend_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.runtime_current_marker_present,
+                expected["runtime_current_marker_present"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.runtime_commit_matches_current,
+                expected["runtime_commit_matches_current"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.artifact_current_commit_matches_current,
+                expected["artifact_current_commit_matches_current"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.generated_at_present,
+                expected["generated_at_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.artifact_fresh,
+                expected["artifact_fresh"].as_bool().unwrap()
+            );
+            assert!(summary.token_source_kind_present);
+            assert_eq!(
+                summary.token_count_matches_expected,
+                expected["token_count_matches_expected"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.duration_ms.is_some(),
+                expected["duration_ms_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.reservation_capacity_projected,
+                expected["reservation_capacity_projected"]
+                    .as_bool()
+                    .unwrap()
+            );
+            assert_eq!(
+                summary.db_acquire_evidence_present,
+                expected["db_acquire_evidence_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.db_acquire_result_present,
+                expected["db_acquire_result_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.live_smoke_command_present,
+                expected["live_smoke_command_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.raw_material_present,
+                expected["raw_material_present"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.simulated_runner,
+                expected["simulated_runner"].as_bool().unwrap()
+            );
+            assert_eq!(
+                summary.repo_fixture_only,
+                expected["repo_fixture_only"].as_bool().unwrap()
+            );
+            assert_eq!(summary.raw_value_omitted, !summary.raw_material_present);
+            assert_eq!(summary.material_in_output, summary.raw_material_present);
+        }
+
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["production_backend_runner_artifact_contract"];
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_RUNNER_ARTIFACT_SCHEMA)
+        );
+        assert_eq!(
+            contract["helper"].as_str(),
+            Some("gateway_trusted_numeric_source_production_runner_artifact_gate")
+        );
+
+        for required_field in [
+            "runner_provenance",
+            "backend_kind",
+            "runtime_current_marker",
+            "current_commit",
+            "generated_at",
+            "token_source_kind",
+            "token_count",
+            "duration_ms",
+            "reservation_capacity_projection",
+            "db_acquire_evidence",
+            "db_acquire_result",
+            "live_smoke_command",
+            "secret_safe_raw_omission",
+        ] {
+            assert!(
+                contract["artifact_schema_fields"]
+                    .as_array()
+                    .expect("artifact schema fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(required_field)),
+                "production runner artifact schema should require {required_field}"
+            );
+        }
+
+        for blocker in [
+            "missing_backend",
+            "stale_runtime",
+            "repo_fixture_only",
+            "simulated_runner",
+            "token_mismatch",
+            "missing_db_acquire",
+            "missing_duration",
+            "raw_material_present",
+            "artifact_stale",
+        ] {
+            assert!(
+                contract["fail_blocker_taxonomy"]
+                    .as_array()
+                    .expect("fail taxonomy should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(blocker)),
+                "production runner taxonomy should include {blocker}"
+            );
+            assert!(
+                contract["production_ready_blocked_evidence_classes"]
+                    .as_array()
+                    .expect("blocked evidence classes should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(blocker)),
+                "production runner blocked evidence classes should include {blocker}"
+            );
+        }
+
+        for state_name in [
+            "missing_backend_blocks",
+            "stale_runtime_blocks",
+            "repo_fixture_only_blocks",
+            "simulated_runner_blocks",
+            "token_mismatch_blocks",
+            "missing_db_acquire_blocks",
+            "missing_duration_blocks",
+            "raw_material_present_blocks",
+            "artifact_stale_blocks",
+            "production_backend_live_smoke_passed",
+        ] {
+            let expected = state(contract, state_name);
+            let summary = gateway_trusted_numeric_source_production_runner_artifact_gate(
+                input_from_state(expected),
+            )
+            .safe_summary();
+            assert_runner(&summary, expected);
+        }
+
+        let serialized = serde_json::to_string(&json!({
+            "blocked": gateway_trusted_numeric_source_production_runner_artifact_gate(
+                input_from_state(state(contract, "repo_fixture_only_blocks")),
+            )
+            .safe_summary(),
+            "passed": gateway_trusted_numeric_source_production_runner_artifact_gate(
+                input_from_state(state(contract, "production_backend_live_smoke_passed")),
+            )
+            .safe_summary()
+        }))
+        .expect("production runner summaries should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "production runner artifact summary leaked forbidden marker: {forbidden}"
+            );
+        }
+        for raw_marker in ["raw input", "raw prompt", "request_body", "\"input\""] {
+            assert!(
+                !serialized.contains(raw_marker),
+                "production runner artifact summary leaked raw marker: {raw_marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn tpm_estimate_mapper_trusted_numeric_source_production_backend_evidence_runbook_contract_is_secret_safe()
+     {
+        let fixture = fixture();
+        let contract = &fixture["trusted_numeric_source_streaming_provider_closure_contract"]["production_backend_evidence_runbook_contract"];
+        assert_eq!(
+            contract["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_production_backend_evidence_runbook_v1")
+        );
+        assert_eq!(
+            contract["acceptance_schema"].as_str(),
+            Some(
+                "gateway_tpm_trusted_numeric_source_production_backend_evidence_acceptance_matrix_v1"
+            )
+        );
+        assert_eq!(
+            contract["execution_pack_schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_production_backend_live_execution_pack_v1")
+        );
+        assert_eq!(
+            contract["closure_audit_schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_final_closure_evidence_audit_v1")
+        );
+        assert_eq!(
+            contract["watcher_schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_production_evidence_watcher_v1")
+        );
+        assert_eq!(
+            contract["script"].as_str(),
+            Some("scripts/verify_gateway_tpm_production_backend_evidence.ps1")
+        );
+        assert_eq!(
+            contract["runbook"].as_str(),
+            Some("docs/E8-004_PRODUCTION_BACKEND_EVIDENCE_RUNBOOK.md")
+        );
+        assert_eq!(
+            contract["default_mode"].as_str(),
+            Some("contract_only_no_io")
+        );
+        assert_eq!(contract["default_reads_artifact"].as_bool(), Some(false));
+        assert_eq!(contract["default_connects_backend"].as_bool(), Some(false));
+        assert_eq!(
+            contract["default_reads_raw_material"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(contract["default_sends_network"].as_bool(), Some(false));
+
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(
+            repo_root
+                .join("scripts/verify_gateway_tpm_production_backend_evidence.ps1")
+                .exists()
+        );
+        assert!(
+            repo_root
+                .join("docs/E8-004_PRODUCTION_BACKEND_EVIDENCE_RUNBOOK.md")
+                .exists()
+        );
+        assert!(
+            repo_root
+                .join("tests/fixtures/gateway/production_backend_runner_artifact_repo_fixture_only.json")
+                .exists()
+        );
+        assert!(
+            repo_root
+                .join(
+                    "tests/fixtures/gateway/production_backend_evidence_accepted_external_simulation.json"
+                )
+                .exists()
+        );
+        for negative_fixture in [
+            "tests/fixtures/gateway/production_backend_evidence_missing_live_smoke.json",
+            "tests/fixtures/gateway/production_backend_evidence_duration_non_numeric.json",
+            "tests/fixtures/gateway/production_backend_evidence_missing_db_result.json",
+        ] {
+            assert!(
+                repo_root.join(negative_fixture).exists(),
+                "production backend acceptance negative fixture should exist: {negative_fixture}"
+            );
+        }
+
+        for required_env in [
+            "GATEWAY_TPM_PRODUCTION_BACKEND_EVIDENCE=1",
+            "GATEWAY_TPM_TRUSTED_TOKENIZER_ENABLED=1 or GATEWAY_TPM_TRUSTED_READ_MODEL_ENABLED=1",
+        ] {
+            assert!(
+                contract["required_env"]
+                    .as_array()
+                    .expect("required env should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(required_env)),
+                "production backend evidence runbook should require env {required_env}"
+            );
+        }
+        for required_flag in [
+            "-OptInArtifactReadback",
+            "-ArtifactPath <tests/fixtures/gateway|.tmp/gateway_tpm_production_backend/*.json>",
+            "-ExpectedCommit <current-runtime-commit>",
+            "-BackendKind tokenizer_backend|read_model_backend",
+            "-TokenSourceKind prompt_tokens|input_tokens",
+            "-EmitWatcher",
+            "-EmitExecutionPack",
+        ] {
+            assert!(
+                contract["required_flags"]
+                    .as_array()
+                    .expect("required flags should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(required_flag)),
+                "production backend evidence runbook should require flag {required_flag}"
+            );
+        }
+
+        assert_eq!(
+            contract["command_shapes"]["preflight"].as_str(),
+            Some(
+                "pwsh -File scripts/verify_gateway_tpm_production_backend_evidence.ps1 -ContractOnly"
+            )
+        );
+        assert!(
+            contract["command_shapes"]["execution_pack"]
+                .as_str()
+                .expect("execution pack command should be present")
+                .contains("-EmitExecutionPack")
+        );
+        assert!(
+            contract["command_shapes"]["watcher"]
+                .as_str()
+                .expect("watcher command should be present")
+                .contains("-EmitWatcher")
+        );
+        assert!(
+            contract["command_shapes"]["readback"]
+                .as_str()
+                .expect("readback command should be present")
+                .contains("-OptInArtifactReadback")
+        );
+        assert!(
+            contract["command_shapes"]["live_command_handoff"]
+                .as_str()
+                .expect("live command handoff should be present")
+                .contains("GATEWAY_TPM_PRODUCTION_BACKEND_EVIDENCE=1")
+        );
+        assert_eq!(
+            contract["command_shapes"]["final_closure_audit"].as_str(),
+            Some(
+                "pwsh -File scripts/verify_gateway_tpm_production_backend_evidence.ps1 -ContractOnly"
+            )
+        );
+
+        for taxonomy in [
+            "missing_opt_in",
+            "unsafe_artifact_path",
+            "missing_backend",
+            "stale_runtime",
+            "stale_artifact",
+            "artifact_stale",
+            "repo_fixture_only",
+            "simulated_runner",
+            "token_mismatch",
+            "missing_live_smoke",
+            "missing_db_acquire",
+            "missing_db_result",
+            "missing_duration",
+            "duration_non_numeric",
+            "raw_material_present",
+            "commit_mismatch",
+            "backend_kind_mismatch",
+        ] {
+            assert!(
+                contract["failure_taxonomy"]
+                    .as_array()
+                    .expect("failure taxonomy should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(taxonomy)),
+                "production backend evidence runbook should classify {taxonomy}"
+            );
+        }
+
+        assert_eq!(
+            contract["status_semantics"]["production_ready_blocked"].as_str(),
+            Some("operator handoff is incomplete or non-production; cannot close E8")
+        );
+        assert_eq!(
+            contract["status_semantics"]["production_evidence_accepted_for_review"].as_str(),
+            Some(
+                "bounded artifact has the required external evidence shape but is a repo simulation or still needs operator review; cannot close final E8 gap"
+            )
+        );
+        assert_eq!(
+            contract["execution_pack"]["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_production_backend_live_execution_pack_v1")
+        );
+        assert_eq!(
+            contract["execution_pack"]["default_executes_live_command"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["execution_pack"]["default_reads_external_artifact"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["execution_pack"]["default_connects_backend"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["execution_pack"]["default_sends_network"].as_bool(),
+            Some(false)
+        );
+        for execution_command in [
+            "backend_runner",
+            "gateway_live_smoke",
+            "db_acquire_readback",
+            "artifact_readback",
+            "cleanup",
+            "rollback",
+        ] {
+            assert!(
+                contract["execution_pack"]["commands"][execution_command]
+                    .as_str()
+                    .is_some(),
+                "execution pack should include command {execution_command}"
+            );
+        }
+        for preflight in [
+            "current runtime commit marker matches -ExpectedCommit",
+            "backend kind/source are declared by operator",
+            "token source kind/count are numeric and match expected count",
+            "live smoke URL/scope is bounded to Gateway operator smoke",
+            "DB reservation table/readback target is declared",
+            "artifact path stays under .tmp/gateway_tpm_production_backend",
+            "secret-safe raw omission is asserted",
+        ] {
+            assert!(
+                contract["execution_pack"]["preflight_checklist"]
+                    .as_array()
+                    .expect("execution pack preflight checklist should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(preflight)),
+                "execution pack should include preflight {preflight}"
+            );
+        }
+        for accepted_field in [
+            "gateway_live_smoke_status",
+            "db_acquire_readback_count",
+            "db_result_readback_count",
+            "secret_safe_raw_omission",
+            "simulation_can_close_final_gap",
+        ] {
+            assert!(
+                contract["execution_pack"]["expected_accepted_fields"]
+                    .as_array()
+                    .expect("execution pack expected fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(accepted_field)),
+                "execution pack should require accepted field {accepted_field}"
+            );
+        }
+        for proof in [
+            "production_backend_live_smoke_passed readback",
+            "live Gateway smoke evidence",
+            "DB acquire/readback evidence",
+            "secret-safe proof with raw material omitted",
+        ] {
+            assert!(
+                contract["execution_pack"]["final_proof_bundle"]
+                    .as_array()
+                    .expect("execution pack proof bundle should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(proof)),
+                "execution pack should require final proof {proof}"
+            );
+        }
+        assert_eq!(
+            contract["closure_audit_contract"]["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_final_closure_evidence_audit_v1")
+        );
+        assert_eq!(
+            contract["closure_audit_contract"]["default_final_x_eligible"].as_bool(),
+            Some(false)
+        );
+        for final_guard_flag in [
+            ["closure_audit_contract", "simulation_can_mark_final_x"],
+            ["closure_audit_contract", "template_can_pass"],
+            ["closure_audit_contract", "watcher_can_mark_final_x"],
+            ["watcher_checklist_contract", "simulation_can_mark_final_x"],
+            ["watcher_checklist_contract", "template_can_pass"],
+            ["watcher_checklist_contract", "watcher_can_mark_final_x"],
+            ["final_guard_consistency", "simulation_can_mark_final_x"],
+            ["final_guard_consistency", "template_can_pass"],
+            ["final_guard_consistency", "watcher_can_mark_final_x"],
+            [
+                "final_guard_consistency",
+                "accepted_for_review_can_mark_final_x",
+            ],
+            [
+                "final_guard_consistency",
+                "production_shaped_temp_artifact_can_replace_real_evidence",
+            ],
+        ] {
+            assert_eq!(
+                contract[final_guard_flag[0]][final_guard_flag[1]].as_bool(),
+                Some(false),
+                "final guard flag should be false: {}.{}",
+                final_guard_flag[0],
+                final_guard_flag[1]
+            );
+        }
+        for final_requirement in [
+            "real production backend runner",
+            "live Gateway smoke/readback",
+            "DB acquire/readback",
+            "secret-safe proof",
+        ] {
+            assert!(
+                contract["final_guard_consistency"]["final_x_requires"]
+                    .as_array()
+                    .expect("final guard requirements should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(final_requirement)),
+                "final guard should require {final_requirement}"
+            );
+        }
+        for blocking_reason in [
+            "missing_opt_in",
+            "missing_production_artifact",
+            "missing_live_gateway_smoke",
+            "missing_db_acquire_readback",
+        ] {
+            assert!(
+                contract["closure_audit_contract"]["default_blocking_reasons"]
+                    .as_array()
+                    .expect("closure audit default blockers should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(blocking_reason)),
+                "closure audit should include default blocking reason {blocking_reason}"
+            );
+        }
+        for report_field in [
+            "final_x_eligible",
+            "blocking_reasons",
+            "artifact_acceptance_state",
+            "live_smoke_state",
+            "db_acquire_readback_state",
+            "backend_provenance",
+            "runtime_current_marker",
+            "secret_safe_omission",
+            "exact_next_commands",
+        ] {
+            assert!(
+                contract["closure_audit_contract"]["report_fields"]
+                    .as_array()
+                    .expect("closure audit report fields should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(report_field)),
+                "closure audit should report field {report_field}"
+            );
+        }
+        assert!(
+            contract["closure_audit_contract"]["eligibility_rules"]
+                .as_array()
+                .expect("closure audit eligibility rules should be an array")
+                .iter()
+                .any(|entry| entry.as_str()
+                    == Some("repo fixture and accepted simulation are final_x_eligible=false"))
+        );
+        assert_eq!(
+            contract["watcher_checklist_contract"]["schema"].as_str(),
+            Some("gateway_tpm_trusted_numeric_source_production_evidence_watcher_v1")
+        );
+        for safe_default in [
+            "polls",
+            "reads_artifact",
+            "sends_network",
+            "connects_backend",
+            "reads_raw_material",
+        ] {
+            assert_eq!(
+                contract["watcher_checklist_contract"]["safe_defaults"][safe_default].as_bool(),
+                Some(false),
+                "watcher safe default should be false for {safe_default}"
+            );
+        }
+        assert!(
+            contract["watcher_checklist_contract"]["expected_artifact_paths"]
+                .as_array()
+                .expect("watcher expected paths should be an array")
+                .iter()
+                .any(|entry| entry.as_str()
+                    == Some(
+                        ".tmp/gateway_tpm_production_backend/<commit>-<backend-kind>-e8-live-evidence.json"
+                    ))
+        );
+        for operator_action in [
+            "run the real production tokenizer/read-model backend runner",
+            "run Gateway live smoke with bounded E8 rate-limit TPM scope",
+            "write the production artifact under .tmp/gateway_tpm_production_backend",
+            "include DB acquire/result/readback counts",
+            "omit raw prompt/input/body/header material",
+            "run explicit opt-in artifact readback",
+        ] {
+            assert!(
+                contract["watcher_checklist_contract"]["required_operator_actions"]
+                    .as_array()
+                    .expect("watcher operator actions should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(operator_action)),
+                "watcher should require operator action {operator_action}"
+            );
+        }
+        for exact_command in [
+            "watcher_default",
+            "execution_pack",
+            "artifact_readback",
+            "final_closure_audit",
+        ] {
+            assert!(
+                contract["watcher_checklist_contract"]["exact_commands"][exact_command]
+                    .as_str()
+                    .is_some(),
+                "watcher should include exact command {exact_command}"
+            );
+        }
+        for review_item in [
+            "closure audit final_x_eligible is true",
+            "artifact acceptance state is production_backend_live_smoke_passed",
+            "real_operator_evidence is true",
+            "simulation is false",
+            "template_can_pass is false",
+            "watcher_can_mark_final_x is false",
+            "live smoke state is passed",
+            "DB acquire/readback state is present",
+            "secret-safe omission is true",
+        ] {
+            assert!(
+                contract["watcher_checklist_contract"]["final_review_checklist"]
+                    .as_array()
+                    .expect("watcher final review checklist should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(review_item)),
+                "watcher should include final review item {review_item}"
+            );
+        }
+        assert_eq!(
+            contract["script_output_samples"]["contract_only"]["status"].as_str(),
+            Some("production_ready_blocked")
+        );
+        assert_eq!(
+            contract["script_output_samples"]["contract_only"]["command_plan_only"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            contract["script_output_samples"]["contract_only"]["closure_audit"]["final_x_eligible"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["script_output_samples"]["contract_only"]["watcher_checklist"]
+                ["artifact_read"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["script_output_samples"]["watcher_default"]["blocker"].as_str(),
+            Some("waiting_for_production_evidence")
+        );
+        assert_eq!(
+            contract["script_output_samples"]["watcher_default"]["watcher_checklist"]
+                ["final_x_eligible"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["script_output_samples"]["execution_pack_plan"]["blocker"].as_str(),
+            Some("execution_pack_plan_only")
+        );
+        assert_eq!(
+            contract["script_output_samples"]["execution_pack_plan"]["command_plan_only"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            contract["script_output_samples"]["repo_fixture_only_readback"]["blocker"].as_str(),
+            Some("repo_fixture_only")
+        );
+        assert_eq!(
+            contract["script_output_samples"]["accepted_external_simulation_readback"]["status"]
+                .as_str(),
+            Some("production_evidence_accepted_for_review")
+        );
+        assert_eq!(
+            contract["script_output_samples"]["accepted_external_simulation_readback"]
+                ["simulation_can_close_final_gap"]
+                .as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            contract["script_output_samples"]["accepted_external_simulation_readback"]
+                ["closure_audit"]["final_x_eligible"]
+                .as_bool(),
+            Some(false)
+        );
+        for accepted_condition in [
+            "artifact provenance present",
+            "runner command provenance present",
+            "Gateway live smoke status is passed",
+            "DB acquire/result evidence and readback counts are present",
+            "secret-safe raw omission is asserted",
+        ] {
+            assert!(
+                contract["acceptance_matrix"]["accepted_for_review"]
+                    .as_array()
+                    .expect("accepted matrix should be an array")
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(accepted_condition)),
+                "production backend acceptance matrix should require {accepted_condition}"
+            );
+        }
+
+        let sample: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/production_backend_runner_artifact_repo_fixture_only.json"
+        ))
+        .expect("repo fixture only production runner artifact should be valid json");
+        assert_eq!(
+            sample["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_RUNNER_ARTIFACT_SCHEMA)
+        );
+        assert_eq!(sample["repo_fixture_only"].as_bool(), Some(true));
+        assert_eq!(sample["raw_material_present"].as_bool(), Some(false));
+        assert_eq!(
+            sample["simulation_can_close_final_gap"].as_bool(),
+            Some(false)
+        );
+
+        let accepted_simulation: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/production_backend_evidence_accepted_external_simulation.json"
+        ))
+        .expect("accepted external simulation artifact should be valid json");
+        assert_eq!(
+            accepted_simulation["schema"].as_str(),
+            Some(GATEWAY_TPM_TRUSTED_NUMERIC_SOURCE_PRODUCTION_RUNNER_ARTIFACT_SCHEMA)
+        );
+        assert_eq!(
+            accepted_simulation["external_artifact_simulation"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            accepted_simulation["simulation_can_close_final_gap"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            accepted_simulation["gateway_live_smoke_status"].as_str(),
+            Some("passed")
+        );
+
+        let missing_live_smoke: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/production_backend_evidence_missing_live_smoke.json"
+        ))
+        .expect("missing live smoke negative fixture should be valid json");
+        assert_ne!(
+            missing_live_smoke["gateway_live_smoke_status"].as_str(),
+            Some("passed")
+        );
+        let duration_non_numeric: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/production_backend_evidence_duration_non_numeric.json"
+        ))
+        .expect("duration non numeric negative fixture should be valid json");
+        assert!(duration_non_numeric["duration_ms"].as_i64().is_none());
+        let missing_db_result: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/gateway/production_backend_evidence_missing_db_result.json"
+        ))
+        .expect("missing db result negative fixture should be valid json");
+        assert_eq!(
+            missing_db_result["db_acquire_result"].as_bool(),
+            Some(false)
+        );
+
+        let serialized = serde_json::to_string(&json!({
+            "contract": contract,
+            "sample": sample,
+            "accepted_simulation": accepted_simulation,
+            "missing_live_smoke": missing_live_smoke,
+            "duration_non_numeric": duration_non_numeric,
+            "missing_db_result": missing_db_result
+        }))
+        .expect("production backend evidence runbook contract should serialize")
+        .to_ascii_lowercase();
+        for forbidden in fixture["trusted_numeric_source_streaming_provider_closure_contract"]
+            ["forbidden_output_markers"]
+            .as_array()
+            .expect("forbidden markers should be an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+        {
+            assert!(
+                !serialized.contains(&forbidden.to_ascii_lowercase()),
+                "production backend evidence runbook contract leaked forbidden marker: {forbidden}"
             );
         }
     }

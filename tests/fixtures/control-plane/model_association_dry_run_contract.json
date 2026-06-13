@@ -33,6 +33,10 @@
       "selection",
       "selected_candidate",
       "candidates",
+      "profile_visibility_readback",
+      "price_config_presence",
+      "diagnostic_readback",
+      "protocol_capability_matrix",
       "route_decision_snapshot"
     ],
     "candidate_required_fields": [
@@ -63,8 +67,25 @@
       "filter_reason",
       "score",
       "selected",
-      "trace_affinity_match"
+      "trace_affinity_match",
+      "provider_key_presence",
+      "blocked_reasons",
+      "protocol_endpoint_capability_readiness",
+      "endpoint_configured",
+      "safe_next_action"
     ],
+    "diagnostic_readback_required_fields": [
+      "profile_visibility_readback",
+      "price_config_presence",
+      "diagnostic_readback",
+      "protocol_capability_matrix"
+    ],
+    "diagnostic_readback_secret_safety": {
+      "provider_key_returned": false,
+      "authorization_returned": false,
+      "raw_upstream_model_payload_returned": false,
+      "raw_channel_endpoint_returned": false
+    },
     "credential_material_omitted": true
   },
   "examples": {
@@ -89,6 +110,69 @@
             "display_name": "GPT Visible",
             "family": "gpt",
             "status": "active"
+          },
+          "profile_visibility_readback": {
+            "schema": "model_profile_visibility_diagnostics.v1",
+            "profile_id": "00000000-0000-0000-0000-000000000012",
+            "project_id": "00000000-0000-0000-0000-000000000011",
+            "profile_status": "active",
+            "credential_scope": "profile",
+            "requested_model": "gpt-visible",
+            "canonical_model_key": "gpt-visible",
+            "requested_model_decision": "allowed",
+            "allowed_models": {
+              "mode": "explicit_list",
+              "models": ["gpt-visible"],
+              "count": 1
+            },
+            "denied_models": {
+              "models": [],
+              "count": 0
+            },
+            "allowed_channel_tags": {
+              "mode": "explicit_list",
+              "tags": ["primary"],
+              "count": 1
+            },
+            "blocked_provider_ids": {
+              "ids": [],
+              "count": 0
+            },
+            "credential_material_returned": false,
+            "authorization_returned": false,
+            "raw_upstream_model_payload_returned": false
+          },
+          "price_config_presence": {
+            "schema": "model_price_config_presence.v1",
+            "default_price_book_configured": true,
+            "default_price_book_id": "00000000-0000-0000-0000-000000000060",
+            "active_price_version_selector": "active_effective_version_for_default_price_book",
+            "pricing_rules_returned": false,
+            "safe_next_action": "Use model price versions to verify active/effective pricing before billing-sensitive traffic."
+          },
+          "diagnostic_readback": {
+            "schema": "model_profile_visibility_diagnostics_readback.v1",
+            "profile_id": "00000000-0000-0000-0000-000000000012",
+            "project_id": "00000000-0000-0000-0000-000000000011",
+            "requested_model": "gpt-visible",
+            "candidate_count": 1,
+            "selected_candidate_count": 1,
+            "filtered_candidate_count": 0,
+            "blocked_provider_channel_reasons": [],
+            "provider_key_presence": {
+              "candidate_channel_count": 1,
+              "enabled_configured_provider_key_count": 1,
+              "credential_material_returned": false
+            },
+            "price_config_present": true,
+            "protocol_endpoint_capability_readiness_present": true,
+            "safe_next_action": "Run manual-test or a bounded gateway smoke before changing live traffic.",
+            "secret_safety": {
+              "provider_key_returned": false,
+              "authorization_returned": false,
+              "raw_upstream_model_payload_returned": false,
+              "raw_channel_endpoint_returned": false
+            }
           },
           "route_policy_version": "gateway_db_route_v1",
           "decision_snapshot_version": 1,
@@ -146,7 +230,40 @@
               "total": 2145483738
             },
             "selected": true,
-            "trace_affinity_match": true
+            "trace_affinity_match": true,
+            "provider_key_presence": {
+              "configured": true,
+              "enabled_configured": true,
+              "provider_key_count": 1,
+              "enabled_provider_key_count": 1,
+              "credential_material_returned": false
+            },
+            "blocked_reasons": [],
+            "protocol_endpoint_capability_readiness": {
+              "schema": "provider_channel_endpoint_capabilities.v1",
+              "protocol": "openai",
+              "endpoints": [
+                {
+                  "endpoint": "chat",
+                  "operation": "OpenAI Chat Completions",
+                  "supported": true,
+                  "protocol": "openai",
+                  "path_template": "/v1/chat/completions",
+                  "mockable_config_status": "ready",
+                  "mock_contract": "openai.chat.completions.v1",
+                  "live_config_status": "ready",
+                  "provider_key_present": true,
+                  "known_missing_pieces": [],
+                  "safe_next_action": "Use routing dry-run or manual-test before an explicit non-billable live probe.",
+                  "raw_endpoint_returned": false,
+                  "raw_payload_returned": false,
+                  "authorization_returned": false,
+                  "provider_key_returned": false
+                }
+              ]
+            },
+            "endpoint_configured": true,
+            "safe_next_action": "Use a non-billable manual test before sending live traffic."
           },
           "candidates": [
             {
@@ -182,7 +299,40 @@
                 "total": 2145483738
               },
               "selected": true,
-              "trace_affinity_match": true
+              "trace_affinity_match": true,
+              "provider_key_presence": {
+                "configured": true,
+                "enabled_configured": true,
+                "provider_key_count": 1,
+                "enabled_provider_key_count": 1,
+                "credential_material_returned": false
+              },
+              "blocked_reasons": [],
+              "protocol_endpoint_capability_readiness": {
+                "schema": "provider_channel_endpoint_capabilities.v1",
+                "protocol": "openai",
+                "endpoints": [
+                  {
+                    "endpoint": "chat",
+                    "operation": "OpenAI Chat Completions",
+                    "supported": true,
+                    "protocol": "openai",
+                    "path_template": "/v1/chat/completions",
+                    "mockable_config_status": "ready",
+                    "mock_contract": "openai.chat.completions.v1",
+                    "live_config_status": "ready",
+                    "provider_key_present": true,
+                    "known_missing_pieces": [],
+                    "safe_next_action": "Use routing dry-run or manual-test before an explicit non-billable live probe.",
+                    "raw_endpoint_returned": false,
+                    "raw_payload_returned": false,
+                    "authorization_returned": false,
+                    "provider_key_returned": false
+                  }
+                ]
+              },
+              "endpoint_configured": true,
+              "safe_next_action": "Use a non-billable manual test before sending live traffic."
             }
           ],
           "route_decision_snapshot": {

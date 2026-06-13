@@ -1,0 +1,96 @@
+{
+  "schema_version": "billing_paid_strong_consistency_evidence_bundle.v1",
+  "bundle_id": "paid-evidence-synthetic-production-ready-selftest-v1",
+  "generated_at_utc": "2026-06-05T19:05:00Z",
+  "generated_by": "synthetic_selftest_only",
+  "environment_scope": "synthetic_selftest",
+  "production_hot_path_claim": true,
+  "contract_shape_only": false,
+  "synthetic_selftest": true,
+  "paid_controlled_beta_production_ready": true,
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "env_value_echoed": false
+  },
+  "evidence": [
+    {
+      "evidence_key": "gateway_hot_path_reserve_settle_refund",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-gateway-hot-path-reserve-settle-refund",
+      "request_id": "00000000-0000-0000-0000-000000050001",
+      "operation": "reserve_settle_refund",
+      "scenario": "synthetic selftest only: gateway hot path reserve/settle/refund shape",
+      "generated_at_utc": "2026-06-05T19:05:01Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "insufficient_balance_prevents_provider_call",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-insufficient-balance-provider-block",
+      "request_id": "00000000-0000-0000-0000-000000050002",
+      "operation": "reserve_pre_authorize",
+      "scenario": "synthetic selftest only: insufficient balance denies before provider attempt",
+      "generated_at_utc": "2026-06-05T19:05:02Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "settle_idempotency",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-settle-idempotency",
+      "request_id": "00000000-0000-0000-0000-000000050003",
+      "operation": "settle",
+      "scenario": "synthetic selftest only: duplicate settle idempotency shape",
+      "generated_at_utc": "2026-06-05T19:05:03Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "refund_idempotency",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-refund-idempotency",
+      "request_id": "00000000-0000-0000-0000-000000050004",
+      "operation": "refund",
+      "scenario": "synthetic selftest only: duplicate refund idempotency shape",
+      "generated_at_utc": "2026-06-05T19:05:04Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "post_commit_readback",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-post-commit-readback",
+      "request_id": "00000000-0000-0000-0000-000000050005",
+      "operation": "readback",
+      "scenario": "synthetic selftest only: post commit readback shape",
+      "generated_at_utc": "2026-06-05T19:05:05Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "rollback_proof",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-rollback-proof",
+      "request_id": "00000000-0000-0000-0000-000000050006",
+      "operation": "rollback",
+      "scenario": "synthetic selftest only: rollback proof shape",
+      "generated_at_utc": "2026-06-05T19:05:06Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    },
+    {
+      "evidence_key": "reconciliation_report",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "synthetic-reconciliation-report",
+      "request_id": "00000000-0000-0000-0000-000000050007",
+      "operation": "reconciliation",
+      "scenario": "synthetic selftest only: reconciliation report shape",
+      "generated_at_utc": "2026-06-05T19:05:07Z",
+      "source": "synthetic_selftest_no_db_no_network"
+    }
+  ]
+}

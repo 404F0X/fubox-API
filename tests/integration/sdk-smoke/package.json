@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "check": "node --check ./sdk_smoke.mjs",
+    "check:user": "node --check ./gateway_user_smoke.mjs",
+    "smoke:user": "node ./gateway_user_smoke.mjs",
     "smoke": "node ./sdk_smoke.mjs"
   },
   "dependencies": {

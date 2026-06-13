@@ -22,6 +22,7 @@ tests/integration/sdk-smoke/node_modules/
 *.log
 *.pid
 *.tmp
+.tmp/
 .tool-cache/
 openapitools.json
 artifacts/
@@ -29,6 +30,14 @@ tmp/
 temp/
 __pycache__/
 *.pyc
+.pytest_cache/
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+web/admin-ui/coverage/
+web/admin-ui/playwright-report/
+web/admin-ui/test-results/
 
 # OS/editor noise
 .DS_Store
@@ -47,3 +56,9 @@ admin-ui-*.png
 # Local unpacked source/reference bundles
 dev_starter_unpacked/
 .docx_unpacked/
+references/axonhub/
+references/sub2api/
+references/new-api/
+
+# External runner scratch files
+latest_run.sh

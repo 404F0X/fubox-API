@@ -1,0 +1,79 @@
+{
+  "importer": "internal-mapping-report-dryrun",
+  "dry_run": true,
+  "generated_at": "2026-06-06T00:00:00Z",
+  "input_files": [
+    "tests/fixtures/importers/apply_plan_provider_channel_unbound.sample.json"
+  ],
+  "source_reports": [
+    {
+      "input_file": "tests/fixtures/importers/apply_plan_provider_channel_unbound.sample.json",
+      "importer": "fixture-internal-mapping-report",
+      "dry_run": true,
+      "counts": {
+        "providers": 1,
+        "channels": 1,
+        "provider_keys": 0,
+        "models": 0,
+        "associations": 0,
+        "warnings": 0,
+        "unsupported_fields": 0
+      }
+    }
+  ],
+  "counts": {
+    "input_reports": 1,
+    "source_providers": 1,
+    "source_channels": 1,
+    "source_provider_keys": 0,
+    "source_models": 0,
+    "source_associations": 0,
+    "canonical_models": 0,
+    "model_associations": 0,
+    "channel_mappings": 1,
+    "channel_mapping_entries": 1,
+    "conflicts": 0,
+    "manual_review_items": 0
+  },
+  "canonical_models": [],
+  "model_associations": [],
+  "channel_mappings": [
+    {
+      "channel_source_id": "fixture:channel:auto-openai-primary",
+      "channel_present": true,
+      "provider_code": "fixture-auto-openai",
+      "provider_name": "Fixture Auto OpenAI",
+      "channel_name": "fixture-auto-openai-primary",
+      "endpoint": "http://mock-provider:18080",
+      "protocol_mode": "openai_compatible",
+      "priority": 30,
+      "weight": 80,
+      "tags": [
+        "fixture",
+        "auto-provider-channel"
+      ],
+      "status": "enabled",
+      "mapping_entries": [
+        {
+          "channel_source_id": "fixture:channel:auto-openai-primary",
+          "requested_model": "fixture-auto-gpt",
+          "canonical_model_key": "fixture-auto-gpt",
+          "upstream_model_name": "openai/fixture-auto-gpt",
+          "mapping_policy": "explicit_upstream_name",
+          "sources": [
+            "channel_model_mapping"
+          ],
+          "source_reports": [
+            "apply_plan_provider_channel_unbound.sample.json:fixture-internal-mapping-report"
+          ]
+        }
+      ],
+      "planned_action": "bind_or_create_channel_mapping"
+    }
+  ],
+  "conflicts": [],
+  "manual_review_items": [],
+  "next_steps": [
+    "Use this fixture to verify provider/channel creation from an unbound source channel without importing provider key material."
+  ]
+}

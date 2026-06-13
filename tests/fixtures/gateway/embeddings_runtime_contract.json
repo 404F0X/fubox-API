@@ -55,7 +55,14 @@
       "final_status": "succeeded",
       "http_status": 200,
       "response_body_hash": "recorded",
-      "final_route_rewritten_after_fallback": true
+      "final_route_rewritten_after_fallback": true,
+      "openai_compat_metadata": {
+        "schema": "gateway_openai_embeddings_compat_v1",
+        "endpoint": "embeddings",
+        "input_shape_schema": "openai_embeddings_input_shape_v1",
+        "raw_input_omitted": true,
+        "raw_payload_omitted": true
+      }
     },
     "usage": {
       "adapter_usage": {
@@ -85,13 +92,15 @@
     "ledger_settle": {
       "requires_complete_usage": true,
       "requires_nonzero_rating": true,
-      "model_source": "route.canonical_model_key"
+      "model_source": "route.canonical_model_key",
+      "metadata_source": "confirmed_settle_ledger_metadata",
+      "usage_source": "provider_explicit_usage"
     }
   },
   "remaining_gaps": [
-    "live smoke with gateway plus mock provider and database",
     "dedicated embedding route or capability constraints",
-    "full OpenAI embeddings input schema coverage"
+    "full OpenAI embeddings input schema coverage",
+    "real provider matrix and live SDK smoke"
   ],
   "notes": "Dry-run fixture for the first Gateway embeddings runtime slice. It documents that auth and DB route planning happen before provider side effects, and that preauth rejection returns before provider attempts, provider key opening, or upstream HTTP."
 }

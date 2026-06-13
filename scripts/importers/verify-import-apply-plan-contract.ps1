@@ -14,9 +14,12 @@ if (-not $scriptPath) {
 
 $script:RepoRoot = (Resolve-Path (Join-Path (Split-Path -Parent $scriptPath) "..\..")).Path
 $script:ApplyPlanScript = Join-Path $script:RepoRoot "scripts\importers\import-apply-plan.ps1"
+$script:NewApiDryRunScript = Join-Path $script:RepoRoot "scripts\importers\import-newapi-dryrun.ps1"
+$script:InternalMappingScript = Join-Path $script:RepoRoot "scripts\importers\import-internal-mapping-report.ps1"
 $script:SqlExecutorFixturePath = Join-Path $script:RepoRoot "tests\fixtures\importers\apply_plan_canonical_only.sample.json"
 $script:ChannelMappingFixturePath = Join-Path $script:RepoRoot "tests\fixtures\importers\apply_plan_channel_mapping_bound.sample.json"
 $script:SqlExecutorContractPath = Join-Path $script:RepoRoot "tests\fixtures\importers\postgresql_sql_executor_contract.expected.json"
+$script:NewApiOpenAiFixturePath = Join-Path $script:RepoRoot "examples\importer_samples\new_api_openai_compatible.sample.json"
 
 if ([string]::IsNullOrWhiteSpace($InputPath)) {
   $InputPath = Join-Path $script:RepoRoot "examples\importer_samples\internal_mapping_report_output.sample.json"
@@ -84,6 +87,32 @@ function Assert-NoSecretMaterial {
   }
 }
 
+function Assert-MappingQualityReadback {
+  param(
+    [object]$Readback,
+    [string]$Context
+  )
+
+  Assert-Condition ($null -ne $Readback) "$Context includes mapping_quality_readback"
+  Assert-Equal $Readback.schema_version "importer.mapping-quality-readback.v1" "$Context mapping quality schema"
+  Assert-Equal $Readback.secret_safe $true "$Context mapping quality secret-safe"
+  Assert-Equal $Readback.dry_run_only $true "$Context mapping quality dry-run only"
+  Assert-Condition ($null -ne $Readback.mapping_counts) "$Context mapping quality counts"
+  foreach ($field in @("provider_mappings", "channel_mappings", "model_mappings", "user_mappings", "key_mappings", "wallet_mappings", "subscription_mappings", "conflicts")) {
+    Assert-Condition ([int]$Readback.mapping_counts.$field -ge 0) "$Context mapping quality count $field"
+  }
+  Assert-Condition ($null -ne $Readback.conflicts) "$Context mapping quality conflicts"
+  Assert-Condition ($null -ne $Readback.non_migratable_reasons) "$Context mapping quality non-migratable reasons"
+  Assert-Condition ($null -ne $Readback.operator_handoff_refs_presence) "$Context mapping quality operator handoff refs"
+  Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$Readback.safe_next_action)) "$Context mapping quality safe next action"
+  Assert-Equal $Readback.raw_provider_key_returned $false "$Context mapping quality omits raw provider key"
+  Assert-Equal $Readback.raw_user_key_returned $false "$Context mapping quality omits raw user key"
+  Assert-Equal $Readback.token_returned $false "$Context mapping quality omits token"
+  Assert-Equal $Readback.db_url_returned $false "$Context mapping quality omits DB URL"
+  Assert-Equal $Readback.raw_sql_returned $false "$Context mapping quality omits raw SQL"
+  Assert-Equal $Readback.authorization_returned $false "$Context mapping quality omits Authorization"
+}
+
 function Read-JsonObject {
   param([string]$Path)
 
@@ -140,12 +169,55 @@ function Get-PreflightCheck {
   return @(Convert-ToArray $Plan.preflight.checks | Where-Object { $_.name -eq $Name } | Select-Object -First 1)
 }
 
+function Write-TextFile {
+  param(
+    [string]$Path,
+    [string]$Content
+  )
+
+  $parent = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($parent)) {
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+  }
+
+  Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8
+}
+
+function Invoke-GeneratedProviderKeyHandoffPlan {
+  $tmpDir = Join-Path $script:RepoRoot ".tmp\importers"
+  $sourceReportPath = Join-Path $tmpDir "provider_key_handoff_source.newapi.generated.json"
+  $mappingReportPath = Join-Path $tmpDir "provider_key_handoff_internal_mapping.generated.json"
+
+  $sourceOutput = & $script:NewApiDryRunScript -InputPath $script:NewApiOpenAiFixturePath
+  $sourceRaw = ($sourceOutput | Out-String).Trim()
+  Assert-Condition (-not [string]::IsNullOrWhiteSpace($sourceRaw)) "generated NewAPI source dry-run produced JSON"
+  Assert-NoSecretMaterial $sourceRaw
+  Write-TextFile -Path $sourceReportPath -Content $sourceRaw
+
+  $mappingOutput = & $script:InternalMappingScript -InputPath $sourceReportPath
+  $mappingRaw = ($mappingOutput | Out-String).Trim()
+  Assert-Condition (-not [string]::IsNullOrWhiteSpace($mappingRaw)) "generated internal mapping report produced JSON"
+  Assert-NoSecretMaterial $mappingRaw
+  Write-TextFile -Path $mappingReportPath -Content $mappingRaw
+
+  $mappingReport = $mappingRaw | ConvertFrom-Json
+  Assert-Condition ([int]$mappingReport.counts.provider_key_handoffs -gt 0) "generated internal mapping has provider key handoffs"
+  Assert-Equal $mappingReport.provider_key_handoff_contract.schema_version "importer.provider-key-handoff-contract.v1" "generated internal mapping handoff contract schema"
+  Assert-Equal $mappingReport.provider_key_handoff_contract.raw_material_allowed $false "generated internal mapping handoff raw material flag"
+  Assert-Equal $mappingReport.provider_key_handoff_contract.apply_directly_supported $false "generated internal mapping handoff direct apply flag"
+
+  return Invoke-ApplyPlan -PlanInputPath $mappingReportPath
+}
+
 Assert-Condition (Test-Path -LiteralPath $script:ApplyPlanScript -PathType Leaf) "apply plan script exists"
+Assert-Condition (Test-Path -LiteralPath $script:NewApiDryRunScript -PathType Leaf) "NewAPI dry-run script exists"
+Assert-Condition (Test-Path -LiteralPath $script:InternalMappingScript -PathType Leaf) "internal mapping script exists"
 Assert-Condition (Test-Path -LiteralPath $InputPath -PathType Leaf) "input sample exists"
 Assert-Condition (Test-Path -LiteralPath $ExistingStatePath -PathType Leaf) "existing-state sample exists"
 Assert-Condition (Test-Path -LiteralPath $script:SqlExecutorFixturePath -PathType Leaf) "sql executor canonical-only fixture exists"
 Assert-Condition (Test-Path -LiteralPath $script:ChannelMappingFixturePath -PathType Leaf) "sql executor channel mapping fixture exists"
 Assert-Condition (Test-Path -LiteralPath $script:SqlExecutorContractPath -PathType Leaf) "sql executor contract fixture exists"
+Assert-Condition (Test-Path -LiteralPath $script:NewApiOpenAiFixturePath -PathType Leaf) "NewAPI OpenAI-compatible fixture exists"
 
 $sqlExecutorContract = Read-JsonObject $script:SqlExecutorContractPath
 
@@ -158,21 +230,68 @@ Assert-Equal $dryRun.Plan.sql_plan_executor_supported $true "sql plan executor s
 Assert-Equal $dryRun.Plan.sql_executor_plan.schema_version "importer.postgresql-sql-executor-plan.v1" "sql executor plan schema"
 Assert-Equal $dryRun.Plan.idempotency_key $dryRunAgain.Plan.idempotency_key "plan idempotency key is stable"
 Assert-Equal $dryRun.Plan.idempotency_manifest.manifest_key $dryRunAgain.Plan.idempotency_manifest.manifest_key "idempotency manifest key is stable"
+Assert-MappingQualityReadback $dryRun.Plan.mapping_quality_readback "apply plan dry-run"
 
 $conflictCheck = Get-PreflightCheck $dryRun.Plan "blocking_conflicts"
 Assert-Equal $conflictCheck.status "fail" "conflict preflight status"
 $databaseWriterCheck = Get-PreflightCheck $dryRun.Plan "database_writer_available"
 Assert-Equal $databaseWriterCheck.status "pass" "sql-plan database writer preflight status"
 $unsupportedCheck = Get-PreflightCheck $dryRun.Plan "write_operations_supported_by_sql_executor"
-Assert-Equal $unsupportedCheck.status "fail" "unsupported operation preflight status"
+Assert-Equal $unsupportedCheck.status "pass" "unsupported operation preflight status"
 $sourceBindingCheck = Get-PreflightCheck $dryRun.Plan "source_provider_channel_bindings"
-Assert-Equal $sourceBindingCheck.status "fail" "source provider/channel binding preflight status"
-Assert-Condition (@(Convert-ToArray $sourceBindingCheck.details.errors | Where-Object { $_.reason -eq "missing_internal_channel_binding" }).Count -gt 0) "source binding preflight blocks missing internal channel bindings"
+Assert-Equal $sourceBindingCheck.status "pass" "source provider/channel binding preflight status"
+Assert-Equal ([int]$dryRun.Plan.counts.source_provider_previews) 2 "sample derives provider previews from unbound channel mappings"
+Assert-Equal ([int]$dryRun.Plan.counts.source_channel_previews) 2 "sample derives channel previews from unbound channel mappings"
+Assert-Equal ([int]$dryRun.Plan.target_counts.provider.creates) 2 "sample plans provider creates"
+Assert-Equal ([int]$dryRun.Plan.target_counts.channel.creates) 2 "sample plans channel creates"
+Assert-Condition (@(Convert-ToArray $dryRun.Plan.source_binding_contract.bindings | Where-Object {
+      $_.channel_present -eq $true -and
+      -not [string]::IsNullOrWhiteSpace([string]$_.internal_provider_id) -and
+      -not [string]::IsNullOrWhiteSpace([string]$_.internal_channel_id)
+    }).Count -ge 2) "source bindings include generated internal provider/channel ids"
 Assert-Equal $dryRun.Plan.source_binding_contract.schema_version "importer.source-provider-channel-binding-contract.v1" "source binding contract schema"
 Assert-Equal $dryRun.Plan.source_binding_contract.secret_material_allowed $false "source binding contract excludes secret material"
 Assert-Condition ([int]$dryRun.Plan.counts.blocking_conflicts -gt 0) "sample has blocking conflicts"
 $blockedSkips = @(Convert-ToArray $dryRun.Plan.planned_skips | Where-Object { $_.reason -eq "blocked_by_conflict" })
 Assert-Condition ($blockedSkips.Count -gt 0) "conflicts create blocked skip operations"
+$dryRunOperationPlans = @(Convert-ToArray $dryRun.Plan.sql_executor_plan.transaction.operation_plans)
+Assert-Condition (@($dryRunOperationPlans | Where-Object { $_.target.kind -eq "provider" -and $_.adapter -eq "providers_upsert_v1" -and $_.supported }).Count -ge 2) "sample emits supported provider adapter plans"
+Assert-Condition (@($dryRunOperationPlans | Where-Object { $_.target.kind -eq "channel" -and $_.adapter -eq "channels_upsert_v1" -and $_.supported }).Count -ge 2) "sample emits supported channel adapter plans"
+
+$generatedHandoffPlan = Invoke-GeneratedProviderKeyHandoffPlan
+Assert-NoSecretMaterial $generatedHandoffPlan.Raw
+Assert-Equal $generatedHandoffPlan.Plan.provider_key_handoff_contract.schema_version "importer.provider-key-handoff-contract.v1" "apply plan provider key handoff contract schema"
+Assert-Equal $generatedHandoffPlan.Plan.provider_key_handoff_contract.raw_material_allowed $false "apply plan provider key handoff excludes raw material"
+Assert-Equal $generatedHandoffPlan.Plan.provider_key_handoff_contract.apply_directly_supported $false "apply plan provider key handoff direct apply flag"
+Assert-Equal $generatedHandoffPlan.Plan.provider_key_handoff_contract.required_operator_path "POST /admin/provider-keys" "apply plan provider key operator path"
+Assert-MappingQualityReadback $generatedHandoffPlan.Plan.mapping_quality_readback "generated provider-key handoff apply plan"
+Assert-Equal ([int]$generatedHandoffPlan.Plan.counts.source_provider_key_handoffs) 3 "apply plan carries source provider key handoffs"
+Assert-Condition ([int]$generatedHandoffPlan.Plan.counts.source_specific_apply_plan_artifacts -gt 0) "apply plan carries source-specific apply-plan artifact count"
+Assert-Condition (@(Convert-ToArray $generatedHandoffPlan.Plan.source_specific_apply_plan_artifacts).Count -gt 0) "apply plan preserves source-specific apply-plan artifacts"
+$generatedSourceArtifacts = @(Convert-ToArray $generatedHandoffPlan.Plan.source_specific_apply_plan_artifacts | Select-Object -First 1)
+Assert-Condition ($generatedSourceArtifacts.Count -eq 1) "apply plan exposes one generated source-specific artifact wrapper"
+Assert-Equal $generatedSourceArtifacts[0].artifacts.executable_handoff.schema_version "importer.source-specific-executable-handoff.v1" "apply plan source-specific executable handoff schema"
+$providerKeyHandoffPreflight = Get-PreflightCheck $generatedHandoffPlan.Plan "provider_key_secret_management_handoff"
+Assert-Equal $providerKeyHandoffPreflight.status "pass" "provider key handoff preflight status"
+$providerKeyHandoffs = @(Convert-ToArray $generatedHandoffPlan.Plan.provider_key_handoffs)
+Assert-Equal $providerKeyHandoffs.Count 3 "apply plan exposes provider key handoff sidecars"
+foreach ($handoff in $providerKeyHandoffs) {
+  Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$handoff.handoff_id)) "provider key handoff has handoff_id"
+  Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$handoff.key_alias)) "provider key handoff has key_alias"
+  Assert-Condition ([bool]$handoff.credential_material_present) "provider key handoff records credential presence"
+  Assert-Condition ([string]$handoff.credential_locator_redacted -like "*redacted*") "provider key handoff locator is redacted"
+  Assert-Equal $handoff.raw_material_exported $false "provider key handoff does not export raw material"
+  Assert-Equal $handoff.provider_key_material_included $false "provider key handoff omits provider key material"
+  Assert-Equal $handoff.apply_directly_supported $false "provider key handoff is not directly applied"
+  Assert-Equal $handoff.apply_mode "sidecar_only" "provider key handoff apply mode"
+  Assert-Equal $handoff.recommended_path "POST /admin/provider-keys" "provider key handoff recommended path"
+  Assert-Condition (@(Convert-ToArray $handoff.credential_locator_hashes).Count -gt 0) "provider key handoff includes locator hash"
+}
+$generatedWriteTargets = @(Convert-ToArray $generatedHandoffPlan.Plan.planned_creates) + @(Convert-ToArray $generatedHandoffPlan.Plan.planned_updates)
+Assert-Condition (@($generatedWriteTargets | Where-Object { $_.target.kind -match "provider_key|secret" }).Count -eq 0) "provider key handoffs do not become write operations"
+$generatedOperationPlans = @(Convert-ToArray $generatedHandoffPlan.Plan.sql_executor_plan.transaction.operation_plans)
+Assert-Condition (@($generatedOperationPlans | Where-Object { $_.target.kind -match "provider_key|secret" }).Count -eq 0) "provider key handoffs do not become SQL operation plans"
+Assert-Condition (@(Convert-ToArray $generatedHandoffPlan.Plan.sql_executor_plan.refusal_contract.refuse_apply_when | Where-Object { $_ -eq "provider_key_secret_management_handoff preflight fails" }).Count -eq 1) "refusal contract blocks unsafe provider key handoff"
 
 $idempotencyEntries = @(Convert-ToArray $dryRun.Plan.idempotency_manifest.entries)
 Assert-Equal $idempotencyEntries.Count ([int]$dryRun.Plan.counts.rollback_snapshot_entries) "idempotency entries match planned writes"

@@ -74,6 +74,20 @@ Environment overrides:
 
 By default it refuses non-local `OPENAI_BASE_URL` values so it cannot accidentally hit a real external provider.
 
+User-facing Gateway examples for the API Console and README live next to the SDK smoke:
+
+```powershell
+$env:GATEWAY_BASE_URL = "http://127.0.0.1:8080"
+$env:GATEWAY_API_KEY = "<user-api-key>"
+$env:SMOKE_MODEL = "mock-gpt-4o-mini"
+node .\tests\integration\sdk-smoke\gateway_user_smoke.mjs
+python .\tests\integration\sdk-smoke\gateway_user_smoke.py
+```
+
+They call `/v1/models`, non-stream chat, and stream chat. Chat calls print the
+Gateway `x-request-id` response header and the injected `x-ai-trace-id` so users
+can find the matching request in the User Portal or Admin Requests view.
+
 ## Control Plane CRUD Smoke
 
 This is a strict API contract smoke for provider/channel/model/association create+get CRUD coverage. It should pass against the local compose stack after migrations are applied.

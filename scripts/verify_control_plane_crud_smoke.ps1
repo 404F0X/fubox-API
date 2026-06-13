@@ -4,6 +4,8 @@ param(
   [string]$AdminEmail = "admin@example.com",
   [string]$AdminPassword = "local-password",
   [string]$AdminSessionToken = "",
+  [string]$ProjectId = "00000000-0000-0000-0000-000000000020",
+  [string]$OutputPath = ".tmp/control-plane/control_plane_management_parity_smoke.json",
   [int]$TimeoutSeconds = 8,
   [switch]$IncludeFullCrud,
   [switch]$StrictFullCrud,
@@ -12,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $script:Failures = @()
 $script:Pending = @()
 
@@ -26,6 +29,11 @@ if ($env:CONTROL_PLANE_AUTH_TOKEN) { $ControlPlaneAuthToken = $env:CONTROL_PLANE
 if ($env:CONTROL_PLANE_ADMIN_EMAIL) { $AdminEmail = $env:CONTROL_PLANE_ADMIN_EMAIL }
 if ($env:CONTROL_PLANE_ADMIN_PASSWORD) { $AdminPassword = $env:CONTROL_PLANE_ADMIN_PASSWORD }
 if ($env:CONTROL_PLANE_ADMIN_SESSION_TOKEN) { $AdminSessionToken = $env:CONTROL_PLANE_ADMIN_SESSION_TOKEN }
+if ($env:CONTROL_PLANE_CRUD_PROJECT_ID) { $ProjectId = $env:CONTROL_PLANE_CRUD_PROJECT_ID }
+if ($env:CONTROL_PLANE_CRUD_OUTPUT_PATH) { $OutputPath = $env:CONTROL_PLANE_CRUD_OUTPUT_PATH }
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+  $OutputPath = ".tmp/control-plane/control_plane_management_parity_smoke.json"
+}
 if ($env:CONTROL_PLANE_FULL_CRUD -eq "1") { $IncludeFullCrud = $true }
 if ($env:STRICT_CONTROL_PLANE_FULL_CRUD -eq "1") { $StrictFullCrud = $true }
 if (Test-TruthyEnv $env:CONTROL_PLANE_CRUD_DRY_RUN) { $DryRun = $true }
@@ -35,6 +43,7 @@ if ([string]::IsNullOrWhiteSpace($AdminSessionToken) -and -not [string]::IsNullO
 }
 
 $script:AdminSessionToken = $AdminSessionToken
+$script:ProviderKeySecret = ""
 
 Add-Type -AssemblyName System.Net.Http
 
@@ -46,7 +55,7 @@ function Redact-SecretLikeString {
   }
 
   $redacted = $Text
-  foreach ($knownSecret in @($GatewayAuthToken, $ControlPlaneAuthToken, $AdminPassword, $AdminSessionToken, $script:AdminSessionToken)) {
+  foreach ($knownSecret in @($GatewayAuthToken, $ControlPlaneAuthToken, $AdminPassword, $AdminSessionToken, $script:AdminSessionToken, $script:ProviderKeySecret)) {
     if (-not [string]::IsNullOrEmpty($knownSecret)) {
       $redacted = $redacted.Replace([string]$knownSecret, "[REDACTED]")
     }
@@ -61,10 +70,84 @@ function Redact-SecretLikeString {
   $redacted = $redacted -replace '(?i)(\b[A-Za-z0-9_-]*(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|provider[_-]?key)[A-Za-z0-9_-]*\s*[:=]\s*)[^\s";,}\]]+', '${1}[REDACTED]'
   $redacted = $redacted -replace 'sk-[A-Za-z0-9._~+\-/=]+', '[REDACTED]'
   $redacted = $redacted -replace 'dev_test_key_[A-Za-z0-9._~+\-/=]+', '[REDACTED]'
+  $redacted = $redacted -replace 'cp-crud-provider-key-[A-Za-z0-9._~+\-/=]+', '[REDACTED]'
   $redacted = $redacted -replace '(?i)\$env:[A-Z0-9_]*(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|provider[_-]?key)[A-Z0-9_]*', '[REDACTED]'
   $redacted = $redacted -replace '(?i)(?<![A-Za-z0-9_])env:[/\\]?[A-Z0-9_]*(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|provider[_-]?key)[A-Z0-9_]*', '[REDACTED]'
   $redacted = $redacted -replace '(?i)\$\{[A-Z0-9_]*(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|private[_-]?key|provider[_-]?key)[A-Z0-9_]*\}', '[REDACTED]'
   return $redacted
+}
+
+function Resolve-RepoPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  if ([System.IO.Path]::IsPathRooted($Path)) {
+    return [System.IO.Path]::GetFullPath($Path)
+  }
+
+  return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
+}
+
+function Get-RepoRelativePath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $full = [System.IO.Path]::GetFullPath($Path)
+  $prefix = $repoRoot.Path.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+  if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return ($full.Substring($prefix.Length) -replace "\\", "/")
+  }
+
+  return ($full -replace "\\", "/")
+}
+
+function Assert-OutputPathIsSafe {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $full = Resolve-RepoPath $Path
+  $relative = Get-RepoRelativePath $full
+  if ($relative.StartsWith("..", [System.StringComparison]::Ordinal) -or [System.IO.Path]::IsPathRooted($relative)) {
+    throw "OutputPath must stay inside the repository."
+  }
+  if (-not ($relative.StartsWith(".tmp/control-plane/", [System.StringComparison]::OrdinalIgnoreCase) -or $relative.StartsWith(".tmp/open-source-alpha/", [System.StringComparison]::OrdinalIgnoreCase))) {
+    throw "OutputPath must stay under .tmp/control-plane/ or .tmp/open-source-alpha/."
+  }
+
+  return $full
+}
+
+function Test-SecretSafeText {
+  param([AllowNull()][string]$Text)
+
+  if ([string]::IsNullOrEmpty($Text)) {
+    return $true
+  }
+
+  foreach ($knownSecret in @($ControlPlaneAuthToken, $AdminPassword, $AdminSessionToken, $script:AdminSessionToken, $script:ProviderKeySecret)) {
+    if (-not [string]::IsNullOrEmpty($knownSecret) -and $Text.Contains([string]$knownSecret)) {
+      return $false
+    }
+  }
+
+  foreach ($pattern in @(
+      '(?i)authorization\s*[:=]\s*bearer\s+[^"\s,}]+',
+      '(?i)cookie\s*[:=]',
+      '(?i)x-admin-session\s*[:=]',
+      '(?i)"session_token_once"\s*:',
+      '(?i)"secret"\s*:\s*"[^"]{4,}"',
+      '(?i)"api_key"\s*:\s*"[^"]{4,}"',
+      '(?i)"encrypted_secret"\s*:',
+      '(?i)"secret_fingerprint"\s*:',
+      '(?i)postgres(?:ql)?://[^"\s]+',
+      '(?i)password\s*[:=]\s*[^"\s,}]+',
+      'sk-[A-Za-z0-9._~+\-/=]{8,}',
+      'sess_[A-Za-z0-9._~+/\-=]{8,}',
+      'cp-crud-provider-key-[A-Za-z0-9._~+\-/=]{4,}'
+    )) {
+    if ($Text -match $pattern) {
+      return $false
+    }
+  }
+
+  return $true
 }
 
 function Write-SafeHost {
@@ -301,6 +384,59 @@ function Assert-JsonContainsPropertyValue {
   }
 }
 
+function Get-JsonPropertyValue {
+  param(
+    [AllowNull()]$Object,
+    [Parameter(Mandatory = $true)][string]$Name,
+    $Default = $null
+  )
+
+  if ($null -eq $Object) {
+    return $Default
+  }
+
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) {
+    return $Default
+  }
+
+  return $property.Value
+}
+
+function Assert-JsonOmitsSensitiveProviderKeyMaterial {
+  param(
+    [Parameter(Mandatory = $true)][string]$Content,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  if (-not (Test-SecretSafeText $Content)) {
+    throw "$Name response contains secret-like material"
+  }
+}
+
+function Assert-ProviderKeyResponseIsRedacted {
+  param(
+    [Parameter(Mandatory = $true)]$Payload,
+    [Parameter(Mandatory = $true)][string]$Name
+  )
+
+  $data = Get-JsonPropertyValue -Object $Payload -Name "data" -Default $Payload
+  if ($null -eq $data) {
+    throw "$Name response does not include data"
+  }
+  if ((Get-JsonPropertyValue -Object $data -Name "credential_configured" -Default $null) -ne $true) {
+    throw "$Name response did not report credential_configured=true"
+  }
+  if ((Get-JsonPropertyValue -Object $data -Name "secret_redacted" -Default $null) -ne $true) {
+    throw "$Name response did not report secret_redacted=true"
+  }
+  foreach ($field in @("secret", "api_key", "encrypted_secret", "secret_fingerprint", "has_secret_fingerprint")) {
+    if ($data.PSObject.Properties.Name -contains $field) {
+      throw "$Name response exposed provider key field '$field'"
+    }
+  }
+}
+
 function Check {
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -418,6 +554,15 @@ $providerId = $null
 $channelId = $null
 $modelId = $null
 $associationId = $null
+$providerKeyId = $null
+$profileId = $null
+$routeDryRunStatus = "not_run"
+$routeDryRunFallbackAllowed = $null
+$routeDryRunSelectedChannelId = $null
+$routeDryRunCandidateCount = 0
+$providerKeySecretRedacted = $false
+$providerKeyCredentialConfigured = $false
+$profileCreated = $false
 
 if ($DryRun) {
   Write-SafeHost ""
@@ -469,6 +614,38 @@ Check "control-plane create channel" {
   Set-Variable -Name channelId -Value $channelId -Scope Script
 }
 
+Check "control-plane create provider key through secret-management path" {
+  Assert-HasId $script:channelId "channel id"
+  $script:ProviderKeySecret = "cp-crud-provider-key-$suffix"
+  $response = Invoke-ApiRequest -Method POST -Uri (Join-Url $ControlPlaneBaseUrl "/admin/provider-keys") -Body @{
+    channel_id = $script:channelId
+    key_alias = "mock-provider-key-$suffix"
+    secret = $script:ProviderKeySecret
+    status = "enabled"
+    metadata = @{
+      smoke = $true
+      source = "control-plane-crud-smoke"
+    }
+  }
+  Assert-StatusAny $response @(200, 201)
+  Assert-JsonOmitsSensitiveProviderKeyMaterial -Content $response.Content -Name "provider key create"
+  $payload = Read-Json $response.Content
+  Assert-ProviderKeyResponseIsRedacted -Payload $payload -Name "provider key create"
+  $providerKeyId = Get-CreatedId -Payload $payload -ResourceName "provider_key"
+  Set-Variable -Name providerKeyId -Value $providerKeyId -Scope Script
+  $script:providerKeySecretRedacted = $true
+  $script:providerKeyCredentialConfigured = $true
+}
+
+Check "control-plane get provider key redacts credential material" {
+  Assert-HasId $script:providerKeyId "provider key id"
+  $response = Invoke-ApiRequest -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/provider-keys/$script:providerKeyId")
+  Assert-StatusAny $response @(200)
+  Assert-JsonContainsId $response.Content $script:providerKeyId "provider key"
+  Assert-JsonOmitsSensitiveProviderKeyMaterial -Content $response.Content -Name "provider key get"
+  Assert-ProviderKeyResponseIsRedacted -Payload (Read-Json $response.Content) -Name "provider key get"
+}
+
 Check "control-plane get channel" {
   Assert-HasId $script:channelId "channel id"
   $response = Invoke-ApiRequest -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/channels/$script:channelId")
@@ -489,6 +666,37 @@ Check "control-plane create canonical model" {
   Set-Variable -Name modelId -Value $modelId -Scope Script
 }
 
+Check "control-plane create api key profile" {
+  Assert-HasId $script:modelId "model id"
+  $profileName = "crud-profile-$suffix"
+  $response = Invoke-ApiRequest -Method POST -Uri (Join-Url $ControlPlaneBaseUrl "/admin/api-key-profiles") -Body @{
+    project_id = $ProjectId
+    name = $profileName
+    inbound_protocol = "openai"
+    default_protocol_mode = "openai_compatible"
+    allowed_models = @("canonical/mock-gpt-4o-mini-$suffix")
+    denied_models = @()
+    allowed_channel_tags = @("smoke")
+    blocked_provider_ids = @()
+    trace_header_rules = @{}
+    ip_allowlist = @()
+    request_overrides = @()
+    status = "active"
+  }
+  Assert-StatusAny $response @(200, 201)
+  $profileId = Get-CreatedId -Payload (Read-Json $response.Content) -ResourceName "api_key_profile"
+  Set-Variable -Name profileId -Value $profileId -Scope Script
+  $script:profileCreated = $true
+}
+
+Check "control-plane get api key profile" {
+  Assert-HasId $script:profileId "api key profile id"
+  $response = Invoke-ApiRequest -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/api-key-profiles/$script:profileId")
+  Assert-StatusAny $response @(200)
+  Assert-JsonContainsId $response.Content $script:profileId "api key profile"
+  Assert-JsonContainsPropertyValue $response.Content "project_id" $ProjectId
+}
+
 Check "control-plane get canonical model" {
   Assert-HasId $script:modelId "model id"
   $response = Invoke-ApiRequest -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/models/$script:modelId")
@@ -505,6 +713,7 @@ Check "control-plane create model association" {
     channel_id = $script:channelId
     upstream_model_name = "mock-gpt-4o-mini"
     priority = 10
+    fallback_allowed = $false
     status = "active"
   }
   Assert-StatusAny $response @(200, 201)
@@ -519,6 +728,48 @@ Check "control-plane get model association" {
   Assert-JsonContainsId $response.Content $script:associationId "association"
 }
 
+Check "control-plane model association dry-run returns selected route and fallback policy" {
+  Assert-HasId $script:profileId "api key profile id"
+  Assert-HasId $script:modelId "model id"
+  Assert-HasId $script:channelId "channel id"
+  $response = Invoke-ApiRequest -Method POST -Uri (Join-Url $ControlPlaneBaseUrl "/admin/model-associations/dry-run") -Body @{
+    project_id = $ProjectId
+    profile_id = $script:profileId
+    requested_model = "canonical/mock-gpt-4o-mini-$suffix"
+    canonical_model_id = $script:modelId
+    seed = 42
+  }
+  Assert-StatusAny $response @(200)
+  Assert-JsonOmitsSensitiveProviderKeyMaterial -Content $response.Content -Name "model association dry-run"
+  $payload = Read-Json $response.Content
+  $data = Get-JsonPropertyValue -Object $payload -Name "data"
+  $selection = Get-JsonPropertyValue -Object $data -Name "selection"
+  $status = [string](Get-JsonPropertyValue -Object $selection -Name "status")
+  if ($status -ne "selected") {
+    throw "dry-run expected selection.status=selected, got '$status'"
+  }
+  $selectedCandidate = Get-JsonPropertyValue -Object $data -Name "selected_candidate"
+  if ($null -eq $selectedCandidate) {
+    throw "dry-run did not return selected_candidate"
+  }
+  $selectedChannelId = [string](Get-JsonPropertyValue -Object $selectedCandidate -Name "channel_id")
+  if ($selectedChannelId -ne $script:channelId) {
+    throw "dry-run selected channel '$selectedChannelId', expected '$script:channelId'"
+  }
+  $fallbackAllowed = Get-JsonPropertyValue -Object $selectedCandidate -Name "fallback_allowed"
+  if ($fallbackAllowed -ne $false) {
+    throw "dry-run selected_candidate.fallback_allowed expected false"
+  }
+  $candidates = @(Get-JsonPropertyValue -Object $data -Name "candidates" -Default @())
+  if ($candidates.Count -lt 1) {
+    throw "dry-run did not return route candidates"
+  }
+  $script:routeDryRunStatus = $status
+  $script:routeDryRunFallbackAllowed = $fallbackAllowed
+  $script:routeDryRunSelectedChannelId = $selectedChannelId
+  $script:routeDryRunCandidateCount = $candidates.Count
+}
+
 if ($IncludeFullCrud) {
   Check-FullCrud -Name "control-plane list providers" -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/providers") -Expected @(200) -PendingMessage "GET /admin/providers collection is not implemented yet." -Assert {
     param($response)
@@ -528,6 +779,17 @@ if ($IncludeFullCrud) {
   Check-FullCrud -Name "control-plane list channels" -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/channels") -Expected @(200) -PendingMessage "GET /admin/channels collection is not implemented yet." -Assert {
     param($response)
     Assert-JsonContainsId $response.Content $script:channelId "channel"
+  }
+
+  Check-FullCrud -Name "control-plane list provider keys" -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/provider-keys") -Expected @(200) -PendingMessage "GET /admin/provider-keys collection is not implemented yet." -Assert {
+    param($response)
+    Assert-JsonContainsId $response.Content $script:providerKeyId "provider key"
+    Assert-JsonOmitsSensitiveProviderKeyMaterial -Content $response.Content -Name "provider key list"
+  }
+
+  Check-FullCrud -Name "control-plane list api key profiles" -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/api-key-profiles?project_id=$ProjectId") -Expected @(200) -PendingMessage "GET /admin/api-key-profiles collection is not implemented yet." -Assert {
+    param($response)
+    Assert-JsonContainsId $response.Content $script:profileId "api key profile"
   }
 
   Check-FullCrud -Name "control-plane list canonical models" -Method GET -Uri (Join-Url $ControlPlaneBaseUrl "/admin/models") -Expected @(200) -PendingMessage "GET /admin/models collection is not implemented yet." -Assert {
@@ -556,6 +818,33 @@ if ($IncludeFullCrud) {
     Assert-PatchedResource -PatchResponse $response -GetPath "/admin/channels/$script:channelId" -PropertyName "name" -Expected $patchedChannelName
   }
 
+  Check-FullCrud -Name "control-plane patch provider key" -Method PATCH -Uri (Join-Url $ControlPlaneBaseUrl "/admin/provider-keys/$script:providerKeyId") -Body @{
+    status = "manual_disabled"
+    metadata = @{
+      smoke = $true
+      patched = $true
+    }
+  } -Expected @(200, 204) -PendingMessage "PATCH /admin/provider-keys/{id} is not implemented yet." -Assert {
+    param($response)
+    Assert-PatchedResource -PatchResponse $response -GetPath "/admin/provider-keys/$script:providerKeyId" -PropertyName "status" -Expected "manual_disabled"
+    Assert-JsonOmitsSensitiveProviderKeyMaterial -Content $response.Content -Name "provider key patch"
+  }
+
+  Check-FullCrud -Name "control-plane patch provider key back to enabled" -Method PATCH -Uri (Join-Url $ControlPlaneBaseUrl "/admin/provider-keys/$script:providerKeyId") -Body @{
+    status = "enabled"
+  } -Expected @(200, 204) -PendingMessage "PATCH /admin/provider-keys/{id} is not implemented yet." -Assert {
+    param($response)
+    Assert-PatchedResource -PatchResponse $response -GetPath "/admin/provider-keys/$script:providerKeyId" -PropertyName "status" -Expected "enabled"
+    Assert-JsonOmitsSensitiveProviderKeyMaterial -Content $response.Content -Name "provider key enable patch"
+  }
+
+  Check-FullCrud -Name "control-plane patch api key profile" -Method PATCH -Uri (Join-Url $ControlPlaneBaseUrl "/admin/api-key-profiles/$script:profileId") -Body @{
+    name = "crud-profile-patched-$suffix"
+  } -Expected @(200, 204) -PendingMessage "PATCH /admin/api-key-profiles/{id} is not implemented yet." -Assert {
+    param($response)
+    Assert-PatchedResource -PatchResponse $response -GetPath "/admin/api-key-profiles/$script:profileId" -PropertyName "name" -Expected "crud-profile-patched-$suffix"
+  }
+
   $patchedDisplayName = "Mock GPT 4o Mini Patched $suffix"
   Check-FullCrud -Name "control-plane patch canonical model" -Method PATCH -Uri (Join-Url $ControlPlaneBaseUrl "/admin/models/$script:modelId") -Body @{
     display_name = $patchedDisplayName
@@ -575,8 +864,16 @@ if ($IncludeFullCrud) {
     Assert-DeletedResource -GetPath "/admin/model-associations/$script:associationId" -ResourceName "association"
   }
 
+  Check-FullCrud -Name "control-plane delete api key profile" -Method DELETE -Uri (Join-Url $ControlPlaneBaseUrl "/admin/api-key-profiles/$script:profileId") -Expected @(200, 202, 204) -PendingMessage "DELETE /admin/api-key-profiles/{id} is not implemented yet." -Assert {
+    Assert-DeletedResource -GetPath "/admin/api-key-profiles/$script:profileId" -ResourceName "api key profile"
+  }
+
   Check-FullCrud -Name "control-plane delete canonical model" -Method DELETE -Uri (Join-Url $ControlPlaneBaseUrl "/admin/models/$script:modelId") -Expected @(200, 202, 204) -PendingMessage "DELETE /admin/models/{id} is not implemented yet." -Assert {
     Assert-DeletedResource -GetPath "/admin/models/$script:modelId" -ResourceName "model"
+  }
+
+  Check-FullCrud -Name "control-plane delete provider key" -Method DELETE -Uri (Join-Url $ControlPlaneBaseUrl "/admin/provider-keys/$script:providerKeyId") -Expected @(200, 202, 204) -PendingMessage "DELETE /admin/provider-keys/{id} is not implemented yet." -Assert {
+    Assert-DeletedResource -GetPath "/admin/provider-keys/$script:providerKeyId" -ResourceName "provider key"
   }
 
   Check-FullCrud -Name "control-plane delete channel" -Method DELETE -Uri (Join-Url $ControlPlaneBaseUrl "/admin/channels/$script:channelId") -Expected @(200, 202, 204) -PendingMessage "DELETE /admin/channels/{id} is not implemented yet." -Assert {
@@ -589,6 +886,48 @@ if ($IncludeFullCrud) {
 }
 
 if ($script:Failures.Count -gt 0) {
+  $artifact = [ordered]@{
+    schema = "control_plane_management_parity_smoke.v1"
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    status = "fail"
+    strict_full_crud = [bool]$IncludeFullCrud
+    project_id = $ProjectId
+    routes = [ordered]@{
+      admin_login = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+      provider = [ordered]@{ created = -not [string]::IsNullOrWhiteSpace($script:providerId) }
+      channel = [ordered]@{ created = -not [string]::IsNullOrWhiteSpace($script:channelId) }
+      provider_key = [ordered]@{
+        created = -not [string]::IsNullOrWhiteSpace($script:providerKeyId)
+        credential_configured = [bool]$script:providerKeyCredentialConfigured
+        secret_redacted = [bool]$script:providerKeySecretRedacted
+        raw_secret_omitted = $true
+      }
+      api_key_profile = [ordered]@{ created = [bool]$script:profileCreated }
+      canonical_model = [ordered]@{ created = -not [string]::IsNullOrWhiteSpace($script:modelId) }
+      model_association = [ordered]@{ created = -not [string]::IsNullOrWhiteSpace($script:associationId) }
+      model_association_dry_run = [ordered]@{
+        status = $script:routeDryRunStatus
+        selected_channel_id_present = -not [string]::IsNullOrWhiteSpace($script:routeDryRunSelectedChannelId)
+        candidate_count = [int]$script:routeDryRunCandidateCount
+        fallback_allowed_observed = $script:routeDryRunFallbackAllowed
+      }
+    }
+    secret_safe = $true
+    raw_secret_omitted = $true
+    raw_command_output_omitted = $true
+    failures = @($script:Failures)
+    pending = @($script:Pending)
+  }
+  $json = $artifact | ConvertTo-Json -Depth 16
+  if (Test-SecretSafeText $json) {
+    $outputFull = Assert-OutputPathIsSafe -Path $OutputPath
+    $outputDir = Split-Path -Parent $outputFull
+    if (-not (Test-Path -LiteralPath $outputDir)) {
+      New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+    }
+    Set-Content -LiteralPath $outputFull -Encoding UTF8 -Value $json
+    Write-SafeHost "control_plane_management_parity_artifact=$(Get-RepoRelativePath $outputFull)"
+  }
   Write-SafeHost ""
   Write-SafeHost "Control Plane CRUD smoke failed:"
   foreach ($failure in $script:Failures) {
@@ -607,7 +946,119 @@ if ($script:Pending.Count -gt 0) {
 }
 
 if ($IncludeFullCrud) {
+  $artifactStatus = "pass"
+  $artifact = [ordered]@{
+    schema = "control_plane_management_parity_smoke.v1"
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    status = $artifactStatus
+    strict_full_crud = [bool]$IncludeFullCrud
+    project_id = $ProjectId
+    routes = [ordered]@{
+      admin_login = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+      provider = [ordered]@{ create_get = -not [string]::IsNullOrWhiteSpace($script:providerId); full_crud = $true }
+      channel = [ordered]@{ create_get = -not [string]::IsNullOrWhiteSpace($script:channelId); full_crud = $true }
+      provider_key = [ordered]@{
+        create_get = -not [string]::IsNullOrWhiteSpace($script:providerKeyId)
+        list_patch_delete = $true
+        credential_configured = [bool]$script:providerKeyCredentialConfigured
+        secret_redacted = [bool]$script:providerKeySecretRedacted
+        encrypted_secret_response_omitted = $true
+        fingerprint_response_omitted = $true
+        raw_secret_omitted = $true
+      }
+      api_key_profile = [ordered]@{
+        create_get = [bool]$script:profileCreated
+        list_patch_delete = $true
+        allowed_models_exercised = $true
+        allowed_channel_tags_exercised = $true
+      }
+      canonical_model = [ordered]@{ create_get = -not [string]::IsNullOrWhiteSpace($script:modelId); full_crud = $true }
+      model_association = [ordered]@{
+        create_get = -not [string]::IsNullOrWhiteSpace($script:associationId)
+        full_crud = $true
+        fallback_allowed_written = $false
+      }
+      model_association_dry_run = [ordered]@{
+        status = $script:routeDryRunStatus
+        selected_channel_id_present = -not [string]::IsNullOrWhiteSpace($script:routeDryRunSelectedChannelId)
+        candidate_count = [int]$script:routeDryRunCandidateCount
+        fallback_allowed_observed = $script:routeDryRunFallbackAllowed
+        upstream_call = $false
+      }
+    }
+    replacement_parity_scope = [ordered]@{
+      os_a1_02 = "provider/channel/provider-key/canonical-model/model-association/profile/fallback-policy Admin API smoke"
+      admin_ui_required = $false
+      documented_api_fallback = $true
+    }
+    secret_safe = $true
+    raw_secret_omitted = $true
+    raw_command_output_omitted = $true
+    blockers = @()
+    pending = @($script:Pending)
+  }
+  $json = $artifact | ConvertTo-Json -Depth 16
+  if (-not (Test-SecretSafeText $json)) {
+    throw "control plane management parity artifact failed secret-safe validation"
+  }
+  $outputFull = Assert-OutputPathIsSafe -Path $OutputPath
+  $outputDir = Split-Path -Parent $outputFull
+  if (-not (Test-Path -LiteralPath $outputDir)) {
+    New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+  }
+  Set-Content -LiteralPath $outputFull -Encoding UTF8 -Value $json
+  Write-SafeHost "control_plane_management_parity_status=$artifactStatus"
+  Write-SafeHost "control_plane_management_parity_artifact=$(Get-RepoRelativePath $outputFull)"
   Write-SafeHost "Control Plane CRUD full smoke passed."
 } else {
+  $artifactStatus = "pass"
+  $artifact = [ordered]@{
+    schema = "control_plane_management_parity_smoke.v1"
+    generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+    status = $artifactStatus
+    strict_full_crud = [bool]$IncludeFullCrud
+    project_id = $ProjectId
+    routes = [ordered]@{
+      admin_login = -not [string]::IsNullOrWhiteSpace($script:AdminSessionToken)
+      provider = [ordered]@{ create_get = -not [string]::IsNullOrWhiteSpace($script:providerId) }
+      channel = [ordered]@{ create_get = -not [string]::IsNullOrWhiteSpace($script:channelId) }
+      provider_key = [ordered]@{
+        create_get = -not [string]::IsNullOrWhiteSpace($script:providerKeyId)
+        credential_configured = [bool]$script:providerKeyCredentialConfigured
+        secret_redacted = [bool]$script:providerKeySecretRedacted
+        raw_secret_omitted = $true
+      }
+      api_key_profile = [ordered]@{ create_get = [bool]$script:profileCreated }
+      canonical_model = [ordered]@{ create_get = -not [string]::IsNullOrWhiteSpace($script:modelId) }
+      model_association = [ordered]@{
+        create_get = -not [string]::IsNullOrWhiteSpace($script:associationId)
+        fallback_allowed_written = $false
+      }
+      model_association_dry_run = [ordered]@{
+        status = $script:routeDryRunStatus
+        selected_channel_id_present = -not [string]::IsNullOrWhiteSpace($script:routeDryRunSelectedChannelId)
+        candidate_count = [int]$script:routeDryRunCandidateCount
+        fallback_allowed_observed = $script:routeDryRunFallbackAllowed
+        upstream_call = $false
+      }
+    }
+    secret_safe = $true
+    raw_secret_omitted = $true
+    raw_command_output_omitted = $true
+    blockers = @()
+    pending = @($script:Pending)
+  }
+  $json = $artifact | ConvertTo-Json -Depth 16
+  if (-not (Test-SecretSafeText $json)) {
+    throw "control plane management parity artifact failed secret-safe validation"
+  }
+  $outputFull = Assert-OutputPathIsSafe -Path $OutputPath
+  $outputDir = Split-Path -Parent $outputFull
+  if (-not (Test-Path -LiteralPath $outputDir)) {
+    New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+  }
+  Set-Content -LiteralPath $outputFull -Encoding UTF8 -Value $json
+  Write-SafeHost "control_plane_management_parity_status=$artifactStatus"
+  Write-SafeHost "control_plane_management_parity_artifact=$(Get-RepoRelativePath $outputFull)"
   Write-SafeHost "Control Plane CRUD baseline smoke passed."
 }

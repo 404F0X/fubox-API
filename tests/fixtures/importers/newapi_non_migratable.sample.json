@@ -1,0 +1,73 @@
+{
+  "source": "new-api",
+  "providers": [
+    {
+      "id": "openai",
+      "name": "OpenAI compatible",
+      "type": "openai-compatible",
+      "base_url": "https://api.openai.example/v1"
+    }
+  ],
+  "channels": [
+    {
+      "id": 301,
+      "name": "openai-paid",
+      "provider": "openai",
+      "base_url": "https://api.openai.example/v1",
+      "groups": ["paid"],
+      "models": ["gpt-4o"],
+      "model_mapping": {
+        "gpt-4o": "gpt-4o-2024-08-06"
+      },
+      "key": {
+        "alias": "paid-routing",
+        "secret": "${OPENAI_API_KEY}"
+      }
+    }
+  ],
+  "models": [
+    {
+      "model": "gpt-4o",
+      "display_name": "GPT-4o",
+      "capabilities": ["text", "tool"]
+    }
+  ],
+  "groups": [
+    {
+      "id": "paid",
+      "name": "paid",
+      "ratio": 1.25,
+      "model_ratio": {
+        "gpt-4o": 2.0
+      }
+    }
+  ],
+  "users": [
+    {
+      "id": 42,
+      "username": "alice",
+      "email": "alice@example.invalid",
+      "group": "paid",
+      "balance": 12345,
+      "used_quota": 678
+    }
+  ],
+  "tokens": [
+    {
+      "id": 9001,
+      "name": "alice-cli",
+      "user_id": 42,
+      "key": "sk-newapi-example-token",
+      "quota": 5000,
+      "used_quota": 123
+    }
+  ],
+  "pricing": [
+    {
+      "model": "gpt-4o",
+      "scope": "model",
+      "prompt_ratio": 2.5,
+      "completion_ratio": 7.5
+    }
+  ]
+}

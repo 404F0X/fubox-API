@@ -1,0 +1,85 @@
+{
+  "name": "gemini_openai_chat_response_from_generate_content_valid",
+  "request": {
+    "model": "gemini-1.5-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say hello."
+      }
+    ],
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1beta/models/gemini-1.5-flash:generateContent",
+    "stream": false,
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Say hello."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "responseId": "gemini_fixture_ok",
+      "candidates": [
+        {
+          "content": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "Hello"
+              },
+              {
+                "text": "."
+              }
+            ]
+          },
+          "finishReason": "STOP",
+          "index": 0
+        }
+      ],
+      "usageMetadata": {
+        "promptTokenCount": 12,
+        "candidatesTokenCount": 3,
+        "totalTokenCount": 15
+      },
+      "modelVersion": "gemini-1.5-flash"
+    }
+  },
+  "expected_response": {
+    "id": "chatcmpl_gemini_fixture_ok",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "gemini-1.5-flash",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "Hello."
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 12,
+      "completion_tokens": 3,
+      "total_tokens": 15
+    }
+  },
+  "expected_usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 3,
+    "total_tokens": 15
+  }
+}

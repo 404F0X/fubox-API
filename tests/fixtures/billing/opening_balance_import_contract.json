@@ -1,0 +1,443 @@
+{
+  "schema": "billing_opening_balance_import_contract.v1",
+  "status": "contract_enforced_not_runtime_wired",
+  "runtime_writer_changed": false,
+  "paid_gate_changed": false,
+  "endpoint": {
+    "method": "POST",
+    "path": "/billing/opening-balance-imports",
+    "owner": "E9 Billing Ledger contract; E11 Control Plane route/auth/RBAC"
+  },
+  "writer_mapping": {
+    "primitive": "AdminAdjustmentLedgerRequest",
+    "adjustment_kind": "credit",
+    "ledger_entry_type": "adjust",
+    "ledger_entry_status": "confirmed",
+    "opening_marker": "opening_entry",
+    "command_metadata_contract": {
+      "metadata_operation": "opening_balance_import",
+      "required_metadata_fields": [
+        "operation",
+        "external_source",
+        "external_reference_id",
+        "reason"
+      ],
+      "raw_idempotency_key_output_allowed": false,
+      "raw_import_payload_output_allowed": false
+    },
+    "direct_wallet_snapshot_mutation_allowed": false,
+    "contract_runtime_wiring": "not_runtime_wired"
+  },
+  "runtime_schema_contract": {
+    "requires_schema": true,
+    "runtime_implemented": false,
+    "table": "opening_balance_imports",
+    "required_columns": [
+      "id",
+      "tenant_id",
+      "project_id",
+      "wallet_id",
+      "currency",
+      "opening_amount",
+      "external_source",
+      "external_reference_id",
+      "idempotency_key",
+      "status",
+      "ledger_entry_id",
+      "admin_adjustment_entry_id",
+      "audit_id",
+      "request_summary",
+      "created_at",
+      "updated_at"
+    ],
+    "required_unique_constraints": [
+      "(tenant_id,idempotency_key)",
+      "(tenant_id,external_source,external_reference_id)"
+    ],
+    "required_statuses": [
+      "imported",
+      "replayed",
+      "refused"
+    ],
+    "required_replay_fields": [
+      "opening_import_id",
+      "ledger_entry_id",
+      "admin_adjustment_entry_id",
+      "audit_id",
+      "status",
+      "request_summary"
+    ],
+    "required_conflict_guards": [
+      "idempotency_replay_same_body",
+      "idempotency_conflict_same_key_different_body",
+      "external_reference_conflict_different_key",
+      "wallet_currency_mismatch_refusal"
+    ],
+    "schema_contract_compatible": true,
+    "e11_schema_landed": true
+  },
+  "runtime_acceptance_contract": {
+    "route_or_internal_runtime_invoked_required": true,
+    "psql_plan_not_runtime_acceptance": true,
+    "rollback_contained_psql_plan_allowed_as_blocked_evidence": true,
+    "runtime_implemented_requires_live_readback": true,
+    "no_direct_wallet_mutation_required": true,
+    "required_live_readback_fields": [
+      "opening_import_id",
+      "ledger_entry_id",
+      "admin_adjustment_entry_id",
+      "audit_id",
+      "idempotency_result",
+      "metadata_operation",
+      "wallet_snapshot_mutated",
+      "opening_import_readback_passed",
+      "ledger_or_admin_adjustment_readback_passed",
+      "audit_readback_passed",
+      "replay_readback_passed",
+      "refusal_readback_passed",
+      "rollback_readback_passed"
+    ]
+  },
+  "money_contract": {
+    "format": "decimal_string_with_currency",
+    "scale": 8,
+    "float_allowed": false
+  },
+  "secret_safe_forbidden_terms": [
+    "authorization",
+    "bearer",
+    "provider_key",
+    "virtual_key",
+    "database_url",
+    "postgres://",
+    "password",
+    "raw_secret",
+    "raw_import_payload",
+    "idempotency_key"
+  ],
+  "cases": [
+    {
+      "name": "accepted_apply",
+      "scenario": "new_api_opening_balance_applies_credit_adjustment",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-001",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "USD",
+        "currency": "USD",
+        "opening_amount": "100.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-001",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321101",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "expected": {
+        "decision": "opening_import_applied",
+        "writer_invoked": true,
+        "idempotency": "applied",
+        "accounting_markers": ["opening_entry", "admin_adjustment_entry", "ledger_entry"],
+        "writer_request": {
+          "primitive": "AdminAdjustmentLedgerRequest",
+          "adjustment_operation_id": "00000000-0000-0000-0000-000000321101",
+          "amount": "100.00000000",
+          "currency": "USD",
+          "adjustment_kind": "credit",
+          "metadata": {
+            "operation": "opening_balance_import",
+            "external_source": "new_api_balance",
+            "external_reference_id": "external-balance-001",
+            "reason": "new_api_balance_import"
+          }
+        },
+        "response": {
+          "opening_import_id": "00000000-0000-0000-0000-000000321201",
+          "wallet_id": "00000000-0000-0000-0000-000000321002",
+          "ledger_entry_id": "00000000-0000-0000-0000-000000321301",
+          "amount": "100.00000000",
+          "currency": "USD",
+          "status": "imported",
+          "idempotency": "applied",
+          "audit_id": "00000000-0000-0000-0000-000000321401",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.apply",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "resource_id": "00000000-0000-0000-0000-000000321201",
+          "reason": "new_api_balance_import",
+          "secret_safe": true
+        }
+      }
+    },
+    {
+      "name": "idempotent_replay",
+      "scenario": "same_import_key_and_body_replays_original_ledger_entry",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-001",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "USD",
+        "currency": "USD",
+        "opening_amount": "100.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-001",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321101",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "existing_ledger_entry": {
+        "ledger_entry_id": "00000000-0000-0000-0000-000000321301",
+        "amount": "100.00000000",
+        "currency": "USD",
+        "status": "confirmed"
+      },
+      "expected": {
+        "decision": "opening_import_replayed",
+        "writer_invoked": true,
+        "idempotency": "replayed",
+        "accounting_markers": ["opening_entry", "admin_adjustment_entry", "ledger_entry"],
+        "writer_request": {
+          "primitive": "AdminAdjustmentLedgerRequest",
+          "adjustment_operation_id": "00000000-0000-0000-0000-000000321101",
+          "amount": "100.00000000",
+          "currency": "USD",
+          "adjustment_kind": "credit",
+          "metadata": {
+            "operation": "opening_balance_import",
+            "external_source": "new_api_balance",
+            "external_reference_id": "external-balance-001",
+            "reason": "new_api_balance_import"
+          }
+        },
+        "response": {
+          "opening_import_id": "00000000-0000-0000-0000-000000321201",
+          "wallet_id": "00000000-0000-0000-0000-000000321002",
+          "ledger_entry_id": "00000000-0000-0000-0000-000000321301",
+          "amount": "100.00000000",
+          "currency": "USD",
+          "status": "imported",
+          "idempotency": "replayed",
+          "audit_id": "00000000-0000-0000-0000-000000321401",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.replay",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "resource_id": "00000000-0000-0000-0000-000000321201",
+          "reason": "new_api_balance_import",
+          "secret_safe": true
+        }
+      }
+    },
+    {
+      "name": "same_key_conflict",
+      "scenario": "same_import_key_different_amount_refuses",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-001",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "USD",
+        "currency": "USD",
+        "opening_amount": "125.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-001",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321101",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "existing_ledger_entry": {
+        "ledger_entry_id": "00000000-0000-0000-0000-000000321301",
+        "amount": "100.00000000",
+        "currency": "USD",
+        "status": "confirmed"
+      },
+      "expected": {
+        "decision": "idempotency_conflict",
+        "writer_invoked": true,
+        "idempotency": "conflict_refused",
+        "accounting_markers": [],
+        "refusal_code": "idempotency_conflict",
+        "writer_request": {
+          "primitive": "AdminAdjustmentLedgerRequest",
+          "adjustment_operation_id": "00000000-0000-0000-0000-000000321101",
+          "amount": "125.00000000",
+          "currency": "USD",
+          "adjustment_kind": "credit",
+          "metadata": {
+            "operation": "opening_balance_import",
+            "external_source": "new_api_balance",
+            "external_reference_id": "external-balance-001",
+            "reason": "new_api_balance_import"
+          }
+        },
+        "response": {
+          "status": "refused",
+          "refusal_code": "idempotency_conflict",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.refuse",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "reason": "idempotency_conflict",
+          "secret_safe": true
+        }
+      }
+    },
+    {
+      "name": "duplicate_external_reference_conflict",
+      "scenario": "same_external_reference_with_different_import_key_refuses",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-001-v2",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "USD",
+        "currency": "USD",
+        "opening_amount": "100.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-001",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321102",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "expected": {
+        "decision": "external_reference_conflict",
+        "writer_invoked": false,
+        "idempotency": "conflict_refused",
+        "accounting_markers": [],
+        "refusal_code": "external_reference_conflict",
+        "response": {
+          "status": "refused",
+          "refusal_code": "external_reference_conflict",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.refuse",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "reason": "external_reference_conflict",
+          "secret_safe": true
+        }
+      }
+    },
+    {
+      "name": "wallet_currency_mismatch",
+      "scenario": "wallet_currency_must_match_import_currency",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-002",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "EUR",
+        "currency": "USD",
+        "opening_amount": "100.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-002",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321103",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "expected": {
+        "decision": "wallet_currency_mismatch",
+        "writer_invoked": false,
+        "idempotency": "refused",
+        "accounting_markers": [],
+        "refusal_code": "wallet_currency_mismatch",
+        "response": {
+          "status": "refused",
+          "refusal_code": "wallet_currency_mismatch",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.refuse",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "reason": "wallet_currency_mismatch",
+          "secret_safe": true
+        }
+      }
+    },
+    {
+      "name": "non_positive_amount_refusal",
+      "scenario": "zero_or_negative_opening_amount_is_not_first_ticket_scope",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-003",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "USD",
+        "currency": "USD",
+        "opening_amount": "0.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-003",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321104",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "expected": {
+        "decision": "non_positive_opening_amount",
+        "writer_invoked": false,
+        "idempotency": "refused",
+        "accounting_markers": [],
+        "refusal_code": "non_positive_opening_amount",
+        "response": {
+          "status": "refused",
+          "refusal_code": "non_positive_opening_amount",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.refuse",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "reason": "non_positive_opening_amount",
+          "secret_safe": true
+        }
+      }
+    },
+    {
+      "name": "direct_wallet_snapshot_mutation_forbidden",
+      "scenario": "wallet_snapshot_is_read_model_not_accounting_truth",
+      "request": {
+        "idempotency_key": "opening_import:new_api_balance:external-balance-004",
+        "tenant_id": "00000000-0000-0000-0000-000000321001",
+        "wallet_id": "00000000-0000-0000-0000-000000321002",
+        "wallet_currency": "USD",
+        "currency": "USD",
+        "opening_amount": "100.00000000",
+        "external_source": "new_api_balance",
+        "external_reference_id": "external-balance-004",
+        "adjustment_operation_id": "00000000-0000-0000-0000-000000321105",
+        "reason": "new_api_balance_import",
+        "actor_id": "operator:migration",
+        "actor_type": "operator"
+      },
+      "attempted_accounting_marker": "direct_wallet_snapshot_update",
+      "expected": {
+        "decision": "direct_wallet_snapshot_mutation_forbidden",
+        "writer_invoked": false,
+        "idempotency": "refused",
+        "accounting_markers": [],
+        "refusal_code": "direct_wallet_snapshot_mutation_forbidden",
+        "response": {
+          "status": "refused",
+          "refusal_code": "direct_wallet_snapshot_mutation_forbidden",
+          "secret_safe": true
+        },
+        "audit_summary": {
+          "action": "opening_balance_import.refuse",
+          "actor_id": "operator:migration",
+          "actor_type": "operator",
+          "reason": "direct_wallet_snapshot_mutation_forbidden",
+          "secret_safe": true
+        }
+      }
+    }
+  ]
+}

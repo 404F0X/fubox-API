@@ -1,0 +1,610 @@
+{
+  "schema": "recharge_voucher_contract.v1",
+  "status": "contract_enforced_not_runtime_wired",
+  "runtime_implemented": false,
+  "contract_only": true,
+  "paid_gate_changed": false,
+  "secret_safe": true,
+  "runtime_acceptance_contract": {
+    "runtime_artifact_schema": "recharge_voucher_runtime.v1",
+    "runtime_artifact_path": ".tmp/credit-wallet/recharge_voucher_runtime.json",
+    "contract_artifact_must_not_mark_runtime_verified": true,
+    "runtime_implemented_required": true,
+    "contract_only_required": false,
+    "route_or_internal_runtime_invocation_required": true,
+    "voucher_storage_readback_required": true,
+    "voucher_code_hash_readback_required": true,
+    "voucher_code_redacted_output_required": true,
+    "redeem_readback_required": true,
+    "redeem_idempotency_readback_required": true,
+    "abuse_refusal_no_write_readback_required": true,
+    "ledger_or_credit_effect_readback_required": true,
+    "refund_cancel_reversal_readback_required": true,
+    "audit_readback_required": true,
+    "secret_safe_required": true,
+    "paid_gate_changed_required": false,
+    "direct_wallet_snapshot_mutation_forbidden": true,
+    "raw_voucher_code_output_allowed": false,
+    "raw_provider_payment_payload_output_allowed": false
+  },
+  "runtime_feasibility_plan": {
+    "status": "feasible_with_new_voucher_schema_and_control_plane_runtime",
+    "runtime_implemented": false,
+    "contract_only": true,
+    "paid_gate_changed": false,
+    "gateway_change_required": false,
+    "control_plane_runtime_required": true,
+    "new_schema_required": true,
+    "external_payment_provider_required_for_recharge_capture": true,
+    "reusable_primitives": [
+      {
+        "primitive": "wallets",
+        "status": "available",
+        "usage": "voucher redeem and recharge credit effects must validate tenant/project/wallet ownership and currency before any accounting write"
+      },
+      {
+        "primitive": "credit_grants",
+        "status": "available",
+        "usage": "successful voucher redeem or paid recharge can issue spendable credit through credit grant rows"
+      },
+      {
+        "primitive": "ledger_entries_admin_adjustment",
+        "status": "available",
+        "usage": "recharge paid, voucher redeem, refund, cancel, and reversal effects can map to ledger/admin adjustment entries"
+      },
+      {
+        "primitive": "audit_logs",
+        "status": "available",
+        "usage": "voucher issue/redeem/refusal and recharge state transitions require bounded audit ids"
+      },
+      {
+        "primitive": "opening_balance_import_idempotent_transaction_pattern",
+        "status": "available",
+        "usage": "same-key replay, same-key conflict refusal, duplicate reference refusal, and no-write refusal transaction shape can be reused"
+      },
+      {
+        "primitive": "credit_grant_crud_runtime",
+        "status": "available",
+        "usage": "grant create/revoke/expire readback can be reused for redeem success and refund/cancel reversal"
+      },
+      {
+        "primitive": "remaining_balance_read_model",
+        "status": "available",
+        "usage": "accepted voucher/recharge credit effects should appear in remaining balance readback"
+      }
+    ],
+    "missing_primitives": [
+      {
+        "primitive": "recharge_intents_schema",
+        "required": true,
+        "reason": "top-up intent lifecycle, payment handoff state, capture/refund/cancel idempotency, and provider references need durable rows"
+      },
+      {
+        "primitive": "voucher_campaigns_schema",
+        "required": true,
+        "reason": "campaign scope, currency, amount, validity window, max redemptions, and revoke status need durable rows"
+      },
+      {
+        "primitive": "voucher_issuances_schema",
+        "required": true,
+        "reason": "issued vouchers need code hash, redacted preview, campaign linkage, status, and audit/readback ids without raw code storage"
+      },
+      {
+        "primitive": "voucher_redemptions_schema",
+        "required": true,
+        "reason": "redeem success, replay, same-code conflicts, grant/ledger linkage, and redeemer ownership need durable idempotent rows"
+      },
+      {
+        "primitive": "voucher_redeem_attempts_or_abuse_events_schema",
+        "required": true,
+        "reason": "failed redeem attempts, rate-limit windows, and abuse refusals need persistence without leaking raw code"
+      },
+      {
+        "primitive": "payment_provider_handoff_and_callback_state",
+        "required": true,
+        "reason": "recharge capture/refund/cancel requires provider state, redacted references, and callback/reconciliation readback"
+      },
+      {
+        "primitive": "live_route_matrix_artifact",
+        "required": true,
+        "reason": "QA runtime acceptance needs non-contract route/internal invocation plus readback for issue/redeem/replay/refusal/refund/audit"
+      }
+    ],
+    "proposed_slices": [
+      {
+        "slice": "TODO-32I-S1",
+        "owner": "E11 Control Plane + Product",
+        "scope": "Add recharge intent, voucher campaign, issuance, redemption, and abuse-event schema contract and OpenAPI boundary",
+        "requires_migration": true,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32I-S2",
+        "owner": "E11 Control Plane + E9 Billing Ledger",
+        "scope": "Implement voucher issue/redeem internal transaction using hashed code lookup, idempotent redemption, credit grant or ledger effect, and audit",
+        "requires_migration": false,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32I-S3",
+        "owner": "Security/Abuse + E11 Control Plane",
+        "scope": "Implement code hashing/redaction, bounded failed-attempt persistence, and abuse/rate-limit refusal taxonomy",
+        "requires_migration": false,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32I-S4",
+        "owner": "Product/Payments + E11 Control Plane",
+        "scope": "Implement recharge provider handoff/callback state and refund/cancel reversal mapping without raw provider payload output",
+        "requires_migration": false,
+        "runtime_acceptance": false
+      },
+      {
+        "slice": "TODO-32I-S5",
+        "owner": "QA + E9",
+        "scope": "Emit and verify recharge_voucher_runtime.v1 with route/internal invocation, storage/hash/readback, replay/refusal no-write, credit effect, reversal, and audit fields true",
+        "requires_migration": false,
+        "runtime_acceptance": true
+      }
+    ]
+  },
+  "money_contract": {
+    "format": "decimal_string_with_currency",
+    "scale": 8,
+    "float_allowed": false
+  },
+  "recharge_lifecycle_states": [
+    "created",
+    "pending",
+    "paid",
+    "cancelled",
+    "refunded"
+  ],
+  "voucher_lifecycle_states": [
+    "issued",
+    "redeemed",
+    "expired",
+    "revoked"
+  ],
+  "secret_safe_contract": {
+    "raw_voucher_code_output_allowed": false,
+    "voucher_code_hash_required": true,
+    "voucher_code_redaction_required": true,
+    "raw_provider_payment_payload_output_allowed": false,
+    "forbidden_output_terms": [
+      "authorization",
+      "bearer",
+      "provider_key",
+      "virtual_key",
+      "database_url",
+      "postgres://",
+      "password",
+      "raw_secret",
+      "raw_voucher_code",
+      "payment_secret"
+    ]
+  },
+  "abuse_guard_contract": {
+    "redeem_attempts_bounded": true,
+    "max_failed_attempts_per_window": 5,
+    "failed_attempts_do_not_echo_code": true,
+    "rate_limit_refusal_code": "voucher_redeem_rate_limited"
+  },
+  "accounting_contract": {
+    "redeem_success_requires_credit_grant_or_ledger_marker": true,
+    "refund_or_cancel_requires_grant_revoke_or_ledger_reversal_marker": true,
+    "audit_metadata_required": true,
+    "direct_wallet_snapshot_mutation_allowed": false,
+    "allowed_markers": [
+      "recharge_intent_row",
+      "voucher_campaign_row",
+      "voucher_issuance_row",
+      "voucher_redemption_row",
+      "credit_grant_row",
+      "admin_adjustment_entry",
+      "ledger_reversal_entry",
+      "credit_grant_revoke_row",
+      "audit_log",
+      "abuse_guard_event"
+    ]
+  },
+  "required_cases": [
+    "recharge_intent_created",
+    "recharge_intent_pending",
+    "recharge_intent_paid",
+    "recharge_intent_cancelled",
+    "recharge_intent_refunded",
+    "voucher_issued_hashed_redacted",
+    "voucher_redeem_success",
+    "voucher_redeem_idempotent_replay",
+    "voucher_redeem_same_code_different_user_refused",
+    "voucher_redeem_over_max_redemptions_refused",
+    "voucher_redeem_expired_refused",
+    "voucher_redeem_revoked_refused",
+    "voucher_redeem_currency_mismatch_refused",
+    "voucher_redeem_non_positive_amount_refused",
+    "voucher_redeem_ownership_mismatch_refused",
+    "voucher_redeem_rate_limited_refused",
+    "voucher_revoke_after_redeem_requires_reversal"
+  ],
+  "cases": [
+    {
+      "name": "recharge_intent_created",
+      "operation": "recharge_intent_create",
+      "decision": "created",
+      "idempotency": "applied",
+      "request": {
+        "idempotency_key_present": true,
+        "tenant_id": "00000000-0000-0000-0000-000000350101",
+        "project_id": "00000000-0000-0000-0000-000000350102",
+        "wallet_id": "00000000-0000-0000-0000-000000350201",
+        "currency": "USD",
+        "amount": "100.00000000",
+        "payment_provider": "external_provider_reference_redacted",
+        "actor_id": "user:billing",
+        "actor_type": "user"
+      },
+      "response": {
+        "recharge_intent_id": "00000000-0000-0000-0000-000000350301",
+        "status": "created",
+        "currency": "USD",
+        "amount": "100.00000000",
+        "provider_reference_redacted": true,
+        "audit_id": "00000000-0000-0000-0000-000000350501",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "recharge_intent_row",
+        "audit_log"
+      ],
+      "audit_metadata": {
+        "operation": "recharge_intent_create",
+        "actor_id_present": true,
+        "reason": "user_top_up",
+        "request_or_operation_id_present": true
+      }
+    },
+    {
+      "name": "recharge_intent_pending",
+      "operation": "recharge_payment_pending",
+      "decision": "pending",
+      "idempotency": "applied",
+      "response": {
+        "recharge_intent_id": "00000000-0000-0000-0000-000000350301",
+        "status": "pending",
+        "currency": "USD",
+        "amount": "100.00000000",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "recharge_intent_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "recharge_intent_paid",
+      "operation": "recharge_payment_paid",
+      "decision": "paid",
+      "idempotency": "applied",
+      "response": {
+        "recharge_intent_id": "00000000-0000-0000-0000-000000350301",
+        "status": "paid",
+        "currency": "USD",
+        "amount": "100.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000350401",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000350601",
+        "audit_id": "00000000-0000-0000-0000-000000350502",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "recharge_intent_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "recharge_intent_cancelled",
+      "operation": "recharge_cancel",
+      "decision": "cancelled",
+      "idempotency": "applied",
+      "response": {
+        "recharge_intent_id": "00000000-0000-0000-0000-000000350301",
+        "status": "cancelled",
+        "currency": "USD",
+        "amount": "100.00000000",
+        "credit_issued": false,
+        "audit_id": "00000000-0000-0000-0000-000000350503",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "recharge_intent_row",
+        "audit_log"
+      ],
+      "refund_cancel_policy": {
+        "credit_grant_revoke_or_ledger_reversal_required_if_credit_issued": true,
+        "no_credit_issued_no_reversal_required": true
+      }
+    },
+    {
+      "name": "recharge_intent_refunded",
+      "operation": "recharge_refund",
+      "decision": "refunded",
+      "idempotency": "applied",
+      "response": {
+        "recharge_intent_id": "00000000-0000-0000-0000-000000350301",
+        "status": "refunded",
+        "currency": "USD",
+        "refund_amount": "100.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000350401",
+        "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000350602",
+        "audit_id": "00000000-0000-0000-0000-000000350504",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "credit_grant_revoke_row",
+        "ledger_reversal_entry",
+        "audit_log"
+      ],
+      "refund_cancel_policy": {
+        "credit_grant_revoke_or_ledger_reversal_required_if_credit_issued": true
+      }
+    },
+    {
+      "name": "voucher_issued_hashed_redacted",
+      "operation": "voucher_issue",
+      "decision": "issued",
+      "idempotency": "applied",
+      "request": {
+        "campaign_id": "00000000-0000-0000-0000-000000350701",
+        "scope": "tenant_project_wallet",
+        "currency": "USD",
+        "amount": "25.00000000",
+        "valid_from": "2026-06-06T00:00:00Z",
+        "expires_at": "2026-07-06T00:00:00Z",
+        "max_redemptions": 1
+      },
+      "response": {
+        "voucher_id": "00000000-0000-0000-0000-000000350801",
+        "campaign_id": "00000000-0000-0000-0000-000000350701",
+        "status": "issued",
+        "code_hash_present": true,
+        "code_redacted": true,
+        "code_preview": "redacted:last4",
+        "currency": "USD",
+        "amount": "25.00000000",
+        "valid_from": "2026-06-06T00:00:00Z",
+        "expires_at": "2026-07-06T00:00:00Z",
+        "max_redemptions": 1,
+        "audit_id": "00000000-0000-0000-0000-000000350505",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "voucher_campaign_row",
+        "voucher_issuance_row",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_success",
+      "operation": "voucher_redeem",
+      "decision": "redeemed",
+      "idempotency": "applied",
+      "request": {
+        "idempotency_key_present": true,
+        "voucher_code_hash_lookup": true,
+        "redeemer_user_id": "00000000-0000-0000-0000-000000350901",
+        "wallet_id": "00000000-0000-0000-0000-000000350201",
+        "currency": "USD"
+      },
+      "response": {
+        "voucher_id": "00000000-0000-0000-0000-000000350801",
+        "redemption_id": "00000000-0000-0000-0000-000000350902",
+        "status": "redeemed",
+        "currency": "USD",
+        "amount": "25.00000000",
+        "credit_grant_id": "00000000-0000-0000-0000-000000350402",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000350603",
+        "audit_id": "00000000-0000-0000-0000-000000350506",
+        "idempotency": "applied",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "voucher_redemption_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "audit_log"
+      ],
+      "abuse_guard": {
+        "attempt_recorded": true,
+        "failed_attempt_count_echoed": false,
+        "raw_code_echoed": false
+      }
+    },
+    {
+      "name": "voucher_redeem_idempotent_replay",
+      "operation": "voucher_redeem",
+      "decision": "replayed",
+      "idempotency": "replayed",
+      "same_redeemer": true,
+      "same_idempotency_key": true,
+      "same_body": true,
+      "new_credit_grant_row_written": false,
+      "new_ledger_entry_written": false,
+      "response": {
+        "voucher_id": "00000000-0000-0000-0000-000000350801",
+        "redemption_id": "00000000-0000-0000-0000-000000350902",
+        "credit_grant_id": "00000000-0000-0000-0000-000000350402",
+        "ledger_entry_id": "00000000-0000-0000-0000-000000350603",
+        "idempotency": "replayed",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "voucher_redemption_row",
+        "credit_grant_row",
+        "admin_adjustment_entry",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_same_code_different_user_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_already_redeemed_by_different_user",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_already_redeemed_by_different_user",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "abuse_guard_event",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_over_max_redemptions_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_max_redemptions_exceeded",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_max_redemptions_exceeded",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "abuse_guard_event",
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_expired_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_expired",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_expired",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_revoked_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_revoked",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_revoked",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_currency_mismatch_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_currency_mismatch",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_currency_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_non_positive_amount_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "non_positive_voucher_amount",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "non_positive_voucher_amount",
+        "amount": "0.00000000",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_ownership_mismatch_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_scope_ownership_mismatch",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_scope_ownership_mismatch",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "audit_log"
+      ]
+    },
+    {
+      "name": "voucher_redeem_rate_limited_refused",
+      "operation": "voucher_redeem",
+      "decision": "refused",
+      "refusal_code": "voucher_redeem_rate_limited",
+      "ledger_write_allowed": false,
+      "credit_grant_write_allowed": false,
+      "response": {
+        "status": "refused",
+        "refusal_code": "voucher_redeem_rate_limited",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "abuse_guard_event",
+        "audit_log"
+      ],
+      "abuse_guard": {
+        "attempt_recorded": true,
+        "failed_attempt_count_echoed": false,
+        "raw_code_echoed": false
+      }
+    },
+    {
+      "name": "voucher_revoke_after_redeem_requires_reversal",
+      "operation": "voucher_revoke",
+      "decision": "revoked",
+      "idempotency": "applied",
+      "response": {
+        "voucher_id": "00000000-0000-0000-0000-000000350801",
+        "status": "revoked",
+        "credit_grant_id": "00000000-0000-0000-0000-000000350402",
+        "reversal_ledger_entry_id": "00000000-0000-0000-0000-000000350604",
+        "audit_id": "00000000-0000-0000-0000-000000350507",
+        "secret_safe": true
+      },
+      "accounting_markers": [
+        "credit_grant_revoke_row",
+        "ledger_reversal_entry",
+        "audit_log"
+      ],
+      "refund_cancel_policy": {
+        "credit_grant_revoke_or_ledger_reversal_required_if_credit_issued": true
+      }
+    }
+  ]
+}

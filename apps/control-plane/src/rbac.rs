@@ -8,10 +8,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::{
     ControlPlaneState,
-    auth::{AuthError, authenticate_headers},
+    auth::{AuthError, authenticate_headers, authenticate_remaining_balance_principal},
 };
 
 pub(crate) async fn require_admin_rbac(
@@ -24,6 +25,37 @@ pub(crate) async fn require_admin_rbac(
     }
 
     let permission = permission_for_admin_request(request.method(), request.uri().path());
+    if wallet_remaining_balance_path(request.uri().path()) {
+        let admin_session = authenticate_headers(state.as_ref(), request.headers()).await;
+        if let Ok(session) = admin_session {
+            if session.has_any_role()
+                && permission.is_none_or(|permission| {
+                    if permission == Permission::KeyManage {
+                        control_plane_roles_allow_permission(session.roles(), permission)
+                    } else {
+                        session.require_permission(permission).is_ok()
+                    }
+                })
+            {
+                request.extensions_mut().insert(session);
+                return next.run(request).await;
+            }
+        }
+
+        let Some(wallet_id) = wallet_id_from_remaining_balance_path(request.uri().path()) else {
+            return AuthError::forbidden().into_response();
+        };
+        match authenticate_remaining_balance_principal(state.as_ref(), request.headers(), wallet_id)
+            .await
+        {
+            Ok(principal) => {
+                request.extensions_mut().insert(principal);
+                return next.run(request).await;
+            }
+            Err(error) => return error.into_response(),
+        }
+    }
+
     let session = match authenticate_headers(state.as_ref(), request.headers()).await {
         Ok(session) => session,
         Err(error) => return error.into_response(),
@@ -68,7 +100,7 @@ pub(crate) struct ControlPlaneCapabilitySummary {
     secret_safe: bool,
 }
 
-pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 19] = [
+pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 48] = [
     ControlPlaneCapability {
         key: "provider.read",
         method: "GET",
@@ -102,6 +134,110 @@ pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 19] = [
         secret_safe: true,
     },
     ControlPlaneCapability {
+        key: "user.manage.read",
+        method: "GET",
+        path: "/admin/users",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "user.status.manage",
+        method: "PATCH",
+        path: "/admin/users/{id}/status",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.read",
+        method: "GET",
+        path: "/admin/enterprise/identity-connections",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.validation_plan",
+        method: "GET",
+        path: "/admin/enterprise/identity-connections/validation-plan",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.oidc_validate_code_plan",
+        method: "POST",
+        path: "/admin/enterprise/identity-connections/oidc/validate-code-plan",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.oidc_execute_validated_login",
+        method: "POST",
+        path: "/admin/enterprise/identity-connections/oidc/execute-validated-login",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.saml_validate_acs_plan",
+        method: "POST",
+        path: "/admin/enterprise/identity-connections/saml/validate-acs-plan",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.saml_execute_validated_acs",
+        method: "POST",
+        path: "/admin/enterprise/identity-connections/saml/execute-validated-acs",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.binding_plan",
+        method: "POST",
+        path: "/admin/enterprise/identity-bindings/plan",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_identity.session_issue_plan",
+        method: "POST",
+        path: "/admin/enterprise/identity-sessions/issue-plan",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_accounts.read",
+        method: "GET",
+        path: "/admin/enterprise/accounts",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_sales_dashboard.read",
+        method: "GET",
+        path: "/admin/enterprise/sales-dashboard",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "enterprise_accounts.write",
+        method: "PATCH",
+        path: "/admin/enterprise/accounts",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
         key: "provider_key.recovery",
         method: "POST",
         path: "/admin/provider-keys/{id}/recovery",
@@ -110,9 +246,25 @@ pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 19] = [
         secret_safe: true,
     },
     ControlPlaneCapability {
+        key: "provider_key.rotate",
+        method: "POST",
+        path: "/admin/provider-keys/{id}/rotate",
+        required_permission: Some(Permission::KeyManage),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
         key: "request_log.read",
         method: "GET",
         path: "/admin/request-logs",
+        required_permission: Some(Permission::LogReadMetadata),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "request_log.payload_preview",
+        method: "GET",
+        path: "/admin/request-logs/{id}/payload",
         required_permission: Some(Permission::LogReadMetadata),
         credential_sensitive_read: false,
         secret_safe: true,
@@ -158,9 +310,113 @@ pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 19] = [
         secret_safe: true,
     },
     ControlPlaneCapability {
+        key: "credit_grant.read",
+        method: "GET",
+        path: "/admin/credit-grants",
+        required_permission: Some(Permission::BillingRead),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "credit_grant.read_detail",
+        method: "GET",
+        path: "/admin/credit-grants/{id}",
+        required_permission: Some(Permission::BillingRead),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "wallet.remaining_balance.read",
+        method: "GET",
+        path: "/billing/wallets/{id}/remaining-balance",
+        required_permission: Some(Permission::BillingRead),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
         key: "price_version.create",
         method: "POST",
         path: "/admin/price-versions",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "credit_grant.create",
+        method: "POST",
+        path: "/admin/credit-grants",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "credit_grant.expire",
+        method: "POST",
+        path: "/admin/credit-grants/{id}/expire",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "credit_grant.revoke",
+        method: "POST",
+        path: "/admin/credit-grants/{id}/revoke",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.read",
+        method: "GET",
+        path: "/admin/voucher-issuances",
+        required_permission: Some(Permission::BillingRead),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.issue",
+        method: "POST",
+        path: "/admin/voucher-issuances",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.revoke",
+        method: "POST",
+        path: "/admin/voucher-issuances/{id}/revoke",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.issue_batch",
+        method: "POST",
+        path: "/admin/voucher-issuance-batches",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.batch_read",
+        method: "GET",
+        path: "/admin/voucher-issuance-batches/{batch_hash}",
+        required_permission: Some(Permission::BillingRead),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.batch_revoke",
+        method: "POST",
+        path: "/admin/voucher-issuance-batches/{batch_hash}/revoke",
+        required_permission: Some(Permission::BillingAdjust),
+        credential_sensitive_read: false,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "voucher.redeem",
+        method: "POST",
+        path: "/billing/vouchers/redeem",
         required_permission: Some(Permission::BillingAdjust),
         credential_sensitive_read: false,
         secret_safe: true,
@@ -185,6 +441,14 @@ pub(crate) const CONTROL_PLANE_CAPABILITIES: [ControlPlaneCapability; 19] = [
         key: "provider_health.read",
         method: "GET",
         path: "/admin/providers/health-summary",
+        required_permission: Some(Permission::ProviderManage),
+        credential_sensitive_read: true,
+        secret_safe: true,
+    },
+    ControlPlaneCapability {
+        key: "distribution_readiness.read",
+        method: "GET",
+        path: "/admin/distribution/readiness",
         required_permission: Some(Permission::ProviderManage),
         credential_sensitive_read: true,
         secret_safe: true,
@@ -314,6 +578,9 @@ pub(crate) fn permission_for_admin_request(method: &Method, path: &str) -> Optio
     if key_manage_path(path) {
         return Some(Permission::KeyManage);
     }
+    if user_manage_path(path) {
+        return Some(Permission::KeyManage);
+    }
 
     None
 }
@@ -339,14 +606,73 @@ fn billing_read_path(path: &str) -> bool {
     path == "/admin/billing/reconciliation"
         || path == "/admin/price-versions"
         || path == "/admin/ledger/entries"
+        || path == "/admin/credit-grants"
+        || path == "/admin/voucher-issuances"
+        || path == "/admin/subscriptions/scheduler-worker"
+        || path == "/admin/subscriptions/run-due-scheduler-events"
+        || subscription_scheduler_event_execute_path(path)
+        || voucher_batch_read_detail_path(path)
+        || credit_grant_read_detail_path(path)
+        || wallet_remaining_balance_path(path)
 }
 
 fn billing_adjust_path(method: &Method, path: &str) -> bool {
     *method == Method::POST
         && matches!(
             path,
-            "/admin/price-versions" | "/admin/ledger/adjustments/dry-run"
+            "/admin/price-versions"
+                | "/admin/credit-grants"
+                | "/admin/voucher-issuances"
+                | "/admin/voucher-issuance-batches"
+                | "/admin/ledger/adjustments/dry-run"
+                | "/admin/subscriptions/scheduler-plan"
+                | "/billing/vouchers/redeem"
+                | "/billing/opening-balance-imports"
         )
+        || (*method == Method::POST && subscription_scheduler_event_lease_path(path))
+        || (*method == Method::POST && subscription_scheduler_event_execute_path(path))
+        || (*method == Method::POST
+            && (credit_grant_lifecycle_write_path(path) || voucher_lifecycle_write_path(path)))
+}
+
+fn subscription_scheduler_event_execute_path(path: &str) -> bool {
+    path.starts_with("/admin/subscriptions/scheduler-events/") && path.ends_with("/execute-plan")
+}
+
+fn subscription_scheduler_event_lease_path(path: &str) -> bool {
+    path.starts_with("/admin/subscriptions/scheduler-events/") && path.ends_with("/lease")
+}
+
+fn credit_grant_read_detail_path(path: &str) -> bool {
+    path.starts_with("/admin/credit-grants/")
+        && !path.ends_with("/expire")
+        && !path.ends_with("/revoke")
+}
+
+fn credit_grant_lifecycle_write_path(path: &str) -> bool {
+    path.starts_with("/admin/credit-grants/")
+        && (path.ends_with("/expire") || path.ends_with("/revoke"))
+}
+
+fn voucher_lifecycle_write_path(path: &str) -> bool {
+    (path.starts_with("/admin/voucher-issuances/") && path.ends_with("/revoke"))
+        || (path.starts_with("/admin/voucher-issuance-batches/") && path.ends_with("/revoke"))
+}
+
+fn voucher_batch_read_detail_path(path: &str) -> bool {
+    path.starts_with("/admin/voucher-issuance-batches/") && !path.ends_with("/revoke")
+}
+
+fn wallet_remaining_balance_path(path: &str) -> bool {
+    path.starts_with("/billing/wallets/") && path.ends_with("/remaining-balance")
+}
+
+fn wallet_id_from_remaining_balance_path(path: &str) -> Option<Uuid> {
+    let value = path
+        .strip_prefix("/billing/wallets/")?
+        .strip_suffix("/remaining-balance")?
+        .trim_matches('/');
+    Uuid::parse_str(value).ok()
 }
 
 fn alert_webhook_path(path: &str) -> bool {
@@ -358,7 +684,8 @@ fn prompt_eval_shadow_path(path: &str) -> bool {
 }
 
 fn provider_manage_path(path: &str) -> bool {
-    path == "/admin/providers"
+    path == "/admin/distribution/readiness"
+        || path == "/admin/providers"
         || path.starts_with("/admin/providers/")
         || path == "/admin/channels"
         || path.starts_with("/admin/channels/")
@@ -371,10 +698,25 @@ fn provider_manage_path(path: &str) -> bool {
 fn key_manage_path(path: &str) -> bool {
     path == "/admin/provider-keys"
         || path.starts_with("/admin/provider-keys/")
+        || path == "/admin/enterprise/identity-connections"
+        || path == "/admin/enterprise/identity-connections/validation-plan"
+        || path == "/admin/enterprise/identity-connections/oidc/validate-code-plan"
+        || path == "/admin/enterprise/identity-connections/oidc/execute-validated-login"
+        || path == "/admin/enterprise/identity-connections/saml/validate-acs-plan"
+        || path == "/admin/enterprise/identity-connections/saml/execute-validated-acs"
+        || path == "/admin/enterprise/identity-bindings/plan"
+        || path == "/admin/enterprise/identity-sessions/issue-plan"
+        || path == "/admin/enterprise/accounts"
+        || path == "/admin/enterprise/sales-dashboard"
+        || path == "/admin/settings/network-security"
         || path == "/admin/api-key-profiles"
         || path.starts_with("/admin/api-key-profiles/")
         || path == "/admin/virtual-keys"
         || path.starts_with("/admin/virtual-keys/")
+}
+
+fn user_manage_path(path: &str) -> bool {
+    path == "/admin/users" || path.starts_with("/admin/users/")
 }
 
 #[cfg(test)]
@@ -446,6 +788,13 @@ mod tests {
         );
         assert_eq!(
             permission_for_admin_request(
+                &Method::POST,
+                "/admin/provider-keys/00000000-0000-0000-0000-000000000001/rotate"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
                 &Method::PATCH,
                 "/admin/api-key-profiles/00000000-0000-0000-0000-000000000001"
             ),
@@ -493,6 +842,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_key_rotate_requires_key_manage_rbac() {
+        let path = "/admin/provider-keys/00000000-0000-0000-0000-000000000001/rotate";
+
+        assert_eq!(
+            permission_for_admin_request(&Method::POST, path),
+            Some(Permission::KeyManage)
+        );
+        assert!(!role_allows_admin_request(
+            Role::Viewer,
+            &Method::POST,
+            path
+        ));
+        assert!(!role_allows_admin_request(
+            Role::Developer,
+            &Method::POST,
+            path
+        ));
+        assert!(role_allows_admin_request(Role::Ops, &Method::POST, path));
+        assert!(role_allows_admin_request(Role::Admin, &Method::POST, path));
+        assert!(role_allows_admin_request(Role::Owner, &Method::POST, path));
+    }
+
+    #[test]
     fn permission_map_requires_manage_for_admin_reads() {
         assert_eq!(
             permission_for_admin_request(&Method::GET, "/admin/providers"),
@@ -514,6 +886,64 @@ mod tests {
             Some(Permission::KeyManage)
         );
         assert_eq!(
+            permission_for_admin_request(&Method::GET, "/admin/enterprise/identity-connections"),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::GET,
+                "/admin/enterprise/identity-connections/validation-plan"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::POST,
+                "/admin/enterprise/identity-connections/oidc/validate-code-plan"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::POST,
+                "/admin/enterprise/identity-connections/oidc/execute-validated-login"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::POST,
+                "/admin/enterprise/identity-connections/saml/validate-acs-plan"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::POST,
+                "/admin/enterprise/identity-connections/saml/execute-validated-acs"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(&Method::POST, "/admin/enterprise/identity-bindings/plan"),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::POST,
+                "/admin/enterprise/identity-sessions/issue-plan"
+            ),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(&Method::GET, "/admin/enterprise/accounts"),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(&Method::PATCH, "/admin/enterprise/accounts"),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
             permission_for_admin_request(
                 &Method::HEAD,
                 "/admin/api-key-profiles/00000000-0000-0000-0000-000000000001"
@@ -524,17 +954,39 @@ mod tests {
             permission_for_admin_request(&Method::OPTIONS, "/admin/virtual-keys"),
             Some(Permission::KeyManage)
         );
+        assert_eq!(
+            permission_for_admin_request(&Method::GET, "/admin/users"),
+            Some(Permission::KeyManage)
+        );
+        assert_eq!(
+            permission_for_admin_request(
+                &Method::PATCH,
+                "/admin/users/00000000-0000-0000-0000-000000000001/status"
+            ),
+            Some(Permission::KeyManage)
+        );
     }
 
     #[test]
-    fn key_management_reads_reject_viewer_and_allow_manager_and_admin() {
+    fn key_and_user_management_reject_viewer_and_allow_manager_and_admin() {
         let paths = [
             "/admin/provider-keys",
             "/admin/provider-keys/00000000-0000-0000-0000-000000000001",
+            "/admin/enterprise/identity-connections",
+            "/admin/enterprise/identity-connections/validation-plan",
+            "/admin/enterprise/identity-connections/oidc/validate-code-plan",
+            "/admin/enterprise/identity-connections/oidc/execute-validated-login",
+            "/admin/enterprise/identity-connections/saml/validate-acs-plan",
+            "/admin/enterprise/identity-connections/saml/execute-validated-acs",
+            "/admin/enterprise/identity-bindings/plan",
+            "/admin/enterprise/identity-sessions/issue-plan",
+            "/admin/enterprise/accounts",
             "/admin/api-key-profiles",
             "/admin/api-key-profiles/00000000-0000-0000-0000-000000000001",
             "/admin/virtual-keys",
             "/admin/virtual-keys/00000000-0000-0000-0000-000000000001",
+            "/admin/users",
+            "/admin/users/00000000-0000-0000-0000-000000000001/status",
         ];
         let methods = [Method::GET, Method::HEAD, Method::OPTIONS];
 
@@ -910,6 +1362,28 @@ mod tests {
             Some(Permission::LogReadMetadata)
         );
         assert_eq!(
+            permission_for_admin_request(
+                &Method::GET,
+                "/admin/request-logs/00000000-0000-0000-0000-000000000001/payload"
+            ),
+            Some(Permission::LogReadMetadata)
+        );
+        assert!(role_allows_admin_request(
+            Role::Viewer,
+            &Method::GET,
+            "/admin/request-logs/00000000-0000-0000-0000-000000000001/payload"
+        ));
+        assert!(role_allows_admin_request(
+            Role::Developer,
+            &Method::GET,
+            "/admin/request-logs/00000000-0000-0000-0000-000000000001/payload"
+        ));
+        assert!(!role_allows_admin_request(
+            Role::Billing,
+            &Method::GET,
+            "/admin/request-logs/00000000-0000-0000-0000-000000000001/payload"
+        ));
+        assert_eq!(
             permission_for_admin_request(&Method::GET, "/admin/traces/trace-contract-1"),
             Some(Permission::LogReadMetadata)
         );
@@ -960,6 +1434,10 @@ mod tests {
             "/admin/billing/reconciliation",
             "/admin/price-versions",
             "/admin/ledger/entries",
+            "/admin/credit-grants",
+            "/admin/credit-grants/00000000-0000-0000-0000-000000000123",
+            "/admin/voucher-issuances",
+            "/billing/wallets/00000000-0000-0000-0000-000000000123/remaining-balance",
         ] {
             assert_eq!(
                 permission_for_admin_request(&Method::GET, path),
@@ -983,7 +1461,18 @@ mod tests {
 
     #[test]
     fn billing_adjust_writes_require_billing_adjust() {
-        for path in ["/admin/price-versions", "/admin/ledger/adjustments/dry-run"] {
+        for path in [
+            "/admin/price-versions",
+            "/admin/credit-grants",
+            "/admin/credit-grants/00000000-0000-0000-0000-000000000123/expire",
+            "/admin/credit-grants/00000000-0000-0000-0000-000000000123/revoke",
+            "/admin/voucher-issuances",
+            "/admin/voucher-issuances/00000000-0000-0000-0000-000000000123/revoke",
+            "/admin/voucher-issuance-batches",
+            "/billing/vouchers/redeem",
+            "/admin/ledger/adjustments/dry-run",
+            "/billing/opening-balance-imports",
+        ] {
             assert_eq!(
                 permission_for_admin_request(&Method::POST, path),
                 Some(Permission::BillingAdjust),

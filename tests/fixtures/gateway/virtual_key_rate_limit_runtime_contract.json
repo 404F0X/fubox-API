@@ -1,0 +1,82 @@
+{
+  "scenario": "virtual_key_rate_limit_runtime_contract_v1",
+  "crate": "apps/gateway",
+  "runtime_schema": "virtual_key_rate_limit_runtime_v1",
+  "scope": "virtual_key",
+  "expected": {
+    "status": "limited",
+    "window_status": "summary_only",
+    "configured_dimensions": [
+      "concurrency",
+      "rpm",
+      "tpm"
+    ],
+    "attempted_dimensions": [
+      "concurrency",
+      "rpm",
+      "tpm"
+    ],
+    "applied_dimensions": [
+      "concurrency",
+      "rpm"
+    ],
+    "refused_dimension": "tpm"
+  },
+  "dimension_shape": {
+    "concurrency": {
+      "scope": "virtual_key",
+      "status": "ok",
+      "limit": 2,
+      "used": 1,
+      "remaining": 1,
+      "required": 1,
+      "window_seconds": null,
+      "window_status": "not_windowed"
+    },
+    "rpm": {
+      "scope": "virtual_key",
+      "status": "ok",
+      "limit": 60,
+      "used": 11,
+      "remaining": 49,
+      "required": 1,
+      "window_seconds": 60,
+      "window_status": "summary_only"
+    },
+    "tpm": {
+      "scope": "virtual_key",
+      "status": "limited",
+      "limit": 1200,
+      "used": null,
+      "remaining": null,
+      "required": 1000,
+      "window_seconds": 60,
+      "window_status": "summary_only"
+    }
+  },
+  "snapshot_contract": {
+    "location": "route_decision_snapshot.virtual_key_rate_limit",
+    "stores_raw_rate_limit_policy": false,
+    "stores_current_window_state": false,
+    "stores_request_or_response_body": false,
+    "stores_authorization_material": false,
+    "stores_provider_key": false,
+    "stores_raw_endpoint": false
+  },
+  "forbidden_snapshot_markers": [
+    "sk-live-secret",
+    "authorization",
+    "bearer",
+    "provider_key",
+    "provider key",
+    "current_window_state",
+    "endpoint",
+    "payload",
+    "request_body",
+    "response_body",
+    "rate_limit_policy",
+    "concurrency_limit",
+    "rpm_limit",
+    "tpm_limit"
+  ]
+}

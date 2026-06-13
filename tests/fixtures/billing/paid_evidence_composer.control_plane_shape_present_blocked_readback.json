@@ -1,0 +1,54 @@
+{
+  "schema_version": "control_plane_paid_ledger_readback_verification.v1",
+  "artifact_id": "control-plane-paid-readback-shape-present-blocked-selftest",
+  "generated_at_utc": "2026-06-05T21:20:00Z",
+  "generated_by": "synthetic_selftest_fixture",
+  "environment_scope": "synthetic_selftest",
+  "overall_status": "blocked",
+  "actual_exit_code": 2,
+  "synthetic_selftest": true,
+  "selftest_fixture": true,
+  "accepted_evidence": [
+    "gateway_hot_path_reserve_settle_refund",
+    "insufficient_balance_prevents_provider_call",
+    "settle_idempotency",
+    "refund_idempotency",
+    "post_commit_readback",
+    "rollback_proof",
+    "reconciliation_report"
+  ],
+  "missing_evidence": [],
+  "readiness_evidence": {
+    "gateway_hot_path_reserve_settle_refund": true,
+    "insufficient_balance_prevents_provider_call": true,
+    "settle_idempotency": true,
+    "refund_idempotency": true,
+    "post_commit_readback": true,
+    "rollback_proof": true,
+    "reconciliation_report": true
+  },
+  "blockers": [
+    "control_plane_paid_readback_sql_unavailable"
+  ],
+  "refusal_reasons": [],
+  "gateway_artifact": {
+    "path_bounded": true,
+    "exists": true,
+    "secret_safe": true,
+    "request_ids_present": true,
+    "operation_ids_present": true
+  },
+  "control_plane_readback": {
+    "attempted": true,
+    "status": "blocked",
+    "blocker": "control_plane_paid_readback_sql_unavailable"
+  },
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "provider_key_echoed": false,
+    "virtual_key_echoed": false,
+    "secret_safe": true
+  }
+}

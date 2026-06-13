@@ -1,4 +1,12 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -13,13 +21,16 @@ import {
   promptProtectionAuditClosureGate,
   promptProtectionEvidenceReadback,
 } from "./components/PromptProtectionSummary";
+import { UserPortalDashboard, UserPortalLoginPanel } from "./components/UserPortalPanel";
 
 vi.setConfig({ testTimeout: 15000 });
 
 const ledgerExecuteSmoke = ledgerAdjustmentExecuteLiveSmokeContract;
 const ledgerExecuteSmokeHandoff = ledgerAdjustmentExecuteLiveSmokeHandoff;
-const ledgerExecuteSmokeSerializableHandoff = ledgerAdjustmentExecuteLiveSmokeSerializableHandoff;
-const ledgerExecuteSmokeSerializableHandoffArtifact = ledgerAdjustmentExecuteLiveSmokeSerializableHandoffArtifact;
+const ledgerExecuteSmokeSerializableHandoff =
+  ledgerAdjustmentExecuteLiveSmokeSerializableHandoff;
+const ledgerExecuteSmokeSerializableHandoffArtifact =
+  ledgerAdjustmentExecuteLiveSmokeSerializableHandoffArtifact;
 
 const AUTH_HEADER_NAME = ["Author", "ization"].join("");
 const BEARER_SCHEME = ["Bear", "er"].join("");
@@ -61,7 +72,12 @@ function sessionPlaceholder(value: string): string {
 
 function stubHealthyFetch(
   roles = ["owner"],
-  options: { meFailsWithSecret?: boolean; recoveryFails?: boolean; recoveryFailsWithSecret?: boolean; restoreSession?: boolean } = {},
+  options: {
+    meFailsWithSecret?: boolean;
+    recoveryFails?: boolean;
+    recoveryFailsWithSecret?: boolean;
+    restoreSession?: boolean;
+  } = {},
 ) {
   let loginSucceeded = false;
   const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
@@ -92,7 +108,10 @@ function stubHealthyFetch(
       return jsonResponse({ logged_out: true });
     }
 
-    if (requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") && method === "POST") {
+    if (
+      requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") &&
+      method === "POST"
+    ) {
       if (options.recoveryFailsWithSecret) {
         return jsonError(
           `fingerprint fp-recovery-hidden current_window_state raw metadata`,
@@ -101,14 +120,19 @@ function stubHealthyFetch(
       }
 
       if (options.recoveryFails) {
-        return jsonError("provider key status `auth_failed` cannot be recovered through this endpoint", 400);
+        return jsonError(
+          "provider key status `auth_failed` cannot be recovered through this endpoint",
+          400,
+        );
       }
 
       return jsonResponse(providerKeyRecoveryPayload());
     }
 
     if (requestUrl.includes("/admin/providers/health-summary")) {
-      return jsonResponse(healthSummaryPayload(healthSummaryQueryOptions(requestUrl)));
+      return jsonResponse(
+        healthSummaryPayload(healthSummaryQueryOptions(requestUrl)),
+      );
     }
 
     if (
@@ -121,7 +145,10 @@ function stubHealthyFetch(
       return jsonResponse([]);
     }
 
-    if (requestUrl.includes("/admin/providers") || requestUrl.includes("/admin/channels")) {
+    if (
+      requestUrl.includes("/admin/providers") ||
+      requestUrl.includes("/admin/channels")
+    ) {
       return jsonResponse([]);
     }
 
@@ -139,10 +166,18 @@ function stubAdminFetch(
     ledgerEntriesRefreshFails?: boolean;
     ledgerAdjustmentErrorEnvelopeData?: boolean;
     ledgerAdjustmentExecuteResponseShape?: "default" | "tolerant";
-    ledgerAdjustmentExecuteStatus?: "applied" | "idempotent" | "blocked" | "failed";
-    ledgerAdjustmentExecuteStatuses?: Array<"applied" | "idempotent" | "blocked" | "failed">;
+    ledgerAdjustmentExecuteStatus?:
+      | "applied"
+      | "idempotent"
+      | "blocked"
+      | "failed";
+    ledgerAdjustmentExecuteStatuses?: Array<
+      "applied" | "idempotent" | "blocked" | "failed"
+    >;
     payloadPreviewStatus?: "success" | "forbidden" | "notImplemented";
     payloadStored?: boolean;
+    requestLogExportStatus?: "success" | "notImplemented";
+    providerKeyStatus?: string;
     promptProtectionProofVariant?:
       | "duplicateRunRefused"
       | "failedRefused"
@@ -206,17 +241,40 @@ function stubAdminFetch(
     entries: [
       {
         amount: "-0.01230000",
+        balance: {
+          after: null,
+          before: null,
+          currency: "USD",
+          reason: "historical wallet balance snapshots are not stored on ledger_entries",
+          source: "ledger_entry_summary.v1",
+          status: "config-needed",
+        },
         created_at: "2026-06-02T12:02:00Z",
         currency: "USD",
         entry_type: "settle",
+        id: "00000000-0000-0000-0000-000000000091",
         occurred_at: "2026-06-02T12:01:30Z",
+        refs: {
+          ledger_entry_id: "00000000-0000-0000-0000-000000000091",
+          order_id: "00000000-0000-0000-0000-0000000000a1",
+          payment_capture_id: "00000000-0000-0000-0000-0000000000a2",
+          ref_source: "ledger_entry_columns_and_safe_metadata_refs",
+          request_id: "req_1",
+          wallet_id: "00000000-0000-0000-0000-000000000040",
+        },
         request_id: "req_1",
         status: "confirmed",
+        wallet_id: "00000000-0000-0000-0000-000000000040",
       },
     ],
     limit: 25,
     limit_reached: false,
-    omitted_fields: ["idempotency_key", "usage_snapshot", "policy_snapshot", "metadata"],
+    omitted_fields: [
+      "idempotency_key",
+      "usage_snapshot",
+      "policy_snapshot",
+      "metadata",
+    ],
     request_count: 1,
     returned_count: 1,
   };
@@ -235,11 +293,19 @@ function stubAdminFetch(
     audit_readiness: {
       classification: "blocked",
       closure_checklist: promptProtectionClosureChecklist,
-      closure_gaps: ["gateway_live_proof_blocker", "postgres_audit_row_missing", "mock_provider_upstream_refusal_missing"],
+      closure_gaps: [
+        "gateway_live_proof_blocker",
+        "postgres_audit_row_missing",
+        "mock_provider_upstream_refusal_missing",
+      ],
       command_summary: "live_proof_report",
       current_provenance_required: true,
       duration_available_required: true,
-      evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      evidence_fields: [
+        "provider_attempts_count",
+        "latency_envelope",
+        "provenance",
+      ],
       freshness_replay_classification: "simulated_replay_refused",
       latency_envelope_required: true,
       provider_attempts_zero_required: true,
@@ -255,7 +321,10 @@ function stubAdminFetch(
     configured_pattern_types: {
       regex: 1,
     },
-    configured_rules: ["custom-reject-rule", skPlaceholder("prompt-rule-hidden")],
+    configured_rules: [
+      "custom-reject-rule",
+      skPlaceholder("prompt-rule-hidden"),
+    ],
     cookie: "session prompt protection hidden",
     default_hit_count: 1,
     detected_action: "reject",
@@ -292,14 +361,17 @@ function stubAdminFetch(
       live_blocker_status: "blocked",
       provider_attempts_zero_required: true,
       raw_headers: {
-        [AUTH_HEADER_NAME]: bearerPlaceholder("prompt-performance-header-hidden"),
+        [AUTH_HEADER_NAME]: bearerPlaceholder(
+          "prompt-performance-header-hidden",
+        ),
       },
     },
     freshness: {
       freshness_replay_classification: "simulated_replay_refused",
       generated_at_utc: "2026-06-04T13:30:00.000Z",
       live_evidence_closure_eligible: false,
-      proof_run_id_hash: "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+      proof_run_id_hash:
+        "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
       raw_report_path: "C:\\secret\\prompt-proof-report-hidden.json",
       repo_head_commit: "abcdef1234567890abcdef1234567890abcdef12",
       stale_or_simulated_report_closes_live_gap: false,
@@ -337,7 +409,11 @@ function stubAdminFetch(
       command_summary: "live_proof_report",
       current_provenance_required: true,
       duration_available_required: true,
-      evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      evidence_fields: [
+        "provider_attempts_count",
+        "latency_envelope",
+        "provenance",
+      ],
       freshness_replay_classification: "current_live_proof",
       latency_envelope_required: true,
       provider_attempts_zero_required: true,
@@ -349,7 +425,8 @@ function stubAdminFetch(
       freshness_replay_classification: "current_live_proof",
       generated_at_utc: "2026-06-04T14:05:00.000Z",
       live_evidence_closure_eligible: true,
-      proof_run_id_hash: "deadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0de",
+      proof_run_id_hash:
+        "deadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0dedeadc0de",
       raw_report_path: "C:\\secret\\prompt-live-proof-report-hidden.json",
       repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
       stale_or_simulated_report_closes_live_gap: false,
@@ -366,7 +443,9 @@ function stubAdminFetch(
     performance_envelope: {
       all_endpoint_performance_within_bounds: true,
       command_summary: {
-        authorization: bearerPlaceholder("prompt-live-performance-command-hidden"),
+        authorization: bearerPlaceholder(
+          "prompt-live-performance-command-hidden",
+        ),
         database_url: "postgres://prompt-live-performance-dsn-hidden",
       },
       duration_unavailable_marker: "duration_available=false",
@@ -375,7 +454,9 @@ function stubAdminFetch(
       live_blocker_status: "not_blocked",
       provider_attempts_zero_required: true,
       raw_headers: {
-        [AUTH_HEADER_NAME]: bearerPlaceholder("prompt-live-performance-header-hidden"),
+        [AUTH_HEADER_NAME]: bearerPlaceholder(
+          "prompt-live-performance-header-hidden",
+        ),
       },
     },
     provenance: {
@@ -402,7 +483,11 @@ function stubAdminFetch(
       command_summary: "live_proof_report",
       current_provenance_required: true,
       duration_available_required: true,
-      evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+      evidence_fields: [
+        "provider_attempts_count",
+        "latency_envelope",
+        "provenance",
+      ],
       freshness_replay_classification: "freshness_or_replay_refused",
       latency_envelope_required: true,
       provider_attempts_zero_required: true,
@@ -414,7 +499,8 @@ function stubAdminFetch(
       freshness_replay_classification: "freshness_or_replay_refused",
       generated_at_utc: "2026-06-04T14:15:00.000Z",
       live_evidence_closure_eligible: false,
-      proof_run_id_hash: "facefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeed",
+      proof_run_id_hash:
+        "facefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeed",
       raw_report_path: "C:\\secret\\prompt-fail-proof-report-hidden.json",
       repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
       stale_or_simulated_report_closes_live_gap: false,
@@ -458,7 +544,8 @@ function stubAdminFetch(
       freshness_replay_classification: "stale_generated_at_refused",
       generated_at_utc: "2026-06-03T14:05:00.000Z",
       live_evidence_closure_eligible: false,
-      proof_run_id_hash: "badc0ffee0ddf00dbadc0ffee0ddf00dbadc0ffee0ddf00dbadc0ffee0ddf00d",
+      proof_run_id_hash:
+        "badc0ffee0ddf00dbadc0ffee0ddf00dbadc0ffee0ddf00dbadc0ffee0ddf00d",
       raw_report_path: "C:\\secret\\prompt-stale-generated-proof-hidden.json",
     },
     generated_at_utc: "2026-06-03T14:05:00.000Z",
@@ -466,8 +553,11 @@ function stubAdminFetch(
       ...liveEligiblePromptProtectionSignal.provenance,
       generated_at_utc: "2026-06-03T14:05:00.000Z",
       redacted_command_summary: {
-        database_connection: "postgres://prompt-stale-generated-artifact-dsn-hidden",
-        provider_secret: skPlaceholder("prompt-stale-generated-provider-hidden"),
+        database_connection:
+          "postgres://prompt-stale-generated-artifact-dsn-hidden",
+        provider_secret: skPlaceholder(
+          "prompt-stale-generated-provider-hidden",
+        ),
         report_path: "C:\\secret\\prompt-stale-generated-proof-hidden.json",
       },
     },
@@ -487,14 +577,16 @@ function stubAdminFetch(
       ...liveEligiblePromptProtectionSignal.freshness,
       freshness_replay_classification: "stale_repo_commit_refused",
       live_evidence_closure_eligible: false,
-      proof_run_id_hash: "c001c0dec001c0dec001c0dec001c0dec001c0dec001c0dec001c0dec001c0de",
+      proof_run_id_hash:
+        "c001c0dec001c0dec001c0dec001c0dec001c0dec001c0dec001c0dec001c0de",
       raw_report_path: "C:\\secret\\prompt-stale-commit-proof-hidden.json",
       repo_head_commit: "0000000000000000000000000000000000000000",
     },
     provenance: {
       ...liveEligiblePromptProtectionSignal.provenance,
       redacted_command_summary: {
-        database_connection: "postgres://prompt-stale-commit-artifact-dsn-hidden",
+        database_connection:
+          "postgres://prompt-stale-commit-artifact-dsn-hidden",
         provider_secret: skPlaceholder("prompt-stale-commit-provider-hidden"),
         report_path: "C:\\secret\\prompt-stale-commit-proof-hidden.json",
       },
@@ -518,13 +610,15 @@ function stubAdminFetch(
       ...liveEligiblePromptProtectionSignal.freshness,
       freshness_replay_classification: "duplicate_proof_run_refused",
       live_evidence_closure_eligible: false,
-      proof_run_id_hash: "d00df00dd00df00dd00df00dd00df00dd00df00dd00df00dd00df00dd00df00d",
+      proof_run_id_hash:
+        "d00df00dd00df00dd00df00dd00df00dd00df00dd00df00dd00df00dd00df00d",
       raw_report_path: "C:\\secret\\prompt-duplicate-run-proof-hidden.json",
     },
     provenance: {
       ...liveEligiblePromptProtectionSignal.provenance,
       redacted_command_summary: {
-        database_connection: "postgres://prompt-duplicate-run-artifact-dsn-hidden",
+        database_connection:
+          "postgres://prompt-duplicate-run-artifact-dsn-hidden",
         provider_secret: skPlaceholder("prompt-duplicate-run-provider-hidden"),
         report_path: "C:\\secret\\prompt-duplicate-run-proof-hidden.json",
       },
@@ -544,14 +638,18 @@ function stubAdminFetch(
     freshness: {
       ...promptProtectionSignal.freshness,
       freshness_replay_classification: "simulated_replay_refused",
-      proof_run_id_hash: "51015eed51015eed51015eed51015eed51015eed51015eed51015eed51015eed",
+      proof_run_id_hash:
+        "51015eed51015eed51015eed51015eed51015eed51015eed51015eed51015eed",
       raw_report_path: "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
     },
     provenance: {
       ...promptProtectionSignal.provenance,
       redacted_command_summary: {
-        database_connection: "postgres://prompt-simulated-replay-artifact-dsn-hidden",
-        provider_secret: skPlaceholder("prompt-simulated-replay-provider-hidden"),
+        database_connection:
+          "postgres://prompt-simulated-replay-artifact-dsn-hidden",
+        provider_secret: skPlaceholder(
+          "prompt-simulated-replay-provider-hidden",
+        ),
         report_path: "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
       },
     },
@@ -567,7 +665,8 @@ function stubAdminFetch(
             ? staleCommitPromptProtectionSignal
             : options.promptProtectionProofVariant === "duplicateRunRefused"
               ? duplicateRunPromptProtectionSignal
-              : options.promptProtectionProofVariant === "simulatedReplayRefused"
+              : options.promptProtectionProofVariant ===
+                  "simulatedReplayRefused"
                 ? simulatedReplayPromptProtectionSignal
                 : promptProtectionSignal;
   const requestDetail = {
@@ -605,18 +704,23 @@ function stubAdminFetch(
         token: bearerPlaceholder("nested-route-hidden"),
       },
       payload_ref: "payload-123-hidden",
-      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: effectivePromptProtectionSignal }),
+      ...(options.promptProtectionSignals === false
+        ? {}
+        : { prompt_protection: effectivePromptProtectionSignal }),
       request_body: {
         body: "raw prompt hidden",
       },
       strategy: "weighted-fallback",
       summary: {
         candidate_count: 3,
+        fallback_status: "fallback_allowed",
         filtered_count: 2,
         filter_reasons: ["ZeroWeight", "CoolingDown"],
+        reject_reason: "none",
         selected_channel_id: "channel-1",
         selected_provider_model: "gpt-route-summary-upstream",
         selected_score_total: 2144483738,
+        strategy: "priority_weight",
         trace_affinity_status: "Disabled",
       },
     },
@@ -717,7 +821,7 @@ function stubAdminFetch(
     rpm_limit: 600,
     secret: skPlaceholder("live-hidden"),
     secret_fingerprint: "fp-hidden",
-    status: "enabled",
+    status: options.providerKeyStatus ?? "enabled",
     tenant_id: "tenant-1",
     tpm_limit: 120000,
   };
@@ -777,6 +881,7 @@ function stubAdminFetch(
   const model = {
     capabilities: {},
     context_length: 128000,
+    default_price_book_id: "price-book-1",
     display_name: "GPT-4o Mini",
     family: "gpt",
     id: "model-1",
@@ -825,7 +930,10 @@ function stubAdminFetch(
   let associationState = association;
   const profile = {
     allowed_channel_tags: [],
-    allowed_models: ["gpt-4o-mini", authorizationBearerPlaceholder("profile-model-hidden")],
+    allowed_models: [
+      "gpt-4o-mini",
+      authorizationBearerPlaceholder("profile-model-hidden"),
+    ],
     blocked_provider_ids: [],
     default_protocol_mode: "openai_compatible",
     denied_models: ["gpt-internal"],
@@ -941,7 +1049,8 @@ function stubAdminFetch(
       audit_snapshot_policy: "bounded public ids and amounts only",
       business_and_success_audit_share_transaction: true,
       ledger_write: false,
-      omitted_material_policy: "no raw request, raw ledger snapshot, raw metadata, or credential material",
+      omitted_material_policy:
+        "no raw request, raw ledger snapshot, raw metadata, or credential material",
       refusal_does_not_build_success_audit: true,
       success_audit_only_after_ledger_write: true,
       upstream_call: false,
@@ -1022,7 +1131,9 @@ function stubAdminFetch(
         resolved_channel_id: "channel-1",
         resolved_provider_id: "provider-1",
         trace_id: githubPatPlaceholder("reconcile_trace_hidden"),
-        upstream_model: authorizationBearerPlaceholder("reconcile-upstream-hidden"),
+        upstream_model: authorizationBearerPlaceholder(
+          "reconcile-upstream-hidden",
+        ),
         virtual_key_id: "virtual-key-1",
       },
     ],
@@ -1074,6 +1185,47 @@ function stubAdminFetch(
       status: "manual_disabled",
       token: bearerPlaceholder("audit-after-hidden"),
     },
+    audit_log_detail_readback: {
+      action: "provider_key.update",
+      action_result: "manual_disabled",
+      actor_session_presence: {
+        actor_session_id_present: true,
+        actor_user_id_present: true,
+        raw_session_returned: false,
+      },
+      audit_log_id: "audit-1",
+      metadata_redaction_summary: {
+        after_snapshot_redacted_field_count: 2,
+        before_snapshot_redacted_field_count: 2,
+        forbidden_material_omitted: [
+          "raw_token",
+          "raw_session",
+          "api_key_secret",
+          "provider_credential_material",
+          "auth_header",
+          "raw_payload",
+        ],
+        metadata_object: true,
+        raw_api_key_returned: false,
+        raw_authorization_returned: false,
+        raw_payload_returned: false,
+        raw_provider_key_returned: false,
+        redacted_field_count: 2,
+        safe_summary_keys: ["actor_session_id", "user_agent_sha256"],
+      },
+      resource_refs: {
+        request_id: "req_1",
+        request_id_present: true,
+        resource_id: "provider-key-1",
+        resource_id_present: true,
+        resource_tenant_id: "tenant-1",
+        resource_tenant_id_present: true,
+        resource_type: "provider_key",
+      },
+      safe_next_action: "Open request detail by request_id, then correlate ledger entries and trace summary; do not fetch payload content.",
+      schema: "audit_log_detail_readback.v1",
+      source: "audit_logs",
+    },
     before_snapshot: {
       headers: {
         [AUTH_HEADER_NAME]: bearerPlaceholder("audit-before-hidden"),
@@ -1094,7 +1246,9 @@ function stubAdminFetch(
       payload: {
         body: "raw audit metadata payload hidden",
       },
-      ...(options.promptProtectionSignals === false ? {} : { prompt_protection: effectivePromptProtectionSignal }),
+      ...(options.promptProtectionSignals === false
+        ? {}
+        : { prompt_protection: effectivePromptProtectionSignal }),
       raw_headers: {
         cookie: "session hidden",
       },
@@ -1144,7 +1298,10 @@ function stubAdminFetch(
       return jsonResponse(healthSummaryPayload());
     }
 
-    if (requestUrl.includes("/admin/model-associations/dry-run") && method === "POST") {
+    if (
+      requestUrl.includes("/admin/model-associations/dry-run") &&
+      method === "POST"
+    ) {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         canonical_model_id?: string;
         canonical_model_key?: string;
@@ -1159,7 +1316,9 @@ function stubAdminFetch(
       }
 
       return jsonResponse(
-        body.requested_model === "missing-model" ? noCandidateDryRunResponse() : selectedDryRunResponse(),
+        body.requested_model === "missing-model"
+          ? noCandidateDryRunResponse()
+          : selectedDryRunResponse(),
       );
     }
 
@@ -1185,6 +1344,33 @@ function stubAdminFetch(
       return jsonResponse(payloadPreview);
     }
 
+    if (requestUrl.includes("/admin/request-logs/export.csv")) {
+      if (options.requestLogExportStatus === "notImplemented") {
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("request-export-hidden")} export route pending ${skPlaceholder("request-export-hidden")}`,
+          501,
+        );
+      }
+
+      return Promise.resolve(
+        new Response("request_id,status,redaction_status\nreq_1,succeeded,redacted\n", {
+          status: 200,
+          headers: { "Content-Type": "text/csv; charset=utf-8" },
+        }),
+      );
+    }
+
+    if (requestUrl.includes("/admin/request-logs/recon-req-1")) {
+      return jsonResponse({
+        ...requestDetail,
+        request_log: {
+          ...requestDetail.request_log,
+          id: "recon-req-1",
+          trace_id: "recon-trace-1",
+        },
+      });
+    }
+
     if (requestUrl.includes("/admin/request-logs/req_1")) {
       return jsonResponse(requestDetail);
     }
@@ -1197,13 +1383,21 @@ function stubAdminFetch(
       return jsonResponse([auditLog]);
     }
 
-    if (requestUrl.includes("/admin/providers/provider-1") && method === "PATCH") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof providerState>;
+    if (
+      requestUrl.includes("/admin/providers/provider-1") &&
+      method === "PATCH"
+    ) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<
+        typeof providerState
+      >;
       providerState = { ...providerState, ...body };
       return jsonResponse(providerState);
     }
 
-    if (requestUrl.includes("/admin/providers/provider-1") && method === "DELETE") {
+    if (
+      requestUrl.includes("/admin/providers/provider-1") &&
+      method === "DELETE"
+    ) {
       providerState = { ...providerState, status: "deleted" };
       return jsonResponse(providerState);
     }
@@ -1214,10 +1408,15 @@ function stubAdminFetch(
     }
 
     if (requestUrl.includes("/admin/providers")) {
-      return jsonResponse(providerCreated ? [providerState, createdProvider] : [providerState]);
+      return jsonResponse(
+        providerCreated ? [providerState, createdProvider] : [providerState],
+      );
     }
 
-    if (requestUrl.includes("/admin/channels/channel-1/manual-test") && method === "POST") {
+    if (
+      requestUrl.includes("/admin/channels/channel-1/manual-test") &&
+      method === "POST"
+    ) {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         model?: string;
         upstream_model_name?: string;
@@ -1230,16 +1429,26 @@ function stubAdminFetch(
         );
       }
 
-      return jsonResponse(channelManualTestResponse(body.model, body.upstream_model_name));
+      return jsonResponse(
+        channelManualTestResponse(body.model, body.upstream_model_name),
+      );
     }
 
-    if (requestUrl.includes("/admin/channels/channel-1") && method === "PATCH") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof channelState>;
+    if (
+      requestUrl.includes("/admin/channels/channel-1") &&
+      method === "PATCH"
+    ) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<
+        typeof channelState
+      >;
       channelState = { ...channelState, ...body };
       return jsonResponse(channelState);
     }
 
-    if (requestUrl.includes("/admin/channels/channel-1") && method === "DELETE") {
+    if (
+      requestUrl.includes("/admin/channels/channel-1") &&
+      method === "DELETE"
+    ) {
       channelState = { ...channelState, status: "deleted" };
       return jsonResponse(channelState);
     }
@@ -1250,11 +1459,14 @@ function stubAdminFetch(
     }
 
     if (requestUrl.includes("/admin/channels")) {
-      return jsonResponse(channelCreated ? [channelState, createdChannel] : [channelState]);
+      return jsonResponse(
+        channelCreated ? [channelState, createdChannel] : [channelState],
+      );
     }
 
     if (requestUrl.includes("/admin/models/model-1") && method === "PATCH") {
-      modelState = { ...modelState, status: "disabled" };
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      modelState = { ...modelState, ...body };
       return jsonResponse(modelState);
     }
 
@@ -1269,15 +1481,23 @@ function stubAdminFetch(
     }
 
     if (requestUrl.includes("/admin/models")) {
-      return jsonResponse(modelCreated ? [modelState, createdModel] : [modelState]);
+      return jsonResponse(
+        modelCreated ? [modelState, createdModel] : [modelState],
+      );
     }
 
-    if (requestUrl.includes("/admin/model-associations/association-1") && method === "PATCH") {
+    if (
+      requestUrl.includes("/admin/model-associations/association-1") &&
+      method === "PATCH"
+    ) {
       associationState = { ...associationState, status: "disabled" };
       return jsonResponse(associationState);
     }
 
-    if (requestUrl.includes("/admin/model-associations/association-1") && method === "DELETE") {
+    if (
+      requestUrl.includes("/admin/model-associations/association-1") &&
+      method === "DELETE"
+    ) {
       associationState = { ...associationState, status: "deleted" };
       return jsonResponse(associationState);
     }
@@ -1288,54 +1508,112 @@ function stubAdminFetch(
     }
 
     if (requestUrl.includes("/admin/model-associations")) {
-      return jsonResponse(associationCreated ? [associationState, createdAssociation] : [associationState]);
+      return jsonResponse(
+        associationCreated
+          ? [associationState, createdAssociation]
+          : [associationState],
+      );
     }
 
-    if (requestUrl.includes("/admin/provider-keys/provider-key-1") && method === "PATCH") {
+    if (
+      requestUrl.includes("/admin/provider-keys/provider-key-1") &&
+      method === "PATCH"
+    ) {
       return jsonResponse({ ...providerKey, status: "manual_disabled" });
     }
 
-    if (requestUrl.includes("/admin/provider-keys/provider-key-1") && method === "DELETE") {
+    if (
+      requestUrl.includes("/admin/provider-keys/provider-key-1") &&
+      method === "DELETE"
+    ) {
       return jsonResponse({ ...providerKey, status: "deleted" });
     }
 
-    if (requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") && method === "POST") {
+    if (
+      requestUrl.includes("/admin/provider-keys/provider-key-1/recovery") &&
+      method === "POST"
+    ) {
       return jsonResponse(providerKeyRecoveryPayload());
     }
 
+    if (
+      requestUrl.includes("/admin/provider-keys/provider-key-1/rotate") &&
+      method === "POST"
+    ) {
+      return jsonResponse({
+        credential_material: { omitted: true },
+        dry_run: false,
+        new_provider_key: {
+          ...providerKey,
+          id: "provider-key-rotated",
+          key_alias: "openai-main-rotated",
+          secret: skPlaceholder("rotated-hidden"),
+          secret_fingerprint: "fp-rotated-hidden",
+          status: "enabled",
+        },
+        old_provider_key: {
+          ...providerKey,
+          status: "manual_disabled",
+        },
+        production_rotation_closure_allowed: false,
+      });
+    }
+
     if (requestUrl.includes("/admin/provider-keys") && method === "POST") {
-      return jsonResponse({ ...providerKey, id: "provider-key-2", key_alias: "created-key" });
+      return jsonResponse({
+        ...providerKey,
+        id: "provider-key-2",
+        key_alias: "created-key",
+      });
     }
 
     if (requestUrl.includes("/admin/provider-keys")) {
       return jsonResponse([providerKey]);
     }
 
-    if (requestUrl.includes("/admin/api-key-profiles/profile-1") && method === "DELETE") {
+    if (
+      requestUrl.includes("/admin/api-key-profiles/profile-1") &&
+      method === "DELETE"
+    ) {
       return jsonError("api key profile has active virtual keys bound");
     }
 
-    if (requestUrl.includes("/admin/api-key-profiles/profile-1") && method === "PATCH") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof profile>;
+    if (
+      requestUrl.includes("/admin/api-key-profiles/profile-1") &&
+      method === "PATCH"
+    ) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<
+        typeof profile
+      >;
       return jsonResponse({ ...profile, ...body });
     }
 
     if (requestUrl.includes("/admin/api-key-profiles") && method === "POST") {
       profileCreated = true;
-      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<typeof createdProfile>;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Partial<
+        typeof createdProfile
+      >;
       createdProfileState = { ...createdProfile, ...body };
       return jsonResponse(createdProfileState);
     }
 
     if (requestUrl.includes("/admin/api-key-profiles")) {
-      return jsonResponse(profileCreated ? [profile, createdProfileState] : [profile]);
+      return jsonResponse(
+        profileCreated ? [profile, createdProfileState] : [profile],
+      );
     }
 
-    if (requestUrl.includes("/admin/virtual-keys/virtual-key-1/disable") && method === "POST") {
+    if (
+      requestUrl.includes("/admin/virtual-keys/virtual-key-1/disable") &&
+      method === "POST"
+    ) {
       return jsonResponse({ ...virtualKey, status: "disabled" });
     }
 
-    if (requestUrl.includes("/admin/virtual-keys/virtual-key-1/expire") && method === "POST") {
+    if (
+      requestUrl.includes("/admin/virtual-keys/virtual-key-1/expire") &&
+      method === "POST"
+    ) {
       return jsonResponse({ ...virtualKey, status: "expired" });
     }
 
@@ -1355,18 +1633,32 @@ function stubAdminFetch(
       return jsonResponse(reconciliationReport);
     }
 
-    if (requestUrl.includes("/admin/ledger/adjustments/dry-run") && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    if (
+      requestUrl.includes("/admin/ledger/adjustments/dry-run") &&
+      method === "POST"
+    ) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+        string,
+        unknown
+      >;
       const validatedPlan = {
         ...ledgerAdjustmentDryRunPlan,
         operation: body.operation ?? ledgerAdjustmentDryRunPlan.operation,
         planned_ledger_entry: {
           ...ledgerAdjustmentDryRunPlan.planned_ledger_entry,
-          amount: body.amount ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.amount,
-          currency: body.currency ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.currency,
+          amount:
+            body.amount ??
+            ledgerAdjustmentDryRunPlan.planned_ledger_entry.amount,
+          currency:
+            body.currency ??
+            ledgerAdjustmentDryRunPlan.planned_ledger_entry.currency,
           related_ledger_entry_id:
-            body.related_ledger_entry_id ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.related_ledger_entry_id,
-          request_id: body.request_id ?? ledgerAdjustmentDryRunPlan.planned_ledger_entry.request_id,
+            body.related_ledger_entry_id ??
+            ledgerAdjustmentDryRunPlan.planned_ledger_entry
+              .related_ledger_entry_id,
+          request_id:
+            body.request_id ??
+            ledgerAdjustmentDryRunPlan.planned_ledger_entry.request_id,
         },
         request_id: body.request_id ?? ledgerAdjustmentDryRunPlan.request_id,
       };
@@ -1390,7 +1682,8 @@ function stubAdminFetch(
                   audit_log_write: false,
                   audit_snapshot_policy: "bounded public ids and amounts only",
                   business_and_success_audit_share_transaction: true,
-                  contract_version: "ledger_adjustment_execute_preflight_contract.v2",
+                  contract_version:
+                    "ledger_adjustment_execute_preflight_contract.v2",
                   dedupe_contract: {
                     client_supplied_dedupe_material_rejected: true,
                     conflicting_duplicate_refused_before_ledger_insert: true,
@@ -1406,10 +1699,13 @@ function stubAdminFetch(
                     "refund_remaining_amount_checked",
                   ],
                   future_writer_required: true,
-                  ledger_executor_refusal_summary_contract: ledgerExecutorRefusalSummaryContract(),
-                  ledger_executor_summary_contract: ledgerExecutorSummaryContract(),
+                  ledger_executor_refusal_summary_contract:
+                    ledgerExecutorRefusalSummaryContract(),
+                  ledger_executor_summary_contract:
+                    ledgerExecutorSummaryContract(),
                   ledger_writer_contract: {
-                    future_writer: "transactional_admin_ledger_adjustment_writer",
+                    future_writer:
+                      "transactional_admin_ledger_adjustment_writer",
                     insert_status_on_success: "confirmed",
                     metadata_policy: "bounded_admin_adjustment_metadata_only",
                     refund_over_remaining_refused_after_locked_recompute: true,
@@ -1425,7 +1721,8 @@ function stubAdminFetch(
                   },
                   request_log_write: false,
                   safe_output_contract: {
-                    audit_snapshot_policy: "bounded public ids and amounts only",
+                    audit_snapshot_policy:
+                      "bounded public ids and amounts only",
                     credential_material_echoed: false,
                     dedupe_material_echoed: false,
                     request_material_echoed: false,
@@ -1434,27 +1731,46 @@ function stubAdminFetch(
                   success_audit_only_after_ledger_write: true,
                   transaction_contract: {
                     begin_before_locking: true,
-                    bounded_by: ["tenant_id", "related_ledger_entry_id", "currency"],
-                    bounded_lock_order: ["source_ledger_entry_for_update", "ledger_insert", "success_audit_insert"],
+                    bounded_by: [
+                      "tenant_id",
+                      "related_ledger_entry_id",
+                      "currency",
+                    ],
+                    bounded_lock_order: [
+                      "source_ledger_entry_for_update",
+                      "ledger_insert",
+                      "success_audit_insert",
+                    ],
                     commit_only_after_ledger_and_success_audit: true,
                     future_isolation: "read_committed_or_stronger",
-                    recompute_after_locks: ["confirmed_credit_sum", "remaining_refundable_amount"],
+                    recompute_after_locks: [
+                      "confirmed_credit_sum",
+                      "remaining_refundable_amount",
+                    ],
                     rollback_on_audit_insert_failure: true,
                     rollback_on_ledger_write_failure: true,
                     rollback_on_refund_remaining_change: true,
-                    rollback_executor_summary_contract: ledgerExecutorRollbackSummaryContract(),
+                    rollback_executor_summary_contract:
+                      ledgerExecutorRollbackSummaryContract(),
                     unbounded_scan_allowed: false,
                   },
                   upstream_call: false,
                   validated_before_refusal: true,
                 },
-                ledger_executor_summary: ledgerExecutorRefusalSummary("refund", "refused_preflight", false, 0, false),
+                ledger_executor_summary: ledgerExecutorRefusalSummary(
+                  "refund",
+                  "refused_preflight",
+                  false,
+                  0,
+                  false,
+                ),
                 mode: "execute_contract",
                 validated_plan: validatedPlan,
               },
               error: {
                 code: "future_writer_required",
-                message: "ledger adjustment execute requires transactional ledger writer",
+                message:
+                  "ledger adjustment execute requires transactional ledger writer",
               },
             }),
             {
@@ -1467,14 +1783,20 @@ function stubAdminFetch(
       }
 
       if (body.mode === "execute") {
-        const executeStatus = options.ledgerAdjustmentExecuteStatuses?.shift() ?? options.ledgerAdjustmentExecuteStatus;
+        const executeStatus =
+          options.ledgerAdjustmentExecuteStatuses?.shift() ??
+          options.ledgerAdjustmentExecuteStatus;
 
         if (executeStatus === "blocked") {
           const message = `${AUTH_HEADER_NAME}: ${bearerPlaceholder(
             "ledger-execute-blocked-hidden",
           )} idempotency_key raw metadata`;
           return options.ledgerAdjustmentErrorEnvelopeData
-            ? jsonErrorWithData(message, 409, ledgerAdjustmentExecuteErrorEnvelopeData("blocked"))
+            ? jsonErrorWithData(
+                message,
+                409,
+                ledgerAdjustmentExecuteErrorEnvelopeData("blocked"),
+              )
             : jsonError(message, 409);
         }
 
@@ -1483,7 +1805,11 @@ function stubAdminFetch(
             "ledger-execute-failed-hidden",
           )} raw request raw metadata`;
           return options.ledgerAdjustmentErrorEnvelopeData
-            ? jsonErrorWithData(message, 500, ledgerAdjustmentExecuteErrorEnvelopeData("failed"))
+            ? jsonErrorWithData(
+                message,
+                500,
+                ledgerAdjustmentExecuteErrorEnvelopeData("failed"),
+              )
             : jsonError(message, 500);
         }
 
@@ -1501,8 +1827,78 @@ function stubAdminFetch(
       return jsonResponse(validatedPlan);
     }
 
+    if (requestUrl.includes("/admin/voucher-issuance-batches") && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        items?: Array<{ raw_voucher_code?: string }>;
+      };
+      const items = body.items ?? [];
+      return jsonResponse({
+        batch_idempotency_key_hash_present: true,
+        database_writes: true,
+        issued: items.length,
+        items: items.map((_, index) => ({
+          amount: "5.00000000",
+          code_redacted: `ADM...00${index + 1}`,
+          currency: "USD",
+          index,
+          raw_idempotency_key_echoed: false,
+          raw_voucher_code_echoed: false,
+          secret_safe: true,
+          status: "issued",
+          voucher_id: `voucher-batch-${index + 1}`,
+          wallet_id: "wallet-1",
+        })),
+        raw_idempotency_key_echoed: false,
+        raw_voucher_code_echoed: false,
+        refused: 0,
+        replayed: 0,
+        runtime_implemented: true,
+        schema: "recharge_voucher_batch_runtime.v1",
+        secret_safe: true,
+        status: "completed",
+        total: items.length,
+      });
+    }
+
+    if (requestUrl.includes("/admin/voucher-issuances/voucher-list-1/revoke") && method === "POST") {
+      return jsonResponse({
+        audit_id: "audit-voucher-revoke-1",
+        operation: "voucher_revoke",
+        raw_idempotency_key_echoed: false,
+        raw_voucher_code_echoed: false,
+        runtime_implemented: true,
+        schema: "recharge_voucher_revoke_runtime.v1",
+        secret_safe: true,
+        status: "revoked",
+        voucher: voucherIssuanceSummaryPayload("revoked"),
+      });
+    }
+
+    if (requestUrl.includes("/admin/voucher-issuances") && method === "GET") {
+      return jsonResponse({
+        count: 2,
+        items: [
+          voucherIssuanceSummaryPayload("issued"),
+          {
+            ...voucherIssuanceSummaryPayload("redeemed"),
+            code_redacted: "ADM...2222",
+            redemption_count: 1,
+            voucher_id: "voucher-list-2",
+          },
+        ],
+        limit: 25,
+        raw_voucher_code_echoed: false,
+        runtime_implemented: true,
+        schema: "recharge_voucher_issuance_list.v1",
+        secret_safe: true,
+      });
+    }
+
     if (requestUrl.includes("/admin/price-versions") && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+        string,
+        unknown
+      >;
       createdPriceVersionState = {
         ...priceVersion,
         ...body,
@@ -1515,7 +1911,11 @@ function stubAdminFetch(
     }
 
     if (requestUrl.includes("/admin/price-versions")) {
-      return jsonResponse(createdPriceVersionState ? [priceVersion, createdPriceVersionState] : [priceVersion]);
+      return jsonResponse(
+        createdPriceVersionState
+          ? [priceVersion, createdPriceVersionState]
+          : [priceVersion],
+      );
     }
 
     if (requestUrl.includes("/admin/ledger/entries")) {
@@ -1531,6 +1931,10 @@ function stubAdminFetch(
       }
 
       return jsonResponse([ledgerEntry]);
+    }
+
+    if (requestUrl.includes("/admin/wallets")) {
+      return jsonResponse([]);
     }
 
     return jsonResponse({});
@@ -1555,6 +1959,29 @@ function jsonResponseWithStatus(data: unknown, status: number) {
     new Response(JSON.stringify({ data }), {
       status,
       headers: { "Content-Type": "application/json" },
+    }),
+  );
+}
+
+function streamResponse(events: unknown[], requestId: string) {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
+    },
+  });
+
+  return Promise.resolve(
+    new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "x-request-id": requestId,
+      },
     }),
   );
 }
@@ -1655,7 +2082,11 @@ function ledgerExecutorSummary(outcome: "applied" | "idempotent") {
     executor: "control_plane_transactional_admin_ledger_adjustment_writer",
     final_statement_kind: writePerformed ? "insert_ledger_entry" : null,
     final_statement_order: writePerformed ? 1 : null,
-    omitted_material: ["dedupe material", "raw metadata", "credential material"],
+    omitted_material: [
+      "dedupe material",
+      "raw metadata",
+      "credential material",
+    ],
     operation: writePerformed ? "refund" : "adjust",
     operation_key: "operation-key-secret-hidden",
     operation_key_output: "omitted",
@@ -1688,7 +2119,13 @@ function ledgerExecutorRefusalSummary(
     executor: "control_plane_transactional_admin_ledger_adjustment_writer",
     final_statement_kind: hasRefusedStatement ? "statement_refusal" : null,
     final_statement_order: hasRefusedStatement ? 1 : null,
-    omitted_material: ["operation key", "dedupe material", "raw metadata", "credential material", "raw executor error detail"],
+    omitted_material: [
+      "operation key",
+      "dedupe material",
+      "raw metadata",
+      "credential material",
+      "raw executor error detail",
+    ],
     operation,
     operation_key: "operation-key-refusal-hidden",
     operation_key_output: "omitted",
@@ -1705,12 +2142,17 @@ function ledgerExecutorRefusalSummary(
   };
 }
 
-function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", validatedPlan: unknown) {
+function ledgerAdjustmentExecutePayload(
+  outcome: "applied" | "idempotent",
+  validatedPlan: unknown,
+) {
   const writePerformed = outcome === "applied";
 
   return {
     audit_insert_failure_rolls_back_ledger_write: true,
-    audit_log_id: writePerformed ? "00000000-0000-0000-0000-000000000093" : null,
+    audit_log_id: writePerformed
+      ? "00000000-0000-0000-0000-000000000093"
+      : null,
     audit_log_write: writePerformed,
     authorization: bearerPlaceholder("ledger-execute-response-hidden"),
     business_and_success_audit_share_transaction: true,
@@ -1726,7 +2168,8 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
       omitted_material: ["dedupe material", "ledger snapshots", "raw metadata"],
       project_id: "00000000-0000-0000-0000-000000000020",
       raw_metadata: "raw executed ledger metadata hidden",
-      related_ledger_entry_id: outcome === "applied" ? "00000000-0000-0000-0000-000000000091" : null,
+      related_ledger_entry_id:
+        outcome === "applied" ? "00000000-0000-0000-0000-000000000091" : null,
       request_id: "00000000-0000-0000-0000-000000000090",
       status: "confirmed",
       tenant_id: "00000000-0000-0000-0000-000000000001",
@@ -1760,7 +2203,12 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
     success_audit_only_after_ledger_write: true,
     transaction_contract: {
       begin_before_locking: true,
-      bounded_by: ["tenant_id", "related_ledger_entry_id", "currency", "server_generated_dedupe_material"],
+      bounded_by: [
+        "tenant_id",
+        "related_ledger_entry_id",
+        "currency",
+        "server_generated_dedupe_material",
+      ],
       bounded_lock_order: [
         "source_ledger_entry_for_update",
         "same_source_confirmed_credit_entries_for_update",
@@ -1775,7 +2223,8 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
       rollback_on_audit_insert_failure: true,
       rollback_on_ledger_write_failure: true,
       rollback_on_refund_remaining_change: true,
-      rollback_executor_summary_contract: ledgerExecutorRollbackSummaryContract(),
+      rollback_executor_summary_contract:
+        ledgerExecutorRollbackSummaryContract(),
       unbounded_scan_allowed: false,
       write_performed: writePerformed,
       writer: "control_plane_transactional_admin_ledger_adjustment_writer",
@@ -1785,7 +2234,10 @@ function ledgerAdjustmentExecutePayload(outcome: "applied" | "idempotent", valid
   };
 }
 
-function ledgerAdjustmentExecuteTolerancePayload(outcome: "applied" | "idempotent", validatedPlan: unknown) {
+function ledgerAdjustmentExecuteTolerancePayload(
+  outcome: "applied" | "idempotent",
+  validatedPlan: unknown,
+) {
   const payload = ledgerAdjustmentExecutePayload(outcome, validatedPlan);
 
   return {
@@ -1823,7 +2275,9 @@ function ledgerAdjustmentExecuteTolerancePayload(outcome: "applied" | "idempoten
   };
 }
 
-function ledgerAdjustmentExecuteErrorEnvelopeData(outcome: "blocked" | "failed") {
+function ledgerAdjustmentExecuteErrorEnvelopeData(
+  outcome: "blocked" | "failed",
+) {
   return {
     authorization: bearerPlaceholder(`ledger-${outcome}-envelope-hidden`),
     credential_material: "credential material error envelope hidden",
@@ -1894,10 +2348,43 @@ function adminMePayload(roles = ["owner"]) {
   };
 }
 
+function voucherIssuanceSummaryPayload(status: string) {
+  return {
+    amount: "5.00000000",
+    audit_id: "audit-voucher-issue-1",
+    campaign_id: null,
+    code_hash_present: false,
+    code_lookup_prefix_present: false,
+    code_redacted: "ADM...1111",
+    currency: "USD",
+    effective_status: status,
+    expires_at: "2026-06-30T00:00:00Z",
+    max_redemptions: 1,
+    project_id: "project-1",
+    raw_idempotency_key_echoed: false,
+    raw_voucher_code_echoed: false,
+    redemption_count: 0,
+    revoke_audit_id: status === "revoked" ? "audit-voucher-revoke-1" : null,
+    schema: "recharge_voucher_issuance_summary.v1",
+    secret_safe: true,
+    status,
+    tenant_id: "tenant-1",
+    voucher_id: "voucher-list-1",
+    wallet_id: "wallet-1",
+  };
+}
+
 function capabilitySummaryForRoles(roles: string[]) {
   const normalized = roles.map((role) => role.toLowerCase());
   const capabilities = normalized.includes("billing")
-    ? ["billing.read", "price.read", "reconciliation.read", "price_version.create", "health.liveness", "health.readiness"]
+    ? [
+        "billing.read",
+        "price.read",
+        "reconciliation.read",
+        "price_version.create",
+        "health.liveness",
+        "health.readiness",
+      ]
     : normalized.includes("viewer")
       ? [
           "request_log.read",
@@ -1925,14 +2412,33 @@ function capabilitySummaryForRoles(roles: string[]) {
             "health.liveness",
             "health.readiness",
           ]
+        : normalized.includes("provider")
+          ? [
+              "provider.read",
+              "provider.manage",
+              "manual_test.run",
+              "health.liveness",
+              "health.readiness",
+            ]
+          : normalized.includes("request")
+            ? [
+                "request_log.read",
+                "trace.read",
+                "health.liveness",
+                "health.readiness",
+              ]
+            : normalized.includes("none")
+              ? []
         : normalized.includes("health")
           ? ["provider_health.read", "health.liveness", "health.readiness"]
-        : allCapabilities;
+          : allCapabilities;
   const allowed = new Set(capabilities);
 
   return {
     capabilities,
-    denied_capabilities: allCapabilities.filter((capability) => !allowed.has(capability)),
+    denied_capabilities: allCapabilities.filter(
+      (capability) => !allowed.has(capability),
+    ),
     personas: roles.map((role) => role[0]?.toUpperCase() + role.slice(1)),
     roles,
     secret_safe: true,
@@ -2013,7 +2519,9 @@ function healthSummaryQueryOptions(requestUrl: string) {
   };
 }
 
-function healthSummaryPayload(options: { sampleLimit?: number; windowMinutes?: number } = {}) {
+function healthSummaryPayload(
+  options: { sampleLimit?: number; windowMinutes?: number } = {},
+) {
   const sampleLimit = options.sampleLimit ?? 500;
   const windowMinutes = options.windowMinutes ?? 60;
   const sampleCount = windowMinutes === 15 ? 1 : 2;
@@ -2024,7 +2532,7 @@ function healthSummaryPayload(options: { sampleLimit?: number; windowMinutes?: n
     channels: [
       {
         enabled_provider_key_count: 0,
-        health_score: 0.41,
+        health_score: 97,
         health_state: "degraded",
         id: "channel-1",
         model_count: 1,
@@ -2098,6 +2606,12 @@ function healthSummaryPayload(options: { sampleLimit?: number; windowMinutes?: n
         status: "enabled",
       },
     ],
+    probe_status: {
+      next_probe: null,
+      probe_source: "request_logs",
+      scheduler_pending: true,
+      status: "scheduler_pending",
+    },
     recent_window: {
       error_count: 1,
       sample_count: sampleCount,
@@ -2319,7 +2833,10 @@ function selectedDryRunResponse() {
   };
 }
 
-function channelManualTestResponse(requestedModel = "gpt-visible", upstreamModel = "upstream-gpt") {
+function channelManualTestResponse(
+  requestedModel = "gpt-visible",
+  upstreamModel = "upstream-gpt",
+) {
   return {
     billing: {
       billable: false,
@@ -2440,9 +2957,12 @@ async function renderSignedInApp() {
   const user = userEvent.setup();
   render(<App />);
 
-  await user.type(await screen.findByLabelText("Email"), "operator@example.com");
-  await user.type(screen.getByLabelText("Password"), "local-password");
-  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  await user.type(
+    await screen.findByLabelText("邮箱"),
+    "operator@example.com",
+  );
+  await user.type(screen.getByLabelText("密码"), "local-password");
+  await user.click(screen.getByRole("button", { name: "登录" }));
 
   return user;
 }
@@ -2454,18 +2974,545 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("opens the standalone developer console without restoring an admin session", async () => {
+    window.history.replaceState(null, "", "/?mode=developer-console");
+    const fetchMock = vi.fn((url: RequestInfo | URL) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.includes("/auth/login")) {
+        return jsonResponse({
+          project: { id: "project-user-standalone", role: "developer" },
+          session: { expires_at: "2026-07-06T00:00:00Z" },
+          session_token_once: sessionPlaceholder("user-standalone-session"),
+          user: {
+            display_name: "Standalone User",
+            email: "standalone@example.com",
+            id: "user-standalone",
+            pending_acceptance: false,
+            tenant_id: "tenant-user-standalone",
+          },
+        });
+      }
+
+      if (requestUrl.includes("/user/models") || requestUrl.includes("/user/request-logs") || requestUrl.includes("/user/virtual-keys")) {
+        return jsonResponse([]);
+      }
+
+      if (requestUrl.includes("/user/balance")) {
+        return jsonResponse({
+          active_credit_grant_total: "0.00",
+          available_to_spend: "0.00",
+          currency: "USD",
+          last_credit_grant_ids: [],
+          last_ledger_entry_ids: [],
+          pending_confirmed_ledger_window: "0.00",
+          schema: "user_balance_runtime.v1",
+          secret_safe: true,
+          wallet_id: "wallet-standalone",
+        });
+      }
+
+      if (requestUrl.includes("/user/readiness")) {
+        return jsonResponse({
+          checks: [],
+          counts: {
+            active_keys: 0,
+            active_profiles: 0,
+            available_models: 0,
+            recent_requests: 0,
+            routable_models: 0,
+          },
+          next_action: "Create a user API key.",
+          project_id: "project-user-standalone",
+          schema: "user_readiness_runtime.v1",
+          secret_safe: true,
+          state: "blocked",
+        });
+      }
+
+      return jsonError("not configured", 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "用户登录" })).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/admin/auth/me"), expect.anything());
+
+    await user.type(screen.getByLabelText("邮箱"), "standalone@example.com");
+    await user.type(screen.getByLabelText("密码"), "local-password");
+    await user.click(screen.getByRole("button", { name: "登录" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/control-plane/auth/login", expect.anything()));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/admin/auth/me"))).toBe(false);
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("shows user legal links and password reset skeleton without account disclosure", async () => {
+    const fetchMock = vi.fn((url: RequestInfo | URL) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/auth/password-reset/request")) {
+        return jsonResponse({
+          account_disclosure: "none",
+          code: "password_reset_email_config_needed",
+          email_delivery: "config_needed",
+          message: "If the account can receive email, a reset link will be queued after mail delivery is configured.",
+          next_action: "Configure the user mail sender and SMTP adapter, then retry this request.",
+          secret_safe: true,
+          status: "pending",
+        });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<UserPortalLoginPanel onAdminMode={vi.fn()} onLogin={vi.fn()} />);
+
+    expect(screen.getAllByRole("button", { name: "用户协议" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "隐私政策" }).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "用户协议" }));
+    expect(await screen.findByRole("dialog", { name: "用户协议" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    await user.type(screen.getByLabelText("邮箱"), "nobody@example.com");
+    await user.click(screen.getByRole("button", { name: "请求重置" }));
+
+    expect(await screen.findByText(/reset link will be queued/)).toBeInTheDocument();
+    expect(document.body.textContent).toContain("不会泄露账号是否存在");
+    expect(document.body.textContent).not.toContain(SK_PREFIX);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/control-plane/auth/password-reset/request");
+  });
+
+  it("uses a safe generic message for user auth failures", async () => {
+    const fetchMock = vi.fn((url: RequestInfo | URL) => {
+      const requestUrl = String(url);
+      if (requestUrl.includes("/auth/login")) {
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("user-login-hidden")} password=raw-secret provider_key=${skPlaceholder("hidden")}`,
+          401,
+        );
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<UserPortalLoginPanel onAdminMode={vi.fn()} onLogin={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("邮箱"), "developer@example.com");
+    await user.type(screen.getByLabelText("密码"), "bad-password");
+    await user.click(screen.getByRole("button", { name: "登录" }));
+
+    expect(await screen.findByText("登录或注册失败。请检查邮箱和密码后重试。")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("raw-secret");
+    expect(document.body.textContent).not.toContain(SK_PREFIX);
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+  });
+
+  it("renders the user portal dashboard in Chinese without exposing API key secrets", async () => {
+    const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.includes("/v1/chat/completions")) {
+        const requestBody = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+        if (requestBody.stream === true) {
+          return streamResponse(
+            [
+              {
+                id: "chatcmpl-user-stream-1",
+                model: "gpt-4o-mini",
+                choices: [{ delta: { content: "hello " }, finish_reason: null, index: 0 }],
+              },
+              {
+                id: "chatcmpl-user-stream-1",
+                model: "gpt-4o-mini",
+                choices: [{ delta: { content: "world" }, finish_reason: null, index: 0 }],
+              },
+              {
+                id: "chatcmpl-user-stream-1",
+                model: "gpt-4o-mini",
+                choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
+              },
+            ],
+            "req-user-stream-1",
+          );
+        }
+
+        return jsonError(
+          `${AUTH_HEADER_NAME}: ${bearerPlaceholder("user-console-hidden")} provider_key=${skPlaceholder("user-console-provider-hidden")} prompt=show-this-never payload=raw-body-never`,
+          500,
+        );
+      }
+
+      if (requestUrl.includes("/user/balance")) {
+        return jsonResponse({
+          active_credit_grant_total: "20.00",
+          available_to_spend: "18.50",
+          currency: "USD",
+          last_credit_grant_ids: [],
+          last_ledger_entry_ids: [],
+          pending_confirmed_ledger_window: "0.00",
+          schema: "user_balance_runtime.v1",
+          secret_safe: true,
+          wallet_id: "wallet-user-1",
+        });
+      }
+
+      if (requestUrl.includes("/user/virtual-keys")) {
+        return jsonResponse([
+          {
+            budget_policy: {},
+            default_profile_id: "profile-1",
+            id: "vk-1",
+            ip_allowlist: [],
+            key_prefix: "vk_live",
+            metadata: {},
+            name: "生产 Key",
+            project_id: "project-1",
+            rate_limit_policy: {},
+            secret_once: false,
+            secret_redacted: true,
+            status: "active",
+            tenant_id: "tenant-1",
+          },
+        ]);
+      }
+
+      if (requestUrl.includes("/user/models")) {
+        return jsonResponse([
+          {
+            context_length: 128000,
+            default_profile_id: "profile-1",
+            display_name: "GPT 4o mini",
+            family: "gpt",
+            id: "model-1",
+            max_output_tokens: 4096,
+            model: "gpt-4o-mini",
+            price: {
+              currency: "USD",
+              price_book_id: "price-book-user-1",
+              price_version_id: "price-version-user-1",
+              pricing_rules: {
+                currency: "USD",
+                input_token_rate_per_1m: "1.00",
+                output_token_rate_per_1m: "2.00",
+              },
+              secret_safe: true,
+              version: "user-v1",
+            },
+            routable: true,
+            routable_channel_count: 1,
+            status: "active",
+            supports_audio: false,
+            supports_reasoning: false,
+            supports_stream: true,
+            supports_tools: true,
+            supports_vision: false,
+            visibility: "public",
+          },
+          {
+            context_length: 32768,
+            default_profile_id: "profile-1",
+            display_name: "Price Missing Model",
+            family: "gpt",
+            id: "model-price-missing",
+            max_output_tokens: 2048,
+            model: "price-missing-model",
+            price: null,
+            routable: true,
+            routable_channel_count: 1,
+            status: "active",
+            supports_audio: false,
+            supports_reasoning: false,
+            supports_stream: false,
+            supports_tools: false,
+            supports_vision: false,
+            visibility: "public",
+          },
+        ]);
+      }
+
+      if (requestUrl.includes("/user/readiness")) {
+        return jsonResponse({
+          checks: [
+            {
+              code: "model",
+              detail: "已有可路由模型",
+              label: "模型",
+              next_action: "可以调用",
+              status: "ready",
+            },
+          ],
+          counts: {
+            active_keys: 1,
+            active_profiles: 1,
+            available_models: 1,
+            recent_requests: 1,
+            routable_models: 1,
+          },
+          next_action: "可以调用",
+          project_id: "project-1",
+          schema: "user_readiness_runtime.v1",
+          secret_safe: true,
+          state: "ready",
+        });
+      }
+
+      if (requestUrl.includes("/user/vouchers/redeem")) {
+        return jsonResponse({
+          amount: "25.00",
+          credit_grant_id: "credit-grant-user-1",
+          currency: "USD",
+          expires_at: "2026-07-06T00:00:00Z",
+          ledger_entry_id: "ledger-user-1",
+          operation: "voucher_redeem",
+          raw_voucher_code_echoed: false,
+          redemption_id: "redemption-user-1",
+          status: "redeemed",
+          voucher_id: "voucher-user-1",
+          wallet_id: "wallet-user-1",
+        });
+      }
+
+      if (requestUrl.includes("/user/usage-summary")) {
+        return jsonResponse({
+          by_key: [],
+          by_model: [],
+          project_id: "project-1",
+          schema: "user_usage_summary_runtime.v1",
+          secret_safe: true,
+          top_errors: [],
+          totals: {
+            avg_latency_ms: 123,
+            currency: "USD",
+            failed_count: 0,
+            input_tokens: 100,
+            output_tokens: 40,
+            request_count: 1,
+            retryable_failed_count: 0,
+            success_count: 1,
+            total_cost: "0.001",
+            total_tokens: 140,
+          },
+          window_days: 7,
+        });
+      }
+
+      if (requestUrl.includes("/user/subscription-payment")) {
+        return jsonResponse({
+          current_subscription: {
+            dunning_status: "not_in_dunning",
+            grace_status: "not_in_grace",
+            lifecycle_state: "no_subscription",
+            next_action: "等待订阅后端接入。",
+            next_renewal_at: null,
+            renewal_status: "not_scheduled",
+            status: "none",
+          },
+          demo_payment: {
+            invoice_status: "placeholder",
+            local_only: true,
+            merchant_connected: false,
+            next_action: "本地 demo pending。",
+            order_status: "not_created",
+            production_payment_evidence: false,
+          },
+          local_only: true,
+          merchant_connected: false,
+          pending_scheduler: true,
+          plans: [],
+          raw_idempotency_key_echoed: false,
+          raw_invoice_metadata_returned: false,
+          raw_payment_payload_returned: false,
+          scheduler_status: "pending_scheduler",
+          scheduler_demo: {
+            dunning: {
+              attempt_count: 0,
+              max_attempts: 3,
+              next_attempt_at: null,
+              status: "not_in_dunning",
+              write_enabled: false,
+            },
+            grace: {
+              ends_at: null,
+              grace_days: 3,
+              status: "not_in_grace",
+              write_enabled: false,
+            },
+            lifecycle_state: "no_subscription",
+            local_only: true,
+            merchant_connected: false,
+            mode: "local_readback_demo",
+            next_action: "本地 demo pending。",
+            pending_scheduler: true,
+            raw_idempotency_key_echoed: false,
+            raw_invoice_metadata_returned: false,
+            raw_payload_returned: false,
+            raw_payment_payload_returned: false,
+            readback_source: "test_fixture",
+            runtime_scheduler_enabled: false,
+            scheduled_events: [],
+            scheduler_status: "pending_scheduler",
+            schema: "user_subscription_scheduler_demo.v1",
+            secret_safe: true,
+            subscription_id: null,
+            subscription_status: "none",
+            upcoming_renewal: {
+              amount: null,
+              billing_interval: null,
+              credit_grant_write: false,
+              currency: null,
+              due_at: null,
+              invoice_status: "placeholder",
+              ledger_write: false,
+              order_status: "not_created",
+              plan_code: null,
+              status: "not_scheduled",
+            },
+          },
+          schema: "user_subscription_payment_overview.v1",
+          secret_safe: true,
+        });
+      }
+
+      if (requestUrl.includes("/user/request-logs")) {
+        return jsonResponse([
+          {
+            completed_at: "2026-06-11T10:01:00Z",
+            created_at: "2026-06-11T10:00:00Z",
+            currency: "USD",
+            final_cost: "0.001",
+            http_status: 200,
+            id: "req-user-1",
+            input_tokens: 100,
+            output_tokens: 40,
+            partial_sent: false,
+            redaction_status: "redacted",
+            requested_model: "gpt-4o-mini",
+            status: "succeeded",
+            tenant_id: "tenant-1",
+            trace_id: null,
+          },
+        ]);
+      }
+
+      if (requestUrl.includes("/auth/email-verification/request")) {
+        return jsonResponse({
+          account_disclosure: "none",
+          code: "email_verification_config_needed",
+          email_delivery: "config_needed",
+          message: "Email verification is pending because user mail delivery is not configured.",
+          next_action: "Configure the user mail sender and SMTP adapter, then request verification again.",
+          secret_safe: true,
+          status: "pending",
+        });
+      }
+
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(
+      <UserPortalDashboard
+        onLogout={vi.fn()}
+        session={{
+          email: "user@example.com",
+          expiresAt: "2026-06-11T12:00:00Z",
+          name: "用户",
+          projectId: "project-1",
+          projectRole: "member",
+          tenantId: "tenant-1",
+          userId: "user-1",
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { level: 2, name: "额度" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "开发者访问" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "API 控制台" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "账号安全" })).toBeInTheDocument();
+    expect(await screen.findByText("已有可路由模型")).toBeInTheDocument();
+    expect(await screen.findByText("余额足够")).toBeInTheDocument();
+    expect(await screen.findByText("0.000288 USD")).toBeInTheDocument();
+    expect(screen.getByText(/最终费用以请求日志和 ledger 为准/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("控制台模型"), "price-missing-model");
+    expect((await screen.findAllByText("Price Missing Model")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("config-needed").length).toBeGreaterThan(0);
+    expect(screen.getByText(/缺少 active price version/)).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("控制台模型"), "gpt-4o-mini");
+    await user.type(screen.getByLabelText("按 request id 或 trace id 搜索请求"), "req-user-1");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/user/request-logs?limit=20&request_id=req-user-1"))).toBe(true),
+    );
+    await user.click(screen.getByRole("button", { name: "清除" }));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls
+          .map(([url]) => String(url))
+          .filter((url) => url === "/api/control-plane/user/request-logs?limit=20").length,
+      ).toBeGreaterThan(1),
+    );
+    await user.click(screen.getByRole("button", { name: "发送验证邮件" }));
+    expect(await screen.findByText("email_verification_config_needed")).toBeInTheDocument();
+    expect(await screen.findByText("config_needed")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("兑换码"), "VOUCHER-RAW-NEVER");
+    await user.click(screen.getByRole("button", { name: "兑换" }));
+    expect(await screen.findByText("兑换成功")).toBeInTheDocument();
+    expect(screen.getByText("25.00 USD")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-06T00:00:00Z")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("VOUCHER-RAW-NEVER");
+    await user.type(screen.getByLabelText("API 密钥"), "test-user-key");
+    const runButton = screen.getByRole("button", { name: "运行测试" });
+    await waitFor(() => expect(runButton).not.toBeDisabled());
+    await user.click(runButton);
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/v1/chat/completions"))).toBe(true),
+    );
+    expect(await screen.findByText("上游返回了已隐藏的敏感错误详情。")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(SK_PREFIX);
+    expect(document.body.textContent).not.toContain(VK_UNDERSCORE_PREFIX);
+    expect(document.body.textContent).not.toContain("show-this-never");
+    expect(document.body.textContent).not.toContain("raw-body-never");
+    expect(document.body.textContent).not.toContain("user-console-provider-hidden");
+    fireEvent.change(screen.getByLabelText("控制台调用模式"), { target: { value: "stream" } });
+    await user.click(screen.getByRole("button", { name: "运行测试" }));
+    await screen.findByText("req-user-stream-1");
+    expect(screen.getAllByText("stream").length).toBeGreaterThan(1);
+    expect(await screen.findByText("req-user-stream-1")).toBeInTheDocument();
+    expect(await screen.findByText(/chunk 1: hello/)).toBeInTheDocument();
+    expect(await screen.findByText(/chunk 2: world/)).toBeInTheDocument();
+    expect(await screen.findByText("stop")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("test-user-key");
+    expect(document.body.textContent).not.toContain("raw-body-never");
+  });
+
   it("restores an existing admin cookie session on mount without showing the login form", async () => {
     const fetchMock = stubHealthyFetch(["ops"], { restoreSession: true });
 
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Restoring session" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "正在恢复会话" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "登录" }),
+    ).not.toBeInTheDocument();
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("/api/control-plane/admin/auth/me");
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain("/api/control-plane/admin/auth/login");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "仪表盘" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /仪表盘/ }),
+    ).toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+      "/api/control-plane/admin/auth/me",
+    );
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain(
+      "/api/control-plane/admin/auth/login",
+    );
   });
 
   it("falls back to the login page when session restore fails without exposing secrets", async () => {
@@ -2473,12 +3520,22 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Restoring session" })).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { level: 1, name: "Admin sign in" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 1, name: "Gateway Control" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "正在恢复会话" }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "管理员登录" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 1, name: "仪表盘" }),
+    ).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("session-restore-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("session-restore-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("session-restore-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("session-restore-hidden"),
+    );
   });
 
   it("clears restored session state on logout", async () => {
@@ -2487,15 +3544,23 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
-    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "仪表盘" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("2 条请求 / 1h")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "退出登录" }));
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Admin sign in" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 1, name: "Gateway Control" })).not.toBeInTheDocument();
-    expect(screen.queryByText("2 requests / 1h")).not.toBeInTheDocument();
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain("/api/control-plane/admin/auth/logout");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "管理员登录" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 1, name: "仪表盘" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("2 条请求 / 1h")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+      "/api/control-plane/admin/auth/logout",
+    );
   });
 
   it("waits for local sign-in before probing services and keeps refresh available", async () => {
@@ -2504,28 +3569,231 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.getByRole("heading", { level: 1, name: "Restoring session" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "正在恢复会话" }),
+    ).toBeInTheDocument();
 
-    await user.type(await screen.findByLabelText("Email"), "operator@example.com");
-    await user.type(screen.getByLabelText("Password"), "local-password");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(
+      await screen.findByLabelText("邮箱"),
+      "operator@example.com",
+    );
+    await user.type(screen.getByLabelText("密码"), "local-password");
+    await user.click(screen.getByRole("button", { name: "登录" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(7));
     expect(
-      fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url === "/api/control-plane/admin/auth/me"),
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url === "/api/control-plane/admin/auth/me"),
     ).toHaveLength(2);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
       "/api/control-plane/admin/providers/health-summary",
     );
 
-    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await user.click(screen.getByRole("button", { name: "刷新" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(11));
     expect(
       fetchMock.mock.calls
         .map(([url]) => String(url))
-        .filter((url) => url === "/api/control-plane/admin/providers/health-summary"),
-    ).toHaveLength(2);
+        .filter(
+          (url) => url === "/api/control-plane/admin/providers/health-summary",
+        ),
+      ).toHaveLength(2);
+  });
+
+  it("shows read-only import wizard dry-run commands without backend requests", async () => {
+    const fetchMock = stubHealthyFetch(["ops"]);
+
+    const user = await renderSignedInApp();
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/admin/providers/health-summary"),
+        ),
+      ).toBe(true),
+    );
+    const callsBeforeImport = fetchMock.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: /导入向导/ }));
+
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "New API apply-plan",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("One API apply-plan")).toBeInTheDocument();
+    expect(screen.getByText("Sub2API apply-plan")).toBeInTheDocument();
+    expect(screen.getByText(/import-newapi-dryrun\.ps1/)).toBeInTheDocument();
+    expect(screen.getByText(/import-oneapi-dryrun\.ps1/)).toBeInTheDocument();
+    expect(screen.getByText(/import-sub2api-dryrun\.ps1/)).toBeInTheDocument();
+    expect(screen.getByText(/import-newapi-oneapi-generic-bridge\.ps1/)).toBeInTheDocument();
+    expect(screen.getByText(/import-sub2api-identity-billing-plan\.ps1/)).toBeInTheDocument();
+    expect(screen.getByText("Secret-safe 规则")).toBeInTheDocument();
+    expect(screen.getByText("下一步 handoff")).toBeInTheDocument();
+    expect(screen.getByText(/apply\/live 脚本不在本页运行/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("artifact JSON"), {
+      target: {
+        value: JSON.stringify({
+          counts: {
+            accounts: 1,
+            api_keys: 1,
+            non_migratable_items: 1,
+          },
+          dry_run: true,
+          importer: "sub2api-source-dryrun",
+          manual_review_items: [
+            {
+              reason: "User profile must be recreated through local registration.",
+              source_id: "user-1",
+              type: "user_profile",
+            },
+          ],
+          migratable_items: [
+            {
+              recommended_path: "Create provider and channel mapping.",
+              source_id: "account-1",
+              type: "provider_channel",
+            },
+          ],
+          next_steps: ["Map accounts into provider/channel/provider-key handoff."],
+          non_migratable_items: [
+            {
+              reason: "Sub2API users are not applied by source dry-run.",
+              source_id: "user-1",
+              type: "user_profile",
+            },
+          ],
+          provider_key_handoffs: [
+            {
+              key_alias: "sub2api-account-main",
+              required_operator_path: "POST /admin/provider-keys",
+            },
+          ],
+        }),
+      },
+    });
+
+    expect(await screen.findByRole("heading", { name: "计数" })).toBeInTheDocument();
+    expect(screen.getByText("sub2api-source-dryrun")).toBeInTheDocument();
+    expect(screen.getByText("accounts")).toBeInTheDocument();
+    expect(screen.getAllByText("1").length).toBeGreaterThan(0);
+    expect(screen.getByText("差异筛选")).toBeInTheDocument();
+    expect(screen.getByText("Sub2API 差异解释")).toBeInTheDocument();
+    expect(screen.getByText("user link / wallet / subscription")).toBeInTheDocument();
+    expect(screen.getByText("渠道 / token / 分组 / 模型映射")).toBeInTheDocument();
+    expect(screen.getByText("apply 前 checklist")).toBeInTheDocument();
+    expect(screen.getByText("handoff 确认")).toBeInTheDocument();
+    expect(screen.getByText("provider_channel")).toBeInTheDocument();
+    expect(screen.getAllByText("user_profile").length).toBeGreaterThan(1);
+    expect(screen.getByText("sub2api-account-main")).toBeInTheDocument();
+    expect(screen.getByText("通过：artifact 标记为 dry-run")).toBeInTheDocument();
+    expect(screen.getByText("通过：未发现 secret-like 字段")).toBeInTheDocument();
+    expect(screen.getByText("通过：不可迁移项已进入人工处理清单")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "密钥交接" }));
+    expect(screen.getByText("sub2api-account-main")).toBeInTheDocument();
+    expect(screen.queryByText("provider_channel")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "人工复核" }));
+    expect(screen.getByText("user_profile")).toBeInTheDocument();
+    expect(screen.queryByText("sub2api-account-main")).not.toBeInTheDocument();
+    expect(screen.getAllByText(/provider\/channel\/provider-key handoff/).length).toBeGreaterThan(1);
+
+    fireEvent.change(screen.getByLabelText("artifact JSON"), {
+      target: {
+        value: JSON.stringify({
+          apply_blocked: false,
+          counts: {
+            planned_creates: 2,
+            planned_skips: 0,
+            source_channel_previews: 1,
+            source_provider_key_handoffs: 1,
+          },
+          dry_run: true,
+          idempotency_manifest: {
+            entries: [
+              {
+                idempotency_key: "import-create-provider",
+              },
+              {
+                idempotency_key: "import-create-channel",
+              },
+            ],
+          },
+          importer: "importer-apply-plan-dryrun",
+          planned_creates: [
+            {
+              action: "create",
+              operation_id: "op-provider",
+              reason: "not_found_in_existing_state",
+              target: {
+                kind: "provider",
+              },
+            },
+            {
+              action: "create",
+              operation_id: "op-channel",
+              reason: "not_found_in_existing_state",
+              target: {
+                kind: "channel",
+              },
+            },
+          ],
+          preflight: {
+            status: "pass",
+          },
+          provider_key_handoff_contract: {
+            raw_material_allowed: false,
+          },
+          provider_key_handoffs: [
+            {
+              key_alias: "sub2api-account-main",
+              required_operator_path: "POST /admin/provider-keys",
+            },
+          ],
+          rollback_snapshot: {
+            entries: [
+              {
+                operation_id: "op-provider",
+              },
+              {
+                operation_id: "op-channel",
+              },
+            ],
+          },
+          source_binding_contract: {
+            bindings: [
+              {
+                channel_present: true,
+                channel_source_id: "sub2api:account:fixture",
+                provider_code: "openai",
+              },
+            ],
+          },
+          sql_executor_plan: {
+            executor_status: "dry_run_sql_plan",
+          },
+          transaction_contract: {
+            transaction_id: "tx-import-fixture",
+          },
+        }),
+      },
+    });
+
+    expect(await screen.findByText("apply-plan")).toBeInTheDocument();
+    expect(screen.getAllByText("pass").length).toBeGreaterThan(1);
+    expect(screen.getByText("provider")).toBeInTheDocument();
+    expect(screen.getByText("channel")).toBeInTheDocument();
+    expect(screen.getByText("source binding")).toBeInTheDocument();
+    expect(screen.getByText("sub2api:account:fixture")).toBeInTheDocument();
+    expect(screen.getByText("rollback entries")).toBeInTheDocument();
+    expect(screen.getByText("idempotency entries")).toBeInTheDocument();
+    expect(screen.getByText("通过：apply-plan preflight 可评审")).toBeInTheDocument();
+    expect(fetchMock.mock.calls).toHaveLength(callsBeforeImport);
   });
 
   it("signs in to the operations shell and renders the health overview", async () => {
@@ -2533,18 +3801,33 @@ describe("App", () => {
 
     await renderSignedInApp();
 
-    expect(screen.getByText("AI Gateway")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Gateway Control" })).toBeInTheDocument();
-    expect(screen.getByText("Routing health")).toBeInTheDocument();
-    expect(screen.getByText("Window success")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByText("50%").length).toBeGreaterThan(0));
-    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
+    expect(screen.getByText("Fubox API")).toBeInTheDocument();
+    expect(screen.getByText("控制台")).toBeInTheDocument();
+    expect(screen.getByText("工作区")).toBeInTheDocument();
+    expect(screen.getAllByText("运营").length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("heading", { level: 1, name: "仪表盘" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("路由健康度")).toBeInTheDocument();
+    expect(screen.getByText("窗口成功率")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByText("50%").length).toBeGreaterThan(0),
+    );
+    expect(await screen.findByText("2 条请求 / 1h")).toBeInTheDocument();
     expect(await screen.findByText("Gateway")).toBeInTheDocument();
+    expect(await screen.findByText("97%")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("9700%");
     expect(document.body.textContent).not.toContain("current_window_state");
-    expect(document.body.textContent).not.toContain("current-window-state-hidden");
+    expect(document.body.textContent).not.toContain(
+      "current-window-state-hidden",
+    );
     expect(document.body.textContent).not.toContain("fp-health-hidden");
-    expect(document.body.textContent).not.toContain("raw health metadata hidden");
-    expect(document.body.textContent).not.toContain(skPlaceholder("health-provider-hidden"));
+    expect(document.body.textContent).not.toContain(
+      "raw health metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("health-provider-hidden"),
+    );
   });
 
   it("applies health summary window and sample controls on manual refresh", async () => {
@@ -2552,43 +3835,53 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Health controls" })).toBeInTheDocument();
-    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
-    await user.selectOptions(screen.getByLabelText("Window"), "15");
-    await user.selectOptions(screen.getByLabelText("Sample limit"), "100");
-    await user.selectOptions(screen.getByLabelText("Scope"), "Provider key");
-    await user.type(screen.getByLabelText("Matrix search"), "openai-main");
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "健康控制" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("2 条请求 / 1h")).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("时间窗口"), "15");
+    await user.selectOptions(screen.getByLabelText("样本上限"), "100");
+    await user.selectOptions(screen.getByLabelText("范围"), "Provider key");
+    await user.type(screen.getByLabelText("矩阵搜索"), "openai-main");
 
     expect(screen.getByText("openai-main")).toBeInTheDocument();
     expect(screen.queryByText("OpenAI")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Refresh summary" }));
+    await user.click(screen.getByRole("button", { name: "刷新汇总" }));
 
     await waitFor(() =>
       expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
         "/api/control-plane/admin/providers/health-summary?window_minutes=15&sample_limit=100",
       ),
     );
-    expect(await screen.findByText("1 requests / 15m")).toBeInTheDocument();
+    expect(await screen.findByText("1 条请求 / 15m")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await user.click(screen.getByRole("button", { name: "刷新" }));
 
-    await waitFor(() => expect(screen.getByText("2 requests / 1h")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("2 条请求 / 1h")).toBeInTheDocument(),
+    );
     expect(
       fetchMock.mock.calls
         .map(([url]) => String(url))
-        .filter((url) => url === "/api/control-plane/admin/providers/health-summary"),
+        .filter(
+          (url) => url === "/api/control-plane/admin/providers/health-summary",
+        ),
     ).toHaveLength(2);
 
-    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    const recoveryButton = await screen.findByRole("button", {
+      name: "请求恢复 openai-main",
+    });
     await user.click(recoveryButton);
 
-    await waitFor(() => expect(recoveryButton).toHaveTextContent("Requested"));
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("已请求"));
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/control-plane/admin/provider-keys/provider-key-1/recovery",
       expect.objectContaining({ method: "POST" }),
     );
-    expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("recovery-response-hidden")),
+    ).not.toBeInTheDocument();
   });
 
   it("auto refreshes the health summary with bounded selected controls", async () => {
@@ -2596,12 +3889,18 @@ describe("App", () => {
 
     await renderSignedInApp();
 
-    expect(await screen.findByText("2 requests / 1h")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Window"), { target: { value: "15" } });
-    fireEvent.change(screen.getByLabelText("Sample limit"), { target: { value: "100" } });
+    expect(await screen.findByText("2 条请求 / 1h")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("时间窗口"), {
+      target: { value: "15" },
+    });
+    fireEvent.change(screen.getByLabelText("样本上限"), {
+      target: { value: "100" },
+    });
 
     vi.useFakeTimers();
-    fireEvent.change(screen.getByLabelText("Auto refresh"), { target: { value: "30" } });
+    fireEvent.change(screen.getByLabelText("自动刷新"), {
+      target: { value: "30" },
+    });
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
@@ -2610,7 +3909,7 @@ describe("App", () => {
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
       "/api/control-plane/admin/providers/health-summary?window_minutes=15&sample_limit=100",
     );
-    expect(screen.getByText("1 requests / 15m")).toBeInTheDocument();
+    expect(screen.getByText("1 条请求 / 15m")).toBeInTheDocument();
   });
 
   it("hides provider key recovery controls without recovery capability", async () => {
@@ -2619,8 +3918,12 @@ describe("App", () => {
     await renderSignedInApp();
 
     expect(await screen.findByText("openai-main")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Request recovery for openai-main" })).not.toBeInTheDocument();
-    expect(screen.getByText("No permission")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: "请求恢复 openai-main",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("无权限")).toBeInTheDocument();
   });
 
   it("shows request log and provider key navigation after sign-in", async () => {
@@ -2628,11 +3931,54 @@ describe("App", () => {
 
     await renderSignedInApp();
 
-    expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Audit Logs/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Provider Keys/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Virtual Keys/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /请求与追踪/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /审计日志/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /计费/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /供应商密钥/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /API 密钥/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders distribution readiness with Chinese operator copy", async () => {
+    stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /分发就绪/ }));
+
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Compact readiness" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("API 分发").length).toBeGreaterThan(0);
+    expect(screen.getByText("操作面板")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /接入供应商/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "检查项" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "证据" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "最近失败请求" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "分发路由" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "用户自助交接" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".status-chip-v2").length).toBeGreaterThan(0);
+    expect(document.querySelector(".status-pill")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /接入供应商/ }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "真实供应商接入向导" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("供应商名称")).toHaveValue("OpenAI");
+    expect(
+      screen.getByRole("button", { name: "创建非密钥配置" }),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).toContain("真实供应商接入计划");
   });
 
   it("trims navigation for viewer capability summary without hiding all sections", async () => {
@@ -2640,12 +3986,22 @@ describe("App", () => {
 
     await renderSignedInApp();
 
-    expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Audit Logs/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Overview/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Provider Keys/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Providers/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /请求与追踪/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /审计日志/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /计费/ })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /仪表盘/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /供应商密钥/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /供应商与通道/ }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("provider.manage")).not.toBeInTheDocument();
   });
 
@@ -2654,11 +4010,66 @@ describe("App", () => {
 
     await renderSignedInApp();
 
-    expect(screen.getByRole("button", { name: /Billing/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Audit Logs/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Request\/Trace/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Providers/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1, name: "Billing / Prices" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /计费/ })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /审计日志/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /请求与追踪/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /供应商与通道/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "计费 / 价格" }),
+    ).toBeInTheDocument();
+  });
+
+  it("defaults provider scoped admins to providers when overview is unavailable", async () => {
+    stubHealthyFetch(["provider"]);
+
+    await renderSignedInApp();
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "供应商与通道" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /供应商与通道/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /计费/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("defaults request scoped admins to requests when overview is unavailable", async () => {
+    stubHealthyFetch(["request"]);
+
+    await renderSignedInApp();
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "请求与追踪" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /请求与追踪/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /供应商与通道/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a safe placeholder when no admin workspace is available", async () => {
+    stubHealthyFetch(["none"]);
+
+    await renderSignedInApp();
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "没有可用管理工作区" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "没有可用区域" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("当前管理员权限没有包含任何控制台区域。")).toBeInTheDocument();
+    expect(screen.queryByText("provider.manage")).not.toBeInTheDocument();
   });
 
   it("keeps ops users on operational provider sections without billing", async () => {
@@ -2666,12 +4077,24 @@ describe("App", () => {
 
     await renderSignedInApp();
 
-    expect(screen.getByRole("button", { name: /Overview/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Request\/Trace/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Audit Logs/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Providers/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Provider Keys/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Billing/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /仪表盘/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /请求与追踪/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /审计日志/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /供应商与通道/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /供应商密钥/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /计费/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("switches navigation sections and requests provider key recovery through the API", async () => {
@@ -2679,15 +4102,24 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Providers/ }));
-    expect(screen.getByRole("heading", { level: 1, name: "Providers" })).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { level: 2, name: "Provider Inventory" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /供应商与通道/ }));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "供应商与通道" }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "供应商库存",
+      }),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Overview/ }));
-    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    await user.click(screen.getByRole("button", { name: /仪表盘/ }));
+    const recoveryButton = await screen.findByRole("button", {
+      name: "请求恢复 openai-main",
+    });
     await user.click(recoveryButton);
 
-    await waitFor(() => expect(recoveryButton).toHaveTextContent("Requested"));
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("已请求"));
     expect(recoveryButton).toBeDisabled();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/control-plane/admin/provider-keys/provider-key-1/recovery",
@@ -2699,7 +4131,46 @@ describe("App", () => {
         method: "POST",
       }),
     );
-    expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("recovery-response-hidden")),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the admin command palette for navigation and safe key prefix jumps", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: "打开全局快速导航" }));
+    expect(screen.getByRole("dialog", { name: "全局快速导航" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "只做导航和安全定位提示；不会执行全局数据搜索，也不会展示 secret、Authorization、prompt 或 raw payload。",
+      ),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("全局搜索或跳转"), "routing");
+    await user.click(screen.getByRole("option", { name: /Routing/ }));
+    expect(screen.getByRole("heading", { level: 1, name: "路由" })).toBeInTheDocument();
+
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(screen.getByLabelText("全局搜索或跳转"), "request:req_1");
+    await user.click(screen.getByRole("option", { name: /跳转到 Request ID/ }));
+    expect(screen.getByRole("heading", { level: 1, name: "请求与追踪" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/admin/request-logs/req_1")),
+      ).toBe(true),
+    );
+
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(screen.getByLabelText("全局搜索或跳转"), "key:vk-main-prefix");
+    await user.click(screen.getByRole("option", { name: /跳转到 API Key Prefix/ }));
+
+    expect(await screen.findByText("安全跳转 focus")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("Prefix vk-main-prefix");
+    expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
+    expect(document.body.textContent).not.toContain("raw payload");
   });
 
   it("shows provider key recovery API failures without exposing secrets", async () => {
@@ -2707,15 +4178,21 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    const recoveryButton = await screen.findByRole("button", {
+      name: "请求恢复 openai-main",
+    });
     await user.click(recoveryButton);
 
-    await waitFor(() => expect(recoveryButton).toHaveTextContent("Retry"));
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("重试"));
     expect(recoveryButton).not.toBeDisabled();
     expect(
-      await screen.findByText("provider key status `auth_failed` cannot be recovered through this endpoint"),
+      await screen.findByText(
+        "provider key status `auth_failed` cannot be recovered through this endpoint",
+      ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(skPlaceholder("recovery-response-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("recovery-response-hidden")),
+    ).not.toBeInTheDocument();
   });
 
   it("redacts secret-bearing provider key recovery errors", async () => {
@@ -2723,13 +4200,17 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    const recoveryButton = await screen.findByRole("button", { name: "Request recovery for openai-main" });
+    const recoveryButton = await screen.findByRole("button", {
+      name: "请求恢复 openai-main",
+    });
     await user.click(recoveryButton);
 
-    await waitFor(() => expect(recoveryButton).toHaveTextContent("Retry"));
+    await waitFor(() => expect(recoveryButton).toHaveTextContent("重试"));
     expect(await screen.findByText("Request failed.")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("recovery-error-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("recovery-error-hidden"),
+    );
     expect(document.body.textContent).not.toContain("fp-recovery-hidden");
     expect(document.body.textContent).not.toContain("current_window_state");
     expect(document.body.textContent).not.toContain("raw metadata");
@@ -2740,88 +4221,270 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
 
     expect(await screen.findByText("req_1")).toBeInTheDocument();
     expect(screen.getByText("gpt-4o-mini")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "View request log req_1" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看请求日志 req_1" }),
+    );
 
-    expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
+    expect(await screen.findByText("供应商尝试")).toBeInTheDocument();
     expect(screen.getByText("provider-1")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Route Trace" })).toBeInTheDocument();
-    const routeTracePanel = screen.getByRole("heading", { level: 2, name: "Route Trace" }).closest("article");
+    expect(
+      screen.getByRole("heading", { level: 2, name: "支持摘要" }),
+    ).toBeInTheDocument();
+    const supportSummaryPanel = screen
+      .getByRole("heading", { level: 2, name: "支持摘要" })
+      .closest("article");
+    expect(supportSummaryPanel).not.toBeNull();
+    expect(
+      within(supportSummaryPanel as HTMLElement).getByText(
+        "请求 succeeded；路由、用量、账本和脱敏信息可供查看。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(supportSummaryPanel as HTMLElement).getByText("channel-1 / 3 个候选"),
+    ).toBeInTheDocument();
+    expect(
+      within(supportSummaryPanel as HTMLElement).getByText("共 1 次 / 失败 0 次"),
+    ).toBeInTheDocument();
+    expect(
+      within(supportSummaryPanel as HTMLElement).getByText("未记录回退"),
+    ).toBeInTheDocument();
+    expect(
+      within(supportSummaryPanel as HTMLElement).getByText("输入 100 / 输出 55"),
+    ).toBeInTheDocument();
+    expect(
+      within(supportSummaryPanel as HTMLElement).getByText("1 条账本记录"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "路由 Trace" }),
+    ).toBeInTheDocument();
+    const routeTracePanel = screen
+      .getByRole("heading", { level: 2, name: "路由 Trace" })
+      .closest("article");
     expect(routeTracePanel).not.toBeNull();
-    expect(within(routeTracePanel as HTMLElement).getByText("channel-1")).toBeInTheDocument();
-    expect(within(routeTracePanel as HTMLElement).getByText("gpt-route-summary-upstream")).toBeInTheDocument();
-    expect(within(routeTracePanel as HTMLElement).getByText("3")).toBeInTheDocument();
-    expect(within(routeTracePanel as HTMLElement).getByText("2")).toBeInTheDocument();
-    expect(within(routeTracePanel as HTMLElement).getByText("ZeroWeight, CoolingDown")).toBeInTheDocument();
-    expect(within(routeTracePanel as HTMLElement).getByText("2144483738")).toBeInTheDocument();
-    expect(within(routeTracePanel as HTMLElement).getByText("Disabled")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Prompt Protection" })).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("channel-1"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("priority_weight"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText(
+        "gpt-route-summary-upstream",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("fallback_allowed"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("none"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("3"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("2"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText(
+        "ZeroWeight, CoolingDown",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("2144483738"),
+    ).toBeInTheDocument();
+    expect(
+      within(routeTracePanel as HTMLElement).getByText("Disabled"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Prompt Protection" }),
+    ).toBeInTheDocument();
     const promptProtectionPanel = screen
       .getByRole("heading", { level: 2, name: "Prompt Protection" })
       .closest("article");
     expect(promptProtectionPanel).not.toBeNull();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("enforce")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getAllByText("reject").length).toBeGreaterThanOrEqual(2);
-    expect(within(promptProtectionPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("authorization_bearer: 1, prompt_injection_phrase: 1")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("regex: 1")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("0")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
-    expect(within(promptProtectionPanel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText("enforce"),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getAllByText("reject")
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "prompt_injection_detected",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "messages, metadata",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "authorization_bearer: 1, prompt_injection_phrase: 1",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText("regex: 1"),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText("0"),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "unavailable: live_request_or_query_blocked",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "not eligible, out of bounds or unavailable",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getAllByText("blocked")
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT,
+      ),
+    ).toBeInTheDocument();
     expect(
       within(promptProtectionPanel as HTMLElement).getByText(
         "gateway_live_proof_blocker, postgres_audit_row_missing, mock_provider_upstream_refusal_missing",
       ),
     ).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("not eligible")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("simulated_replay_refused")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
-    expect(within(promptProtectionPanel as HTMLElement).getByText("raw payload, raw pattern values")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Ledger Entries" })).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "2026-06-04T13:30:00Z",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText("abcdef123456"),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "contract / simulated",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText("not eligible"),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "simulated_replay_refused",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "cannot close live gap",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(promptProtectionPanel as HTMLElement).getByText(
+        "raw payload, raw pattern values",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "账本条目" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("0.0123 USD").length).toBeGreaterThan(0);
     expect(screen.getByText("settle")).toBeInTheDocument();
     expect(screen.getByText("-0.01230000 USD")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Payload Preview" })).toBeInTheDocument();
+    expect(screen.getAllByText("00000000...").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        "config-needed: historical wallet balance snapshots are not stored on ledger_entries",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("order 00000000... / capture 00000000..."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "载荷预览" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("request-body-hash-hidden")).toBeInTheDocument();
     expect(screen.getByText("response-body-hash-hidden")).toBeInTheDocument();
-    expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toEqual([]);
-    expect(screen.queryByText((content) => content.includes('"strategy": "weighted-fallback"'))).not.toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url.includes("/payload")),
+    ).toEqual([]);
+    expect(
+      screen.queryByText((content) =>
+        content.includes('"strategy": "weighted-fallback"'),
+      ),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("weighted-fallback")).not.toBeInTheDocument();
     expect(screen.queryByText("payload-123-hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("raw prompt hidden")).not.toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("raw prompt protection prompt hidden");
-    expect(document.body.textContent).not.toContain("secret-like prompt protection pattern hidden");
+    expect(document.body.textContent).not.toContain(
+      "raw prompt protection prompt hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "secret-like prompt protection pattern hidden",
+    );
     expect(document.body.textContent).not.toContain("custom-reject-rule");
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-rule-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-pattern-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-provider-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-side-effect-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-token-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-protection-hidden"));
-    expect(document.body.textContent).not.toContain("raw prompt protection performance body hidden");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-command-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-header-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-performance-dsn-hidden");
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-proof-report-hidden.json");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-artifact-command-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-artifact-dsn-hidden");
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-artifact-provider-hidden"));
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-rule-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-pattern-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-provider-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-side-effect-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-token-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-protection-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw prompt protection performance body hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-performance-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-performance-header-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-performance-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-proof-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-artifact-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-artifact-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-artifact-provider-hidden"),
+    );
     expect(document.body.textContent).not.toContain("feedfacefeedface");
     expect(screen.queryByText("provider-key-1")).not.toBeInTheDocument();
     expect(screen.queryByText("settle:request-1")).not.toBeInTheDocument();
     expect(screen.queryByText("price-version-1")).not.toBeInTheDocument();
-    expect(screen.queryByText(skPlaceholder("route-hidden"))).not.toBeInTheDocument();
-    expect(screen.queryByText(bearerPlaceholder("route-hidden"))).not.toBeInTheDocument();
-    expect(screen.queryByText(bearerPlaceholder("nested-route-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("route-hidden")),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(bearerPlaceholder("route-hidden")),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(bearerPlaceholder("nested-route-hidden")),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps legacy request logs without prompt protection metadata compatible", async () => {
@@ -2829,11 +4492,15 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
-    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看请求日志 req_1" }),
+    );
 
-    expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 2, name: "Prompt Protection" })).not.toBeInTheDocument();
+    expect(await screen.findByText("供应商尝试")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 2, name: "Prompt Protection" }),
+    ).not.toBeInTheDocument();
   });
 
   it("lazy loads request payload preview only after explicit action and renders safe fields", async () => {
@@ -2841,18 +4508,29 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
-    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看请求日志 req_1" }),
+    );
 
-    const payloadCalls = () => fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"));
+    const payloadCalls = () =>
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url.includes("/payload"));
     expect(payloadCalls()).toEqual([]);
 
-    await user.click(screen.getByRole("button", { name: "Load payload preview for req_1" }));
+    await user.click(
+      screen.getByRole("button", { name: "加载载荷预览 req_1" }),
+    );
 
     await waitFor(() =>
-      expect(payloadCalls()).toEqual(["/api/control-plane/admin/request-logs/req_1/payload"]),
+      expect(payloadCalls()).toEqual([
+        "/api/control-plane/admin/request-logs/req_1/payload",
+      ]),
     );
-    expect(await screen.findByText("Payload preview loaded.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("载荷预览已加载。"),
+    ).toBeInTheDocument();
     expect(screen.getByText("request-preview-hash")).toBeInTheDocument();
     expect(screen.getByText("response-preview-hash")).toBeInTheDocument();
     expect(document.body.textContent).toContain("messages_count");
@@ -2860,10 +4538,130 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("raw lazy payload hidden");
     expect(document.body.textContent).not.toContain("raw response body hidden");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("payload-preview-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("payload-response-hidden"));
-    expect(document.body.textContent).not.toContain("provider-key-secret-hidden");
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("payload-preview-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("payload-response-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "provider-key-secret-hidden",
+    );
     expect(document.body.textContent).not.toContain("raw_headers");
+  });
+
+  it("sends request log troubleshooting filters to the list API", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await screen.findByText("req_1");
+    await user.selectOptions(screen.getByLabelText("状态"), "failed");
+    await user.type(screen.getByLabelText("起始时间"), "2026-06-02T00:00");
+    await user.type(screen.getByLabelText("结束时间"), "2026-06-03T00:00");
+    await user.type(screen.getByLabelText("模型"), "gpt-4o-mini");
+    await user.type(screen.getByLabelText("API Key"), "key-1");
+    await user.type(screen.getByLabelText("Channel ID"), "channel-1");
+    await user.selectOptions(screen.getByLabelText("Stream"), "true");
+    await user.type(screen.getByLabelText("错误类型"), "rate_limit");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/request-logs?api_key_profile_id=key-1&channel_id=channel-1&created_from=2026-06-02T00%3A00&created_to=2026-06-03T00%3A00&error_type=rate_limit&limit=25&model=gpt-4o-mini&status=failed&stream=true&virtual_key_id=key-1",
+      ),
+    );
+  });
+
+  it("exports current request log filters through the backend CSV route", async () => {
+    const fetchMock = stubAdminFetch();
+    const exportedParts: BlobPart[][] = [];
+    const originalBlob = globalThis.Blob;
+    class CapturingBlob extends originalBlob {
+      constructor(parts?: BlobPart[], options?: BlobPropertyBag) {
+        exportedParts.push(parts ?? []);
+        super(parts, options);
+      }
+    }
+    vi.stubGlobal("Blob", CapturingBlob);
+    const createObjectUrl = vi.fn(() => "blob:request-log-export");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    expect(await screen.findByText("req_1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "后端导出" }));
+
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(1);
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+      "/api/control-plane/admin/request-logs/export.csv?limit=25",
+    );
+    const exportedText = exportedParts.flat().map(String).join("\n");
+    expect(exportedText).toContain("request_id");
+    expect(exportedText).toContain("redaction_status");
+    expect(exportedText).toContain("req_1");
+    expect(exportedText).toContain("succeeded");
+    expect(exportedText).not.toContain("raw prompt hidden");
+    expect(exportedText).not.toContain("raw lazy payload hidden");
+    expect(exportedText).not.toContain(AUTH_HEADER_NAME);
+    expect(exportedText).not.toContain(skPlaceholder("prompt-provider-hidden"));
+    expect(exportedText).not.toContain("provider-key-secret-hidden");
+  });
+
+  it("falls back to local secret-safe request log CSV when backend export is unavailable", async () => {
+    stubAdminFetch({ requestLogExportStatus: "notImplemented" });
+    const exportedParts: BlobPart[][] = [];
+    const originalBlob = globalThis.Blob;
+    class CapturingBlob extends originalBlob {
+      constructor(parts?: BlobPart[], options?: BlobPropertyBag) {
+        exportedParts.push(parts ?? []);
+        super(parts, options);
+      }
+    }
+    vi.stubGlobal("Blob", CapturingBlob);
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:request-log-local-export"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    expect(await screen.findByText("req_1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "后端导出" }));
+
+    expect(await screen.findByText(/已回退到本地安全 CSV/)).toBeInTheDocument();
+    const exportedText = exportedParts.flat().map(String).join("\n");
+    expect(exportedText).toContain("request_id");
+    expect(exportedText).toContain("requested_model");
+    expect(exportedText).toContain("redaction_status");
+    expect(exportedText).toContain("req_1");
+    expect(exportedText).toContain("gpt-4o-mini");
+    expect(exportedText).not.toContain("provider_key_id");
+    expect(exportedText).not.toContain("raw prompt hidden");
+    expect(exportedText).not.toContain("raw lazy payload hidden");
+    expect(exportedText).not.toContain(AUTH_HEADER_NAME);
+    expect(exportedText).not.toContain(skPlaceholder("request-export-hidden"));
+    expect(exportedText).not.toContain(skPlaceholder("prompt-provider-hidden"));
+    expect(exportedText).not.toContain("provider-key-secret-hidden");
   });
 
   it("shows payload preview permission failures without exposing response secrets", async () => {
@@ -2871,34 +4669,64 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
-    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
-    await user.click(screen.getByRole("button", { name: "Load payload preview for req_1" }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看请求日志 req_1" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "加载载荷预览 req_1" }),
+    );
 
     await waitFor(() =>
-      expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toHaveLength(1),
+      expect(
+        fetchMock.mock.calls
+          .map(([url]) => String(url))
+          .filter((url) => url.includes("/payload")),
+      ).toHaveLength(1),
     );
-    expect(await screen.findByText("You do not have permission to load payload previews.")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "你没有权限加载载荷预览。",
+      ),
+    ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("payload-forbidden-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("payload-forbidden-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("payload-forbidden-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("payload-forbidden-hidden"),
+    );
   });
 
   it("shows payload preview unimplemented state without exposing response secrets", async () => {
-    const fetchMock = stubAdminFetch({ payloadPreviewStatus: "notImplemented" });
+    const fetchMock = stubAdminFetch({
+      payloadPreviewStatus: "notImplemented",
+    });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
-    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
-    await user.click(screen.getByRole("button", { name: "Load payload preview for req_1" }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看请求日志 req_1" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "加载载荷预览 req_1" }),
+    );
 
     await waitFor(() =>
-      expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toHaveLength(1),
+      expect(
+        fetchMock.mock.calls
+          .map(([url]) => String(url))
+          .filter((url) => url.includes("/payload")),
+      ).toHaveLength(1),
     );
-    expect(await screen.findByText("Payload preview API is not implemented yet.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("载荷预览 API 尚未实现。"),
+    ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("payload-not-implemented-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("payload-not-implemented-hidden"),
+    );
   });
 
   it("keeps payload preview action disabled when no payload preview was stored", async () => {
@@ -2906,14 +4734,24 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
-    await user.click(await screen.findByRole("button", { name: "View request log req_1" }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看请求日志 req_1" }),
+    );
 
-    const loadButton = screen.getByRole("button", { name: "Load payload preview for req_1" });
+    const loadButton = screen.getByRole("button", {
+      name: "加载载荷预览 req_1",
+    });
     expect(loadButton).toBeDisabled();
-    expect(screen.getByText("No payload preview was stored for this request.")).toBeInTheDocument();
+    expect(
+      screen.getByText("此请求未存储载荷预览。"),
+    ).toBeInTheDocument();
     await user.click(loadButton);
-    expect(fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes("/payload"))).toEqual([]);
+    expect(
+      fetchMock.mock.calls
+        .map(([url]) => String(url))
+        .filter((url) => url.includes("/payload")),
+    ).toEqual([]);
   });
 
   it("queries trace summary and renders safe trace request rows", async () => {
@@ -2921,21 +4759,25 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
     await user.type(await screen.findByLabelText("Trace ID"), "trace-1");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "搜索" }));
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Trace Summary" })).toBeInTheDocument();
-    const metrics = screen.getByLabelText("Trace summary metrics");
-    expect(within(metrics).getByText("Request Count")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Trace 摘要" }),
+    ).toBeInTheDocument();
+    const metrics = screen.getByLabelText("Trace 摘要指标");
+    expect(within(metrics).getByText("请求数")).toBeInTheDocument();
     expect(within(metrics).getByText("2")).toBeInTheDocument();
-    expect(within(metrics).getByText("Errors")).toBeInTheDocument();
+    expect(within(metrics).getByText("错误数")).toBeInTheDocument();
     expect(within(metrics).getByText("300")).toBeInTheDocument();
     expect(within(metrics).getByText("155")).toBeInTheDocument();
-    expect(screen.getByText("Ledger rows")).toBeInTheDocument();
+    expect(screen.getByText("账本行")).toBeInTheDocument();
     expect(screen.getAllByText("settle").length).toBeGreaterThan(0);
     expect(await screen.findByText("req_2")).toBeInTheDocument();
-    expect(document.body.textContent).toContain("provider_auth_failed [redacted]");
+    expect(document.body.textContent).toContain(
+      "provider_auth_failed [redacted]",
+    );
 
     await waitFor(() =>
       expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
@@ -2943,11 +4785,48 @@ describe("App", () => {
       ),
     );
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("requested-model-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("trace-error-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("requested-model-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("trace-error-hidden"),
+    );
     expect(document.body.textContent).not.toContain("raw trace prompt hidden");
-    expect(document.body.textContent).not.toContain("raw trace response hidden");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("trace-route-hidden"));
+    expect(document.body.textContent).not.toContain(
+      "raw trace response hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("trace-route-hidden"),
+    );
+  });
+
+  it("merges trace summary into the request detail drawer", async () => {
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看请求日志 req_1" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "Trace 失败原因" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Trace trace-1 / 2 个请求。")).toBeInTheDocument();
+    expect(screen.getByText("1 / 2")).toBeInTheDocument();
+    expect(document.body.textContent).toContain(
+      "provider_auth_failed [redacted]",
+    );
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/traces/trace-1?limit=25",
+      ),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("trace-route-hidden"),
+    );
+    expect(document.body.textContent).not.toContain("raw trace prompt hidden");
   });
 
   it("renders audit logs with filters and secret-safe snapshots", async () => {
@@ -2955,87 +4834,132 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
+    await user.click(screen.getByRole("button", { name: /审计日志/ }));
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Audit Logs" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "审计日志" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("audit-1")).toBeInTheDocument();
     expect(screen.getByText("provider_key.update")).toBeInTheDocument();
-    expect(screen.getByText("provider_key")).toBeInTheDocument();
+    expect(document.body.textContent).toContain("provider_key");
+    expect(screen.getByText("not provided")).toBeInTheDocument();
+    expect(screen.getByText("manual_disabled")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "View audit log audit-1" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看审计日志 audit-1" }),
+    );
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Audit Detail" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Before Snapshot" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "After Snapshot" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Metadata" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Prompt Protection" })).toBeInTheDocument();
-    const auditPromptPanel = screen
-      .getByRole("heading", { level: 2, name: "Prompt Protection" })
-      .closest("article");
-    expect(auditPromptPanel).not.toBeNull();
-    expect(within(auditPromptPanel as HTMLElement).getByText("enforce")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getAllByText("reject").length).toBeGreaterThanOrEqual(2);
-    expect(within(auditPromptPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
-    expect(within(auditPromptPanel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
     expect(
-      within(auditPromptPanel as HTMLElement).getByText(
-        "gateway_live_proof_blocker, postgres_audit_row_missing, mock_provider_upstream_refusal_missing",
-      ),
+      await screen.findByRole("heading", { level: 2, name: "Audit detail" }),
     ).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("prompt_injection_detected")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("messages, metadata")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("0")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("unavailable: live_request_or_query_blocked")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(2);
-    expect(within(auditPromptPanel as HTMLElement).getByText("2026-06-04T13:30:00Z")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("abcdef123456")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("contract / simulated")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("not eligible")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("simulated_replay_refused")).toBeInTheDocument();
-    expect(within(auditPromptPanel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Safe metadata summary" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Detail readback" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("audit_log_detail_readback.v1")).toBeInTheDocument();
+    expect(screen.getByText(/actor=true session=true/)).toBeInTheDocument();
+    expect(screen.getByText(/metadata=2, before=2, after=2/)).toBeInTheDocument();
+    expect(screen.getByText("hidden_metadata_fields")).toBeInTheDocument();
     expect(document.body.textContent).toContain("manual_disabled");
-    expect(document.body.textContent).toContain("client-ip-hash");
+    expect(document.body.textContent).not.toContain("client-ip-hash");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("audit-before-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("audit-after-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("audit-before-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("audit-after-hidden"));
-    expect(document.body.textContent).not.toContain("raw before payload hidden");
-    expect(document.body.textContent).not.toContain("raw audit metadata payload hidden");
-    expect(document.body.textContent).not.toContain("raw prompt protection prompt hidden");
-    expect(document.body.textContent).not.toContain("secret-like prompt protection pattern hidden");
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("audit-before-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("audit-after-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("audit-before-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("audit-after-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw before payload hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw audit metadata payload hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw prompt protection prompt hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "secret-like prompt protection pattern hidden",
+    );
     expect(document.body.textContent).not.toContain("custom-reject-rule");
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-rule-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-pattern-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-provider-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-side-effect-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-token-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-protection-hidden"));
-    expect(document.body.textContent).not.toContain("raw prompt protection performance body hidden");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-command-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-performance-header-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-performance-dsn-hidden");
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-proof-report-hidden.json");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-artifact-command-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-artifact-dsn-hidden");
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-artifact-provider-hidden"));
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-handoff-report-hidden.json");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-handoff-command-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-handoff-dsn-hidden");
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-rule-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-pattern-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-provider-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-side-effect-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-token-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-protection-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw prompt protection performance body hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-performance-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-performance-header-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-performance-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-proof-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-artifact-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-artifact-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-artifact-provider-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-handoff-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-handoff-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-handoff-dsn-hidden",
+    );
     expect(document.body.textContent).not.toContain("feedfacefeedface");
     expect(document.body.textContent).not.toContain("prompt_protection");
     expect(document.body.textContent).not.toContain("raw_headers");
     expect(document.body.textContent).not.toContain('"payload"');
 
     await user.type(screen.getByLabelText("Action"), "provider_key.update");
-    await user.type(screen.getByLabelText("Resource"), "provider_key");
-    await user.type(screen.getByLabelText("Actor ID"), "00000000-0000-0000-0000-000000000070");
-    await user.type(screen.getByLabelText("Created From"), "2026-06-03T00:00:00Z");
-    await user.type(screen.getByLabelText("Created To"), "2026-06-03T23:59:59Z");
+    await user.type(screen.getByLabelText("Entity"), "provider_key");
+    await user.type(
+      screen.getByLabelText("Actor"),
+      "00000000-0000-0000-0000-000000000070",
+    );
+    await user.type(
+      screen.getByLabelText("Time from"),
+      "2026-06-03T00:00:00Z",
+    );
+    await user.type(
+      screen.getByLabelText("Time to"),
+      "2026-06-03T23:59:59Z",
+    );
     await user.clear(screen.getByLabelText("Limit"));
     await user.type(screen.getByLabelText("Limit"), "5");
     await user.click(screen.getByRole("button", { name: "Search" }));
@@ -3047,81 +4971,106 @@ describe("App", () => {
     );
   });
 
-  it("renders prompt protection audit live proof readiness without raw artifact material", async () => {
+  it("keeps prompt protection audit proof material hidden in the admin operations view", async () => {
     stubAdminFetch({ promptProtectionProofVariant: "liveEligible" });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
-    await user.click(await screen.findByRole("button", { name: "View audit log audit-1" }));
+    await user.click(screen.getByRole("button", { name: /审计日志/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看审计日志 audit-1" }),
+    );
 
-    const auditPromptPanel = await screen.findByRole("heading", { level: 2, name: "Prompt Protection" });
-    const panel = auditPromptPanel.closest("article");
-    expect(panel).not.toBeNull();
+    expect(
+      await screen.findByRole("heading", {
+      level: 2,
+      name: "Safe metadata summary",
+    }),
+    ).toBeInTheDocument();
 
-    expect(within(panel as HTMLElement).getByText("0")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("total 24 ms / preflight 9 ms / db 15 ms")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("pass")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("none")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getAllByText("eligible").length).toBeGreaterThanOrEqual(2);
-    expect(within(panel as HTMLElement).getByText("not_blocked")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("2026-06-04T14:05:00Z")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("1234567890ab")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("live / live")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("current_live_proof")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("current live proof")).toBeInTheDocument();
-
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-live-proof-report-hidden.json");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-artifact-command-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-live-artifact-dsn-hidden");
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-live-handoff-report-hidden.json");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-handoff-command-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-live-handoff-dsn-hidden");
-    expect(document.body.textContent).not.toContain("postgres://prompt-live-performance-dsn-hidden");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-performance-command-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-live-performance-header-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-live-artifact-provider-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-live-unavailable-hidden"));
+    expect(screen.queryByRole("heading", { level: 2, name: "Prompt Protection" })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("prompt_protection");
+    expect(document.body.textContent).not.toContain("live_proof_report");
+    expect(document.body.textContent).not.toContain(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT);
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-live-proof-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-live-artifact-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-live-artifact-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-live-handoff-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-live-handoff-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-live-handoff-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-live-performance-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-live-performance-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-live-performance-header-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-live-artifact-provider-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-live-unavailable-hidden"),
+    );
     expect(document.body.textContent).not.toContain("deadc0dedeadc0de");
-    expect(document.body.textContent).not.toContain("raw live prompt proof performance body hidden");
+    expect(document.body.textContent).not.toContain(
+      "raw live prompt proof performance body hidden",
+    );
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
   });
 
-  it("renders prompt protection audit failed handoff as not closure eligible", async () => {
+  it("keeps failed prompt proof handoff material hidden in the admin operations view", async () => {
     stubAdminFetch({ promptProtectionProofVariant: "failedRefused" });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
-    await user.click(await screen.findByRole("button", { name: "View audit log audit-1" }));
+    await user.click(screen.getByRole("button", { name: /审计日志/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "查看审计日志 audit-1" }),
+    );
 
-    const auditPromptPanel = await screen.findByRole("heading", { level: 2, name: "Prompt Protection" });
-    const panel = auditPromptPanel.closest("article");
-    expect(panel).not.toBeNull();
+    expect(
+      await screen.findByRole("heading", {
+      level: 2,
+      name: "Safe metadata summary",
+    }),
+    ).toBeInTheDocument();
 
-    expect(within(panel as HTMLElement).getByText("fail")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("latency_envelope_failed, duration_unavailable")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("not eligible, out of bounds or unavailable")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
-    expect(within(panel as HTMLElement).getByText("freshness_or_replay_refused")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("cannot close live gap")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("live / live")).toBeInTheDocument();
-    expect(within(panel as HTMLElement).getByText("1234567890ab")).toBeInTheDocument();
-
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-fail-handoff-report-hidden.json");
-    expect(document.body.textContent).not.toContain("C:\\secret\\prompt-fail-proof-report-hidden.json");
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("prompt-fail-handoff-command-hidden"));
-    expect(document.body.textContent).not.toContain("postgres://prompt-fail-handoff-dsn-hidden");
-    expect(document.body.textContent).not.toContain("postgres://prompt-fail-artifact-dsn-hidden");
-    expect(document.body.textContent).not.toContain(skPlaceholder("prompt-fail-artifact-provider-hidden"));
+    expect(screen.queryByRole("heading", { level: 2, name: "Prompt Protection" })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("prompt_protection");
+    expect(document.body.textContent).not.toContain("live_proof_report");
+    expect(document.body.textContent).not.toContain("freshness_or_replay_refused");
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-fail-handoff-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      "C:\\secret\\prompt-fail-proof-report-hidden.json",
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("prompt-fail-handoff-command-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-fail-handoff-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "postgres://prompt-fail-artifact-dsn-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("prompt-fail-artifact-provider-hidden"),
+    );
     expect(document.body.textContent).not.toContain("facefeedfacefeed");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
   });
@@ -3131,9 +5080,14 @@ describe("App", () => {
       classification: "stale_generated_at_refused",
       forbiddenDsn: "postgres://prompt-stale-generated-dsn-hidden",
       forbiddenHashPrefix: "badc0ffee0ddf00d",
-      forbiddenProvider: skPlaceholder("prompt-stale-generated-provider-hidden"),
-      forbiddenReportPath: "C:\\secret\\prompt-stale-generated-proof-hidden.json",
-      forbiddenToken: bearerPlaceholder("prompt-stale-generated-command-hidden"),
+      forbiddenProvider: skPlaceholder(
+        "prompt-stale-generated-provider-hidden",
+      ),
+      forbiddenReportPath:
+        "C:\\secret\\prompt-stale-generated-proof-hidden.json",
+      forbiddenToken: bearerPlaceholder(
+        "prompt-stale-generated-command-hidden",
+      ),
       readiness: "blocked",
       variant: "staleGeneratedAtRefused" as const,
     },
@@ -3161,39 +5115,84 @@ describe("App", () => {
       classification: "simulated_replay_refused",
       forbiddenDsn: "postgres://prompt-simulated-replay-dsn-hidden",
       forbiddenHashPrefix: "51015eed51015eed",
-      forbiddenProvider: skPlaceholder("prompt-simulated-replay-provider-hidden"),
-      forbiddenReportPath: "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
-      forbiddenToken: bearerPlaceholder("prompt-simulated-replay-command-hidden"),
+      forbiddenProvider: skPlaceholder(
+        "prompt-simulated-replay-provider-hidden",
+      ),
+      forbiddenReportPath:
+        "C:\\secret\\prompt-simulated-replay-proof-hidden.json",
+      forbiddenToken: bearerPlaceholder(
+        "prompt-simulated-replay-command-hidden",
+      ),
       readiness: "blocked",
       variant: "simulatedReplayRefused" as const,
     },
   ])(
     "renders prompt protection proof replay refusal for $classification without raw artifact material",
-    async ({ classification, forbiddenDsn, forbiddenHashPrefix, forbiddenProvider, forbiddenReportPath, forbiddenToken, readiness, variant }) => {
+    async ({
+      classification,
+      forbiddenDsn,
+      forbiddenHashPrefix,
+      forbiddenProvider,
+      forbiddenReportPath,
+      forbiddenToken,
+      readiness,
+      variant,
+    }) => {
       stubAdminFetch({ promptProtectionProofVariant: variant });
 
       const user = await renderSignedInApp();
 
-      await user.click(screen.getByRole("button", { name: /Audit Logs/ }));
-      await user.click(await screen.findByRole("button", { name: "View audit log audit-1" }));
+      await user.click(screen.getByRole("button", { name: /审计日志/ }));
+      await user.click(
+        await screen.findByRole("button", { name: "查看审计日志 audit-1" }),
+      );
 
-      const auditPromptPanel = await screen.findByRole("heading", { level: 2, name: "Prompt Protection" });
+      const auditPromptPanel = await screen.findByRole("heading", {
+        level: 2,
+        name: "Prompt Protection",
+      });
       const panel = auditPromptPanel.closest("article");
       expect(panel).not.toBeNull();
 
       if (readiness === "blocked") {
-        expect(within(panel as HTMLElement).getAllByText("blocked").length).toBeGreaterThanOrEqual(1);
+        expect(
+          within(panel as HTMLElement).getAllByText("blocked").length,
+        ).toBeGreaterThanOrEqual(1);
       } else {
-        expect(within(panel as HTMLElement).getByText(readiness)).toBeInTheDocument();
+        expect(
+          within(panel as HTMLElement).getByText(readiness),
+        ).toBeInTheDocument();
       }
-      expect(within(panel as HTMLElement).getByText(classification)).toBeInTheDocument();
+      expect(
+        within(panel as HTMLElement).getByText(classification),
+      ).toBeInTheDocument();
       expect(within(panel as HTMLElement).getByText("0")).toBeInTheDocument();
-      expect(within(panel as HTMLElement).getByText("live_proof_report")).toBeInTheDocument();
-      expect(within(panel as HTMLElement).getByText("provider_attempts_count, latency_envelope, provenance")).toBeInTheDocument();
-      expect(within(panel as HTMLElement).getByText("provider_attempts=0, latency bounded, duration available, current provenance")).toBeInTheDocument();
-      expect(within(panel as HTMLElement).getByText(PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT)).toBeInTheDocument();
-      expect(within(panel as HTMLElement).getByText(classification.replace("_refused", ""))).toBeInTheDocument();
-      expect(within(panel as HTMLElement).getAllByText("not eligible").length).toBeGreaterThanOrEqual(1);
+      expect(
+        within(panel as HTMLElement).getByText("live_proof_report"),
+      ).toBeInTheDocument();
+      expect(
+        within(panel as HTMLElement).getByText(
+          "provider_attempts_count, latency_envelope, provenance",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(panel as HTMLElement).getByText(
+          "provider_attempts=0, latency bounded, duration available, current provenance",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(panel as HTMLElement).getByText(
+          PROMPT_PROTECTION_CLOSURE_CHECKLIST_TEXT,
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(panel as HTMLElement).getByText(
+          classification.replace("_refused", ""),
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(panel as HTMLElement).getAllByText("not eligible").length,
+      ).toBeGreaterThanOrEqual(1);
 
       expect(document.body.textContent).not.toContain(forbiddenReportPath);
       expect(document.body.textContent).not.toContain(forbiddenToken);
@@ -3280,7 +5279,9 @@ describe("App", () => {
       rawMarker,
     }) => {
       const proofKind = proofMode.endsWith("simulated") ? "simulated" : "live";
-      const proofModeValue = proofMode.startsWith("contract") ? "contract" : "live";
+      const proofModeValue = proofMode.startsWith("contract")
+        ? "contract"
+        : "live";
       const input = {
         action: "reject",
         audit_readiness: {
@@ -3299,7 +5300,11 @@ describe("App", () => {
           command_summary: "live_proof_report",
           current_provenance_required: true,
           duration_available_required: true,
-          evidence_fields: ["provider_attempts_count", "latency_envelope", "provenance"],
+          evidence_fields: [
+            "provider_attempts_count",
+            "latency_envelope",
+            "provenance",
+          ],
           freshness_replay_classification: freshnessReplay,
           latency_envelope_required: true,
           provider_attempts_zero_required: true,
@@ -3333,7 +5338,8 @@ describe("App", () => {
           },
           duration_unavailable_marker: "duration_available=false",
           latency_envelope_closure_eligible: latencyClosureEligible,
-          live_blocker_status: auditReadiness === "blocker" ? "blocked" : "not_blocked",
+          live_blocker_status:
+            auditReadiness === "blocker" ? "blocked" : "not_blocked",
           provider_attempts_zero_required: true,
           raw_headers: {
             [AUTH_HEADER_NAME]: bearerPlaceholder(`${rawMarker}-header`),
@@ -3367,7 +5373,8 @@ describe("App", () => {
       expect(readback).toMatchObject({
         auditReadiness,
         closureGaps,
-        closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+        closureRule:
+          "provider_attempts=0, latency bounded, duration available, current provenance",
         currentCommit: "1234567890ab",
         freshnessReplay,
         proofMode,
@@ -3384,7 +5391,11 @@ describe("App", () => {
         "duration_available",
         "freshness_replay_classification",
       ]);
-      expect(readback?.proofEvidence).toEqual(["provider_attempts_count", "latency_envelope", "provenance"]);
+      expect(readback?.proofEvidence).toEqual([
+        "provider_attempts_count",
+        "latency_envelope",
+        "provenance",
+      ]);
 
       const exported = JSON.stringify(readback);
       expect(exported).not.toContain(rawMarker);
@@ -3419,7 +5430,11 @@ describe("App", () => {
       closureGaps: ["stale_generated_at"],
       durationAvailability: "total 24 ms / preflight 9 ms / db 15 ms",
       expectedClassification: "fail",
-      expectedGaps: ["stale_generated_at", "proof_closure_not_eligible", "freshness_replay_refused"],
+      expectedGaps: [
+        "stale_generated_at",
+        "proof_closure_not_eligible",
+        "freshness_replay_refused",
+      ],
       freshnessReplay: "stale_generated_at_refused",
       latencyEnvelope: "eligible",
       proofClosure: "not eligible",
@@ -3466,7 +5481,10 @@ describe("App", () => {
       closureGaps: ["none"],
       durationAvailability: "unavailable: duration_unavailable",
       expectedClassification: "blocker",
-      expectedGaps: ["latency_envelope_missing_or_ineligible", "duration_unavailable"],
+      expectedGaps: [
+        "latency_envelope_missing_or_ineligible",
+        "duration_unavailable",
+      ],
       freshnessReplay: "current_live_proof",
       latencyEnvelope: "-",
       proofClosure: "eligible",
@@ -3491,7 +5509,11 @@ describe("App", () => {
     {
       auditReadiness: "fail",
       closureEligible: false,
-      closureGaps: ["external_blocker", "provider_attempts_missing", "duration_unavailable"],
+      closureGaps: [
+        "external_blocker",
+        "provider_attempts_missing",
+        "duration_unavailable",
+      ],
       durationAvailability: "unavailable: duration_unavailable",
       expectedClassification: "blocker",
       expectedGaps: [
@@ -3538,14 +5560,19 @@ describe("App", () => {
           "freshness_replay_classification",
         ],
         closureGaps,
-        closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+        closureRule:
+          "provider_attempts=0, latency bounded, duration available, current provenance",
         currentCommit: "1234567890ab",
         durationAvailability,
         freshnessReplay,
         latencyEnvelope,
         omittedMaterial: "raw payload, raw pattern values",
         proofClosure,
-        proofEvidence: ["provider_attempts_count", "latency_envelope", "provenance"],
+        proofEvidence: [
+          "provider_attempts_count",
+          "latency_envelope",
+          "provenance",
+        ],
         proofMode,
         providerAttempts,
         raw_command: `${AUTH_HEADER_NAME}: ${bearerPlaceholder(`${rawMarker}-command`)}`,
@@ -3607,14 +5634,19 @@ describe("App", () => {
           "freshness_replay_classification",
         ],
         closureGaps: ["none"],
-        closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+        closureRule:
+          "provider_attempts=0, latency bounded, duration available, current provenance",
         currentCommit: "1234567890ab",
         durationAvailability: "total available",
         freshnessReplay: "current_live_proof",
         latencyEnvelope: "eligible",
         omittedMaterial: "raw payload, raw pattern values",
         proofClosure: "eligible",
-        proofEvidence: ["provider_attempts_count", "latency_envelope", "provenance"],
+        proofEvidence: [
+          "provider_attempts_count",
+          "latency_envelope",
+          "provenance",
+        ],
         proofMode: "live / live",
         providerAttempts: "0",
         schema: "prompt_protection_evidence_readback_v1",
@@ -3665,22 +5697,73 @@ describe("App", () => {
         admin_api_endpoint: "GET /admin/audit-logs",
         blocker_reason: "none",
         classification: "pass",
+        classification_reason: "none",
         closure_requires: [
           "admin_session_handoff",
           "audit_logs_tab_readable",
-          "prompt_protection_audit_row_present",
+          "runtime_owned_prompt_protection_audit_row_present",
+          "proof_owned_row_not_counted_as_runtime_closure",
           "request_trace_detail_readback_passed",
           "secret_safe_omission",
         ],
         cookie_value_omitted: true,
-        matching_rule: "audit row metadata/before/after contains prompt_protection evidence readback or closure gate",
+        ambiguous_prompt_protection_row_count: 0,
+        failure_reason: "none",
+        freshness: {
+          current_run_marker: "target_request_id_count",
+          generated_at_utc: "2026-06-04T14:05:00.000Z",
+          proof_owned_rows_close_runtime_gap: false,
+          repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
+          stale_or_proof_owned_report_closes_runtime_gap: false,
+        },
+        matching_rule:
+          "matching Audit Logs row must be bound to this live request and contain prompt_protection evidence plus explicit gateway_runtime ownership; proof_owned=true is rejected for runtime closure",
         observed_row_count: 1,
+        ownership_gate: "runtime_owned_required",
         prompt_protection_row_count: 1,
+        proof_owned_row_count: 0,
+        proof_owned_rows_close_runtime_gap: false,
         raw_report_path_omitted: true,
         raw_values_omitted: true,
         requested: true,
+        rerun_command:
+          "set ADMIN_UI_BASE_URL and PROMPT_PROTECTION_ADMIN_SESSION_TOKEN or CONTROL_PLANE_ADMIN_SESSION_TOKEN, then rerun scripts/verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath <safe .tmp json> -BrowserAuditDetailAttempt",
+        runtime_owned_closure_eligible: true,
+        runtime_owned_row_count: 1,
         schema: "prompt_protection_audit_logs_mutation_row_attempt_v1",
+        secret_safe_row_fields: [
+          "id",
+          "created_at",
+          "action",
+          "resource_type",
+          "request_id",
+          "metadata.schema",
+          "metadata.source",
+          "metadata.writer",
+          "metadata.runtime_owned",
+          "metadata.proof_owned",
+          "metadata.provenance.kind",
+          "after_snapshot.promptProtection.schema",
+        ],
+        target_request_id_count: 4,
         token_value_omitted: true,
+        provenance: {
+          accepted_runtime_markers: [
+            "metadata.runtime_owned=true",
+            "metadata.row_owner=gateway_runtime",
+            "metadata.source=gateway_runtime",
+            "metadata.writer=gateway_runtime",
+            "metadata.provenance.kind=runtime",
+          ],
+          current_live_request_bound: true,
+          generated_at_utc: "2026-06-04T14:05:00.000Z",
+          raw_values_omitted: true,
+          rejected_proof_markers: [
+            "metadata.proof_owned=true",
+            "action=prompt_protection.audit_readback",
+          ],
+          required_owner: "gateway_runtime",
+        },
       },
       closure_gate: {
         classification: "pass",
@@ -3770,12 +5853,24 @@ describe("App", () => {
       admin_api_endpoint: "GET /admin/audit-logs",
       blocker_reason: "none",
       classification: "pass",
+      ownership_gate: "runtime_owned_required",
       prompt_protection_row_count: 1,
+      proof_owned_row_count: 0,
+      proof_owned_rows_close_runtime_gap: false,
+      runtime_owned_closure_eligible: true,
+      runtime_owned_row_count: 1,
       schema: "prompt_protection_audit_logs_mutation_row_attempt_v1",
       token_value_omitted: true,
       cookie_value_omitted: true,
       raw_report_path_omitted: true,
     });
+    expect(bridge.audit_logs_mutation_row_attempt.provenance).toMatchObject({
+      current_live_request_bound: true,
+      required_owner: "gateway_runtime",
+    });
+    expect(
+      bridge.audit_logs_mutation_row_attempt.secret_safe_row_fields,
+    ).toContain("metadata.runtime_owned");
 
     const exported = JSON.stringify(gate);
     expect(exported).not.toContain("prompt-bridge");
@@ -3783,6 +5878,112 @@ describe("App", () => {
     expect(exported).not.toContain("postgres://");
     expect(exported).not.toContain(AUTH_HEADER_NAME);
     expect(exported).not.toContain(BEARER_SCHEME);
+  });
+
+  it("refuses proof-owned prompt protection audit rows as runtime-owned closure evidence", () => {
+    const proofOwnedOnlyAttempt = {
+      admin_api_endpoint: "GET /admin/audit-logs",
+      ambiguous_prompt_protection_row_count: 0,
+      blocker_reason: "proof_owned_row_readback_only_runtime_owned_missing",
+      classification: "blocker",
+      classification_reason:
+        "proof_owned_row_readback_only_runtime_owned_missing",
+      closure_requires: [
+        "admin_session_handoff",
+        "audit_logs_tab_readable",
+        "runtime_owned_prompt_protection_audit_row_present",
+        "proof_owned_row_not_counted_as_runtime_closure",
+        "request_trace_detail_readback_passed",
+        "secret_safe_omission",
+      ],
+      cookie_value_omitted: true,
+      failure_reason: "none",
+      freshness: {
+        current_run_marker: "target_request_id_count",
+        generated_at_utc: "2026-06-04T14:06:00.000Z",
+        proof_owned_rows_close_runtime_gap: false,
+        repo_head_commit: "1234567890abcdef1234567890abcdef12345678",
+        stale_or_proof_owned_report_closes_runtime_gap: false,
+      },
+      matching_rule:
+        "matching Audit Logs row must be bound to this live request and contain prompt_protection evidence plus explicit gateway_runtime ownership; proof_owned=true is rejected for runtime closure",
+      observed_row_count: 1,
+      ownership_gate: "runtime_owned_required",
+      prompt_protection_row_count: 1,
+      proof_owned_row_count: 1,
+      proof_owned_rows_close_runtime_gap: false,
+      provenance: {
+        accepted_runtime_markers: [
+          "metadata.runtime_owned=true",
+          "metadata.row_owner=gateway_runtime",
+          "metadata.source=gateway_runtime",
+          "metadata.writer=gateway_runtime",
+          "metadata.provenance.kind=runtime",
+        ],
+        current_live_request_bound: true,
+        generated_at_utc: "2026-06-04T14:06:00.000Z",
+        raw_values_omitted: true,
+        rejected_proof_markers: [
+          "metadata.proof_owned=true",
+          "action=prompt_protection.audit_readback",
+        ],
+        required_owner: "gateway_runtime",
+      },
+      raw_report_path_omitted: true,
+      raw_values_omitted: true,
+      requested: true,
+      rerun_command:
+        "set ADMIN_UI_BASE_URL and PROMPT_PROTECTION_ADMIN_SESSION_TOKEN or CONTROL_PLANE_ADMIN_SESSION_TOKEN, then rerun scripts/verify_prompt_protection_postgres_proof.ps1 -Live -EvidenceReportPath <safe .tmp json> -BrowserAuditDetailAttempt",
+      runtime_owned_closure_eligible: false,
+      runtime_owned_row_count: 0,
+      schema: "prompt_protection_audit_logs_mutation_row_attempt_v1",
+      secret_safe_row_fields: [
+        "id",
+        "created_at",
+        "action",
+        "resource_type",
+        "request_id",
+        "metadata.schema",
+        "metadata.source",
+        "metadata.writer",
+        "metadata.runtime_owned",
+        "metadata.proof_owned",
+        "metadata.provenance.kind",
+        "after_snapshot.promptProtection.schema",
+      ],
+      target_request_id_count: 1,
+      token_value_omitted: true,
+    };
+
+    expect(proofOwnedOnlyAttempt).toMatchObject({
+      blocker_reason: "proof_owned_row_readback_only_runtime_owned_missing",
+      classification: "blocker",
+      ownership_gate: "runtime_owned_required",
+      proof_owned_row_count: 1,
+      proof_owned_rows_close_runtime_gap: false,
+      runtime_owned_closure_eligible: false,
+      runtime_owned_row_count: 0,
+      schema: "prompt_protection_audit_logs_mutation_row_attempt_v1",
+    });
+    expect(proofOwnedOnlyAttempt.provenance.rejected_proof_markers).toContain(
+      "metadata.proof_owned=true",
+    );
+    expect(proofOwnedOnlyAttempt.secret_safe_row_fields).toEqual(
+      expect.arrayContaining([
+        "metadata.runtime_owned",
+        "metadata.proof_owned",
+        "metadata.provenance.kind",
+      ]),
+    );
+
+    const exported = JSON.stringify(proofOwnedOnlyAttempt);
+    expect(exported).not.toContain("prompt-proof-owned-token-hidden");
+    expect(exported).not.toContain("C:\\secret");
+    expect(exported).not.toContain("postgres://");
+    expect(exported).not.toContain(AUTH_HEADER_NAME);
+    expect(exported).not.toContain(BEARER_SCHEME);
+    expect(exported).not.toContain(SK_PREFIX);
+    expect(exported).not.toContain("raw prompt");
   });
 
   it("imports a current live prompt protection proof report into the audit closure gate", () => {
@@ -3801,14 +6002,19 @@ describe("App", () => {
             "freshness_replay_classification",
           ],
           closureGaps: ["none"],
-          closureRule: "provider_attempts=0, latency bounded, duration available, current provenance",
+          closureRule:
+            "provider_attempts=0, latency bounded, duration available, current provenance",
           currentCommit: "1234567890ab",
           durationAvailability: "total available",
           freshnessReplay: "current_live_proof",
           latencyEnvelope: "eligible",
           omittedMaterial: "raw payload, raw pattern values",
           proofClosure: "eligible",
-          proofEvidence: ["provider_attempts_count", "latency_envelope", "provenance"],
+          proofEvidence: [
+            "provider_attempts_count",
+            "latency_envelope",
+            "provenance",
+          ],
           proofMode: "live / live",
           providerAttempts: "0",
           schema: "prompt_protection_evidence_readback_v1",
@@ -3854,7 +6060,9 @@ describe("App", () => {
       has_resolved_provider: false,
       provider_attempts_count: 0,
     });
-    expect(endpoint.provider_side_effects.route_policy_version).toBe("policy-v1");
+    expect(endpoint.provider_side_effects.route_policy_version).toBe(
+      "policy-v1",
+    );
 
     const gate = promptProtectionAuditClosureGate(liveReport);
     expect(gate).toMatchObject({
@@ -3883,28 +6091,41 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Routing/ }));
-    await user.type(await screen.findByLabelText("Project ID"), "project-1");
-    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
-    await user.type(screen.getByLabelText("Requested model"), "gpt-visible");
-    await user.clear(screen.getByLabelText("Seed"));
-    await user.type(screen.getByLabelText("Seed"), "42");
+    await user.click(screen.getByRole("button", { name: /路由/ }));
+    await user.type(await screen.findByLabelText("项目 ID"), "project-1");
+    await user.type(screen.getByLabelText("配置 ID"), "profile-1");
+    await user.type(screen.getByLabelText("请求模型"), "gpt-visible");
+    await user.clear(screen.getByLabelText("随机种子"));
+    await user.type(screen.getByLabelText("随机种子"), "42");
     await user.type(screen.getByLabelText("Trace ID"), "trace-1");
-    await user.type(screen.getByLabelText("Previous successful channel ID"), "channel-1");
-    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await user.type(
+      screen.getByLabelText("上次成功渠道 ID"),
+      "channel-1",
+    );
+    await user.click(screen.getByRole("button", { name: "运行 dry-run" }));
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Selection" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Selected Candidate" })).toBeInTheDocument();
-    expect(screen.getAllByText("primary channel").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Provider A").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Fallback allowed").length).toBeGreaterThan(0);
-    expect(screen.getByText("Fallback blocked")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "选择结果" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "选中候选项" }),
+    ).toBeInTheDocument();
+    expect((await screen.findAllByText("primary channel")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Provider A")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("允许回退").length).toBeGreaterThan(0);
+    expect(screen.getByText("阻止回退")).toBeInTheDocument();
     expect(screen.getAllByText("profile denied").length).toBeGreaterThan(0);
-    expect(screen.getByText("Route Snapshot Summary")).toBeInTheDocument();
-    expect(screen.getByText("Request Override Summary")).toBeInTheDocument();
-    expect(screen.getAllByText("profile_ip_allowlist").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("203.0.113.0/24, 2001:db8::/64").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("payload-policy-override").length).toBeGreaterThan(0);
+    expect(screen.getByText("路由快照摘要")).toBeInTheDocument();
+    expect(screen.getByText("请求覆盖摘要")).toBeInTheDocument();
+    expect(screen.getAllByText("profile_ip_allowlist").length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getAllByText("203.0.113.0/24, 2001:db8::/64").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("payload-policy-override").length,
+    ).toBeGreaterThan(0);
 
     const dryRunCall = fetchMock.mock.calls.find(([url]) =>
       String(url).includes("/admin/model-associations/dry-run"),
@@ -3918,16 +6139,48 @@ describe("App", () => {
       seed: 42,
       trace_id: "trace-1",
     });
-    expect(screen.queryByText((content) => content.includes(skPlaceholder("route-dry-hidden")))).not.toBeInTheDocument();
-    expect(screen.queryByText((content) => content.includes(bearerPlaceholder("route-dry-hidden")))).not.toBeInTheDocument();
-    expect(screen.queryByText((content) => content.includes(bearerPlaceholder("nested-route-dry-hidden")))).not.toBeInTheDocument();
-    expect(screen.queryByText((content) => content.includes(skPlaceholder("selection-hidden")))).not.toBeInTheDocument();
-    expect(screen.queryByText((content) => content.includes(skPlaceholder("candidate-hidden")))).not.toBeInTheDocument();
-    expect(screen.queryByText((content) => content.includes(bearerPlaceholder("request-override-hidden")))).not.toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("raw dry-run payload hidden");
-    expect(document.body.textContent).not.toContain("raw dry-run snapshot hidden");
-    expect(document.body.textContent).not.toContain("raw request override payload hidden");
-    expect(document.body.textContent).not.toContain("raw snapshot override payload hidden");
+    expect(
+      screen.queryByText((content) =>
+        content.includes(skPlaceholder("route-dry-hidden")),
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((content) =>
+        content.includes(bearerPlaceholder("route-dry-hidden")),
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((content) =>
+        content.includes(bearerPlaceholder("nested-route-dry-hidden")),
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((content) =>
+        content.includes(skPlaceholder("selection-hidden")),
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((content) =>
+        content.includes(skPlaceholder("candidate-hidden")),
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText((content) =>
+        content.includes(bearerPlaceholder("request-override-hidden")),
+      ),
+    ).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(
+      "raw dry-run payload hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw dry-run snapshot hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw request override payload hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw snapshot override payload hidden",
+    );
   });
 
   it("runs routing dry-run with a canonical model key selector", async () => {
@@ -3935,14 +6188,21 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Routing/ }));
-    await user.type(await screen.findByLabelText("Project ID"), "project-1");
-    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
-    await user.type(screen.getByLabelText("Canonical model key"), "gpt-visible");
-    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await user.click(screen.getByRole("button", { name: /路由/ }));
+    await user.type(await screen.findByLabelText("项目 ID"), "project-1");
+    await user.type(screen.getByLabelText("配置 ID"), "profile-1");
+    await user.type(
+      screen.getByLabelText("规范模型 key"),
+      "gpt-visible",
+    );
+    await user.click(screen.getByRole("button", { name: "运行 dry-run" }));
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Selection" })).toBeInTheDocument();
-    expect(screen.getAllByText((content) => content.includes("gpt-visible")).length).toBeGreaterThan(0);
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "选择结果" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText((content) => content.includes("gpt-visible")).length,
+    ).toBeGreaterThan(0);
 
     const dryRunCall = fetchMock.mock.calls.find(([url]) =>
       String(url).includes("/admin/model-associations/dry-run"),
@@ -3959,16 +6219,20 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Routing/ }));
-    await user.type(await screen.findByLabelText("Project ID"), "project-1");
-    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
-    await user.type(screen.getByLabelText("Requested model"), "secret-error");
-    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await user.click(screen.getByRole("button", { name: /路由/ }));
+    await user.type(await screen.findByLabelText("项目 ID"), "project-1");
+    await user.type(screen.getByLabelText("配置 ID"), "profile-1");
+    await user.type(screen.getByLabelText("请求模型"), "secret-error");
+    await user.click(screen.getByRole("button", { name: "运行 dry-run" }));
 
     expect(await screen.findByText("Request failed.")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("dry-run-secret"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("dry-run-secret"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("dry-run-secret"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("dry-run-secret"),
+    );
   });
 
   it("renders billing price versions, ledger overview, and reconciliation without secret material", async () => {
@@ -3976,44 +6240,83 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Billing / Prices" })).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { level: 2, name: "Price Versions" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "计费 / 价格",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "价格版本" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("2026-06")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "View price version 2026-06" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看价格版本 2026-06" }),
+    );
 
-    expect(screen.getByRole("heading", { level: 2, name: "Pricing Rules" })).toBeInTheDocument();
-    expect(screen.queryByText(skPlaceholder("price-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "计费规则" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("price-hidden")),
+    ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("tab", { name: "账本概览" }));
 
     expect(await screen.findByText("-0.01230000")).toBeInTheDocument();
     expect(screen.getByText("USD -0.0123")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "View ledger entry ledger-entry-1" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看账本条目 ledger-entry-1" }),
+    );
 
-    expect(screen.getByRole("heading", { level: 2, name: "Usage Snapshot" })).toBeInTheDocument();
-    expect(screen.queryByText(skPlaceholder("ledger-hidden"))).not.toBeInTheDocument();
-    expect(screen.queryByText(bearerPlaceholder("ledger-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "用量快照" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("ledger-hidden")),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(bearerPlaceholder("ledger-hidden")),
+    ).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("settle:request-1");
 
-    await user.click(screen.getByRole("tab", { name: "Reconciliation" }));
+    await user.click(screen.getByRole("tab", { name: "对账" }));
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Reconciliation" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "对账" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("1.25000000")).toBeInTheDocument();
     expect(screen.getByText("missing ledger")).toBeInTheDocument();
     expect(screen.getByText("recon-req-1")).toBeInTheDocument();
     expect(screen.getByText("USD 1.00000000")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Summary JSON" })).toBeInTheDocument();
-    expect(document.body.textContent).not.toContain(skUnderscorePlaceholder("reconcile_model_hidden"));
-    expect(document.body.textContent).not.toContain(githubPatPlaceholder("reconcile_trace_hidden"));
-    expect(document.body.textContent).not.toContain(authorizationBearerPlaceholder("reconcile-upstream-hidden"));
-    expect(document.body.textContent).not.toContain("raw reconciliation payload hidden");
-    expect(document.body.textContent).not.toContain("raw reconciliation export hidden");
-    expect(document.body.textContent).not.toContain(skPlaceholder("reconcile-policy-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("reconcile-summary-hidden"));
+    expect(
+      screen.getByRole("heading", { level: 2, name: "摘要 JSON" }),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(
+      skUnderscorePlaceholder("reconcile_model_hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      githubPatPlaceholder("reconcile_trace_hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      authorizationBearerPlaceholder("reconcile-upstream-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw reconciliation payload hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw reconciliation export hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("reconcile-policy-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("reconcile-summary-hidden"),
+    );
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(document.body.textContent).not.toContain("raw_policy_snapshot");
     expect(document.body.textContent).not.toContain("raw_export");
@@ -4021,20 +6324,158 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain('"payload"');
     expect(document.body.textContent).not.toContain('"body"');
 
-    await user.type(screen.getByLabelText("Day"), "2026-06-02");
-    await user.clear(screen.getByLabelText("Limit"));
-    await user.type(screen.getByLabelText("Limit"), "5");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.type(screen.getByLabelText("日期"), "2026-06-02");
+    await user.clear(screen.getByLabelText("限制"));
+    await user.type(screen.getByLabelText("限制"), "5");
+    await user.type(
+      screen.getByLabelText("Request ID"),
+      "00000000-0000-0000-0000-000000000123",
+    );
+    await user.click(screen.getByRole("button", { name: "搜索" }));
 
     await waitFor(() =>
       expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
-        "/api/control-plane/admin/billing/reconciliation?day=2026-06-02&limit=5",
+        "/api/control-plane/admin/billing/reconciliation?day=2026-06-02&limit=5&request_id=00000000-0000-0000-0000-000000000123",
+      ),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "打开请求详情 recon-req-1" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "请求与追踪" }),
+    ).toBeInTheDocument();
+    expect((await screen.findAllByText("recon-req-1")).length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+        "/api/control-plane/admin/request-logs/recon-req-1",
       ),
     );
   });
 
+  it("submits voucher batches without rendering raw voucher codes", async () => {
+    const fetchMock = stubAdminFetch();
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(await screen.findByRole("tab", { name: "代金券" }));
+    await user.click(screen.getByRole("button", { name: "发放用户额度" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "发放用户额度对话框",
+    });
+    await user.click(within(dialog).getByRole("tab", { name: "批量" }));
+
+    fireEvent.change(within(dialog).getByLabelText("Wallet ID"), {
+      target: { value: "00000000-0000-0000-0000-000000000099" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("批次幂等键"), {
+      target: { value: "batch-test-1" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("代金券码列表"), {
+      target: { value: "BATCH-SECRET-001\nBATCH-SECRET-002,custom-batch-key-2" },
+    });
+
+    await user.click(within(dialog).getByRole("button", { name: "批量发放" }));
+
+    expect(await screen.findByRole("heading", { name: "批量发放结果" })).toBeInTheDocument();
+    expect(screen.getByText(/共 2 条/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("BATCH-SECRET-001");
+    expect(document.body.textContent).not.toContain("custom-batch-key-2");
+
+    const batchCall = fetchMock.mock.calls.find(([url, init]) => {
+      return (
+        String(url).includes("/admin/voucher-issuance-batches") &&
+        init?.method === "POST"
+      );
+    });
+    expect(batchCall).toBeTruthy();
+    expect(JSON.parse(String(batchCall?.[1]?.body))).toMatchObject({
+      batch_idempotency_key: "batch-test-1",
+      defaults: {
+        amount: "5.00000000",
+        currency: "USD",
+        tenant_id: "00000000-0000-0000-0000-000000000001",
+        wallet_id: "00000000-0000-0000-0000-000000000099",
+      },
+      items: [
+        {
+          idempotency_key: "batch-test-1:1",
+          raw_voucher_code: "BATCH-SECRET-001",
+        },
+        {
+          idempotency_key: "custom-batch-key-2",
+          raw_voucher_code: "BATCH-SECRET-002",
+        },
+      ],
+    });
+  });
+
+  it("lists and revokes issued vouchers without rendering raw voucher codes", async () => {
+    const fetchMock = stubAdminFetch();
+    const user = await renderSignedInApp();
+    const exportedParts: BlobPart[][] = [];
+    const originalBlob = globalThis.Blob;
+    class CapturingBlob extends originalBlob {
+      constructor(parts?: BlobPart[], options?: BlobPropertyBag) {
+        exportedParts.push(parts ?? []);
+        super(parts, options);
+      }
+    }
+    vi.stubGlobal("Blob", CapturingBlob);
+    const createObjectUrl = vi.fn(() => "blob:voucher-export");
+    const revokeObjectUrl = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    });
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(await screen.findByRole("tab", { name: "代金券" }));
+
+    expect(await screen.findByRole("heading", { name: "已发放代金券" })).toBeInTheDocument();
+    expect(await screen.findByText("ADM...1111")).toBeInTheDocument();
+    expect(screen.getByText("ADM...2222")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("VOUCHER-RAW-SECRET");
+    expect(document.body.textContent).not.toContain("idempotency-secret");
+
+    await user.click(screen.getByRole("button", { name: "导出 CSV" }));
+    await user.click(screen.getByRole("button", { name: "导出 JSON" }));
+    expect(createObjectUrl).toHaveBeenCalledTimes(2);
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(2);
+    expect(anchorClick).toHaveBeenCalledTimes(2);
+    const exportedText = exportedParts.flat().map(String).join("\n");
+    expect(exportedText).toContain("code_redacted");
+    expect(exportedText).toContain("ADM...1111");
+    expect(exportedText).toContain("admin_voucher_issuance_export.v1");
+    expect(exportedText).not.toContain("VOUCHER-RAW-SECRET");
+    expect(exportedText).not.toContain("idempotency-secret");
+    expect(exportedText).not.toContain("code_hash_value");
+
+    await user.click(screen.getAllByRole("button", { name: "撤销" })[0]);
+
+    expect(await screen.findByText("代金券 voucher-... 已撤销。")).toBeInTheDocument();
+    const revokeCall = fetchMock.mock.calls.find(([url, init]) => {
+      return (
+        String(url).includes("/admin/voucher-issuances/voucher-list-1/revoke") &&
+        init?.method === "POST"
+      );
+    });
+    expect(revokeCall).toBeTruthy();
+    expect(document.body.textContent).not.toContain("VOUCHER-RAW-SECRET");
+    expect(document.body.textContent).not.toContain("idempotency-secret");
+  });
+
   function normalizeAbsentSmokeMarker<T>(value: T | null): T | undefined {
-    return value === ledgerAdjustmentExecuteAbsentOptionalMarker ? undefined : value;
+    return value === ledgerAdjustmentExecuteAbsentOptionalMarker
+      ? undefined
+      : value;
   }
 
   function expectLedgerBackendSmokeReadiness({
@@ -4060,26 +6501,52 @@ describe("App", () => {
   }) {
     const { markers, selectors } = ledgerExecuteSmoke;
     const readiness = screen.getByTestId(selectors.readiness);
-    const expectedHandoffState = handoffState ? ledgerExecuteSmokeHandoff.readinessStates[handoffState] : null;
+    const expectedHandoffState = handoffState
+      ? ledgerExecuteSmokeHandoff.readinessStates[handoffState]
+      : null;
 
     if (expectedHandoffState) {
       expect(expectedHandoffState.expectedStatus).toBe(status);
       expect(expectedHandoffState.executeButtonEnabled).toBe(executeEnabled);
-      expect(expectedHandoffState.markers.contractCheckNetworkCall).toBe(contractCheckNetworkCall);
+      expect(expectedHandoffState.markers.contractCheckNetworkCall).toBe(
+        contractCheckNetworkCall,
+      );
       expect(expectedHandoffState.markers.dryRunFresh).toBe(dryRunFresh);
-      expect(expectedHandoffState.markers.executeWriteNetworkCall).toBe(executeWriteNetworkCall);
-      expect(normalizeAbsentSmokeMarker(expectedHandoffState.markers.executeResultFresh)).toBe(executeResultFresh);
-      expect(normalizeAbsentSmokeMarker(expectedHandoffState.markers.executeOutcome)).toBe(executeOutcome);
-      expect(normalizeAbsentSmokeMarker(expectedHandoffState.markers.ledgerRefreshStatus)).toBe(ledgerRefreshStatus);
+      expect(expectedHandoffState.markers.executeWriteNetworkCall).toBe(
+        executeWriteNetworkCall,
+      );
+      expect(
+        normalizeAbsentSmokeMarker(
+          expectedHandoffState.markers.executeResultFresh,
+        ),
+      ).toBe(executeResultFresh);
+      expect(
+        normalizeAbsentSmokeMarker(expectedHandoffState.markers.executeOutcome),
+      ).toBe(executeOutcome);
+      expect(
+        normalizeAbsentSmokeMarker(
+          expectedHandoffState.markers.ledgerRefreshStatus,
+        ),
+      ).toBe(ledgerRefreshStatus);
     }
 
-    expect(screen.getByTestId(selectors.executeContractMode)).toHaveTextContent(`${markers.executeContractMode}=true`);
-    expect(screen.getByTestId(selectors.executeEndpoint)).toHaveTextContent(`${markers.executeEndpoint}=true`);
-    expect(screen.getByTestId(selectors.dryRunFresh)).toHaveTextContent(`${markers.dryRunFresh}=${String(dryRunFresh)}`);
-    expect(screen.getByTestId(selectors.contractCheckNetworkCall)).toHaveTextContent(
+    expect(screen.getByTestId(selectors.executeContractMode)).toHaveTextContent(
+      `${markers.executeContractMode}=true`,
+    );
+    expect(screen.getByTestId(selectors.executeEndpoint)).toHaveTextContent(
+      `${markers.executeEndpoint}=true`,
+    );
+    expect(screen.getByTestId(selectors.dryRunFresh)).toHaveTextContent(
+      `${markers.dryRunFresh}=${String(dryRunFresh)}`,
+    );
+    expect(
+      screen.getByTestId(selectors.contractCheckNetworkCall),
+    ).toHaveTextContent(
       `${markers.contractCheckNetworkCall}=${String(contractCheckNetworkCall)}`,
     );
-    expect(screen.getByTestId(selectors.executeWriteNetworkCall)).toHaveTextContent(
+    expect(
+      screen.getByTestId(selectors.executeWriteNetworkCall),
+    ).toHaveTextContent(
       `${markers.executeWriteNetworkCall}=${String(executeWriteNetworkCall)}`,
     );
     if (executeEnabled) {
@@ -4090,26 +6557,44 @@ describe("App", () => {
     expect(within(readiness).getAllByText(status).length).toBeGreaterThan(0);
 
     if (executeOutcome) {
-      expect(screen.getByTestId(selectors.executeResultFresh)).toHaveTextContent(
+      expect(
+        screen.getByTestId(selectors.executeResultFresh),
+      ).toHaveTextContent(
         `${markers.executeResultFresh}=${String(executeResultFresh ?? true)}`,
       );
-      expect(screen.getByTestId(selectors.executeOutcome)).toHaveTextContent(`${markers.executeOutcome}=${executeOutcome}`);
+      expect(screen.getByTestId(selectors.executeOutcome)).toHaveTextContent(
+        `${markers.executeOutcome}=${executeOutcome}`,
+      );
     } else {
-      expect(screen.queryByTestId(selectors.executeResultFresh)).not.toBeInTheDocument();
-      expect(screen.queryByTestId(selectors.executeOutcome)).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId(selectors.executeResultFresh),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId(selectors.executeOutcome),
+      ).not.toBeInTheDocument();
     }
 
     if (ledgerRefreshStatus) {
-      expect(screen.getByTestId(selectors.ledgerRefreshStatus)).toHaveTextContent(
+      expect(
+        screen.getByTestId(selectors.ledgerRefreshStatus),
+      ).toHaveTextContent(
         `${markers.ledgerEntriesRefreshAfterExecute}=${ledgerRefreshStatus}`,
       );
     } else {
-      expect(screen.queryByTestId(selectors.ledgerRefreshStatus)).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId(selectors.ledgerRefreshStatus),
+      ).not.toBeInTheDocument();
     }
   }
 
   it("exports the ledger execute live-smoke selector and status contract", () => {
-    const { forbiddenSensitiveMarkers, markers, refreshStatuses, selectors, statuses } = ledgerExecuteSmoke;
+    const {
+      forbiddenSensitiveMarkers,
+      markers,
+      refreshStatuses,
+      selectors,
+      statuses,
+    } = ledgerExecuteSmoke;
 
     expect(selectors).toMatchObject({
       amountInput: "ledger-adjustment-amount-input",
@@ -4136,7 +6621,9 @@ describe("App", () => {
       dryRunFresh: "ledger-adjustment-dry-run-fresh",
       walletInput: "ledger-adjustment-wallet-input",
     });
-    expect(new Set(Object.values(selectors)).size).toBe(Object.values(selectors).length);
+    expect(new Set(Object.values(selectors)).size).toBe(
+      Object.values(selectors).length,
+    );
     expect(markers).toMatchObject({
       contractCheckNetworkCall: "contract_check_network_call",
       dryRunFresh: "fresh_dry_run",
@@ -4173,17 +6660,26 @@ describe("App", () => {
   });
 
   it("exports the ledger execute live-smoke handoff for scripts", () => {
-    const { forbiddenSensitiveMarkers, readinessMarkerKeys, readinessStates, scriptUsage, selectors, statusMarkers } =
-      ledgerExecuteSmokeHandoff;
+    const {
+      forbiddenSensitiveMarkers,
+      readinessMarkerKeys,
+      readinessStates,
+      scriptUsage,
+      selectors,
+      statusMarkers,
+    } = ledgerExecuteSmokeHandoff;
 
     expect(selectors).toBe(ledgerExecuteSmoke.selectors);
     expect(statusMarkers).toBe(ledgerExecuteSmoke.markers);
-    expect(forbiddenSensitiveMarkers).toBe(ledgerExecuteSmoke.forbiddenSensitiveMarkers);
+    expect(forbiddenSensitiveMarkers).toBe(
+      ledgerExecuteSmoke.forbiddenSensitiveMarkers,
+    );
     expect(scriptUsage).toEqual({
       assertNoForbiddenMarkersInDocument: true,
       readStatusFromReadinessRegion: true,
       selectorsSource: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
-      statusMarkersSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
+      statusMarkersSource:
+        "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
       useDataTestIdsOnly: true,
     });
     expect(readinessMarkerKeys).toEqual([
@@ -4316,7 +6812,9 @@ describe("App", () => {
         },
       },
     });
-    expect(new Set(Object.keys(readinessStates)).size).toBe(Object.keys(readinessStates).length);
+    expect(new Set(Object.keys(readinessStates)).size).toBe(
+      Object.keys(readinessStates).length,
+    );
   });
 
   it("exports a JSON-serializable ledger execute live-smoke handoff", () => {
@@ -4329,7 +6827,9 @@ describe("App", () => {
     expect(serializedHandoff).not.toContain("undefined");
     expect(parsed).toEqual(handoff);
     expect(ledgerExecuteSmokeSerializableHandoffArtifact).toEqual(handoff);
-    expect(JSON.parse(JSON.stringify(ledgerExecuteSmokeSerializableHandoffArtifact))).toEqual(handoff);
+    expect(
+      JSON.parse(JSON.stringify(ledgerExecuteSmokeSerializableHandoffArtifact)),
+    ).toEqual(handoff);
     expect(parsed.browserActionPlan).toEqual({
       defaultMode: "dry_run_only",
       durationMarkers: {
@@ -4419,11 +6919,65 @@ describe("App", () => {
         source: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
         summaryMarker: "selector_availability_summary",
       },
-      stepOrder: ["dry_run_plan", "execute_apply", "idempotent_replay", "refund_refusal", "ledger_refresh"],
+      stepOrder: [
+        "dry_run_plan",
+        "execute_apply",
+        "idempotent_replay",
+        "refund_refusal",
+        "ledger_refresh",
+      ],
       toolingBlocker: "browser_tooling_unavailable",
     });
     expect(parsed.browserEvidenceArtifact).toEqual({
       artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      classificationFields: {
+        failure: "failure",
+        mutationPassArtifact: "mutation_pass_artifact",
+        readback: "readback",
+        replay: "replay",
+        runtimeCurrent: "runtime_current",
+      },
+      classificationValues: {
+        failure: {
+          artifactClosureFailed: "artifact_closure_failed",
+          artifactReadbackFailed: "artifact_readback_failed",
+          artifactWriteMissing: "artifact_write_missing",
+          browserUnavailable: "browser_tooling_unavailable",
+          durationNonNumeric: "duration_non_numeric",
+          browserIdempotentReplayFailed: "browser_idempotent_replay_failed",
+          browserLiveRunnerTimeout: "browser_live_runner_timeout",
+          ledgerRefreshMissing: "ledger_refresh_missing",
+          mutationOptInMissing: "mutation_opt_in_missing",
+          none: "none",
+          refundRefusalMissing: "refund_refusal_missing",
+          runtimeStale: "runtime_image_stale_or_unverified",
+          sessionMissing: "session_material_missing",
+          simulatedArtifact: "simulated_artifact_cannot_close_e11",
+          staleArtifact: "artifact_readback_failed",
+        },
+        mutationPassArtifact: {
+          blocked: "mutation_pass_artifact_blocked",
+          failed: "mutation_pass_artifact_failed",
+          notRequested: "mutation_pass_artifact_not_requested",
+          passed: "mutation_pass_artifact_passed",
+        },
+        readback: {
+          failed: "artifact_readback_failed",
+          missing: "artifact_readback_missing",
+          notRequested: "artifact_readback_not_requested",
+          passed: "artifact_readback_passed",
+        },
+        replay: {
+          failed: "browser_idempotent_replay_failed",
+          notRun: "idempotent_replay_not_run",
+          passed: "idempotent_replay_passed",
+        },
+        runtimeCurrent: {
+          notChecked: "runtime_current_not_checked",
+          staleOrUnverified: "runtime_image_stale_or_unverified",
+          verified: "runtime_current_verified",
+        },
+      },
       durationFields: {
         browserLaunchDurationMs: "browser_launch_duration_ms",
         contextSetupDurationMs: "context_setup_duration_ms",
@@ -4449,12 +7003,56 @@ describe("App", () => {
         "outcome",
         "provenance",
         "freshness",
+        "runtime_current",
+        "classifications",
+        "readback",
+        "runtime_current_artifact",
+        "session_verification",
+        "mutation_controls",
+        "api_readback",
+        "ledger_readback",
+        "failure_taxonomy",
         "blockers",
         "matrix",
         "durations",
         "actions",
         "secret_safe",
       ],
+      artifactSchema: {
+        apiReadbackFields: [
+          "dry_run_plan",
+          "execute_apply",
+          "idempotent_replay",
+          "refund_refusal",
+          "ledger_refresh",
+        ],
+        failureTaxonomyFields: [
+          "session_missing",
+          "runtime_stale",
+          "mutation_opt_in_missing",
+          "artifact_write_missing",
+          "artifact_readback_failed",
+          "idempotent_replay_failed",
+          "refund_refusal_missing",
+          "ledger_refresh_missing",
+          "duration_non_numeric",
+          "stale_or_simulated_artifact",
+          "browser_unavailable",
+        ],
+        ledgerReadbackFields: [
+          "applied_ledger_entry_visible",
+          "idempotent_replay_reused_ledger_entry",
+          "refund_refusal_no_ledger_write",
+          "ledger_refresh_visible",
+        ],
+        mutationControlFields: [
+          "mutation_opt_in_enabled",
+          "artifact_write_opt_in_enabled",
+          "artifact_readback_opt_in_enabled",
+        ],
+        runtimeCurrentArtifactLinkField: "runtime_current_artifact",
+        sessionVerificationField: "session_verification",
+      },
       unavailableMarker: "unavailable",
     });
     expect(parsed.browserLiveRunbook).toEqual({
@@ -4481,7 +7079,8 @@ describe("App", () => {
       },
       liveCommand: {
         arguments: ["-BrowserPreflight"],
-        script: "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
+        script:
+          "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
       },
       mutationOptIn: {
         env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
@@ -4502,13 +7101,15 @@ describe("App", () => {
       artifact: {
         defaultPath: "artifacts/billing_execute_browser_live_e2e_evidence.json",
         name: "billing_execute_browser_live_e2e_evidence.v1",
-        pathEnv: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
+        pathEnv:
+          "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
         readBackRequired: true,
         writeOptInFlag: "-BrowserEvidenceArtifactWriteOptIn",
       },
       command: {
         flag: "-BrowserLiveRunnerExecutionOptIn",
-        script: "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
+        script:
+          "scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1",
       },
       defaultClicksAdminUiActions: false,
       defaultMode: "live_runner_execution_bridge",
@@ -4516,7 +7117,8 @@ describe("App", () => {
       defaultSubmitsLiveMutation: false,
       durationFields: parsed.browserEvidenceArtifact.durationFields,
       env: {
-        artifactWrite: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
+        artifactWrite:
+          "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
         liveRunner: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER",
         mutation: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
         session: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
@@ -4543,13 +7145,18 @@ describe("App", () => {
     });
     expect(parsed.browserLivePassArtifactReadbackGate).toEqual({
       artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      classificationValues:
+        parsed.browserEvidenceArtifact.classificationValues.readback,
       defaultMode: "live_pass_artifact_readback_gate",
       defaultReadsArtifact: false,
       defaultSubmitsLiveMutation: false,
       durationFields: parsed.browserEvidenceArtifact.durationFields,
-      expectedActionOutcomes: parsed.browserMutationPassArtifactClosure.expectedActionOutcomes,
-      requiredArtifactFreshness: parsed.browserMutationPassArtifactClosure.requiredArtifactFreshness,
-      requiredReadiness: parsed.browserMutationPassArtifactClosure.requiredReadiness,
+      expectedActionOutcomes:
+        parsed.browserMutationPassArtifactClosure.expectedActionOutcomes,
+      requiredArtifactFreshness:
+        parsed.browserMutationPassArtifactClosure.requiredArtifactFreshness,
+      requiredReadiness:
+        parsed.browserMutationPassArtifactClosure.requiredReadiness,
       secretSafeOmission: {
         echoRequestMaterial: false,
         echoSessionMaterial: false,
@@ -4560,6 +7167,428 @@ describe("App", () => {
         fail: "fail",
         pass: "pass",
       },
+    });
+    expect(parsed.browserMutationFinalDod).toEqual({
+      acceptanceMatrix: {
+        passRequires: {
+          adminSessionVerifiedSecretOmitted: true,
+          applyOutcome: "applied",
+          artifactFreshCurrentCommit: true,
+          artifactReadbackOptIn: true,
+          artifactReadbackPassed: true,
+          artifactWriteOptIn: true,
+          browserToolingAvailable: true,
+          idempotentReplayOutcome: "idempotent",
+          ledgerRefreshOutcome: "success",
+          mutationOptIn: true,
+          numericDurations: true,
+          refundRefusalOutcome: "blocked",
+          runtimeCurrentVerified: true,
+          secretSafeOmission: true,
+        },
+        rejectedEvidence: {
+          browserUnavailable: "browser_tooling_unavailable",
+          missingArtifact: "artifact_readback_missing",
+          missingSession: "session_material_missing",
+          simulatedArtifact: "simulated_artifact_cannot_close_e11",
+          staleArtifact: "artifact_readback_failed",
+          staleRuntime: "runtime_image_stale_or_unverified",
+        },
+      },
+      checklist: [
+        "runtime_current_verified",
+        "admin_session_verified_secret_omitted",
+        "mutation_opt_in_enabled",
+        "artifact_write_opt_in_enabled",
+        "artifact_readback_passed",
+        "apply_outcome_applied",
+        "idempotent_replay_outcome_idempotent",
+        "refund_refusal_outcome_blocked",
+        "ledger_refresh_outcome_success",
+        "numeric_duration_fields_present",
+        "artifact_fresh_current_commit",
+        "secret_safe_omission",
+      ],
+      defaultBuildsRuntime: false,
+      defaultClosesE11: false,
+      defaultRunsBrowserRunner: false,
+      defaultSubmitsLiveMutation: false,
+      e11TargetState: "x_requires_real_browser_mutation_pass",
+      finalPassClassification: "e11_browser_mutation_dod_passed",
+      schema: "billing_execute_browser_mutation_final_dod.v1",
+    });
+    expect(parsed.runtimeCurrentEvidenceAcceptanceMatrix).toEqual({
+      acceptedStates: {
+        e11X: "requires mutation_pass_artifact_passed plus artifact_readback_passed, current commit freshness, API and ledger readback, numeric durations, and secret-safe omission",
+        mutationPassArtifactPassed:
+          "real browser mutation artifact passed after runtime_current_evidence_accepted_for_review, admin session verification, mutation opt-in, artifact write/readback opt-in, API readback, ledger readback, and action duration checks",
+        mutationRunnerReadyBlocked:
+          "runtime_current_evidence_accepted_for_review is true but admin session, mutation opt-in, browser artifact write/readback, or runner opt-in is still missing",
+        runtimeCurrentEvidenceAcceptedForReview:
+          "bounded external runtime-current artifact is current, non-simulated, commit-matched, timestamp-consistent, and secret-safe; cannot mark E11 final x by itself",
+      },
+      acceptanceSchema: {
+        adminSessionVerification: {
+          marker: "admin_session_verified_secret_omitted",
+          rawSecretRequired: false,
+          requiredField: "session_verification",
+          secretOmitted: true,
+        },
+        browserArtifact: {
+          provenanceField: "provenance",
+          requiredFields: parsed.browserEvidenceArtifact.requiredTopLevelFields,
+          schema: "billing_execute_browser_live_e2e_evidence.v1",
+        },
+        freshness: {
+          currentCommitField: "git_commit",
+          freshnessField: "freshness",
+          requireCurrentCommit: true,
+        },
+        mutationControls: {
+          artifactReadbackOptIn: "artifact_readback_opt_in_enabled",
+          artifactWriteOptIn: "artifact_write_opt_in_enabled",
+          mutationOptIn: "mutation_opt_in_enabled",
+          requiredField: "mutation_controls",
+        },
+        readback: {
+          apiFields: [
+            "dry_run_plan",
+            "execute_apply",
+            "idempotent_replay",
+            "refund_refusal",
+            "ledger_refresh",
+          ],
+          ledgerFields: [
+            "applied_ledger_entry_visible",
+            "idempotent_replay_reused_ledger_entry",
+            "refund_refusal_no_ledger_write",
+            "ledger_refresh_visible",
+          ],
+        },
+        resultClassification: {
+          failedActionField: "failed_action",
+          failureClassificationField: "failure_classification",
+          requiredField: "failure_taxonomy",
+        },
+        runtimeArtifact: {
+          currentCommitField: "git_commit",
+          provenanceField: "provenance",
+          requiredFields: [
+            "schema",
+            "status",
+            "classification",
+            "blocker",
+            "source_newest_utc",
+            "container_created_utc",
+            "image_created_utc",
+            "image_id",
+            "git_commit",
+            "alignment_rules",
+            "readback_classification",
+            "rebuild_handoff_execution_allowed",
+          ],
+          schema: "control_plane_ledger_execute_runtime_current_handoff.v1",
+          timestampComparison: {
+            imageCreatedUtc: "image_created_utc",
+            runtimeCreatedUtc: "container_created_utc",
+            sourceNewestUtc: "source_newest_utc",
+          },
+        },
+        secretSafeOmission: {
+          requestMaterialEchoed: false,
+          sessionMaterialEchoed: false,
+          urlCredentialsEchoed: false,
+        },
+      },
+      defaults: {
+        buildsRuntime: false,
+        consumesAdminSession: false,
+        mutates: false,
+        readsBrowserArtifact: false,
+        readsRuntimeArtifact: false,
+        recreatesRuntime: false,
+      },
+      refusalTaxonomy: {
+        artifactReadbackMissing: "artifact_readback_missing",
+        artifactWriteMissing: "artifact_write_missing",
+        browserArtifactSimulated: "simulated_artifact_cannot_close_e11",
+        browserArtifactStale: "artifact_readback_failed",
+        browserUnavailable: "browser_tooling_unavailable",
+        durationNonNumeric: "duration_non_numeric",
+        idempotentReplayFailed: "browser_idempotent_replay_failed",
+        ledgerRefreshMissing: "ledger_refresh_missing",
+        mutationOptInMissing: "mutation_opt_in_missing",
+        rawSecretPresent: "raw_secret_present",
+        refundRefusalMissing: "refund_refusal_missing",
+        runtimeArtifactMissing: "runtime_current_artifact_missing",
+        runtimeArtifactSimulated: "simulated_artifact_cannot_close_e11",
+        runtimeArtifactStale: "runtime_current_artifact_stale_or_unverified",
+        runtimeCommitMismatch: "runtime_current_commit_mismatch",
+        runtimeUnsafeArtifact: "unsafe_artifact_path",
+        sessionInvalidMarker: "admin_session_invalid",
+        sessionMissingMarker: "session_material_missing",
+      },
+      schema: "billing_execute_runtime_current_evidence_acceptance_matrix.v1",
+      simulationPolicy: {
+        acceptedShapeSimulations: true,
+        buildsRuntime: false,
+        mutates: false,
+        recreatesRuntime: false,
+        simulationCanMarkFinalX: false,
+      },
+    });
+    expect(parsed.runtimeCurrentFinalClosureAudit).toEqual({
+      defaults: {
+        buildsRuntime: false,
+        consumesAdminSession: false,
+        mutates: false,
+        readsBrowserArtifact: false,
+        readsRuntimeArtifact: false,
+        recreatesRuntime: false,
+      },
+      exactNextCommands: {
+        browserMutationRunnerArtifact:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+        browserMutationRunnerArtifactReadback:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserEvidenceArtifactReadbackOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+        runtimeCurrentHandoff:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactWriteOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        runtimeCurrentReadback:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        sessionMarker:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -AdminSessionHandoff",
+      },
+      reportFields: {
+        apiReadbackState: "api_readback_state",
+        blockingReasons: "blocking_reasons",
+        browserArtifactState: "browser_artifact_state",
+        currentCommit: "current_commit",
+        durationState: "duration_state",
+        finalXEligible: "final_x_eligible",
+        generatedAt: "generated_at",
+        ledgerReadbackState: "ledger_readback_state",
+        mutationControlsState: "mutation_controls_state",
+        requiredEvidence: "required_evidence",
+        runtimeArtifactState: "runtime_artifact_state",
+        secretSafeOmissionState: "secret_safe_omission_state",
+        sessionState: "session_state",
+      },
+      requiredEvidence: [
+        "runtime_current_verified_artifact_readback",
+        "admin_session_verified_secret_omitted_marker",
+        "mutation_opt_in_enabled",
+        "browser_mutation_artifact_write_readback",
+        "api_readback_passed",
+        "ledger_readback_passed",
+        "numeric_durations_present",
+        "secret_safe_omission_proof",
+        "current_commit_freshness",
+      ],
+      schema: "billing_execute_browser_mutation_final_closure_audit.v1",
+      simulationPolicy: {
+        acceptedShapeSimulations: true,
+        buildsRuntime: false,
+        mutates: false,
+        recreatesRuntime: false,
+        simulationCanMarkFinalX: false,
+      },
+      stateValues: {
+        accepted: "accepted",
+        blocked: "blocked",
+        missing: "missing",
+        refused: "refused",
+        simulated: "simulated",
+      },
+    });
+    expect(parsed.browserMutationEvidenceWatcherFinalGuard).toEqual({
+      defaultMode: "watcher_final_guard_review",
+      defaults: {
+        buildsRuntime: false,
+        consumesAdminSession: false,
+        mutates: false,
+        readsBrowserArtifact: false,
+        readsRuntimeArtifact: false,
+        recreatesRuntime: false,
+      },
+      exactNextCommands: {
+        browserArtifactReadback:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserEvidenceArtifactReadbackOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+        browserMutationRunner:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+        runtimeCurrentHandoff:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactWriteOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        runtimeCurrentReadback:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        sessionMarker:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -AdminSessionHandoff",
+      },
+      expectedArtifactPaths: {
+        browserMutationArtifact:
+          "artifacts/billing_execute_browser_live_e2e_evidence.json",
+        runtimeCurrentArtifact:
+          "artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+      },
+      finalGuardFlags: {
+        acceptedShapeCanMarkFinalX: false,
+        noArtifactCanMarkFinalX: false,
+        sessionMissingCanMarkFinalX: false,
+        simulationCanMarkFinalX: false,
+        watcherCanMarkFinalX: false,
+      },
+      finalReviewChecklist: [
+        {
+          key: "runtime_current_artifact_current",
+          requiredState: "runtime_current_verified",
+        },
+        {
+          key: "admin_session_marker_secret_omitted",
+          requiredState: "admin_session_verified_secret_omitted",
+        },
+        {
+          key: "mutation_opt_in_present",
+          requiredState: "mutation_opt_in_enabled",
+        },
+        {
+          key: "browser_artifact_readback_passed",
+          requiredState: "mutation_pass_artifact_passed",
+        },
+        {
+          key: "api_and_ledger_readback_passed",
+          requiredState: "api_ledger_readback_passed",
+        },
+        {
+          key: "numeric_durations_present",
+          requiredState: "numeric_durations_present",
+        },
+        {
+          key: "secret_safe_omission_proven",
+          requiredState: "secret_safe_omission",
+        },
+        {
+          key: "not_simulation_or_watcher_only",
+          requiredState: "real_artifact_only",
+        },
+      ],
+      mutationOptInRequirements: {
+        artifactReadbackFlag: "-BrowserEvidenceArtifactReadbackOptIn",
+        artifactWriteFlag: "-BrowserEvidenceArtifactWriteOptIn",
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION=1",
+        runnerFlag: "-BrowserLiveRunnerExecutionOptIn",
+      },
+      schema:
+        "billing_execute_browser_mutation_evidence_watcher_final_guard.v1",
+      sessionMarkerRequirements: {
+        env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+        marker: "admin_session_verified_secret_omitted",
+        rawSecretEchoed: false,
+      },
+      watcherStates: {
+        blocked: "blocked",
+        finalEligible: "final_eligible",
+        waitingForRealEvidence: "waiting_for_real_evidence",
+      },
+    });
+    expect(parsed.runtimeCurrentOperatorHandoffPack).toEqual({
+      boundedRunnerTimeoutMs: 90000,
+      commands: {
+        adminSessionVerify: {
+          env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+          flag: "-AdminSessionHandoff",
+          marker: "admin_session_present",
+          secretEchoed: false,
+        },
+        browserMutationRunner: {
+          command:
+            "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+          env: {
+            artifactWrite:
+              "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE=1",
+            mutation:
+              "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION=1",
+            session: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+          },
+        },
+        runtimeArtifactReadback: {
+          command:
+            "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+          env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK=1",
+          flag: "-RuntimeCurrentEvidenceArtifactReadbackOptIn",
+        },
+        runtimeArtifactWrite: {
+          command:
+            "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactWriteOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+          env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE=1",
+          flag: "-RuntimeCurrentEvidenceArtifactWriteOptIn",
+        },
+      },
+      defaultBuildsRuntime: false,
+      defaultConsumesSession: false,
+      defaultMutates: false,
+      defaultReadsRuntimeArtifact: false,
+      defaultRecreatesRuntime: false,
+      failureTaxonomy: {
+        artifactReadbackMissing: "artifact_readback_missing",
+        artifactWriteMissing: "artifact_write_missing",
+        browserUnavailable: "browser_tooling_unavailable",
+        durationNonNumeric: "duration_non_numeric",
+        idempotentReplayFailed: "browser_idempotent_replay_failed",
+        ledgerRefreshMissing: "ledger_refresh_missing",
+        mutationOptInMissing: "mutation_opt_in_missing",
+        recreateUnavailable:
+          "control_plane_container_unavailable_for_no_build_handoff",
+        rebuildForbidden: "runtime_image_requires_rebuild_but_build_forbidden",
+        refundRefusalMissing: "refund_refusal_missing",
+        runtimeArtifactMissing: "runtime_current_artifact_missing",
+        runtimeArtifactSimulated: "simulated_artifact_cannot_close_e11",
+        runtimeArtifactStale: "runtime_current_artifact_stale_or_unverified",
+        sessionInvalid: "admin_session_invalid",
+        sessionMissing: "session_material_missing",
+        unsafeArtifactPath: "unsafe_artifact_path",
+      },
+      requiredArtifactFields: {
+        browserMutationArtifact:
+          parsed.browserEvidenceArtifact.requiredTopLevelFields,
+        runtimeCurrentArtifact: [
+          "schema",
+          "status",
+          "classification",
+          "blocker",
+          "source_newest_utc",
+          "container_created_utc",
+          "image_created_utc",
+          "image_id",
+          "git_commit",
+          "alignment_rules",
+          "readback_classification",
+          "rebuild_handoff_execution_allowed",
+        ],
+      },
+      schema: "billing_execute_runtime_current_operator_handoff_pack.v1",
+      stateMarkers: {
+        e11X: "e11_x",
+        mutationPassArtifactPassed: "mutation_pass_artifact_passed",
+        mutationRunnerReadyBlocked: "mutation_runner_ready_blocked",
+        runtimeCurrentHandoffReady: "runtime_current_handoff_ready",
+      },
+      stateDefinitions: {
+        e11X: "requires mutation_pass_artifact_passed and artifact_readback_passed with final DoD checklist complete",
+        mutationPassArtifactPassed:
+          "browser runner produced passed artifact with current runtime, action outcomes, numeric durations, API and ledger readback",
+        mutationRunnerReadyBlocked:
+          "runtime_current_verified is proven, but session, mutation, browser artifact write/readback, or runner opt-in is still missing",
+        runtimeCurrentHandoffReady:
+          "runtime_current_verified artifact/readback is current; no browser mutation has run",
+      },
+      sequence: [
+        "operator_rebuild_or_recreate_outside_script",
+        "runtime_artifact_write",
+        "runtime_artifact_readback",
+        "admin_session_verify_secret_omitted",
+        "mutation_and_browser_artifact_opt_in",
+        "browser_runner_bounded_execution",
+        "browser_artifact_readback",
+        "final_dod_classification",
+      ],
     });
     expect(parsed.browserLiveEnvironmentBootstrapAttempt).toEqual({
       artifactName: "billing_execute_browser_live_e2e_evidence.v1",
@@ -4577,7 +7606,8 @@ describe("App", () => {
       durationFields: parsed.browserEvidenceArtifact.durationFields,
       playwright: {
         browser: "chromium",
-        installCommand: "npm --prefix web/admin-ui exec playwright install chromium",
+        installCommand:
+          "npm --prefix web/admin-ui exec playwright install chromium",
         installHintOnly: true,
       },
       sessionHandoff: {
@@ -4612,6 +7642,9 @@ describe("App", () => {
     });
     expect(parsed.browserMutationPassArtifactClosure).toEqual({
       artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+      classificationValues:
+        parsed.browserEvidenceArtifact.classificationValues
+          .mutationPassArtifact,
       defaultClosesLiveGap: false,
       defaultMode: "mutation_pass_artifact_closure_gate",
       defaultSubmitsLiveMutation: false,
@@ -4710,7 +7743,8 @@ describe("App", () => {
       requiredInputs: {
         adminUiBaseUrl: "ADMIN_UI_BASE_URL",
         controlPlaneBaseUrl: "CONTROL_PLANE_BASE_URL",
-        handoffArtifact: "web/admin-ui/src/billingExecuteSmokeContract.serializable.json",
+        handoffArtifact:
+          "web/admin-ui/src/billingExecuteSmokeContract.serializable.json",
       },
       requiresLiveBackendByDefault: false,
       usesDataTestIdsOnly: true,
@@ -4735,7 +7769,8 @@ describe("App", () => {
         defaultPath: "artifacts/billing_execute_browser_live_e2e_evidence.json",
         env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
         flag: "-BrowserEvidenceArtifactWriteOptIn",
-        pathEnv: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
+        pathEnv:
+          "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_PATH",
         requiredValue: "1",
         staleRefusal: {
           maxGeneratedAgeMinutes: 30,
@@ -4762,16 +7797,114 @@ describe("App", () => {
     });
     expect(parsed.selectors).toEqual(ledgerExecuteSmoke.selectors);
     expect(parsed.statusMarkers).toEqual(ledgerExecuteSmoke.markers);
-    expect(parsed.forbiddenSensitiveMarkers).toEqual(ledgerExecuteSmoke.forbiddenSensitiveMarkers);
-    expect(parsed.readinessStates).toEqual(ledgerExecuteSmokeHandoff.readinessStates);
-    expect(parsed.readinessMarkerKeys).toEqual(ledgerExecuteSmokeHandoff.readinessMarkerKeys);
+    expect(parsed.forbiddenSensitiveMarkers).toEqual(
+      ledgerExecuteSmoke.forbiddenSensitiveMarkers,
+    );
+    expect(parsed.runtimeCurrentHandoff).toEqual({
+      buildAllowedDefault: false,
+      classifications: {
+        buildRequiredButForbidden: "build_required_but_forbidden",
+        containerRecreateAvailable: "container_recreate_available",
+        containerUnavailable: "control_plane_container_unavailable",
+        dockerUnavailable: "docker_unavailable",
+        imageInspectUnavailable: "control_plane_image_inspect_unavailable",
+        operatorCommandGenerated: "operator_command_generated",
+        runtimeCurrentAfterRecreateUnverified:
+          "runtime_current_after_recreate_unverified",
+        runtimeCurrentAfterRecreateVerified:
+          "runtime_current_after_recreate_verified",
+        sourceNewerThanRuntimeImage: "source_newer_than_runtime_image",
+      },
+      defaultMode: "runtime_current_handoff",
+      evidenceArtifact: {
+        defaultPath:
+          "artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE",
+        flag: "-RuntimeCurrentEvidenceArtifactWriteOptIn",
+        pathEnv:
+          "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_PATH",
+        readBackRequiredForExecution: true,
+        readDisabledByDefault: true,
+        readbackEnv:
+          "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK",
+        readbackFlag: "-RuntimeCurrentEvidenceArtifactReadbackOptIn",
+        requiredValue: "1",
+        schema: "control_plane_ledger_execute_runtime_current_handoff.v1",
+        writeDisabledByDefault: true,
+      },
+      browserRunnerUnlock: {
+        classifications: {
+          artifactMissing: "runtime_current_artifact_missing",
+          artifactStaleOrUnverified:
+            "runtime_current_artifact_stale_or_unverified",
+          verifiedArtifact: "runtime_current_verified",
+        },
+        defaultRunsBrowserRunner: false,
+        defaultSubmitsLiveMutation: false,
+        requiresArtifactReadback: true,
+        unlockedBlockerShift: "session_mutation_artifact_gate",
+        verifiedClassification: "runtime_current_verified",
+      },
+      noBuildRecreate: {
+        command:
+          "docker compose -f deploy/docker-compose/docker-compose.yml up -d --no-build --no-deps --force-recreate control-plane",
+        commandClassification: "operator_command_generated",
+        defaultExecutes: false,
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_RECREATE",
+        flag: "-RuntimeCurrentNoBuildRecreateOptIn",
+        readbackRequired: true,
+        requiredValue: "1",
+      },
+      outputMarkers: {
+        buildAllowed: "runtime_current_handoff_build_allowed",
+        blocker: "runtime_current_handoff_blocker",
+        classification: "runtime_current_handoff_classification",
+        command: "runtime_current_handoff_command",
+        readbackClassification:
+          "runtime_current_handoff_readback_classification",
+        status: "runtime_current_handoff_status",
+      },
+      readbackClassifications: {
+        failed: "runtime_current_readback_failed",
+        notRequested: "runtime_current_readback_not_requested",
+        staleOrUnverified: "runtime_current_readback_stale_or_unverified",
+        verified: "runtime_current_readback_verified",
+      },
+      rebuildHandoff: {
+        buildForbiddenBlocker:
+          "runtime_image_requires_rebuild_but_build_forbidden",
+        commandClassification: "operator_command_generated",
+        commandHint:
+          "docker compose -f deploy/docker-compose/docker-compose.yml build control-plane && docker compose -f deploy/docker-compose/docker-compose.yml up -d --no-deps --force-recreate control-plane",
+        defaultExecutesBuild: false,
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_REBUILD_HANDOFF",
+        executionAllowed: false,
+        flag: "-RuntimeCurrentRebuildHandoffOptIn",
+        readbackRequired: true,
+        requiredValue: "1",
+      },
+      secretSafeOmission: {
+        echoRequestMaterial: false,
+        echoSessionMaterial: false,
+        echoUrlCredentials: false,
+      },
+    });
+    expect(parsed.readinessStates).toEqual(
+      ledgerExecuteSmokeHandoff.readinessStates,
+    );
+    expect(parsed.readinessMarkerKeys).toEqual(
+      ledgerExecuteSmokeHandoff.readinessMarkerKeys,
+    );
     expect(parsed.serialization).toEqual({
       absentOptionalMarker: ledgerAdjustmentExecuteAbsentOptionalMarker,
       format: "json",
-      requiredReadinessMarkerKeys: ledgerExecuteSmokeHandoff.readinessMarkerKeys,
+      requiredReadinessMarkerKeys:
+        ledgerExecuteSmokeHandoff.readinessMarkerKeys,
     });
 
-    const expectedMarkerKeys = [...handoff.serialization.requiredReadinessMarkerKeys].sort();
+    const expectedMarkerKeys = [
+      ...handoff.serialization.requiredReadinessMarkerKeys,
+    ].sort();
     for (const state of Object.values(parsed.readinessStates) as Array<{
       markers: Record<string, unknown>;
     }>) {
@@ -4780,17 +7913,31 @@ describe("App", () => {
     }
 
     expect(parsed.readinessStates.blocked.markers.executeOutcome).toBeNull();
-    expect(parsed.readinessStates.blocked.markers.executeResultFresh).toBeNull();
-    expect(parsed.readinessStates.blocked.markers.ledgerRefreshStatus).toBeNull();
-    expect(parsed.readinessStates.contractBlocked.markers.executeOutcome).toBeNull();
-    expect(parsed.readinessStates.dryRunRequired.markers.executeResultFresh).toBeNull();
-    expect(parsed.readinessStates.executePreflight.markers.ledgerRefreshStatus).toBeNull();
+    expect(
+      parsed.readinessStates.blocked.markers.executeResultFresh,
+    ).toBeNull();
+    expect(
+      parsed.readinessStates.blocked.markers.ledgerRefreshStatus,
+    ).toBeNull();
+    expect(
+      parsed.readinessStates.contractBlocked.markers.executeOutcome,
+    ).toBeNull();
+    expect(
+      parsed.readinessStates.dryRunRequired.markers.executeResultFresh,
+    ).toBeNull();
+    expect(
+      parsed.readinessStates.executePreflight.markers.ledgerRefreshStatus,
+    ).toBeNull();
     expect(parsed.readinessStates.failed.markers.executeOutcome).toBeNull();
-    expect(parsed.readinessStates.stalePlan.markers.ledgerRefreshStatus).toBeNull();
+    expect(
+      parsed.readinessStates.stalePlan.markers.ledgerRefreshStatus,
+    ).toBeNull();
 
     const assertNoFunctionValues = (value: unknown): void => {
       if (value && typeof value === "object") {
-        for (const nestedValue of Object.values(value as Record<string, unknown>)) {
+        for (const nestedValue of Object.values(
+          value as Record<string, unknown>,
+        )) {
           assertNoFunctionValues(nestedValue);
         }
         return;
@@ -4805,17 +7952,31 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const readinessRegion = await screen.findByRole("region", { name: "Ledger adjustment execute readiness" });
+    const readinessRegion = await screen.findByRole("region", {
+      name: "账本调整执行准备",
+    });
     const readinessPanel = within(readinessRegion);
-    expect(readinessPanel.getByText("execute_contract_mode=true")).toBeInTheDocument();
-    expect(readinessPanel.getByText("execute_endpoint=true")).toBeInTheDocument();
+    expect(
+      readinessPanel.getByText("execute_contract_mode=true"),
+    ).toBeInTheDocument();
+    expect(
+      readinessPanel.getByText("execute_endpoint=true"),
+    ).toBeInTheDocument();
     expect(readinessPanel.getByText("fresh_dry_run=false")).toBeInTheDocument();
-    expect(readinessPanel.getByText("contract_check_network_call=false")).toBeInTheDocument();
-    expect(readinessPanel.getByText("execute_write_network_call=false")).toBeInTheDocument();
-    expect(readinessPanel.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expect(
+      readinessPanel.getByText("contract_check_network_call=false"),
+    ).toBeInTheDocument();
+    expect(
+      readinessPanel.getByText("execute_write_network_call=false"),
+    ).toBeInTheDocument();
+    expect(
+      readinessPanel.getByRole("button", { name: "执行账本调整" }),
+    ).toBeDisabled();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: false,
       executeEnabled: false,
@@ -4824,45 +7985,100 @@ describe("App", () => {
       status: "dry run required",
     });
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.dryRunForm)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.operationInput)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.amountInput)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.currencyInput)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.relatedLedgerEntryInput)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.requestInput)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.reasonInput)).toBeInTheDocument();
-    expect(screen.getByTestId(ledgerExecuteSmoke.selectors.dryRunButton)).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.dryRunForm),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.operationInput),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.amountInput),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.currencyInput),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.relatedLedgerEntryInput),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.requestInput),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.reasonInput),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId(ledgerExecuteSmoke.selectors.dryRunButton),
+    ).toBeInTheDocument();
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
-    await user.type(dryRunPanel.getByLabelText("Reason"), "customer credit");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.type(
+      dryRunPanel.getByLabelText("Request ID"),
+      "00000000-0000-0000-0000-000000000090",
+    );
+    await user.type(dryRunPanel.getByLabelText("原因"), "customer credit");
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
 
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Plan Flags" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "计划标记" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("plan_only=true")).toBeInTheDocument();
-    expect(screen.getAllByText("fresh_dry_run=true").length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText("fresh_dry_run=true").length,
+    ).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("ledger_write=false")).toBeInTheDocument();
     expect(screen.getByText("request_log_write=false")).toBeInTheDocument();
     expect(screen.getByText("audit_log_write=false")).toBeInTheDocument();
     expect(screen.getByText("upstream_call=false")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Planned Ledger Entry" })).toBeInTheDocument();
-    expect(screen.getAllByText("0.25000000 USD").length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByRole("heading", { level: 2, name: "计划账本条目" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("0.25000000 USD").length).toBeGreaterThanOrEqual(
+      2,
+    );
     expect(screen.getByText("server generated on execute")).toBeInTheDocument();
-    expect(screen.getByText("bounded_admin_adjustment_metadata_only")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Related Entry Summary" })).toBeInTheDocument();
+    expect(
+      screen.getByText("bounded_admin_adjustment_metadata_only"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "关联条目摘要" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("-0.25000000 USD")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Refund Remaining" })).toBeInTheDocument();
-    expect(screen.getAllByText("0.15000000 USD").length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByRole("heading", { level: 2, name: "剩余可退款" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("0.15000000 USD").length).toBeGreaterThanOrEqual(
+      2,
+    );
     expect(screen.getByText("refund, adjust")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Future Audit / Write Contract" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: "未来审计 / 写入契约",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText("ledger.refund")).toBeInTheDocument();
-    expect(screen.getByText("bounded public ids and amounts only")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Check execute contract" })).toBeEnabled();
+    expect(
+      screen.getByText("bounded public ids and amounts only"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "检查执行契约" }),
+    ).toBeEnabled();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: true,
       executeEnabled: true,
@@ -4871,65 +8087,172 @@ describe("App", () => {
       status: "execute preflight",
     });
 
-    await user.click(screen.getByRole("button", { name: "Check execute contract" }));
+    await user.click(
+      screen.getByRole("button", { name: "检查执行契约" }),
+    );
 
-    expect(await screen.findByText(/future_writer_required: backend validated the plan/)).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Ledger adjustment execute contract result" })).toBeInTheDocument();
-    expect(screen.getByText("contract_check_network_call=true")).toBeInTheDocument();
-    expect(screen.getByText("execute_write_network_call=false")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /future_writer_required：后端已验证计划/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", {
+        name: "账本调整执行契约结果",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("contract_check_network_call=true"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("execute_write_network_call=false"),
+    ).toBeInTheDocument();
     expect(screen.getByText("blocked")).toBeInTheDocument();
-    expect(screen.getAllByText("future_writer_required").length).toBeGreaterThan(0);
-    expect(screen.getByText("ledger_adjustment_execute_preflight_contract.v2")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("future_writer_required").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText("ledger_adjustment_execute_preflight_contract.v2"),
+    ).toBeInTheDocument();
     expect(screen.getByText("validated before refusal")).toBeInTheDocument();
-    expect(screen.getByText("transactional writer pending")).toBeInTheDocument();
+    expect(
+      screen.getByText("transactional writer pending"),
+    ).toBeInTheDocument();
     expect(screen.getByText("future_writer_required=true")).toBeInTheDocument();
-    expect(screen.getAllByText("ledger_write=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("audit_log_write=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("request_log_write=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText("upstream_call=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("server_generated_write_marker=true")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("ledger_write=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText("audit_log_write=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText("request_log_write=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText("upstream_call=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByText("server_generated_write_marker=true"),
+    ).toBeInTheDocument();
     expect(screen.getByText("write_marker_echoed=false")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Dedupe Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Transaction Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Writer / Audit Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Safe Output Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Executor Summary Contract" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Refusal Executor Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Refusal Summary Contract" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Rollback Executor Summary Contract" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "去重摘要" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "事务摘要" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "写入器 / 审计摘要" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "安全输出摘要" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "执行器摘要契约",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "拒绝执行器摘要",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "拒绝摘要契约",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "回滚执行器摘要契约",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText("read_committed_or_stronger")).toBeInTheDocument();
     expect(screen.getByText("digest_marker_only")).toBeInTheDocument();
-    expect(screen.getByText("transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
-    expect(screen.getAllByText("billing_ledger_postgres_executor_summary.v1").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("ledger_executor_summary").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("transactional_admin_ledger_adjustment_writer"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("billing_ledger_postgres_executor_summary.v1").length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("ledger_executor_summary").length,
+    ).toBeGreaterThan(0);
     const refusalSummaryPanel = screen
-      .getByRole("heading", { level: 3, name: "Refusal Executor Summary" })
+      .getByRole("heading", { level: 3, name: "拒绝执行器摘要" })
       .closest("article");
     expect(refusalSummaryPanel).not.toBeNull();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("refund")).toBeInTheDocument();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("refused_preflight")).toBeInTheDocument();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("Committed")).toBeInTheDocument();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("Rolled back")).toBeInTheDocument();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("Refused statements")).toBeInTheDocument();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("Failure output")).toBeInTheDocument();
-    expect(within(refusalSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText("refund"),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText("refused_preflight"),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText("已提交"),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText("已回滚"),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText(
+        "拒绝语句数",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText("失败输出"),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalSummaryPanel as HTMLElement).getByText(
+        "行数不匹配",
+      ),
+    ).toBeInTheDocument();
     const refusalContractPanel = screen
-      .getByRole("heading", { level: 3, name: "Refusal Summary Contract" })
+      .getByRole("heading", { level: 3, name: "拒绝摘要契约" })
       .closest("article");
     expect(refusalContractPanel).not.toBeNull();
-    expect(within(refusalContractPanel as HTMLElement).getByText("refused_preflight, refused_rollback")).toBeInTheDocument();
-    expect(within(refusalContractPanel as HTMLElement).getByText("Preflight refused statements")).toBeInTheDocument();
-    expect(within(refusalContractPanel as HTMLElement).getByText("Rollback refused statements")).toBeInTheDocument();
+    expect(
+      within(refusalContractPanel as HTMLElement).getByText(
+        "refused_preflight, refused_rollback",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalContractPanel as HTMLElement).getByText(
+        "预检拒绝语句数",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(refusalContractPanel as HTMLElement).getByText(
+        "回滚拒绝语句数",
+      ),
+    ).toBeInTheDocument();
     const rollbackContractPanel = screen
-      .getByRole("heading", { level: 3, name: "Rollback Executor Summary Contract" })
+      .getByRole("heading", {
+        level: 3,
+        name: "回滚执行器摘要契约",
+      })
       .closest("article");
     expect(rollbackContractPanel).not.toBeNull();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("refused_rollback")).toBeInTheDocument();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("one_or_more")).toBeInTheDocument();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("boolean_only")).toBeInTheDocument();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("Failure output")).toBeInTheDocument();
-    expect(screen.getByText("Compatible fields")).toBeInTheDocument();
-    expect(screen.getByText("Constraints checked")).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText(
+        "refused_rollback",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText("one_or_more"),
+    ).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText("boolean_only"),
+    ).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText("失败输出"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("兼容字段")).toBeInTheDocument();
+    expect(screen.getByText("已检查约束")).toBeInTheDocument();
     expect(screen.getAllByText("3").length).toBeGreaterThan(0);
     expectLedgerBackendSmokeReadiness({
       contractCheckNetworkCall: true,
@@ -4941,9 +8264,13 @@ describe("App", () => {
     });
 
     const dryRunCall = fetchMock.mock.calls.find(
-      ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
+      ([url, init]) =>
+        String(url).includes("/admin/ledger/adjustments/dry-run") &&
+        init?.method === "POST",
     );
-    expect(String(dryRunCall?.[0])).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(String(dryRunCall?.[0])).toBe(
+      "/api/control-plane/admin/ledger/adjustments/dry-run",
+    );
     expect(JSON.parse(String(dryRunCall?.[1]?.body))).toEqual({
       amount: "0.25000000",
       currency: "USD",
@@ -4959,7 +8286,9 @@ describe("App", () => {
         init?.method === "POST" &&
         JSON.parse(String(init.body)).mode === "execute_contract",
     );
-    expect(String(executeContractCall?.[0])).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(String(executeContractCall?.[0])).toBe(
+      "/api/control-plane/admin/ledger/adjustments/dry-run",
+    );
     expect(JSON.parse(String(executeContractCall?.[1]?.body))).toEqual({
       amount: "0.25000000",
       currency: "USD",
@@ -4972,32 +8301,66 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
     expect(document.body.textContent).not.toContain("dedupe_replay_state");
-    expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
+    expect(document.body.textContent).not.toContain(
+      "dedupe_reservation_for_update",
+    );
     expect(document.body.textContent).not.toContain("operation_key");
-    expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
-    expect(document.body.textContent).not.toContain("operation-key-refusal-hidden");
-    expect(document.body.textContent).not.toContain("operation-key-refusal-contract-hidden");
-    expect(document.body.textContent).not.toContain("operation-key-rollback-contract-hidden");
+    expect(document.body.textContent).not.toContain(
+      "operation-key-secret-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "operation-key-refusal-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "operation-key-refusal-contract-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "operation-key-rollback-contract-hidden",
+    );
     expect(document.body.textContent).not.toContain("error_detail");
-    expect(document.body.textContent).not.toContain("ledger-executor-contract-hidden");
-    expect(document.body.textContent).not.toContain("ledger-executor-refusal-hidden");
-    expect(document.body.textContent).not.toContain("ledger-refusal-contract-hidden");
-    expect(document.body.textContent).not.toContain("ledger-rollback-contract-hidden");
+    expect(document.body.textContent).not.toContain(
+      "ledger-executor-contract-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "ledger-executor-refusal-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "ledger-refusal-contract-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "ledger-rollback-contract-hidden",
+    );
     expect(document.body.textContent).not.toContain("credential_material");
     expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
-    expect(document.body.textContent).not.toContain("raw executor contract metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor refusal metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor refusal contract metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor rollback contract metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor refusal error detail hidden");
-    expect(document.body.textContent).not.toContain("raw executor refusal contract error hidden");
-    expect(document.body.textContent).not.toContain("raw executor rollback contract error hidden");
+    expect(document.body.textContent).not.toContain(
+      "raw executor contract metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor refusal metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor refusal contract metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor rollback contract metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor refusal error detail hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor refusal contract error hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor rollback contract error hidden",
+    );
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(
       fetchMock.mock.calls.filter(
-        ([url]) => String(url).includes("/admin/ledger/adjustments/") && !String(url).includes("/dry-run"),
+        ([url]) =>
+          String(url).includes("/admin/ledger/adjustments/") &&
+          !String(url).includes("/dry-run"),
       ),
     ).toHaveLength(0);
   });
@@ -5007,19 +8370,33 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
-    await user.type(dryRunPanel.getByLabelText("Reason"), "customer credit");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.type(
+      dryRunPanel.getByLabelText("Request ID"),
+      "00000000-0000-0000-0000-000000000090",
+    );
+    await user.type(dryRunPanel.getByLabelText("原因"), "customer credit");
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
 
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) =>
@@ -5029,15 +8406,31 @@ describe("App", () => {
       ),
     ).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
-    expect(await screen.findByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Ledger adjustment execute result" })).toBeInTheDocument();
-    expect(screen.getByText("execute_write_network_call=true")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "账本调整已应用：账本和审计写入已确认。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "账本调整执行结果" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("execute_write_network_call=true"),
+    ).toBeInTheDocument();
     expect(screen.getByText("execute_result_fresh=true")).toBeInTheDocument();
     expect(screen.getByText("execute_outcome=applied")).toBeInTheDocument();
-    expect(await screen.findByText("Ledger entries refreshed after execute; this execute result matches the current dry-run payload.")).toBeInTheDocument();
-    expect(screen.getByText("ledger_entries_refresh_after_execute=success")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "执行后账本条目已刷新；本次执行结果匹配当前 dry-run payload。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ledger_entries_refresh_after_execute=success"),
+    ).toBeInTheDocument();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: true,
       executeEnabled: true,
@@ -5049,31 +8442,84 @@ describe("App", () => {
       status: "applied",
     });
     expect(screen.getAllByText("ledger_write=true").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("audit_log_write=true").length).toBeGreaterThan(0);
-    expect(screen.getByRole("heading", { level: 3, name: "Execute Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Executed Ledger Entry" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Ledger Executor Summary" })).toBeInTheDocument();
+    expect(screen.getAllByText("audit_log_write=true").length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getByRole("heading", { level: 3, name: "执行摘要" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "已执行账本条目" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).toBeInTheDocument();
     const executorSummaryPanel = screen
-      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .getByRole("heading", { level: 3, name: "账本执行器摘要" })
       .closest("article");
     expect(executorSummaryPanel).not.toBeNull();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("billing_ledger_postgres_executor_summary.v1")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("control_plane_transactional_admin_ledger_adjustment_writer")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("refund")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("applied")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("insert_ledger_entry")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getAllByText("1").length).toBeGreaterThanOrEqual(4);
-    expect(screen.getByRole("heading", { level: 3, name: "Executor Summary Contract" })).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "billing_ledger_postgres_executor_summary.v1",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "control_plane_transactional_admin_ledger_adjustment_writer",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText("refund"),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText("applied"),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "insert_ledger_entry",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "行数不匹配",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getAllByText("1").length,
+    ).toBeGreaterThanOrEqual(4);
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "执行器摘要契约",
+      }),
+    ).toBeInTheDocument();
     const rollbackContractPanel = screen
-      .getByRole("heading", { level: 3, name: "Rollback Executor Summary Contract" })
+      .getByRole("heading", {
+        level: 3,
+        name: "回滚执行器摘要契约",
+      })
       .closest("article");
     expect(rollbackContractPanel).not.toBeNull();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("refused_rollback")).toBeInTheDocument();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("one_or_more")).toBeInTheDocument();
-    expect(within(rollbackContractPanel as HTMLElement).getByText("boolean_only")).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText(
+        "refused_rollback",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText("one_or_more"),
+    ).toBeInTheDocument();
+    expect(
+      within(rollbackContractPanel as HTMLElement).getByText("boolean_only"),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("00000000...").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("control_plane_transactional_admin_ledger_adjustment_writer").length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText(
+        "control_plane_transactional_admin_ledger_adjustment_writer",
+      ).length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("6").length).toBeGreaterThan(0);
 
     const executeCall = fetchMock.mock.calls.find(
@@ -5082,7 +8528,9 @@ describe("App", () => {
         init?.method === "POST" &&
         JSON.parse(String(init.body)).mode === "execute",
     );
-    expect(String(executeCall?.[0])).toBe("/api/control-plane/admin/ledger/adjustments/dry-run");
+    expect(String(executeCall?.[0])).toBe(
+      "/api/control-plane/admin/ledger/adjustments/dry-run",
+    );
     expect(JSON.parse(String(executeCall?.[1]?.body))).toEqual({
       amount: "0.25000000",
       currency: "USD",
@@ -5095,36 +8543,73 @@ describe("App", () => {
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.filter(
-          ([url, init]) => String(url).includes("/admin/ledger/entries") && (init?.method ?? "GET") === "GET",
+          ([url, init]) =>
+            String(url).includes("/admin/ledger/entries") &&
+            (init?.method ?? "GET") === "GET",
         ).length,
       ).toBeGreaterThanOrEqual(2),
     );
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
-    expect(document.body.textContent).not.toContain("dedupe_reservation_for_update");
+    expect(document.body.textContent).not.toContain(
+      "dedupe_reservation_for_update",
+    );
     expect(document.body.textContent).not.toContain("operation_key");
-    expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
+    expect(document.body.textContent).not.toContain(
+      "operation-key-secret-hidden",
+    );
     expect(document.body.textContent).not.toContain("error_detail");
-    expect(document.body.textContent).not.toContain("ledger-executor-summary-hidden");
+    expect(document.body.textContent).not.toContain(
+      "ledger-executor-summary-hidden",
+    );
     expect(document.body.textContent).not.toContain("credential_material");
     expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
-    expect(document.body.textContent).not.toContain("raw execute metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executed ledger metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor summary metadata hidden");
+    expect(document.body.textContent).not.toContain(
+      "raw execute metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executed ledger metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor summary metadata hidden",
+    );
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-response-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-response-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-execute-response-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("ledger-execute-response-hidden"),
+    );
 
-    await user.clear(dryRunPanel.getByLabelText("Amount"));
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
+    await user.clear(dryRunPanel.getByLabelText("金额"));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.10000000");
 
-    expect(await screen.findByText("Form changed after dry-run. Run dry-run again before execute can be considered.")).toBeInTheDocument();
-    expect(screen.getAllByText("fresh_dry_run=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
-    expect(screen.queryByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).not.toBeInTheDocument();
-    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "表单在 dry-run 后已变更。请重新运行 dry-run 后再评估执行。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("fresh_dry_run=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    ).toBeDisabled();
+    expect(
+      screen.queryByText(
+        "账本调整已应用：账本和审计写入已确认。",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("execute_outcome=applied"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) =>
@@ -5136,28 +8621,53 @@ describe("App", () => {
   });
 
   it("renders idempotent ledger adjustment execute replay without claiming new writes", async () => {
-    const fetchMock = stubAdminFetch({ ledgerAdjustmentExecuteStatus: "idempotent" });
+    const fetchMock = stubAdminFetch({
+      ledgerAdjustmentExecuteStatus: "idempotent",
+    });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.selectOptions(dryRunPanel.getByLabelText("Operation"), "adjust");
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
-    await user.type(dryRunPanel.getByLabelText("Wallet ID"), "00000000-0000-0000-0000-000000000040");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.selectOptions(dryRunPanel.getByRole("combobox", { name: "操作" }), "adjust");
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.10000000");
+    await user.type(
+      dryRunPanel.getByLabelText("Wallet ID"),
+      "00000000-0000-0000-0000-000000000040",
+    );
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
-    expect(await screen.findByText("Idempotent replay: existing ledger entry returned without new ledger or audit writes.")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "幂等重放：返回既有账本条目，没有新的账本或审计写入。",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("execute_result_fresh=true")).toBeInTheDocument();
     expect(screen.getByText("execute_outcome=idempotent")).toBeInTheDocument();
-    expect(await screen.findByText("Ledger entries refreshed after execute; this execute result matches the current dry-run payload.")).toBeInTheDocument();
-    expect(screen.getByText("ledger_entries_refresh_after_execute=success")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "执行后账本条目已刷新；本次执行结果匹配当前 dry-run payload。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("ledger_entries_refresh_after_execute=success"),
+    ).toBeInTheDocument();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: true,
       executeEnabled: true,
@@ -5168,17 +8678,31 @@ describe("App", () => {
       ledgerRefreshStatus: "success",
       status: "idempotent",
     });
-    expect(screen.getAllByText("ledger_write=false").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("audit_log_write=false").length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText("ledger_write=false").length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getAllByText("audit_log_write=false").length,
+    ).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("idempotent").length).toBeGreaterThan(0);
     const executorSummaryPanel = screen
-      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .getByRole("heading", { level: 3, name: "账本执行器摘要" })
       .closest("article");
     expect(executorSummaryPanel).not.toBeNull();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("adjust")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("idempotent")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getAllByText("0").length).toBeGreaterThanOrEqual(4);
-    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText("adjust"),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText("idempotent"),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getAllByText("0").length,
+    ).toBeGreaterThanOrEqual(4);
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "行数不匹配",
+      ),
+    ).toBeInTheDocument();
 
     const executeCall = fetchMock.mock.calls.find(
       ([url, init]) =>
@@ -5196,101 +8720,175 @@ describe("App", () => {
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("server_dedupe_digest");
     expect(document.body.textContent).not.toContain("operation_key");
-    expect(document.body.textContent).not.toContain("operation-key-secret-hidden");
+    expect(document.body.textContent).not.toContain(
+      "operation-key-secret-hidden",
+    );
     expect(document.body.textContent).not.toContain("error_detail");
-    expect(document.body.textContent).not.toContain("ledger-executor-summary-hidden");
+    expect(document.body.textContent).not.toContain(
+      "ledger-executor-summary-hidden",
+    );
     expect(document.body.textContent).not.toContain("credential_material");
     expect(document.body.textContent).not.toContain("dedupe_material");
     expect(document.body.textContent).not.toContain("raw metadata");
   });
 
-  async function expectLedgerRefreshFailureKeepsFreshExecuteResult(outcome: "applied" | "idempotent") {
+  async function expectLedgerRefreshFailureKeepsFreshExecuteResult(
+    outcome: "applied" | "idempotent",
+  ) {
     const fetchMock = stubAdminFetch({
       ledgerAdjustmentExecuteStatus: outcome,
       ledgerEntriesRefreshFails: true,
     });
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
     if (outcome === "applied") {
-      await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-      await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-      await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
+      await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+      await user.type(
+        dryRunPanel.getByLabelText("关联账本条目"),
+        "00000000-0000-0000-0000-000000000091",
+      );
+      await user.type(
+        dryRunPanel.getByLabelText("Request ID"),
+        "00000000-0000-0000-0000-000000000090",
+      );
     } else {
-      await user.selectOptions(dryRunPanel.getByLabelText("Operation"), "adjust");
-      await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
-      await user.type(dryRunPanel.getByLabelText("Wallet ID"), "00000000-0000-0000-0000-000000000040");
+      await user.selectOptions(
+        dryRunPanel.getByRole("combobox", { name: "操作" }),
+        "adjust",
+      );
+      await user.type(dryRunPanel.getByLabelText("金额"), "0.10000000");
+      await user.type(
+        dryRunPanel.getByLabelText("Wallet ID"),
+        "00000000-0000-0000-0000-000000000040",
+      );
     }
 
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
     const expectedReadiness =
       outcome === "applied"
-        ? "Ledger adjustment applied: ledger and audit writes were confirmed."
-        : "Idempotent replay: existing ledger entry returned without new ledger or audit writes.";
+        ? "账本调整已应用：账本和审计写入已确认。"
+        : "幂等重放：返回既有账本条目，没有新的账本或审计写入。";
 
     expect(await screen.findByText(expectedReadiness)).toBeInTheDocument();
-    const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
+    const readinessRegion = screen.getByRole("region", {
+      name: "账本调整执行准备",
+    });
     const readinessPanel = within(readinessRegion);
     expect(readinessPanel.getAllByText(outcome).length).toBeGreaterThan(0);
     expect(readinessPanel.queryByText("failed")).not.toBeInTheDocument();
-    expect(readinessPanel.queryByText("future_writer_required")).not.toBeInTheDocument();
+    expect(
+      readinessPanel.queryByText("future_writer_required"),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("execute_result_fresh=true")).toBeInTheDocument();
     expect(screen.getByText(`execute_outcome=${outcome}`)).toBeInTheDocument();
-    expect(screen.getByText("ledger_entries_refresh_after_execute=error")).toBeInTheDocument();
+    expect(
+      screen.getByText("ledger_entries_refresh_after_execute=error"),
+    ).toBeInTheDocument();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: true,
       executeEnabled: true,
       executeOutcome: outcome,
       executeResultFresh: true,
       executeWriteNetworkCall: true,
-      handoffState: outcome === "applied" ? "appliedRefreshError" : "idempotentRefreshError",
+      handoffState:
+        outcome === "applied"
+          ? "appliedRefreshError"
+          : "idempotentRefreshError",
       ledgerRefreshStatus: "error",
       status: outcome,
     });
     expect(
       await screen.findByText(
-        "Execute result matches the current dry-run payload, but ledger entries refresh failed. Request failed.",
+        "执行结果匹配当前 dry-run payload，但账本条目刷新失败。Request failed.",
       ),
     ).toBeInTheDocument();
 
     const executorSummaryPanel = screen
-      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .getByRole("heading", { level: 3, name: "账本执行器摘要" })
       .closest("article");
     expect(executorSummaryPanel).not.toBeNull();
-    expect(within(executorSummaryPanel as HTMLElement).getByText(outcome)).toBeInTheDocument();
     expect(
-      within(executorSummaryPanel as HTMLElement).getByText(outcome === "applied" ? "refund" : "adjust"),
+      within(executorSummaryPanel as HTMLElement).getByText(outcome),
     ).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Refusal Executor Summary" })).not.toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        outcome === "applied" ? "refund" : "adjust",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "行数不匹配",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "拒绝执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
 
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-refresh-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-refresh-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-refresh-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("ledger-refresh-hidden"),
+    );
     expect(document.body.textContent).not.toContain("operation_key");
     expect(document.body.textContent).not.toContain("raw metadata");
-    expect(document.body.textContent).not.toContain("raw executor error detail");
+    expect(document.body.textContent).not.toContain(
+      "raw executor error detail",
+    );
     expect(document.body.textContent).not.toContain("credential");
     expect(document.body.textContent).not.toContain("Cookie");
     expect(document.body.textContent).not.toContain("token");
 
-    await user.clear(dryRunPanel.getByLabelText("Amount"));
-    await user.type(dryRunPanel.getByLabelText("Amount"), outcome === "applied" ? "0.10000000" : "0.20000000");
+    await user.clear(dryRunPanel.getByLabelText("金额"));
+    await user.type(
+      dryRunPanel.getByLabelText("金额"),
+      outcome === "applied" ? "0.10000000" : "0.20000000",
+    );
 
-    expect(await screen.findByText("Form changed after dry-run. Run dry-run again before execute can be considered.")).toBeInTheDocument();
-    expect(screen.getAllByText("fresh_dry_run=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expect(
+      await screen.findByText(
+        "表单在 dry-run 后已变更。请重新运行 dry-run 后再评估执行。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("fresh_dry_run=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    ).toBeDisabled();
     expect(screen.queryByText(expectedReadiness)).not.toBeInTheDocument();
-    expect(screen.queryByText(`execute_outcome=${outcome}`)).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(`execute_outcome=${outcome}`),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
     expect(
       fetchMock.mock.calls.filter(
         ([url, init]) =>
@@ -5309,38 +8907,62 @@ describe("App", () => {
     await expectLedgerRefreshFailureKeepsFreshExecuteResult("idempotent");
   });
 
-  async function expectLedgerExecuteToleratesBackendResponseShape(outcome: "applied" | "idempotent") {
+  async function expectLedgerExecuteToleratesBackendResponseShape(
+    outcome: "applied" | "idempotent",
+  ) {
     const fetchMock = stubAdminFetch({
       ledgerAdjustmentExecuteResponseShape: "tolerant",
       ledgerAdjustmentExecuteStatus: outcome,
     });
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
     if (outcome === "applied") {
-      await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-      await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-      await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
+      await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+      await user.type(
+        dryRunPanel.getByLabelText("关联账本条目"),
+        "00000000-0000-0000-0000-000000000091",
+      );
+      await user.type(
+        dryRunPanel.getByLabelText("Request ID"),
+        "00000000-0000-0000-0000-000000000090",
+      );
     } else {
-      await user.selectOptions(dryRunPanel.getByLabelText("Operation"), "adjust");
-      await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
-      await user.type(dryRunPanel.getByLabelText("Wallet ID"), "00000000-0000-0000-0000-000000000040");
+      await user.selectOptions(
+        dryRunPanel.getByRole("combobox", { name: "操作" }),
+        "adjust",
+      );
+      await user.type(dryRunPanel.getByLabelText("金额"), "0.10000000");
+      await user.type(
+        dryRunPanel.getByLabelText("Wallet ID"),
+        "00000000-0000-0000-0000-000000000040",
+      );
     }
 
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
     expect(
       await screen.findByText(
         outcome === "applied"
-          ? "Ledger adjustment applied: ledger and audit writes were confirmed."
-          : "Idempotent replay: existing ledger entry returned without new ledger or audit writes.",
+          ? "账本调整已应用：账本和审计写入已确认。"
+          : "幂等重放：返回既有账本条目，没有新的账本或审计写入。",
       ),
     ).toBeInTheDocument();
     expectLedgerBackendSmokeReadiness({
@@ -5349,43 +8971,100 @@ describe("App", () => {
       executeOutcome: outcome,
       executeResultFresh: true,
       executeWriteNetworkCall: true,
-      handoffState: outcome === "applied" ? "appliedRefreshSuccess" : "idempotentRefreshSuccess",
+      handoffState:
+        outcome === "applied"
+          ? "appliedRefreshSuccess"
+          : "idempotentRefreshSuccess",
       ledgerRefreshStatus: "success",
       status: outcome,
     });
-    expect(screen.getByRole("heading", { level: 3, name: "Execute Summary" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Executed Ledger Entry" })).toBeInTheDocument();
-    expect(screen.getByText("No safe ledger entry summary returned.")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "执行摘要" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 3, name: "已执行账本条目" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("没有返回安全账本条目摘要。"),
+    ).toBeInTheDocument();
     const executorSummaryPanel = screen
-      .getByRole("heading", { level: 3, name: "Ledger Executor Summary" })
+      .getByRole("heading", { level: 3, name: "账本执行器摘要" })
       .closest("article");
     expect(executorSummaryPanel).not.toBeNull();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("billing_ledger_postgres_executor_summary.v1")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText(outcome === "applied" ? "refund" : "adjust")).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText(outcome)).toBeInTheDocument();
-    expect(within(executorSummaryPanel as HTMLElement).getByText("Row count mismatch")).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "billing_ledger_postgres_executor_summary.v1",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        outcome === "applied" ? "refund" : "adjust",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(outcome),
+    ).toBeInTheDocument();
+    expect(
+      within(executorSummaryPanel as HTMLElement).getByText(
+        "行数不匹配",
+      ),
+    ).toBeInTheDocument();
     if (outcome === "applied") {
-      expect(within(executorSummaryPanel as HTMLElement).getByText("insert_ledger_entry")).toBeInTheDocument();
+      expect(
+        within(executorSummaryPanel as HTMLElement).getByText(
+          "insert_ledger_entry",
+        ),
+      ).toBeInTheDocument();
     }
 
-    expect(document.body.textContent).not.toContain("safe_backend_unknown_marker");
-    expect(document.body.textContent).not.toContain("safe_executor_unknown_marker");
-    expect(document.body.textContent).not.toContain("safe_nested_unknown_marker");
-    expect(document.body.textContent).not.toContain("safe_transaction_unknown_marker");
+    expect(document.body.textContent).not.toContain(
+      "safe_backend_unknown_marker",
+    );
+    expect(document.body.textContent).not.toContain(
+      "safe_executor_unknown_marker",
+    );
+    expect(document.body.textContent).not.toContain(
+      "safe_nested_unknown_marker",
+    );
+    expect(document.body.textContent).not.toContain(
+      "safe_transaction_unknown_marker",
+    );
     expect(document.body.textContent).not.toContain("operation_key");
-    expect(document.body.textContent).not.toContain("operation-key-response-tolerance-hidden");
-    expect(document.body.textContent).not.toContain("operation-key-executor-tolerance-hidden");
+    expect(document.body.textContent).not.toContain(
+      "operation-key-response-tolerance-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "operation-key-executor-tolerance-hidden",
+    );
     expect(document.body.textContent).not.toContain("raw metadata");
-    expect(document.body.textContent).not.toContain("raw execute tolerance metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor tolerance metadata hidden");
-    expect(document.body.textContent).not.toContain("raw executor error detail");
-    expect(document.body.textContent).not.toContain("raw executor tolerance error detail hidden");
-    expect(document.body.textContent).not.toContain("raw executor response tolerance detail hidden");
-    expect(document.body.textContent).not.toContain("credential material executor tolerance hidden");
-    expect(document.body.textContent).not.toContain("dedupe material executor tolerance hidden");
-    expect(document.body.textContent).not.toContain("raw execute validated plan hidden");
+    expect(document.body.textContent).not.toContain(
+      "raw execute tolerance metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor tolerance metadata hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor error detail",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor tolerance error detail hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor response tolerance detail hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "credential material executor tolerance hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "dedupe material executor tolerance hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw execute validated plan hidden",
+    );
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-tolerance-plan-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-tolerance-plan-hidden"),
+    );
     expect(document.body.textContent).not.toContain("Cookie");
     expect(document.body.textContent).not.toContain("token");
 
@@ -5408,26 +9087,48 @@ describe("App", () => {
   });
 
   it("redacts ledger adjustment execute failures and marks failed state", async () => {
-    const fetchMock = stubAdminFetch({ ledgerAdjustmentErrorEnvelopeData: true, ledgerAdjustmentExecuteStatus: "failed" });
+    const fetchMock = stubAdminFetch({
+      ledgerAdjustmentErrorEnvelopeData: true,
+      ledgerAdjustmentExecuteStatus: "failed",
+    });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
-    expect((await screen.findAllByText("Ledger adjustment execute failed.")).length).toBeGreaterThan(0);
-    const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
+    expect(
+      (await screen.findAllByText("账本调整执行失败。")).length,
+    ).toBeGreaterThan(0);
+    const readinessRegion = screen.getByRole("region", {
+      name: "账本调整执行准备",
+    });
     expect(within(readinessRegion).getByText("failed")).toBeInTheDocument();
-    expect(screen.getByText("execute_write_network_call=true")).toBeInTheDocument();
+    expect(
+      screen.getByText("execute_write_network_call=true"),
+    ).toBeInTheDocument();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: true,
       executeEnabled: true,
@@ -5436,17 +9137,33 @@ describe("App", () => {
       status: "failed",
     });
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-failed-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-failed-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-execute-failed-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("ledger-execute-failed-hidden"),
+    );
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("raw request");
     expect(document.body.textContent).not.toContain("raw metadata");
-    expect(document.body.textContent).not.toContain("safe_error_unknown_marker");
-    expect(document.body.textContent).not.toContain("operation-key-failed-envelope-hidden");
-    expect(document.body.textContent).not.toContain("raw executor error envelope hidden");
-    expect(document.body.textContent).not.toContain("credential material error envelope hidden");
-    expect(document.body.textContent).not.toContain("dedupe material error envelope hidden");
-    expect(document.body.textContent).not.toContain("token error envelope hidden");
+    expect(document.body.textContent).not.toContain(
+      "safe_error_unknown_marker",
+    );
+    expect(document.body.textContent).not.toContain(
+      "operation-key-failed-envelope-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor error envelope hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "credential material error envelope hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "dedupe material error envelope hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "token error envelope hidden",
+    );
 
     expect(
       fetchMock.mock.calls.filter(
@@ -5459,31 +9176,67 @@ describe("App", () => {
   });
 
   it("marks ledger adjustment execute blocked without failed or success smoke markers", async () => {
-    const fetchMock = stubAdminFetch({ ledgerAdjustmentErrorEnvelopeData: true, ledgerAdjustmentExecuteStatus: "blocked" });
+    const fetchMock = stubAdminFetch({
+      ledgerAdjustmentErrorEnvelopeData: true,
+      ledgerAdjustmentExecuteStatus: "blocked",
+    });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
-    expect((await screen.findAllByText("Ledger adjustment execute was blocked.")).length).toBeGreaterThan(0);
-    const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
+    expect(
+      (await screen.findAllByText("账本调整执行被阻止。"))
+        .length,
+    ).toBeGreaterThan(0);
+    const readinessRegion = screen.getByRole("region", {
+      name: "账本调整执行准备",
+    });
     expect(within(readinessRegion).getByText("blocked")).toBeInTheDocument();
-    expect(within(readinessRegion).queryByText("failed")).not.toBeInTheDocument();
-    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
-    expect(screen.queryByText("execute_outcome=idempotent")).not.toBeInTheDocument();
-    expect(screen.queryByText("ledger_entries_refresh_after_execute=success")).not.toBeInTheDocument();
-    expect(screen.queryByText("ledger_entries_refresh_after_execute=error")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
+    expect(
+      within(readinessRegion).queryByText("failed"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("execute_outcome=applied"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("execute_outcome=idempotent"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("ledger_entries_refresh_after_execute=success"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("ledger_entries_refresh_after_execute=error"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: true,
       executeEnabled: true,
@@ -5492,16 +9245,26 @@ describe("App", () => {
       status: "blocked",
     });
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-blocked-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-execute-blocked-hidden"),
+    );
     expect(document.body.textContent).not.toContain("operation_key");
     expect(document.body.textContent).not.toContain("raw metadata");
-    expect(document.body.textContent).not.toContain("raw executor error detail");
+    expect(document.body.textContent).not.toContain(
+      "raw executor error detail",
+    );
     expect(document.body.textContent).not.toContain("credential");
     expect(document.body.textContent).not.toContain("Cookie");
     expect(document.body.textContent).not.toContain("token");
-    expect(document.body.textContent).not.toContain("safe_error_unknown_marker");
-    expect(document.body.textContent).not.toContain("operation-key-blocked-envelope-hidden");
-    expect(document.body.textContent).not.toContain("raw executor error envelope hidden");
+    expect(document.body.textContent).not.toContain(
+      "safe_error_unknown_marker",
+    );
+    expect(document.body.textContent).not.toContain(
+      "operation-key-blocked-envelope-hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw executor error envelope hidden",
+    );
 
     expect(
       fetchMock.mock.calls.filter(
@@ -5514,48 +9277,128 @@ describe("App", () => {
   });
 
   it("clears prior ledger execute success when a later execute fails", async () => {
-    const fetchMock = stubAdminFetch({ ledgerAdjustmentExecuteStatuses: ["applied", "failed"] });
+    const fetchMock = stubAdminFetch({
+      ledgerAdjustmentExecuteStatuses: ["applied", "failed"],
+    });
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
-    expect(await screen.findByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
+    expect(
+      await screen.findByText(
+        "账本调整已应用：账本和审计写入已确认。",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("execute_outcome=applied")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Ledger Executor Summary" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Check execute contract" }));
+    await user.click(
+      screen.getByRole("button", { name: "检查执行契约" }),
+    );
 
-    expect(await screen.findByText(/future_writer_required: backend validated the plan/)).toBeInTheDocument();
-    expect(within(screen.getByRole("region", { name: "Ledger adjustment execute readiness" })).getByText("blocked")).toBeInTheDocument();
-    expect(screen.queryByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).not.toBeInTheDocument();
-    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Refusal Executor Summary" })).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /future_writer_required：后端已验证计划/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(
+        screen.getByRole("region", {
+          name: "账本调整执行准备",
+        }),
+      ).getByText("blocked"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "账本调整已应用：账本和审计写入已确认。",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("execute_outcome=applied"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "拒绝执行器摘要",
+      }),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Execute ledger adjustment" }));
+    await user.click(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    );
 
-    expect((await screen.findAllByText("Ledger adjustment execute failed.")).length).toBeGreaterThan(0);
-    const readinessRegion = screen.getByRole("region", { name: "Ledger adjustment execute readiness" });
+    expect(
+      (await screen.findAllByText("账本调整执行失败。")).length,
+    ).toBeGreaterThan(0);
+    const readinessRegion = screen.getByRole("region", {
+      name: "账本调整执行准备",
+    });
     expect(within(readinessRegion).getByText("failed")).toBeInTheDocument();
-    expect(screen.queryByText("Ledger adjustment applied: ledger and audit writes were confirmed.")).not.toBeInTheDocument();
-    expect(screen.queryByText("execute_outcome=applied")).not.toBeInTheDocument();
-    expect(screen.queryByText("ledger_entries_refresh_after_execute=success")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Ledger Executor Summary" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { level: 3, name: "Refusal Executor Summary" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "账本调整已应用：账本和审计写入已确认。",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("execute_outcome=applied"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("ledger_entries_refresh_after_execute=success"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "账本执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        level: 3,
+        name: "拒绝执行器摘要",
+      }),
+    ).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-execute-failed-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-execute-failed-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-execute-failed-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("ledger-execute-failed-hidden"),
+    );
     expect(document.body.textContent).not.toContain("operation_key");
     expect(document.body.textContent).not.toContain("raw metadata");
 
@@ -5574,26 +9417,50 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.type(dryRunPanel.getByLabelText("Request ID"), "00000000-0000-0000-0000-000000000090");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.type(
+      dryRunPanel.getByLabelText("Request ID"),
+      "00000000-0000-0000-0000-000000000090",
+    );
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
 
-    expect(await screen.findByRole("region", { name: "Ledger adjustment dry-run result" })).toBeInTheDocument();
-    expect(screen.getAllByText("fresh_dry_run=true").length).toBeGreaterThanOrEqual(2);
+    expect(
+      await screen.findByRole("region", {
+        name: "账本调整 dry-run 结果",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("fresh_dry_run=true").length,
+    ).toBeGreaterThanOrEqual(2);
 
-    await user.clear(dryRunPanel.getByLabelText("Amount"));
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.10000000");
+    await user.clear(dryRunPanel.getByLabelText("金额"));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.10000000");
 
-    expect(await screen.findByText("Form changed after dry-run. Run dry-run again before execute can be considered.")).toBeInTheDocument();
-    expect(screen.getAllByText("fresh_dry_run=false").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole("button", { name: "Execute ledger adjustment" })).toBeDisabled();
+    expect(
+      await screen.findByText(
+        "表单在 dry-run 后已变更。请重新运行 dry-run 后再评估执行。",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText("fresh_dry_run=false").length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByRole("button", { name: "执行账本调整" }),
+    ).toBeDisabled();
     expectLedgerBackendSmokeReadiness({
       dryRunFresh: false,
       executeEnabled: false,
@@ -5603,7 +9470,9 @@ describe("App", () => {
     });
     expect(
       fetchMock.mock.calls.filter(
-        ([url, init]) => String(url).includes("/admin/ledger/adjustments/dry-run") && init?.method === "POST",
+        ([url, init]) =>
+          String(url).includes("/admin/ledger/adjustments/dry-run") &&
+          init?.method === "POST",
       ),
     ).toHaveLength(1);
     expect(
@@ -5616,7 +9485,9 @@ describe("App", () => {
     ).toHaveLength(0);
     expect(
       fetchMock.mock.calls.filter(
-        ([url]) => String(url).includes("/admin/ledger/adjustments/") && !String(url).includes("/dry-run"),
+        ([url]) =>
+          String(url).includes("/admin/ledger/adjustments/") &&
+          !String(url).includes("/dry-run"),
       ),
     ).toHaveLength(0);
   });
@@ -5626,20 +9497,31 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
-    await user.click(await screen.findByRole("tab", { name: "Ledger Overview" }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
+    await user.click(
+      await screen.findByRole("tab", { name: "账本概览" }),
+    );
 
-    const dryRunRegion = await screen.findByRole("region", { name: "Ledger adjustment dry-run" });
+    const dryRunRegion = await screen.findByRole("region", {
+      name: "账本调整 dry-run",
+    });
     const dryRunPanel = within(dryRunRegion);
 
-    await user.type(dryRunPanel.getByLabelText("Amount"), "0.25000000");
-    await user.type(dryRunPanel.getByLabelText("Related ledger entry"), "00000000-0000-0000-0000-000000000091");
-    await user.click(dryRunPanel.getByRole("button", { name: "Plan dry-run" }));
+    await user.type(dryRunPanel.getByLabelText("金额"), "0.25000000");
+    await user.type(
+      dryRunPanel.getByLabelText("关联账本条目"),
+      "00000000-0000-0000-0000-000000000091",
+    );
+    await user.click(dryRunPanel.getByRole("button", { name: "规划 dry-run" }));
 
     expect(await screen.findByText("Request failed.")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("ledger-adjust-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("ledger-adjust-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("ledger-adjust-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("ledger-adjust-hidden"),
+    );
     expect(document.body.textContent).not.toContain("idempotency_key");
     expect(document.body.textContent).not.toContain("raw metadata");
   });
@@ -5649,10 +9531,15 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
 
-    const createRegion = await screen.findByRole("region", { name: "Create price version" });
-    const createPanel = within(createRegion);
+    await user.click(
+      await screen.findByRole("button", { name: "创建价格版本" }),
+    );
+    const createDialog = await screen.findByRole("dialog", {
+      name: "创建价格版本对话框",
+    });
+    const createPanel = within(createDialog);
     const pricingRules = {
       currency: "USD",
       fixed_request_cost: "0.00000000",
@@ -5661,24 +9548,39 @@ describe("App", () => {
       scale: 8,
     };
 
-    await user.type(createPanel.getByLabelText("Price book ID"), "price-book-2");
-    await user.type(createPanel.getByLabelText("Model ID"), "model-2");
-    await user.type(createPanel.getByLabelText("Version"), "2026-07");
-    await user.selectOptions(createPanel.getByLabelText("Status"), "active");
-    await user.type(createPanel.getByLabelText("Effective at"), "2026-07-01T00:00:00Z");
-    await user.type(createPanel.getByLabelText("Retired at"), "2026-09-01T00:00:00Z");
-    fireEvent.change(createPanel.getByLabelText("Pricing rules JSON"), {
+    await user.type(
+      createPanel.getByLabelText("价格簿 ID"),
+      "price-book-2",
+    );
+    await user.type(createPanel.getByLabelText("模型 ID"), "model-2");
+    await user.type(createPanel.getByLabelText("版本"), "2026-07");
+    await user.selectOptions(createPanel.getByLabelText("状态"), "active");
+    await user.type(
+      createPanel.getByLabelText("生效时间"),
+      "2026-07-01T00:00:00Z",
+    );
+    await user.type(
+      createPanel.getByLabelText("退役时间"),
+      "2026-09-01T00:00:00Z",
+    );
+    fireEvent.change(createPanel.getByLabelText("计费规则 JSON"), {
       target: { value: JSON.stringify(pricingRules, null, 2) },
     });
-    await user.click(createPanel.getByRole("button", { name: "Create" }));
+    await user.click(createPanel.getByRole("button", { name: "创建" }));
 
-    expect(await screen.findByText("Price version 2026-07 created.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("价格版本 2026-07 已创建。"),
+    ).toBeInTheDocument();
     expect((await screen.findAllByText("2026-07")).length).toBeGreaterThan(0);
 
     const createCall = fetchMock.mock.calls.find(
-      ([url, init]) => String(url).includes("/admin/price-versions") && init?.method === "POST",
+      ([url, init]) =>
+        String(url).includes("/admin/price-versions") &&
+        init?.method === "POST",
     );
-    expect(String(createCall?.[0])).toBe("/api/control-plane/admin/price-versions");
+    expect(String(createCall?.[0])).toBe(
+      "/api/control-plane/admin/price-versions",
+    );
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       canonical_model_id: "model-2",
       effective_at: "2026-07-01T00:00:00Z",
@@ -5691,7 +9593,9 @@ describe("App", () => {
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.filter(
-          ([url, init]) => String(url).includes("/admin/price-versions") && init?.method === "GET",
+          ([url, init]) =>
+            String(url).includes("/admin/price-versions") &&
+            init?.method === "GET",
         ).length,
       ).toBeGreaterThanOrEqual(2),
     );
@@ -5702,10 +9606,15 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Billing/ }));
+    await user.click(screen.getByRole("button", { name: /计费/ }));
 
-    const createRegion = await screen.findByRole("region", { name: "Create price version" });
-    const createPanel = within(createRegion);
+    await user.click(
+      await screen.findByRole("button", { name: "创建价格版本" }),
+    );
+    const createDialog = await screen.findByRole("dialog", {
+      name: "创建价格版本对话框",
+    });
+    const createPanel = within(createDialog);
     const rawKey = skPlaceholder("price-raw-hidden");
     const bearer = bearerPlaceholder("price-auth-hidden");
     const unsafeRules = {
@@ -5718,21 +9627,34 @@ describe("App", () => {
       },
     };
 
-    await user.type(createPanel.getByLabelText("Price book ID"), "price-book-2");
-    await user.type(createPanel.getByLabelText("Version"), "2026-07");
-    fireEvent.change(createPanel.getByLabelText("Pricing rules JSON"), {
+    await user.type(
+      createPanel.getByLabelText("价格簿 ID"),
+      "price-book-2",
+    );
+    await user.type(createPanel.getByLabelText("版本"), "2026-07");
+    fireEvent.change(createPanel.getByLabelText("计费规则 JSON"), {
       target: { value: JSON.stringify(unsafeRules, null, 2) },
     });
-    await user.click(createPanel.getByRole("button", { name: "Create" }));
+    await user.click(createPanel.getByRole("button", { name: "创建" }));
 
-    expect(await screen.findByText(/Pricing rules cannot contain unsafe fields/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/计费规则不能包含不安全字段/),
+    ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(
-        ([url, init]) => String(url).includes("/admin/price-versions") && init?.method === "POST",
+        ([url, init]) =>
+          String(url).includes("/admin/price-versions") &&
+          init?.method === "POST",
       ),
     ).toBe(false);
-    expect((createPanel.getByLabelText("Pricing rules JSON") as HTMLTextAreaElement).value).not.toContain(rawKey);
-    expect((createPanel.getByLabelText("Pricing rules JSON") as HTMLTextAreaElement).value).not.toContain(bearer);
+    expect(
+      (createPanel.getByLabelText("计费规则 JSON") as HTMLTextAreaElement)
+        .value,
+    ).not.toContain(rawKey);
+    expect(
+      (createPanel.getByLabelText("计费规则 JSON") as HTMLTextAreaElement)
+        .value,
+    ).not.toContain(bearer);
     expect(document.body.textContent).not.toContain(rawKey);
     expect(document.body.textContent).not.toContain(bearer);
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
@@ -5745,15 +9667,19 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Routing/ }));
-    await user.type(await screen.findByLabelText("Project ID"), "project-1");
-    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
-    await user.type(screen.getByLabelText("Requested model"), "missing-model");
-    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await user.click(screen.getByRole("button", { name: /路由/ }));
+    await user.type(await screen.findByLabelText("项目 ID"), "project-1");
+    await user.type(screen.getByLabelText("配置 ID"), "profile-1");
+    await user.type(screen.getByLabelText("请求模型"), "missing-model");
+    await user.click(screen.getByRole("button", { name: "运行 dry-run" }));
 
-    expect((await screen.findAllByText("model not found or not allowed")).length).toBeGreaterThan(0);
-    expect(screen.getByText("No candidate selected.")).toBeInTheDocument();
-    expect(screen.getByText("No route candidates returned.")).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("model not found or not allowed")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("未选中候选项。")).toBeInTheDocument();
+    expect(
+      screen.getByText("暂无路由候选项。"),
+    ).toBeInTheDocument();
   });
 
   it("keeps the newest request log detail when earlier detail requests resolve late", async () => {
@@ -5812,28 +9738,48 @@ describe("App", () => {
         return jsonResponse([slowLog, fastLog]);
       }
 
+      if (requestUrl.includes("/admin/wallets")) {
+        return jsonResponse([]);
+      }
+
       return Promise.resolve(new Response("", { status: 200 }));
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Request\/Trace/ }));
+    await user.click(screen.getByRole("button", { name: /请求与追踪/ }));
     expect(await screen.findByText("req_slow")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "View request log req_slow" }));
-    await user.click(screen.getByRole("button", { name: "View request log req_fast" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看请求日志 req_slow" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "查看请求日志 req_fast" }),
+    );
 
     fastDetail.resolve();
-    expect(await screen.findByText("Provider Attempts")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("Request log detail")).getByText("req_fast")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("Request log detail")).getByText("fast-model")).toBeInTheDocument();
+    expect(await screen.findByText("供应商尝试")).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("请求日志详情")).getAllByText("req_fast").length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(screen.getByLabelText("请求日志详情")).getByText(
+        "fast-model",
+      ),
+    ).toBeInTheDocument();
 
     slowDetail.resolve();
     await waitFor(() =>
-      expect(within(screen.getByLabelText("Request log detail")).queryByText("req_slow")).not.toBeInTheDocument(),
+      expect(
+        within(screen.getByLabelText("请求日志详情")).queryByText(
+          "req_slow",
+        ),
+      ).not.toBeInTheDocument(),
     );
-    expect(within(screen.getByLabelText("Request log detail")).getByText("req_fast")).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("请求日志详情")).getAllByText("req_fast").length,
+    ).toBeGreaterThan(0);
   });
 
   it("does not render provider key secret material from API responses", async () => {
@@ -5841,15 +9787,181 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Provider Keys/ }));
+    await user.click(screen.getByRole("button", { name: /供应商密钥/ }));
 
     expect(await screen.findByText("openai-main")).toBeInTheDocument();
-    expect(screen.getByLabelText("Secret / API key")).toHaveAttribute("type", "password");
-    expect(screen.queryByText(skPlaceholder("live-hidden"))).not.toBeInTheDocument();
+    expect(screen.getAllByText("openai primary").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "添加密钥" }));
+    const createKeyDialog = screen.getByRole("dialog", {
+      name: "创建供应商密钥对话框",
+    });
+    const channelSelect = within(createKeyDialog).getByLabelText("通道");
+    expect(channelSelect).toHaveTextContent("openai primary");
+    await user.selectOptions(channelSelect, "channel-1");
+    expect(
+      within(createKeyDialog).getByLabelText("已选择的供应商密钥通道"),
+    ).toHaveTextContent("openai primary");
+    expect(
+      within(createKeyDialog).getByLabelText("已选择的供应商密钥通道"),
+    ).toHaveTextContent("provider-1");
+    expect(within(createKeyDialog).getByLabelText("Secret / API key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    expect(
+      screen.queryByText(skPlaceholder("live-hidden")),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("ciphertext-hidden")).not.toBeInTheDocument();
     expect(screen.queryByText("fp-hidden")).not.toBeInTheDocument();
-    expect(screen.queryByText(skPlaceholder("metadata-hidden"))).not.toBeInTheDocument();
-    expect(screen.queryByText(bearerPlaceholder("metadata-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("metadata-hidden")),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(bearerPlaceholder("metadata-hidden")),
+    ).not.toBeInTheDocument();
+  });
+
+  it("requests provider key recovery from the provider key page", async () => {
+    const fetchMock = stubAdminFetch({ providerKeyStatus: "cooldown" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /供应商密钥/ }));
+    expect(await screen.findByText("openai-main")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "恢复供应商密钥 openai-main",
+      }),
+    );
+    const recoveryDialog = screen.getByRole("dialog", {
+      name: "恢复供应商密钥对话框",
+    });
+    expect(
+      within(recoveryDialog).getByLabelText("供应商密钥恢复安全状态"),
+    ).toHaveTextContent("omitted");
+    await user.click(
+      within(recoveryDialog).getByRole("button", {
+        name: "提交恢复探针",
+      }),
+    );
+
+    expect(
+      await screen.findByText("openai-main 已进入恢复探针。"),
+    ).toBeInTheDocument();
+    const recoveryCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/admin/provider-keys/provider-key-1/recovery") &&
+        init?.method === "POST",
+    );
+    expect(JSON.parse(String(recoveryCall?.[1]?.body))).toEqual({
+      reason: "operator requested recovery from provider key page",
+      target_status: "recovery_probe",
+    });
+    expect(
+      screen.queryByText(skPlaceholder("recovery-response-hidden")),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a confirmed provider recovery suggestion before running recovery", async () => {
+    const fetchMock = stubAdminFetch({ providerKeyStatus: "cooldown" });
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /供应商与通道/ }));
+    expect(await screen.findByText("openai-main")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "查看恢复建议 openai-main",
+      }),
+    );
+
+    const suggestionDialog = screen.getByRole("dialog", {
+      name: "恢复建议确认对话框",
+    });
+    expect(within(suggestionDialog).getByLabelText("恢复建议摘要")).toHaveTextContent("状态");
+    expect(within(suggestionDialog).getByLabelText("恢复建议摘要")).toHaveTextContent("原因");
+    expect(within(suggestionDialog).getByLabelText("恢复建议摘要")).toHaveTextContent("下一步");
+    expect(suggestionDialog).not.toHaveTextContent(skPlaceholder("live-hidden"));
+    expect(suggestionDialog).not.toHaveTextContent("ciphertext-hidden");
+    expect(suggestionDialog).not.toHaveTextContent("https://api.openai.test/v1");
+
+    await user.click(
+      within(suggestionDialog).getByRole("button", {
+        name: "确认恢复探针",
+      }),
+    );
+
+    expect(
+      await screen.findByText("openai-main 已进入恢复探针。"),
+    ).toBeInTheDocument();
+    const recoveryCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/admin/provider-keys/provider-key-1/recovery") &&
+        init?.method === "POST",
+    );
+    expect(JSON.parse(String(recoveryCall?.[1]?.body))).toEqual({
+      reason: "operator requested recovery from provider workflow",
+      target_status: "recovery_probe",
+    });
+  });
+
+  it("rotates provider keys without rendering submitted or returned secret material", async () => {
+    const rotatedSecret = skPlaceholder("new-rotation-hidden");
+    const fetchMock = stubAdminFetch();
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /供应商密钥/ }));
+    expect(await screen.findByText("openai-main")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "轮换供应商密钥 openai-main",
+      }),
+    );
+    const rotateDialog = screen.getByRole("dialog", {
+      name: "轮换供应商密钥对话框",
+    });
+    expect(within(rotateDialog).getByLabelText("新 Secret / API key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    await user.clear(within(rotateDialog).getByLabelText("新 Alias"));
+    await user.type(
+      within(rotateDialog).getByLabelText("新 Alias"),
+      "openai-main-rotated",
+    );
+    await user.type(
+      within(rotateDialog).getByLabelText("新 Secret / API key"),
+      rotatedSecret,
+    );
+    await user.click(
+      within(rotateDialog).getByRole("button", { name: "提交轮换" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "供应商密钥轮换已提交。下一步：运行恢复探针或刷新通道健康；提交的 secret 已从表单清除。",
+      ),
+    ).toBeInTheDocument();
+    const rotateCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/admin/provider-keys/provider-key-1/rotate") &&
+        init?.method === "POST",
+    );
+    expect(JSON.parse(String(rotateCall?.[1]?.body))).toMatchObject({
+      key_alias: "openai-main-rotated",
+      reason: "operator credential rotation",
+      secret: rotatedSecret,
+    });
+    expect(screen.getByText("openai-main-rotated")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(rotatedSecret);
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("rotated-hidden"),
+    );
+    expect(document.body.textContent).not.toContain("fp-rotated-hidden");
   });
 
   it("lists and mutates providers and channels", async () => {
@@ -5857,26 +9969,39 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Providers/ }));
+    await user.click(screen.getByRole("button", { name: /供应商与通道/ }));
 
     expect((await screen.findAllByText("OpenAI")).length).toBeGreaterThan(0);
-    expect(screen.queryByText(skPlaceholder("provider-hidden"))).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(skPlaceholder("provider-hidden")),
+    ).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("secret_note");
 
-    fireEvent.change(screen.getByLabelText("Provider code"), { target: { value: "anthropic" } });
-    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Anthropic" } });
-    fireEvent.change(screen.getByLabelText("Provider type"), { target: { value: "anthropic" } });
-    fireEvent.change(screen.getByLabelText("Provider base URL"), {
+    await user.click(screen.getByRole("button", { name: "创建供应商" }));
+    const providerDialog = screen.getByRole("dialog", {
+      name: "创建供应商对话框",
+    });
+    fireEvent.change(within(providerDialog).getByLabelText("供应商 code"), {
+      target: { value: "anthropic" },
+    });
+    fireEvent.change(within(providerDialog).getByLabelText("供应商名称"), {
+      target: { value: "Anthropic" },
+    });
+    fireEvent.change(within(providerDialog).getByLabelText("供应商类型"), {
+      target: { value: "anthropic" },
+    });
+    fireEvent.change(within(providerDialog).getByLabelText("供应商 base URL"), {
       target: { value: "https://api.anthropic.test/v1" },
     });
-    fireEvent.change(screen.getByLabelText("Provider metadata JSON"), {
+    fireEvent.change(within(providerDialog).getByLabelText("供应商 metadata JSON"), {
       target: { value: '{"owner":"research","tier":"backup"}' },
     });
-    await user.click(screen.getByRole("button", { name: "Create provider" }));
+    await user.click(within(providerDialog).getByRole("button", { name: "创建供应商" }));
 
     expect((await screen.findAllByText("Anthropic")).length).toBeGreaterThan(0);
     const createProviderCall = fetchMock.mock.calls.find(
-      ([url, init]) => String(url).endsWith("/admin/providers") && init?.method === "POST",
+      ([url, init]) =>
+        String(url).endsWith("/admin/providers") && init?.method === "POST",
     );
     expect(JSON.parse(String(createProviderCall?.[1]?.body))).toMatchObject({
       base_url: "https://api.anthropic.test/v1",
@@ -5889,13 +10014,23 @@ describe("App", () => {
       provider_type: "anthropic",
     });
 
-    fireEvent.change(screen.getByLabelText("Provider patch ID"), { target: { value: "provider-1" } });
-    fireEvent.change(screen.getByLabelText("Provider patch metadata JSON"), {
+    await user.click(screen.getByRole("button", { name: "高级 JSON" }));
+    const advancedJsonDialog = screen.getByRole("dialog", {
+      name: "高级 JSON 策略对话框",
+    });
+    fireEvent.change(within(advancedJsonDialog).getByLabelText("供应商补丁 ID"), {
+      target: { value: "provider-1" },
+    });
+    fireEvent.change(within(advancedJsonDialog).getByLabelText("供应商补丁 metadata JSON"), {
       target: { value: '{"owner":"platform-2","region":"us"}' },
     });
-    await user.click(screen.getByRole("button", { name: "Save provider JSON" }));
+    await user.click(
+      within(advancedJsonDialog).getByRole("button", { name: "保存供应商 JSON" }),
+    );
 
-    expect(await screen.findByText("OpenAI JSON policy saved.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("OpenAI JSON 策略已保存。"),
+    ).toBeInTheDocument();
     const providerPatchCall = fetchMock.mock.calls.find(
       ([url, init]) =>
         String(url).includes("/admin/providers/provider-1") &&
@@ -5909,17 +10044,34 @@ describe("App", () => {
       },
     });
 
-    await user.click(screen.getByRole("button", { name: "Disable provider OpenAI" }));
+    await user.click(
+      screen.getByRole("button", { name: "禁用供应商 OpenAI" }),
+    );
 
-    expect(await screen.findByText("OpenAI disabled.")).toBeInTheDocument();
+    expect(await screen.findByText("OpenAI 已禁用。")).toBeInTheDocument();
 
-    expect((await screen.findAllByText("openai primary")).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("openai primary")).length,
+    ).toBeGreaterThan(0);
 
-    fireEvent.change(screen.getByLabelText("Requested model"), { target: { value: "gpt-visible" } });
-    fireEvent.change(screen.getByLabelText("Upstream model"), { target: { value: "upstream-gpt" } });
-    await user.click(screen.getByRole("button", { name: "Run manual test for openai primary" }));
+    fireEvent.change(screen.getByLabelText("请求模型"), {
+      target: { value: "gpt-visible" },
+    });
+    fireEvent.change(screen.getByLabelText("上游模型"), {
+      target: { value: "upstream-gpt" },
+    });
+    await user.click(
+      screen.getByRole("button", {
+        name: "为 openai primary 运行手动测试",
+      }),
+    );
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Channel Manual Test" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "通道手动测试",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByText("upstream_call=false")).toBeInTheDocument();
     expect(screen.getByText("billable=false")).toBeInTheDocument();
     expect(screen.getByText("ledger_write=false")).toBeInTheDocument();
@@ -5928,46 +10080,73 @@ describe("App", () => {
     expect(screen.getByText("/v1/chat/completions")).toBeInTheDocument();
     expect(screen.getAllByText("upstream-gpt").length).toBeGreaterThan(0);
 
-    const manualTestCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/manual-test"));
+    const manualTestCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/manual-test"),
+    );
     expect(manualTestCall?.[1]).toMatchObject({ method: "POST" });
     expect(JSON.parse(String(manualTestCall?.[1]?.body))).toEqual({
       dry_run: true,
       model: "gpt-visible",
       upstream_model_name: "upstream-gpt",
     });
-    expect(document.body.textContent).not.toContain(skPlaceholder("manual-key-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("manual-endpoint-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("manual-channel-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("manual-provider-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("manual-plan-hidden"));
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("manual-key-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("manual-endpoint-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("manual-channel-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("manual-provider-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("manual-plan-hidden"),
+    );
     expect(document.body.textContent).not.toContain("fp-manual-hidden");
-    expect(document.body.textContent).not.toContain("raw manual payload hidden");
+    expect(document.body.textContent).not.toContain(
+      "raw manual payload hidden",
+    );
 
-    fireEvent.change(screen.getByLabelText("Channel provider ID"), { target: { value: "provider-2" } });
-    fireEvent.change(screen.getByLabelText("Channel name"), { target: { value: "anthropic primary" } });
-    fireEvent.change(screen.getByLabelText("Endpoint / base URL"), {
+    await user.click(screen.getByRole("button", { name: "创建通道" }));
+    const channelDialog = screen.getByRole("dialog", {
+      name: "创建通道对话框",
+    });
+    fireEvent.change(within(channelDialog).getByLabelText("通道 provider ID"), {
+      target: { value: "provider-2" },
+    });
+    fireEvent.change(within(channelDialog).getByLabelText("通道名称"), {
+      target: { value: "anthropic primary" },
+    });
+    fireEvent.change(within(channelDialog).getByLabelText("Endpoint / base URL"), {
       target: { value: "https://api.anthropic.test/v1" },
     });
-    fireEvent.change(screen.getByLabelText("Channel model mappings JSON"), {
+    fireEvent.change(within(channelDialog).getByLabelText("通道 model_mappings JSON"), {
       target: { value: '{"claude-3-haiku":"claude-3-haiku-20240307"}' },
     });
-    fireEvent.change(screen.getByLabelText("Channel tags JSON"), {
+    fireEvent.change(within(channelDialog).getByLabelText("通道 tags JSON"), {
       target: { value: '["backup","anthropic"]' },
     });
-    fireEvent.change(screen.getByLabelText("Channel request overrides JSON"), {
-      target: { value: '[{"type":"header","name":"x-ai-profile","value":"default"}]' },
+    fireEvent.change(within(channelDialog).getByLabelText("通道 request_overrides JSON"), {
+      target: {
+        value: '[{"type":"header","name":"x-ai-profile","value":"default"}]',
+      },
     });
-    fireEvent.change(screen.getByLabelText("Channel probe policy JSON"), {
+    fireEvent.change(within(channelDialog).getByLabelText("通道 probe_policy JSON"), {
       target: { value: '{"path":"/health"}' },
     });
-    fireEvent.change(screen.getByLabelText("Channel timeout policy JSON"), {
+    fireEvent.change(within(channelDialog).getByLabelText("通道 timeout_policy JSON"), {
       target: { value: '{"connect_ms":3000}' },
     });
-    await user.click(screen.getByRole("button", { name: "Create channel" }));
+    await user.click(within(channelDialog).getByRole("button", { name: "创建通道" }));
 
-    expect((await screen.findAllByText("anthropic primary")).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("anthropic primary")).length,
+    ).toBeGreaterThan(0);
     const createChannelCall = fetchMock.mock.calls.find(
-      ([url, init]) => String(url).endsWith("/admin/channels") && init?.method === "POST",
+      ([url, init]) =>
+        String(url).endsWith("/admin/channels") && init?.method === "POST",
     );
     expect(JSON.parse(String(createChannelCall?.[1]?.body))).toMatchObject({
       endpoint: "https://api.anthropic.test/v1",
@@ -5992,25 +10171,35 @@ describe("App", () => {
       },
     });
 
-    fireEvent.change(screen.getByLabelText("Channel patch ID"), { target: { value: "channel-1" } });
-    fireEvent.change(screen.getByLabelText("Patch model mappings JSON"), {
+    await user.click(screen.getByRole("button", { name: "高级 JSON" }));
+    const channelJsonDialog = screen.getByRole("dialog", {
+      name: "高级 JSON 策略对话框",
+    });
+    fireEvent.change(within(channelJsonDialog).getByLabelText("通道补丁 ID"), {
+      target: { value: "channel-1" },
+    });
+    fireEvent.change(within(channelJsonDialog).getByLabelText("补丁 model_mappings JSON"), {
       target: { value: '{"gpt-visible":"gpt-4o-mini-2024-07-18"}' },
     });
-    fireEvent.change(screen.getByLabelText("Patch tags JSON"), {
+    fireEvent.change(within(channelJsonDialog).getByLabelText("补丁 tags JSON"), {
       target: { value: '["primary","low-latency"]' },
     });
-    fireEvent.change(screen.getByLabelText("Patch request overrides JSON"), {
-      target: { value: '[{"type":"header","name":"x-ai-profile","value":"default"}]' },
+    fireEvent.change(within(channelJsonDialog).getByLabelText("补丁 request_overrides JSON"), {
+      target: {
+        value: '[{"type":"header","name":"x-ai-profile","value":"default"}]',
+      },
     });
-    fireEvent.change(screen.getByLabelText("Patch probe policy JSON"), {
+    fireEvent.change(within(channelJsonDialog).getByLabelText("补丁 probe_policy JSON"), {
       target: { value: '{"path":"/ready"}' },
     });
-    fireEvent.change(screen.getByLabelText("Patch timeout policy JSON"), {
+    fireEvent.change(within(channelJsonDialog).getByLabelText("补丁 timeout_policy JSON"), {
       target: { value: '{"connect_ms":2500}' },
     });
-    await user.click(screen.getByRole("button", { name: "Save channel JSON" }));
+    await user.click(within(channelJsonDialog).getByRole("button", { name: "保存通道 JSON" }));
 
-    expect(await screen.findByText("openai primary JSON policy saved.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("openai primary JSON 策略已保存。"),
+    ).toBeInTheDocument();
     const channelPatchCall = fetchMock.mock.calls.find(
       ([url, init]) =>
         String(url).includes("/admin/channels/channel-1") &&
@@ -6037,13 +10226,21 @@ describe("App", () => {
       },
     });
 
-    await user.click(screen.getByRole("button", { name: "Disable channel openai primary" }));
+    await user.click(
+      screen.getByRole("button", { name: "禁用通道 openai primary" }),
+    );
 
-    expect(await screen.findByText("openai primary disabled.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("openai primary 已禁用。"),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Delete channel openai primary" }));
+    await user.click(
+      screen.getByRole("button", { name: "删除通道 openai primary" }),
+    );
 
-    expect(await screen.findByText("openai primary deleted.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("openai primary 已删除。"),
+    ).toBeInTheDocument();
   });
 
   it("rejects malformed or unsafe provider and channel JSON policies", async () => {
@@ -6051,30 +10248,57 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Providers/ }));
+    await user.click(screen.getByRole("button", { name: /供应商与通道/ }));
     expect((await screen.findAllByText("OpenAI")).length).toBeGreaterThan(0);
 
-    fireEvent.change(screen.getByLabelText("Provider code"), { target: { value: "bad-provider" } });
-    fireEvent.change(screen.getByLabelText("Provider name"), { target: { value: "Bad Provider" } });
-    fireEvent.change(screen.getByLabelText("Provider metadata JSON"), { target: { value: "{" } });
-    await user.click(screen.getByRole("button", { name: "Create provider" }));
-
-    expect(await screen.findByText("Provider metadata JSON must be valid JSON.")).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Provider metadata JSON"), {
-      target: { value: `{"Authorization":"${bearerPlaceholder("provider-json-hidden")}"}` },
+    await user.click(screen.getByRole("button", { name: "创建供应商" }));
+    const providerDialog = screen.getByRole("dialog", {
+      name: "创建供应商对话框",
     });
-    await user.click(screen.getByRole("button", { name: "Create provider" }));
+    fireEvent.change(within(providerDialog).getByLabelText("供应商 code"), {
+      target: { value: "bad-provider" },
+    });
+    fireEvent.change(within(providerDialog).getByLabelText("供应商名称"), {
+      target: { value: "Bad Provider" },
+    });
+    fireEvent.change(within(providerDialog).getByLabelText("供应商 metadata JSON"), {
+      target: { value: "{" },
+    });
+    await user.click(within(providerDialog).getByRole("button", { name: "创建供应商" }));
 
-    expect(await screen.findByText("Provider metadata JSON contains unsafe fields.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("供应商 metadata JSON 必须是有效 JSON。"),
+    ).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Channel patch ID"), { target: { value: "channel-1" } });
-    fireEvent.change(screen.getByLabelText("Patch model mappings JSON"), {
+    fireEvent.change(within(providerDialog).getByLabelText("供应商 metadata JSON"), {
+      target: {
+        value: `{"Authorization":"${bearerPlaceholder("provider-json-hidden")}"}`,
+      },
+    });
+    await user.click(within(providerDialog).getByRole("button", { name: "创建供应商" }));
+
+    expect(
+      await screen.findByText("供应商 metadata JSON 包含不安全字段。"),
+    ).toBeInTheDocument();
+
+    await user.click(within(providerDialog).getByRole("button", { name: "关闭" }));
+    await user.click(screen.getByRole("button", { name: "高级 JSON" }));
+    const advancedJsonDialog = screen.getByRole("dialog", {
+      name: "高级 JSON 策略对话框",
+    });
+    fireEvent.change(within(advancedJsonDialog).getByLabelText("通道补丁 ID"), {
+      target: { value: "channel-1" },
+    });
+    fireEvent.change(within(advancedJsonDialog).getByLabelText("补丁 model_mappings JSON"), {
       target: { value: '{"raw_key":"hidden"}' },
     });
-    await user.click(screen.getByRole("button", { name: "Save channel JSON" }));
+    await user.click(within(advancedJsonDialog).getByRole("button", { name: "保存通道 JSON" }));
 
-    expect(await screen.findByText("Patch model mappings JSON contains unsafe fields.")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "补丁 model_mappings JSON 包含不安全字段。",
+      ),
+    ).toBeInTheDocument();
 
     const unsafeMutationCalls = fetchMock.mock.calls.filter(([url, init]) => {
       const requestUrl = String(url);
@@ -6086,7 +10310,9 @@ describe("App", () => {
       );
     });
     expect(unsafeMutationCalls).toHaveLength(0);
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("provider-json-hidden"));
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("provider-json-hidden"),
+    );
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
     expect(document.body.textContent).not.toContain("raw_key");
   });
@@ -6096,41 +10322,102 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Models/ }));
+    await user.click(screen.getByRole("button", { name: /模型/ }));
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Model Catalog" })).toBeInTheDocument();
-    expect((await screen.findAllByText("GPT-4o Mini")).length).toBeGreaterThan(0);
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "模型目录" }),
+    ).toBeInTheDocument();
+    expect((await screen.findAllByText("GPT-4o Mini")).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByText("gpt-4o-mini / model-1")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("GPT-4o Mini 的默认价格表"),
+    ).toHaveValue("price-book-1");
 
-    await user.type(screen.getByLabelText("Model key"), "claude-3-haiku");
-    await user.type(screen.getByLabelText("Display name"), "Claude Haiku");
-    await user.type(screen.getByLabelText("Family"), "claude");
-    await user.type(screen.getByLabelText("Context length"), "200000");
-    await user.click(screen.getByRole("button", { name: "Create model" }));
+    await user.selectOptions(
+      screen.getByLabelText("GPT-4o Mini 的默认价格表"),
+      "",
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "保存 GPT-4o Mini 的默认价格表",
+      }),
+    );
 
-    expect((await screen.findAllByText("Claude Haiku")).length).toBeGreaterThan(0);
+    expect(
+      await screen.findByText("GPT-4o Mini 默认价格表已保存。"),
+    ).toBeInTheDocument();
+    const defaultPricePatchCall = fetchMock.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes("/admin/models/model-1") &&
+        init?.method === "PATCH" &&
+        String(init.body).includes("default_price_book_id"),
+    );
+    expect(JSON.parse(String(defaultPricePatchCall?.[1]?.body))).toEqual({
+      default_price_book_id: null,
+    });
 
-    await user.click(screen.getByRole("button", { name: "Disable model GPT-4o Mini" }));
+    await user.click(screen.getByRole("button", { name: "创建模型" }));
+    const createModelDialog = screen.getByRole("dialog", {
+      name: "创建模型对话框",
+    });
+    await user.type(within(createModelDialog).getByLabelText("模型 key"), "claude-3-haiku");
+    await user.type(within(createModelDialog).getByLabelText("显示名称"), "Claude Haiku");
+    await user.type(within(createModelDialog).getByLabelText("系列"), "claude");
+    await user.type(within(createModelDialog).getByLabelText("上下文长度"), "200000");
+    await user.click(within(createModelDialog).getByRole("button", { name: "创建模型" }));
 
-    expect(await screen.findByText("GPT-4o Mini disabled.")).toBeInTheDocument();
-    expect((await screen.findAllByText("gpt-4o-mini")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Claude Haiku")).length).toBeGreaterThan(
+      0,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "停用模型 GPT-4o Mini" }),
+    );
+
+    expect(
+      await screen.findByText("GPT-4o Mini 已停用。"),
+    ).toBeInTheDocument();
+    expect((await screen.findAllByText("gpt-4o-mini")).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByText("gpt-4o-mini-2024-07-18")).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("Association model ID"), "model-2");
-    await user.type(screen.getByLabelText("Channel ID"), "channel-2");
-    await user.type(screen.getByLabelText("Upstream model"), "claude-3-haiku-20240307");
-    await user.click(screen.getByRole("button", { name: "Create association" }));
+    await user.click(screen.getByRole("button", { name: "创建关联" }));
+    const createAssociationDialog = screen.getByRole("dialog", {
+      name: "创建关联对话框",
+    });
+    await user.type(within(createAssociationDialog).getByLabelText("关联模型 ID"), "model-2");
+    await user.type(within(createAssociationDialog).getByLabelText("渠道 ID"), "channel-2");
+    await user.type(
+      within(createAssociationDialog).getByLabelText("上游模型"),
+      "claude-3-haiku-20240307",
+    );
+    await user.click(
+      within(createAssociationDialog).getByRole("button", { name: "创建关联" }),
+    );
 
-    expect(await screen.findByText("claude-3-haiku-20240307")).toBeInTheDocument();
+    expect(
+      await screen.findByText("claude-3-haiku-20240307"),
+    ).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("Project ID"), "project-1");
-    await user.type(screen.getByLabelText("Profile ID"), "profile-1");
-    await user.type(screen.getByLabelText("Canonical model key"), "gpt-4o-mini");
-    await user.click(screen.getByRole("button", { name: "Run dry-run" }));
+    await user.type(screen.getByLabelText("项目 ID"), "project-1");
+    await user.type(screen.getByLabelText("配置 ID"), "profile-1");
+    await user.type(
+      screen.getByLabelText("规范模型 key"),
+      "gpt-4o-mini",
+    );
+    await user.click(screen.getByRole("button", { name: "运行 dry-run" }));
 
-    expect(await screen.findByRole("heading", { level: 2, name: "Route Snapshot Summary" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "路由快照摘要",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("primary channel").length).toBeGreaterThan(0);
-    expect(screen.getByText("Fallback blocked")).toBeInTheDocument();
+    expect(screen.getByText("阻止回退")).toBeInTheDocument();
     expect(screen.getAllByText("profile denied").length).toBeGreaterThan(0);
 
     const dryRunCalls = fetchMock.mock.calls.filter(([url]) =>
@@ -6142,24 +10429,46 @@ describe("App", () => {
       project_id: "project-1",
     });
     expect(document.body.textContent).not.toContain(AUTH_HEADER_NAME);
-    expect(document.body.textContent).not.toContain(skPlaceholder("route-dry-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("route-dry-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("selection-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("candidate-hidden"));
-    expect(document.body.textContent).not.toContain("raw dry-run payload hidden");
-    expect(document.body.textContent).not.toContain("raw dry-run snapshot hidden");
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("route-dry-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("route-dry-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("selection-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("candidate-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw dry-run payload hidden",
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw dry-run snapshot hidden",
+    );
 
-    await user.click(screen.getByRole("button", { name: "Disable association association-1" }));
+    await user.click(
+      screen.getByRole("button", { name: "停用关联 association-1" }),
+    );
 
-    expect(await screen.findByText("Association associat... disabled.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("关联 associat... 已停用。"),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Delete association association-1" }));
+    await user.click(
+      screen.getByRole("button", { name: "删除关联 association-1" }),
+    );
 
-    expect(await screen.findByText("Association associat... deleted.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("关联 associat... 已删除。"),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Delete model GPT-4o Mini" }));
+    await user.click(
+      screen.getByRole("button", { name: "删除模型 GPT-4o Mini" }),
+    );
 
-    expect(await screen.findByText("GPT-4o Mini deleted.")).toBeInTheDocument();
+    expect(await screen.findByText("GPT-4o Mini 已删除。")).toBeInTheDocument();
   }, 10000);
 
   it("shows generated virtual key credentials once after create", async () => {
@@ -6167,20 +10476,39 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Virtual Keys/ }));
-    await user.type(await screen.findByLabelText("Project ID"), "project-1");
-    await user.type(screen.getByLabelText("Virtual key name"), "created-virtual");
-    await user.type(screen.getByLabelText("Default profile ID"), "profile-1");
-    await user.click(screen.getByRole("button", { name: "Create virtual key" }));
+    await user.click(screen.getByRole("button", { name: /API 密钥/ }));
+    await user.click(await screen.findByRole("button", { name: "创建 API 密钥" }));
+    const createKeyDialog = screen.getByRole("dialog", {
+      name: "创建 API 密钥对话框",
+    });
+    await user.type(within(createKeyDialog).getByLabelText("项目 ID"), "project-1");
+    await user.type(
+      within(createKeyDialog).getByLabelText("API 密钥名称"),
+      "created-virtual",
+    );
+    await user.type(within(createKeyDialog).getByLabelText("默认配置档案 ID"), "profile-1");
+    await user.click(
+      within(createKeyDialog).getByRole("button", { name: "创建 API 密钥" }),
+    );
 
-    expect(await screen.findByText("Credential created for created-virtual")).toBeInTheDocument();
-    expect(screen.getByText("vk-created-secret-once")).toBeInTheDocument();
-    expect(screen.queryByText("vk-created-secret-hash")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Clear credential" }));
-
-    await waitFor(() => expect(screen.queryByText("Credential created for created-virtual")).not.toBeInTheDocument());
+    expect(
+      await screen.findByText("created-virtual 已创建"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("vk-created-secret-once")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("vk-created-secret-hash"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "清除提示" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("created-virtual 已创建"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText("vk-created-secret-once"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not render virtual key secret hashes from list or detail responses", async () => {
@@ -6188,22 +10516,97 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Virtual Keys/ }));
-    await user.type(await screen.findByLabelText("Virtual key project ID"), "project-1");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: /API 密钥/ }));
+    await user.type(
+      await screen.findByLabelText("API 密钥项目 ID"),
+      "project-1",
+    );
+    await user.click(screen.getByRole("button", { name: "搜索" }));
 
     expect(await screen.findByText("virtual-main")).toBeInTheDocument();
     expect(screen.queryByText("vk-list-secret-hash")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "View virtual key virtual-main" }));
+    await user.click(
+      screen.getByRole("button", { name: "查看 API 密钥 virtual-main" }),
+    );
 
-    expect(await screen.findByText("Virtual Key Detail")).toBeInTheDocument();
+    expect(await screen.findByText("API 密钥详情")).toBeInTheDocument();
     expect(screen.queryByText("vk-list-secret-hash")).not.toBeInTheDocument();
-    expect(screen.queryByText(skPlaceholder("vk-metadata-hidden"))).not.toBeInTheDocument();
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("vk-budget-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("vk-rate-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("vk-budget-hidden"));
-    expect(document.body.textContent).not.toContain("raw virtual key payload hidden");
+    expect(
+      screen.queryByText(skPlaceholder("vk-metadata-hidden")),
+    ).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("vk-budget-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("vk-rate-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("vk-budget-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw virtual key payload hidden",
+    );
+  });
+
+  it("focuses an audit-linked virtual key without rendering secret material", async () => {
+    const baseFetch = stubAdminFetch();
+    const fetchMock = vi.fn((url: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = String(url);
+
+      if (requestUrl.includes("/admin/audit-logs")) {
+        return jsonResponse([
+          {
+            action: "virtual_key.bulk_leak_action",
+            actor_user_id: "operator-1",
+            after_snapshot: {
+              key_prefix: vkUnderscorePlaceholder("live_123"),
+              project_id: "project-1",
+              status: "active",
+            },
+            before_snapshot: null,
+            created_at: "2026-06-12T10:00:00Z",
+            id: "audit-virtual-key-1",
+            metadata: {
+              action_result: "suspected_leaked_marked",
+              key_id: "virtual-key-1",
+              key_prefix: vkUnderscorePlaceholder("live_123"),
+              project_id: "project-1",
+              reason: "ticket INC-42",
+              secret_note: skPlaceholder("audit-virtual-hidden"),
+              status: "active",
+            },
+            request_id: null,
+            resource_id: "virtual-key-1",
+            resource_type: "virtual_key",
+            tenant_id: "tenant-1",
+          },
+        ]);
+      }
+
+      return baseFetch(url, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = await renderSignedInApp();
+
+    await user.click(screen.getByRole("button", { name: /审计日志/ }));
+    await user.click(await screen.findByRole("button", { name: /API key/ }));
+
+    expect(await screen.findByText("审计跳转 focus")).toBeInTheDocument();
+    expect(await screen.findByText(/已定位 API key/)).toBeInTheDocument();
+    expect(screen.getAllByText("virtual...").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "选择 focus key" })).toBeDisabled();
+    expect(document.body.textContent).not.toContain("vk-list-secret-hash");
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("audit-virtual-hidden"),
+    );
+
+    await user.click(screen.getByRole("button", { name: "清除 focus" }));
+
+    await waitFor(() =>
+      expect(screen.queryByText("审计跳转 focus")).not.toBeInTheDocument(),
+    );
   });
 
   it("lists, creates, and patches profile model permissions without unsafe display", async () => {
@@ -6211,69 +10614,106 @@ describe("App", () => {
 
     const user = await renderSignedInApp();
 
-    await user.click(screen.getByRole("button", { name: /Virtual Keys/ }));
-    await user.click(await screen.findByRole("tab", { name: "Profiles" }));
-    await user.type(screen.getByLabelText("Profile project ID"), "project-1");
-    await user.click(screen.getByRole("button", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: /API 密钥/ }));
+    await user.click(await screen.findByRole("tab", { name: "配置档案" }));
+    await user.type(screen.getByLabelText("配置档案项目 ID"), "project-1");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
 
     expect(await screen.findByText("default-profile")).toBeInTheDocument();
-    expect(screen.getAllByText((content) => content.includes("gpt-4o-mini")).length).toBeGreaterThan(0);
-    expect(screen.getByText((content) => content.includes("gpt-internal"))).toBeInTheDocument();
-    expect(screen.getByText((content) => content.includes("chat-fast=gpt-4o-mini"))).toBeInTheDocument();
-    expect(document.body.textContent).toMatch(/Profile IP\s*2 entries/);
+    expect(
+      screen.getAllByText((content) => content.includes("gpt-4o-mini")).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText((content) => content.includes("gpt-internal")),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText((content) => content.includes("chat-fast=gpt-4o-mini")),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).toMatch(/配置档案 IP\s*2 项/);
     expect(document.body.textContent).not.toContain("198.51.100.0/24");
     expect(document.body.textContent).not.toContain("203.0.113.0/24");
-    expect(document.body.textContent).not.toContain(authorizationBearerPlaceholder("profile-model-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("profile-alias-hidden"));
-    expect(document.body.textContent).not.toContain(skPlaceholder("profile-alias-hidden"));
-    expect(document.body.textContent).not.toContain(bearerPlaceholder("profile-override-hidden"));
-    expect(document.body.textContent).not.toContain("raw profile payload hidden");
+    expect(document.body.textContent).not.toContain(
+      authorizationBearerPlaceholder("profile-model-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("profile-alias-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      skPlaceholder("profile-alias-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      bearerPlaceholder("profile-override-hidden"),
+    );
+    expect(document.body.textContent).not.toContain(
+      "raw profile payload hidden",
+    );
 
-    await user.type(screen.getByLabelText("New profile project ID"), "project-1");
-    await user.type(screen.getByLabelText("Profile name"), "created-profile");
-    fireEvent.change(screen.getByLabelText("Visible models JSON"), {
+    await user.click(screen.getByRole("button", { name: "创建配置档案" }));
+    const createProfileDialog = screen.getByRole("dialog", {
+      name: "创建配置档案对话框",
+    });
+    await user.type(
+      within(createProfileDialog).getByLabelText("新配置档案项目 ID"),
+      "project-1",
+    );
+    await user.type(within(createProfileDialog).getByLabelText("配置档案名称"), "created-profile");
+    fireEvent.change(within(createProfileDialog).getByLabelText("可见模型 JSON"), {
       target: { value: '["gpt-create-visible"]' },
     });
-    fireEvent.change(screen.getByLabelText("Denied models JSON"), {
+    fireEvent.change(within(createProfileDialog).getByLabelText("拒绝模型 JSON"), {
       target: { value: '["gpt-create-denied"]' },
     });
-    fireEvent.change(screen.getByLabelText("Model aliases JSON"), {
+    fireEvent.change(within(createProfileDialog).getByLabelText("模型别名 JSON"), {
       target: { value: '{"create-fast":"gpt-create-visible"}' },
     });
-    fireEvent.change(screen.getByLabelText("Profile IP allowlist JSON"), {
+    fireEvent.change(within(createProfileDialog).getByLabelText("配置档案 IP 白名单 JSON"), {
       target: { value: "{" },
     });
-    await user.click(screen.getByRole("button", { name: "Create profile" }));
+    await user.click(within(createProfileDialog).getByRole("button", { name: "创建配置档案" }));
 
-    expect(await screen.findByText("Profile IP allowlist must be valid JSON.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("配置档案 IP 白名单必须是有效 JSON。"),
+    ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(
-        ([url, init]) => String(url).includes("/admin/api-key-profiles") && init?.method === "POST",
+        ([url, init]) =>
+          String(url).includes("/admin/api-key-profiles") &&
+          init?.method === "POST",
       ),
     ).toBe(false);
 
-    fireEvent.change(screen.getByLabelText("Profile IP allowlist JSON"), {
+    fireEvent.change(within(createProfileDialog).getByLabelText("配置档案 IP 白名单 JSON"), {
       target: { value: '{"office":"198.51.100.0/24"}' },
     });
-    await user.click(screen.getByRole("button", { name: "Create profile" }));
+    await user.click(within(createProfileDialog).getByRole("button", { name: "创建配置档案" }));
 
-    expect(await screen.findByText("Profile IP allowlist must be a JSON array.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("配置档案 IP 白名单必须是 JSON 数组。"),
+    ).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(
-        ([url, init]) => String(url).includes("/admin/api-key-profiles") && init?.method === "POST",
+        ([url, init]) =>
+          String(url).includes("/admin/api-key-profiles") &&
+          init?.method === "POST",
       ),
     ).toBe(false);
 
-    fireEvent.change(screen.getByLabelText("Profile IP allowlist JSON"), {
+    fireEvent.change(within(createProfileDialog).getByLabelText("配置档案 IP 白名单 JSON"), {
       target: { value: '["198.51.100.0/24","2001:db8:2::/64"]' },
     });
-    await user.click(screen.getByRole("button", { name: "Create profile" }));
+    await user.click(within(createProfileDialog).getByRole("button", { name: "创建配置档案" }));
 
     expect(await screen.findByText("created-profile")).toBeInTheDocument();
-    expect(screen.getAllByText((content) => content.includes("gpt-create-visible")).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText((content) => content.includes("gpt-create-visible"))
+        .length,
+    ).toBeGreaterThan(0);
 
     const createCall = fetchMock.mock.calls.find(([url, init]) => {
-      return String(url).includes("/admin/api-key-profiles") && init?.method === "POST";
+      return (
+        String(url).includes("/admin/api-key-profiles") &&
+        init?.method === "POST"
+      );
     });
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       allowed_models: ["gpt-create-visible"],
@@ -6287,28 +10727,41 @@ describe("App", () => {
       status: "active",
     });
 
-    await user.click(screen.getByRole("button", { name: "Edit profile default-profile" }));
+    await user.click(
+      screen.getByRole("button", { name: "编辑配置档案 default-profile" }),
+    );
 
-    const patchPanel = screen.getByLabelText("Patch profile");
-    fireEvent.change(within(patchPanel).getByLabelText("Visible models JSON"), {
+    const patchPanel = screen.getByRole("dialog", { name: "编辑配置档案对话框" });
+    fireEvent.change(within(patchPanel).getByLabelText("可见模型 JSON"), {
       target: { value: '["gpt-4o-mini","gpt-visible-new"]' },
     });
-    fireEvent.change(within(patchPanel).getByLabelText("Denied models JSON"), {
+    fireEvent.change(within(patchPanel).getByLabelText("拒绝模型 JSON"), {
       target: { value: '["gpt-denied-new"]' },
     });
-    fireEvent.change(within(patchPanel).getByLabelText("Model aliases JSON"), {
+    fireEvent.change(within(patchPanel).getByLabelText("模型别名 JSON"), {
       target: { value: '{"chat-fast":"gpt-visible-new"}' },
     });
-    fireEvent.change(within(patchPanel).getByLabelText("Profile IP allowlist JSON"), {
-      target: { value: '["198.51.100.10","2001:db8:3::/64"]' },
-    });
-    await user.click(within(patchPanel).getByRole("button", { name: "Save patch" }));
+    fireEvent.change(
+      within(patchPanel).getByLabelText("配置档案 IP 白名单 JSON"),
+      {
+        target: { value: '["198.51.100.10","2001:db8:3::/64"]' },
+      },
+    );
+    await user.click(
+      within(patchPanel).getByRole("button", { name: "保存变更" }),
+    );
 
-    expect(await screen.findByText("Profile updated.")).toBeInTheDocument();
-    expect(screen.getAllByText((content) => content.includes("gpt-visible-new")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("配置档案已更新。")).toBeInTheDocument();
+    expect(
+      screen.getAllByText((content) => content.includes("gpt-visible-new"))
+        .length,
+    ).toBeGreaterThan(0);
 
     const patchCall = fetchMock.mock.calls.find(([url, init]) => {
-      return String(url).includes("/admin/api-key-profiles/profile-1") && init?.method === "PATCH";
+      return (
+        String(url).includes("/admin/api-key-profiles/profile-1") &&
+        init?.method === "PATCH"
+      );
     });
     expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual({
       allowed_models: ["gpt-4o-mini", "gpt-visible-new"],
@@ -6319,8 +10772,12 @@ describe("App", () => {
       },
     });
 
-    await user.click(screen.getByRole("button", { name: "Delete profile default-profile" }));
+    await user.click(
+      screen.getByRole("button", { name: "删除配置档案 default-profile" }),
+    );
 
-    expect(await screen.findByText("api key profile has active virtual keys bound")).toBeInTheDocument();
+    expect(
+      await screen.findByText("api key profile has active virtual keys bound"),
+    ).toBeInTheDocument();
   });
 });

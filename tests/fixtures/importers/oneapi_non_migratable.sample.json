@@ -1,0 +1,62 @@
+{
+  "source": "one-api",
+  "Channels": [
+    {
+      "Id": 401,
+      "Name": "openai-paid",
+      "Type": 1,
+      "BaseURL": "https://api.openai.example/v1",
+      "Key": "${ONE_API_OPENAI_KEY}",
+      "Group": "paid",
+      "Models": "gpt-4o",
+      "ModelMapping": {
+        "gpt-4o": "gpt-4o-2024-08-06"
+      }
+    }
+  ],
+  "Models": [
+    {
+      "Model": "gpt-4o",
+      "DisplayName": "GPT-4o",
+      "Capabilities": ["text", "tool"]
+    }
+  ],
+  "Groups": [
+    {
+      "Id": "paid",
+      "Name": "paid",
+      "Ratio": 1.25,
+      "ModelRatio": {
+        "gpt-4o": 2.0
+      }
+    }
+  ],
+  "Users": [
+    {
+      "Id": 42,
+      "Username": "alice",
+      "Email": "alice@example.invalid",
+      "Group": "paid",
+      "Quota": 12345,
+      "UsedQuota": 678
+    }
+  ],
+  "Tokens": [
+    {
+      "Id": 9001,
+      "Name": "alice-cli",
+      "UserId": 42,
+      "Key": "sk-oneapi-example-token",
+      "Quota": 5000,
+      "UsedQuota": 123
+    }
+  ],
+  "Pricing": [
+    {
+      "Model": "gpt-4o",
+      "Scope": "model",
+      "PromptRatio": 2.5,
+      "CompletionRatio": 7.5
+    }
+  ]
+}

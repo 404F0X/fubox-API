@@ -1,0 +1,96 @@
+{
+  "schema_version": "billing_paid_strong_consistency_evidence_bundle.v1",
+  "bundle_id": "paid-evidence-contract-shape-accepted-v1",
+  "generated_at_utc": "2026-06-05T18:50:00Z",
+  "generated_by": "fixture_contract_only",
+  "environment_scope": "contract_fixture",
+  "production_hot_path_claim": false,
+  "contract_shape_only": true,
+  "synthetic_selftest": false,
+  "paid_controlled_beta_production_ready": false,
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "env_value_echoed": false
+  },
+  "evidence": [
+    {
+      "evidence_key": "gateway_hot_path_reserve_settle_refund",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-gateway-hot-path-reserve-settle-refund-contract",
+      "request_id": "00000000-0000-0000-0000-000000030001",
+      "operation": "reserve_settle_refund",
+      "scenario": "gateway hot path performs reserve before provider call, settle on success, refund on failure",
+      "generated_at_utc": "2026-06-05T18:50:01Z",
+      "source": "contract_fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "insufficient_balance_prevents_provider_call",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-insufficient-balance-provider-block-contract",
+      "request_id": "00000000-0000-0000-0000-000000030002",
+      "operation": "reserve_pre_authorize",
+      "scenario": "insufficient balance denies before provider attempt",
+      "generated_at_utc": "2026-06-05T18:50:02Z",
+      "source": "contract_fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "settle_idempotency",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-settle-idempotency-contract",
+      "request_id": "00000000-0000-0000-0000-000000030003",
+      "operation": "settle",
+      "scenario": "duplicate settle for the same request id is idempotent",
+      "generated_at_utc": "2026-06-05T18:50:03Z",
+      "source": "contract_fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "refund_idempotency",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-refund-idempotency-contract",
+      "request_id": "00000000-0000-0000-0000-000000030004",
+      "operation": "refund",
+      "scenario": "duplicate refund for the same refund operation is idempotent",
+      "generated_at_utc": "2026-06-05T18:50:04Z",
+      "source": "contract_fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "post_commit_readback",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-post-commit-readback-contract",
+      "request_id": "00000000-0000-0000-0000-000000030005",
+      "operation": "readback",
+      "scenario": "ledger entries, wallet window, and request cost snapshot read back after commit",
+      "generated_at_utc": "2026-06-05T18:50:05Z",
+      "source": "contract_fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "rollback_proof",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-rollback-proof-contract",
+      "request_id": "00000000-0000-0000-0000-000000030006",
+      "operation": "rollback",
+      "scenario": "failed paid writer transaction rolls back without partial ledger state",
+      "generated_at_utc": "2026-06-05T18:50:06Z",
+      "source": "contract_fixture_no_db_no_network"
+    },
+    {
+      "evidence_key": "reconciliation_report",
+      "status": "passed",
+      "passed": true,
+      "evidence_id": "evidence-reconciliation-report-contract",
+      "request_id": "00000000-0000-0000-0000-000000030007",
+      "operation": "reconciliation",
+      "scenario": "usage rows and ledger summary reconcile for the paid evidence window",
+      "generated_at_utc": "2026-06-05T18:50:07Z",
+      "source": "contract_fixture_no_db_no_network"
+    }
+  ]
+}

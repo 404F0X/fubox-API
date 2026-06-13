@@ -20,7 +20,7 @@ global:
     name: runtime-config
     fileName: config.yaml
     mountPath: /app/config/config.yaml
-    content: "server:\n  listen: \":8080\"\n  public_base_url: \"http://localhost:8080\"\n  max_request_body_bytes: 10485760\n  graceful_shutdown_seconds: 30\nsecurity:\n  master_key_env: \"AI_GATEWAY_MASTER_KEY\"\n  secret_masking: true\n  default_payload_policy: \"metadata_only\"\nrouting:\n  default_max_attempts: 2\n  retry_before_first_byte_only_for_stream: true\n  default_timeout_seconds: 120\n  stream_idle_timeout_seconds: 60\nobservability:\n  metrics_enabled: true\n  otlp_enabled: false\n  log_payload_default: false\n  raw_stream_sampling_rate: 0.001\nbilling:\n  pre_authorize_enabled: true\n  reserve_enabled: true\n  default_currency: \"CREDIT\"\n  settlement_async: true\n"
+    content: "server:\n  listen: \":8080\"\n  public_base_url: \"https://api.staging.example.invalid\"\n  max_request_body_bytes: 10485760\n  graceful_shutdown_seconds: 30\n  trusted_proxy_allowlist: []\n  ip_allowlist:\n    default_policy: \"config-needed\"\nsecurity:\n  master_key_env: \"AI_GATEWAY_MASTER_KEY\"\n  secret_masking: true\n  default_payload_policy: \"metadata_only\"\n  cors:\n    allowed_origins_env: \"AI_GATEWAY_CORS_ALLOWED_ORIGINS\"\n    control_plane_allowed_origins_env: \"AI_GATEWAY_CONTROL_CORS_ALLOWED_ORIGINS\"\n  rate_limit:\n    status: \"config-needed\"\n    store: \"redis\"\nrouting:\n  default_max_attempts: 2\n  retry_before_first_byte_only_for_stream: true\n  default_timeout_seconds: 120\n  stream_idle_timeout_seconds: 60\nobservability:\n  metrics_enabled: true\n  otlp_enabled: false\n  log_payload_default: false\n  raw_stream_sampling_rate: 0.001\nclickhouse:\n  config_status: \"config-needed\"\n  secret_ref: \"clickhouse.secretRef\"\nproviders:\n  config_status: \"config-needed\"\n  secret_ref: \"provider.secretRef\"\npayment:\n  provider_status: \"config-needed\"\n  secret_ref: \"payment.secretRef\"\nbilling:\n  pre_authorize_enabled: true\n  reserve_enabled: true\n  default_currency: \"CREDIT\"\n  settlement_async: true\n"
 
 database:
   secretRef:
@@ -36,6 +36,116 @@ application:
   secretRef:
     name: fubox-app-secrets
     optional: false
+
+clickhouse:
+  secretRef:
+    name: fubox-clickhouse
+    optional: true
+
+provider:
+  secretRef:
+    name: fubox-provider-secrets
+    optional: true
+
+payment:
+  secretRef:
+    name: fubox-payment-secrets
+    optional: true
+
+stagingPlan:
+  enabled: true
+  schemaVersion: staging-smoke-security-plan/v1
+  smokeOrder:
+    - render_chart
+    - apply_migrations
+    - wait_for_readiness
+    - seed_admin_and_mock_provider
+    - create_virtual_key
+    - gateway_models
+    - mock_chat_completion
+    - admin_request_trace_readback
+    - billing_ledger_readback
+    - recovery_probe_optional
+  securityChecks:
+    - secret_refs_present
+    - admin_ui_has_no_secret_env
+    - browser_public_env_absent
+    - trusted_proxy_config_reviewed
+    - ip_allowlist_config_reviewed
+    - cors_origins_reviewed
+    - rate_limit_store_present
+    - payload_policy_metadata_only
+    - provider_payment_secret_values_omitted
+    - service_account_token_disabled
+    - pod_security_context_restricted
+  securityReviewChecklist:
+    - cors_origins
+    - ip_allowlist
+    - trusted_proxy
+    - secret_refs
+    - rate_limit
+    - payload_policy
+    - provider_config
+    - payment_config
+    - clickhouse_config
+  targetServices:
+    - gateway
+    - control-plane
+    - admin-ui
+    - worker
+    - mock-provider
+    - redis
+    - postgres
+    - clickhouse
+  trafficModels:
+    - gateway_latency_baseline
+    - streaming_idle_timeout_baseline
+    - rate_limit_reservation_baseline
+    - request_log_ingest_baseline
+  resourceGuards:
+    - operator_window
+    - bounded_rate
+    - staging_only
+    - cost_cap
+    - secret_safe_logs
+    - no_release_gate
+  rollbackCriteria:
+    - readiness_degraded
+    - error_rate_spike
+    - rate_limit_fail_open
+    - billing_mismatch
+    - secret_or_payload_leak
+    - resource_saturation
+  loadPlaceholders:
+    - gateway_latency_baseline
+    - streaming_idle_timeout_baseline
+    - rate_limit_reservation_baseline
+    - request_log_ingest_baseline
+  chaosPlaceholders:
+    - provider_5xx_fallback_drill
+    - redis_unavailable_readiness_drill
+    - postgres_failover_readiness_drill
+    - worker_restart_recovery_drill
+  chaosExperiments:
+    - provider_5xx_fallback_drill
+    - redis_unavailable_readiness_drill
+    - postgres_failover_readiness_drill
+    - worker_restart_recovery_drill
+  expectedOutputs:
+    - staging_smoke_summary_json
+    - security_presence_matrix_json
+    - staging_security_review_readback_json
+    - staging_load_plan_readback_json
+    - staging_chaos_plan_readback_json
+    - operator_notes_without_secrets
+    - follow_up_actions_for_real_load_chaos_security_review
+  expectedSafeOutputs:
+    - staging_smoke_summary_json
+    - security_presence_matrix_json
+    - staging_security_review_readback_json
+    - staging_load_plan_readback_json
+    - staging_chaos_plan_readback_json
+    - operator_notes_without_secrets
 
 ingress:
   enabled: false
@@ -71,11 +181,18 @@ services:
     applicationSecretRef: true
     databaseSecretRef: true
     redisSecretRef: true
+    clickhouseSecretRef: true
+    providerSecretRef: true
+    paymentSecretRef: false
     configMapRef: true
     env:
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_LISTEN: 0.0.0.0:8080
-      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
+      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "false"
+      AI_GATEWAY_CORS_ALLOWED_ORIGINS: "https://admin.staging.example.invalid"
+      AI_GATEWAY_TRUSTED_PROXY_ALLOWLIST_STATUS: "config-needed"
+      AI_GATEWAY_IP_ALLOWLIST_STATUS: "config-needed"
+      AI_GATEWAY_RATE_LIMIT_STATUS: "config-needed"
     resources:
       requests:
         cpu: 100m
@@ -114,11 +231,19 @@ services:
     applicationSecretRef: true
     databaseSecretRef: true
     redisSecretRef: true
+    clickhouseSecretRef: true
+    providerSecretRef: true
+    paymentSecretRef: true
     configMapRef: true
     env:
       AI_GATEWAY_CONFIG: /app/config/config.yaml
       AI_GATEWAY_CONTROL_LISTEN: 0.0.0.0:8081
-      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "true"
+      AI_GATEWAY_ALLOW_UNSAFE_PROVIDER_ENDPOINTS: "false"
+      AI_GATEWAY_CONTROL_CORS_ALLOWED_ORIGINS: "https://admin.staging.example.invalid"
+      AI_GATEWAY_TRUSTED_PROXY_ALLOWLIST_STATUS: "config-needed"
+      AI_GATEWAY_IP_ALLOWLIST_STATUS: "config-needed"
+      AI_GATEWAY_RATE_LIMIT_STATUS: "config-needed"
+      AI_GATEWAY_PAYMENT_PROVIDER_STATUS: "config-needed"
     resources:
       requests:
         cpu: 100m
@@ -226,3 +351,82 @@ services:
         periodSeconds: 10
         timeoutSeconds: 2
         failureThreshold: 3
+
+  worker:
+    enabled: false
+    replicas: 1
+    image:
+      repository: fubox/ai-worker
+      tag: latest
+      pullPolicy: IfNotPresent
+    containerPort: 8082
+    service:
+      type: ClusterIP
+      port: 8082
+      targetPort: http
+    applicationSecretRef: true
+    databaseSecretRef: true
+    redisSecretRef: true
+    clickhouseSecretRef: true
+    providerSecretRef: true
+    paymentSecretRef: true
+    configMapRef: true
+    env:
+      AI_GATEWAY_CONFIG: /app/config/config.yaml
+      AI_GATEWAY_WORKER_MODE: staging-config-seam
+      AI_GATEWAY_CLICKHOUSE_LOG_STORE_ENABLED: "false"
+      AI_GATEWAY_CLICKHOUSE_CONFIG_STATUS: "config-needed"
+      AI_GATEWAY_PAYMENT_PROVIDER_STATUS: "config-needed"
+      AI_GATEWAY_PROVIDER_ADAPTER_STATUS: "config-needed"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    probes:
+      liveness:
+        enabled: false
+        path: /healthz
+        initialDelaySeconds: 10
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+      readiness:
+        enabled: false
+        path: /readyz
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+
+jobs:
+  recoveryProbe:
+    enabled: false
+    backoffLimit: 0
+    ttlSecondsAfterFinished: 3600
+    restartPolicy: Never
+    image:
+      repository: fubox/ai-worker
+      tag: latest
+      pullPolicy: IfNotPresent
+    applicationSecretRef: true
+    databaseSecretRef: true
+    redisSecretRef: true
+    clickhouseSecretRef: false
+    providerSecretRef: true
+    paymentSecretRef: false
+    configMapRef: true
+    env:
+      AI_GATEWAY_CONFIG: /app/config/config.yaml
+    args:
+      - recovery-probe
+      - --execute
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi

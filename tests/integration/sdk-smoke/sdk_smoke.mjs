@@ -6,10 +6,17 @@ const apiKey = process.env.OPENAI_API_KEY ?? process.env.GATEWAY_AUTH_TOKEN ?? "
 const model = process.env.SMOKE_MODEL ?? "mock-gpt-4o-mini";
 const includeStreaming = parseBooleanEnv("SDK_SMOKE_INCLUDE_STREAMING");
 const allowStreamingSkip = parseBooleanEnv("SDK_SMOKE_ALLOW_STREAMING_SKIP");
+const includeProtocolCoverage = parseBooleanEnv("SDK_SMOKE_INCLUDE_PROTOCOL_COVERAGE");
 
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+async function assertOkResponse(response) {
+  if (!response.ok) {
+    throw new Error(`expected HTTP 2xx, got HTTP ${response.status}: ${await response.text()}`);
   }
 }
 
@@ -89,6 +96,88 @@ async function runStreamingSmoke(client) {
   };
 }
 
+async function runResponsesStreamTerminalSmoke(client) {
+  const stream = await client.responses.create({
+    model,
+    input: "sdk smoke responses stream terminal ping",
+    stream: true,
+  });
+
+  let eventCount = 0;
+  let terminalType = null;
+  for await (const event of stream) {
+    eventCount += 1;
+    if (event?.type === "response.completed" || event?.type === "response.failed") {
+      terminalType = event.type;
+    }
+  }
+
+  assert(eventCount > 0, "expected at least one Responses stream event");
+  assert(terminalType === "response.completed", `expected response.completed terminal, got ${terminalType}`);
+  return { status: "ok", events: eventCount, terminal: terminalType };
+}
+
+async function runAnthropicMessagesSmoke() {
+  const response = await fetch(`${gatewayBaseUrl}/v1/messages`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 32,
+      messages: [{ role: "user", content: "sdk smoke anthropic ping" }],
+    }),
+  });
+  await assertOkResponse(response);
+
+  const payload = await response.json();
+  assert(payload.type === "message" || payload.content, "expected Anthropic message response shape");
+  return { status: "ok", type: payload.type ?? "message" };
+}
+
+async function runGeminiGenerateContentSmoke() {
+  const response = await fetch(`${gatewayBaseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: "sdk smoke gemini ping" }] }],
+    }),
+  });
+  await assertOkResponse(response);
+
+  const payload = await response.json();
+  assert(Array.isArray(payload.candidates), "expected Gemini candidates array");
+  return { status: "ok", candidates: payload.candidates.length };
+}
+
+async function runModelsGatewayFilteringSmoke() {
+  const response = await fetch(`${gatewayBaseUrl}/v1/models`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
+  await assertOkResponse(response);
+
+  const payload = await response.json();
+  assert(payload.object === "list", `expected object=list, got ${payload.object}`);
+  assert(Array.isArray(payload.data), "expected models data array");
+  return { status: "ok", models: payload.data.map((entry) => entry.id).filter(Boolean) };
+}
+
+async function runProtocolCoverageSmoke(client) {
+  return {
+    openai_responses_stream_terminal: await runResponsesStreamTerminalSmoke(client),
+    anthropic_messages: await runAnthropicMessagesSmoke(),
+    gemini_generate_content: await runGeminiGenerateContentSmoke(),
+    models_gateway_filtering: await runModelsGatewayFilteringSmoke(),
+  };
+}
+
 function describeError(error) {
   const status = error?.status ? `HTTP ${error.status}` : null;
   const message = error?.message ?? String(error);
@@ -132,6 +221,9 @@ async function main() {
   const result = await runNonStreamingSmoke(client);
   if (includeStreaming) {
     result.streaming = await maybeRunStreamingSmoke(client);
+  }
+  if (includeProtocolCoverage) {
+    result.protocol_coverage = await runProtocolCoverageSmoke(client);
   }
 
   console.log(

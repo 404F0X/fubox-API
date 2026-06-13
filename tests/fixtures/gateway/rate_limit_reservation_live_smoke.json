@@ -83,6 +83,7 @@
       "bounded_scope",
       "performance",
       "trusted_numeric_source_handoff",
+      "smoke_run_readback",
       "secret_safe_command_summary",
       "blockers",
       "blocker_evidence",
@@ -120,6 +121,30 @@
       "omits_raw_profile_ref": true,
       "omits_request_body": true,
       "omits_provider_key_secret": true
+    },
+    "smoke_run_readback": {
+      "schema": "gateway_rate_limit_reservation_smoke_run_readback_v1",
+      "operator_sql": "scripts/operator/e8_rate_limit_db_acquire_readback.sql",
+      "correlation_fields": [
+        "smoke_run_id",
+        "request_hashes",
+        "request_ids"
+      ],
+      "expected_count_fields": [
+        "acquire_applied_count",
+        "release_applied_count",
+        "not_applied_count",
+        "fallback_count",
+        "provider_attempt_rows"
+      ],
+      "same_smoke_run_request_correlation": true,
+      "raw_material_in_output": false
+    },
+    "tpm_estimate_evidence": {
+      "estimated_field": "rate_limit_reservation.tpm_estimate.estimated",
+      "trusted_numeric_source_present_field": "rate_limit_reservation.tpm_estimate.trusted_numeric_source_present",
+      "missing_tokenizer_expected_estimated": true,
+      "missing_tokenizer_expected_trusted_numeric_source_present": false
     }
   },
   "log_safety": {
@@ -141,5 +166,5 @@
       "dev-fallback-strict-429-key-fingerprint"
     ]
   },
-  "notes": "Live mode mutates only provider_keys rpm/tpm/concurrency limits and current_window_state for the listed dev smoke keys, then restores the original values in a finally block. Dry-run validates fixture/script/seed markers only."
+  "notes": "Live mode mutates only provider_keys rpm/tpm/concurrency limits, current_window_state, status, and cooldown_until for the listed dev smoke keys, then restores the original values in a finally block. Dry-run validates fixture/script/seed markers only."
 }

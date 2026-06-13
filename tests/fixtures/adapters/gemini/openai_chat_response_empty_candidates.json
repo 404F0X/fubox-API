@@ -1,0 +1,58 @@
+{
+  "name": "gemini_openai_chat_response_empty_candidates",
+  "request": {
+    "model": "gemini-1.5-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say hello."
+      }
+    ],
+    "stream": false
+  },
+  "expected_upstream": {
+    "method": "POST",
+    "path": "/v1beta/models/gemini-1.5-flash:generateContent",
+    "stream": false,
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "Say hello."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "candidates": [],
+      "usageMetadata": {
+        "promptTokenCount": 4,
+        "totalTokenCount": 4
+      },
+      "modelVersion": "gemini-1.5-flash"
+    }
+  },
+  "expected_response": {
+    "id": "chatcmpl_gemini",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "gemini-1.5-flash",
+    "choices": [],
+    "usage": {
+      "prompt_tokens": 4,
+      "completion_tokens": 0,
+      "total_tokens": 4
+    }
+  },
+  "expected_usage": {
+    "prompt_tokens": 4,
+    "completion_tokens": 0,
+    "total_tokens": 4
+  }
+}

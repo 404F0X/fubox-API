@@ -106,6 +106,11 @@
       "strict_live_model": "mock-gpt-4o-mini-fallback-timeout",
       "expected_mock_status": "timeout",
       "expected_gateway_error_code": "provider_timeout",
+      "strict_live_timeout_policy": {
+        "request_timeout_ms": 1500,
+        "notes": "Strict local fallback smoke rewrites the timeout channel policy to this bounded request timeout before probing."
+      },
+      "strict_live_probe_timeout_seconds": 8,
       "fallback_expected_status": 200,
       "expected_provider_attempts": {
         "minimum_count": 2,

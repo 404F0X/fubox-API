@@ -6,10 +6,14 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+ai-gateway-adapters.workspace = true
+ai-gateway-auth.workspace = true
 ai-gateway-billing-ledger.workspace = true
 ai-gateway-config.workspace = true
 ai-gateway-db.workspace = true
 ai-gateway-observability.workspace = true
+hex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -1,0 +1,99 @@
+{
+  "schema_version": "gateway_paid_hot_path_evidence.v1",
+  "status": "passed",
+  "smoke_run_id": "e8-paid-required-shape-fixture",
+  "generated_at_utc": "2026-06-05T20:00:00Z",
+  "generated_by": "fixture_contract_only",
+  "secret_safe": {
+    "raw_secret_present": false,
+    "credential_material_echoed": false,
+    "database_url_echoed": false,
+    "provider_key_echoed": false,
+    "virtual_key_echoed": false
+  },
+  "request_ids": [
+    "00000000-0000-0000-0000-000000040001",
+    "00000000-0000-0000-0000-000000040002",
+    "00000000-0000-0000-0000-000000040003",
+    "00000000-0000-0000-0000-000000040004",
+    "00000000-0000-0000-0000-000000040005",
+    "00000000-0000-0000-0000-000000040006",
+    "00000000-0000-0000-0000-000000040007"
+  ],
+  "operation_ids": [
+    "00000000-0000-0000-0000-000000040001",
+    "00000000-0000-0000-0000-000000040002",
+    "00000000-0000-0000-0000-000000040003",
+    "00000000-0000-0000-0000-000000040104",
+    "00000000-0000-0000-0000-000000040005",
+    "00000000-0000-0000-0000-000000040006",
+    "00000000-0000-0000-0000-000000040007"
+  ],
+  "evidence": [
+    {
+      "evidence_key": "gateway_hot_path_reserve_settle_refund",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040001",
+      "operation": "reserve_settle_refund",
+      "operation_id": "00000000-0000-0000-0000-000000040001",
+      "reserve_operation_id": "00000000-0000-0000-0000-000000040001",
+      "settle_operation_id": "00000000-0000-0000-0000-000000040001",
+      "expected_ledger_entry_types": ["reserve", "settle", "refund"],
+      "provider_call_expected": true
+    },
+    {
+      "evidence_key": "insufficient_balance_prevents_provider_call",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040002",
+      "operation": "reserve_pre_authorize",
+      "operation_id": "00000000-0000-0000-0000-000000040002",
+      "provider_call_expected": false
+    },
+    {
+      "evidence_key": "settle_idempotency",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040003",
+      "operation": "settle",
+      "operation_id": "00000000-0000-0000-0000-000000040003",
+      "expected_idempotency_key": "settle:00000000-0000-0000-0000-000000040003"
+    },
+    {
+      "evidence_key": "refund_idempotency",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040004",
+      "operation": "refund_partial",
+      "operation_id": "00000000-0000-0000-0000-000000040104",
+      "related_ledger_entry_id": "00000000-0000-0000-0000-000000040204",
+      "refund_operation_id": "00000000-0000-0000-0000-000000040104",
+      "expected_idempotency_key": "refund_partial:00000000-0000-0000-0000-000000040204:00000000-0000-0000-0000-000000040104"
+    },
+    {
+      "evidence_key": "post_commit_readback",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040005",
+      "operation": "readback",
+      "operation_id": "00000000-0000-0000-0000-000000040005"
+    },
+    {
+      "evidence_key": "rollback_proof",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040006",
+      "operation": "rollback",
+      "operation_id": "00000000-0000-0000-0000-000000040006"
+    },
+    {
+      "evidence_key": "reconciliation_report",
+      "status": "passed",
+      "passed": true,
+      "request_id": "00000000-0000-0000-0000-000000040007",
+      "operation": "reconciliation",
+      "operation_id": "00000000-0000-0000-0000-000000040007"
+    }
+  ]
+}

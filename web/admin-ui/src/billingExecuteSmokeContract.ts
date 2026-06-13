@@ -59,7 +59,8 @@ export const ledgerAdjustmentExecuteLiveSmokeContract = {
   },
 } as const;
 
-export type LedgerAdjustmentExecuteLiveSmokeContract = typeof ledgerAdjustmentExecuteLiveSmokeContract;
+export type LedgerAdjustmentExecuteLiveSmokeContract =
+  typeof ledgerAdjustmentExecuteLiveSmokeContract;
 
 export const ledgerAdjustmentExecuteAbsentOptionalMarker = null;
 
@@ -94,7 +95,8 @@ export const ledgerAdjustmentExecuteBrowserPreflightContract = {
   requiredInputs: {
     adminUiBaseUrl: "ADMIN_UI_BASE_URL",
     controlPlaneBaseUrl: "CONTROL_PLANE_BASE_URL",
-    handoffArtifact: "web/admin-ui/src/billingExecuteSmokeContract.serializable.json",
+    handoffArtifact:
+      "web/admin-ui/src/billingExecuteSmokeContract.serializable.json",
   },
   requiresLiveBackendByDefault: false,
   usesDataTestIdsOnly: true,
@@ -194,12 +196,61 @@ export const ledgerAdjustmentExecuteBrowserLiveRunbookContract = {
   },
   secretSafeOutput: {
     echoSessionMaterial: false,
-    forbiddenMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
+    forbiddenMarkers:
+      ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
   },
 } as const;
 
 export const ledgerAdjustmentExecuteBrowserEvidenceArtifactContract = {
   artifactName: "billing_execute_browser_live_e2e_evidence.v1",
+  classificationFields: {
+    failure: "failure",
+    mutationPassArtifact: "mutation_pass_artifact",
+    readback: "readback",
+    replay: "replay",
+    runtimeCurrent: "runtime_current",
+  },
+  classificationValues: {
+    failure: {
+      artifactClosureFailed: "artifact_closure_failed",
+      artifactReadbackFailed: "artifact_readback_failed",
+      artifactWriteMissing: "artifact_write_missing",
+      browserUnavailable: "browser_tooling_unavailable",
+      durationNonNumeric: "duration_non_numeric",
+      browserIdempotentReplayFailed: "browser_idempotent_replay_failed",
+      browserLiveRunnerTimeout: "browser_live_runner_timeout",
+      ledgerRefreshMissing: "ledger_refresh_missing",
+      mutationOptInMissing: "mutation_opt_in_missing",
+      none: "none",
+      refundRefusalMissing: "refund_refusal_missing",
+      runtimeStale: "runtime_image_stale_or_unverified",
+      sessionMissing: "session_material_missing",
+      simulatedArtifact: "simulated_artifact_cannot_close_e11",
+      staleArtifact: "artifact_readback_failed",
+    },
+    mutationPassArtifact: {
+      blocked: "mutation_pass_artifact_blocked",
+      failed: "mutation_pass_artifact_failed",
+      notRequested: "mutation_pass_artifact_not_requested",
+      passed: "mutation_pass_artifact_passed",
+    },
+    readback: {
+      failed: "artifact_readback_failed",
+      missing: "artifact_readback_missing",
+      notRequested: "artifact_readback_not_requested",
+      passed: "artifact_readback_passed",
+    },
+    replay: {
+      failed: "browser_idempotent_replay_failed",
+      notRun: "idempotent_replay_not_run",
+      passed: "idempotent_replay_passed",
+    },
+    runtimeCurrent: {
+      notChecked: "runtime_current_not_checked",
+      staleOrUnverified: "runtime_image_stale_or_unverified",
+      verified: "runtime_current_verified",
+    },
+  },
   durationFields: {
     browserLaunchDurationMs: "browser_launch_duration_ms",
     contextSetupDurationMs: "context_setup_duration_ms",
@@ -220,18 +271,149 @@ export const ledgerAdjustmentExecuteBrowserEvidenceArtifactContract = {
     "outcome",
     "provenance",
     "freshness",
+    "runtime_current",
+    "classifications",
+    "readback",
+    "runtime_current_artifact",
+    "session_verification",
+    "mutation_controls",
+    "api_readback",
+    "ledger_readback",
+    "failure_taxonomy",
     "blockers",
     "matrix",
     "durations",
     "actions",
     "secret_safe",
   ],
+  artifactSchema: {
+    apiReadbackFields: [
+      "dry_run_plan",
+      "execute_apply",
+      "idempotent_replay",
+      "refund_refusal",
+      "ledger_refresh",
+    ],
+    failureTaxonomyFields: [
+      "session_missing",
+      "runtime_stale",
+      "mutation_opt_in_missing",
+      "artifact_write_missing",
+      "artifact_readback_failed",
+      "idempotent_replay_failed",
+      "refund_refusal_missing",
+      "ledger_refresh_missing",
+      "duration_non_numeric",
+      "stale_or_simulated_artifact",
+      "browser_unavailable",
+    ],
+    ledgerReadbackFields: [
+      "applied_ledger_entry_visible",
+      "idempotent_replay_reused_ledger_entry",
+      "refund_refusal_no_ledger_write",
+      "ledger_refresh_visible",
+    ],
+    mutationControlFields: [
+      "mutation_opt_in_enabled",
+      "artifact_write_opt_in_enabled",
+      "artifact_readback_opt_in_enabled",
+    ],
+    runtimeCurrentArtifactLinkField: "runtime_current_artifact",
+    sessionVerificationField: "session_verification",
+  },
   outcomes: {
     blocked: "blocked",
     failed: "failed",
     passed: "passed",
   },
   unavailableMarker: "unavailable",
+} as const;
+
+export const ledgerAdjustmentExecuteRuntimeCurrentHandoffContract = {
+  buildAllowedDefault: false,
+  classifications: {
+    buildRequiredButForbidden: "build_required_but_forbidden",
+    containerRecreateAvailable: "container_recreate_available",
+    containerUnavailable: "control_plane_container_unavailable",
+    dockerUnavailable: "docker_unavailable",
+    imageInspectUnavailable: "control_plane_image_inspect_unavailable",
+    operatorCommandGenerated: "operator_command_generated",
+    runtimeCurrentAfterRecreateUnverified:
+      "runtime_current_after_recreate_unverified",
+    runtimeCurrentAfterRecreateVerified:
+      "runtime_current_after_recreate_verified",
+    sourceNewerThanRuntimeImage: "source_newer_than_runtime_image",
+  },
+  defaultMode: "runtime_current_handoff",
+  evidenceArtifact: {
+    defaultPath:
+      "artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE",
+    flag: "-RuntimeCurrentEvidenceArtifactWriteOptIn",
+    pathEnv:
+      "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_PATH",
+    readBackRequiredForExecution: true,
+    readDisabledByDefault: true,
+    readbackEnv:
+      "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK",
+    readbackFlag: "-RuntimeCurrentEvidenceArtifactReadbackOptIn",
+    requiredValue: "1",
+    schema: "control_plane_ledger_execute_runtime_current_handoff.v1",
+    writeDisabledByDefault: true,
+  },
+  browserRunnerUnlock: {
+    classifications: {
+      artifactMissing: "runtime_current_artifact_missing",
+      artifactStaleOrUnverified: "runtime_current_artifact_stale_or_unverified",
+      verifiedArtifact: "runtime_current_verified",
+    },
+    defaultRunsBrowserRunner: false,
+    defaultSubmitsLiveMutation: false,
+    requiresArtifactReadback: true,
+    unlockedBlockerShift: "session_mutation_artifact_gate",
+    verifiedClassification: "runtime_current_verified",
+  },
+  noBuildRecreate: {
+    command:
+      "docker compose -f deploy/docker-compose/docker-compose.yml up -d --no-build --no-deps --force-recreate control-plane",
+    commandClassification: "operator_command_generated",
+    defaultExecutes: false,
+    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_RECREATE",
+    flag: "-RuntimeCurrentNoBuildRecreateOptIn",
+    readbackRequired: true,
+    requiredValue: "1",
+  },
+  outputMarkers: {
+    buildAllowed: "runtime_current_handoff_build_allowed",
+    blocker: "runtime_current_handoff_blocker",
+    classification: "runtime_current_handoff_classification",
+    command: "runtime_current_handoff_command",
+    readbackClassification: "runtime_current_handoff_readback_classification",
+    status: "runtime_current_handoff_status",
+  },
+  readbackClassifications: {
+    failed: "runtime_current_readback_failed",
+    notRequested: "runtime_current_readback_not_requested",
+    staleOrUnverified: "runtime_current_readback_stale_or_unverified",
+    verified: "runtime_current_readback_verified",
+  },
+  rebuildHandoff: {
+    buildForbiddenBlocker: "runtime_image_requires_rebuild_but_build_forbidden",
+    commandClassification: "operator_command_generated",
+    commandHint:
+      "docker compose -f deploy/docker-compose/docker-compose.yml build control-plane && docker compose -f deploy/docker-compose/docker-compose.yml up -d --no-deps --force-recreate control-plane",
+    defaultExecutesBuild: false,
+    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_REBUILD_HANDOFF",
+    executionAllowed: false,
+    flag: "-RuntimeCurrentRebuildHandoffOptIn",
+    readbackRequired: true,
+    requiredValue: "1",
+  },
+  secretSafeOmission: {
+    echoRequestMaterial: false,
+    echoSessionMaterial: false,
+    echoUrlCredentials: false,
+  },
 } as const;
 
 export const ledgerAdjustmentExecuteBrowserRunnerReadinessContract = {
@@ -265,7 +447,8 @@ export const ledgerAdjustmentExecuteBrowserRunnerReadinessContract = {
     writeMode: "explicit_opt_in_only",
   },
   defaultMode: "runner_readiness_only",
-  durationCaptureNames: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+  durationCaptureNames:
+    ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
   readinessFields: {
     actionsAllowed: "actions_allowed",
     adminUiUrlSafe: "admin_ui_url_safe",
@@ -282,7 +465,8 @@ export const ledgerAdjustmentExecuteBrowserRunnerReadinessContract = {
 
 export const ledgerAdjustmentExecuteBrowserDomActionRunnerContract = {
   artifactEmission: {
-    artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    artifactName:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
     outputMarker: "browser_runner_evidence_json",
     writeDisabledByDefault: true,
     writeOptInFlag: "-BrowserEvidenceArtifactWriteOptIn",
@@ -326,7 +510,8 @@ export const ledgerAdjustmentExecuteBrowserDomActionRunnerContract = {
 
 export const ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract = {
   artifactEmission: {
-    artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    artifactName:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
     outputMarker: "browser_runner_evidence_json",
     writeDisabledByDefault: true,
   },
@@ -341,11 +526,21 @@ export const ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract = {
   defaultMode: "playwright_launch_readiness_only",
   defaultSubmitsLiveMutation: false,
   durationFields: {
-    browserLaunchDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.browserLaunchDurationMs,
-    contextSetupDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.contextSetupDurationMs,
-    pageReadyDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.pageReadyDurationMs,
-    selectorSnapshotDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.selectorSnapshotDurationMs,
-    serviceReadinessDurationMs: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields.serviceReadinessDurationMs,
+    browserLaunchDurationMs:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields
+        .browserLaunchDurationMs,
+    contextSetupDurationMs:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields
+        .contextSetupDurationMs,
+    pageReadyDurationMs:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields
+        .pageReadyDurationMs,
+    selectorSnapshotDurationMs:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields
+        .selectorSnapshotDurationMs,
+    serviceReadinessDurationMs:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields
+        .serviceReadinessDurationMs,
   },
   readinessFields: {
     browserLaunchReady: "browser_launch_ready",
@@ -363,46 +558,52 @@ export const ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract = {
   },
 } as const;
 
-export const ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract = {
-  artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
-  defaultClosesLiveGap: false,
-  defaultMode: "mutation_pass_artifact_closure_gate",
-  defaultSubmitsLiveMutation: false,
-  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
-  expectedActionOutcomes: {
-    dry_run_plan: "executePreflight",
-    execute_apply: "applied",
-    idempotent_replay: "idempotent",
-    ledger_refresh: "success",
-    refund_refusal: "blocked",
-  },
-  requiredArtifactFreshness: {
-    requireCurrentGitCommit: true,
-    requireFreshnessMarker: true,
-    requireHandoffFresh: true,
-    requireReadBack: true,
-  },
-  requiredReadiness: {
-    adminUiReachable: true,
-    browserLaunchReady: true,
-    contextReady: true,
-    controlPlaneHealthReachable: true,
-    mutationOptInEnabled: true,
-    pageReady: true,
-    selectorSnapshotReady: true,
-    sessionMaterialPresent: true,
-  },
-  secretSafeOmission: {
-    echoRequestMaterial: false,
-    echoSessionMaterial: false,
-    echoUrlCredentials: false,
-  },
-  statusMarkers: {
-    blocked: "blocked",
-    closureEligible: "closure_eligible",
-    passed: "passed",
-  },
-} as const;
+export const ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract =
+  {
+    artifactName:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    classificationValues:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract
+        .classificationValues.mutationPassArtifact,
+    defaultClosesLiveGap: false,
+    defaultMode: "mutation_pass_artifact_closure_gate",
+    defaultSubmitsLiveMutation: false,
+    durationFields:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+    expectedActionOutcomes: {
+      dry_run_plan: "executePreflight",
+      execute_apply: "applied",
+      idempotent_replay: "idempotent",
+      ledger_refresh: "success",
+      refund_refusal: "blocked",
+    },
+    requiredArtifactFreshness: {
+      requireCurrentGitCommit: true,
+      requireFreshnessMarker: true,
+      requireHandoffFresh: true,
+      requireReadBack: true,
+    },
+    requiredReadiness: {
+      adminUiReachable: true,
+      browserLaunchReady: true,
+      contextReady: true,
+      controlPlaneHealthReachable: true,
+      mutationOptInEnabled: true,
+      pageReady: true,
+      selectorSnapshotReady: true,
+      sessionMaterialPresent: true,
+    },
+    secretSafeOmission: {
+      echoRequestMaterial: false,
+      echoSessionMaterial: false,
+      echoUrlCredentials: false,
+    },
+    statusMarkers: {
+      blocked: "blocked",
+      closureEligible: "closure_eligible",
+      passed: "passed",
+    },
+  } as const;
 
 export const ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract = {
   artifact: {
@@ -420,9 +621,11 @@ export const ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract = {
   defaultMode: "live_runner_execution_bridge",
   defaultRunsBridge: false,
   defaultSubmitsLiveMutation: false,
-  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+  durationFields:
+    ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
   env: {
-    artifactWrite: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
+    artifactWrite:
+      "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE",
     liveRunner: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_RUNNER",
     mutation: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION",
     session: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
@@ -448,90 +651,550 @@ export const ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract = {
   },
 } as const;
 
-export const ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract = {
-  artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
-  defaultMode: "live_pass_artifact_readback_gate",
-  defaultReadsArtifact: false,
-  defaultSubmitsLiveMutation: false,
-  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
-  expectedActionOutcomes: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.expectedActionOutcomes,
-  requiredArtifactFreshness: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.requiredArtifactFreshness,
-  requiredReadiness: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.requiredReadiness,
-  secretSafeOmission: {
-    echoRequestMaterial: false,
-    echoSessionMaterial: false,
-    echoUrlCredentials: false,
+export const ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract =
+  {
+    artifactName:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    classificationValues:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract
+        .classificationValues.readback,
+    defaultMode: "live_pass_artifact_readback_gate",
+    defaultReadsArtifact: false,
+    defaultSubmitsLiveMutation: false,
+    durationFields:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+    expectedActionOutcomes:
+      ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.expectedActionOutcomes,
+    requiredArtifactFreshness:
+      ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.requiredArtifactFreshness,
+    requiredReadiness:
+      ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract.requiredReadiness,
+    secretSafeOmission: {
+      echoRequestMaterial: false,
+      echoSessionMaterial: false,
+      echoUrlCredentials: false,
+    },
+    statusMarkers: {
+      blocked: "blocked",
+      fail: "fail",
+      pass: "pass",
+    },
+  } as const;
+
+export const ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract =
+  {
+    artifactName:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+    defaultInstallsBrowser: false,
+    defaultMode: "live_environment_bootstrap_attempt",
+    defaultStartsAdminUiDevServer: false,
+    defaultSubmitsLiveMutation: false,
+    devServer: {
+      command: "npm run dev -- --host 127.0.0.1",
+      cwd: "web/admin-ui",
+      env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER",
+      flag: "-BrowserAdminUiDevServerOptIn",
+      requiredValue: "1",
+    },
+    durationFields:
+      ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
+    playwright: {
+      browser: "chromium",
+      installCommand:
+        "npm --prefix web/admin-ui exec playwright install chromium",
+      installHintOnly: true,
+    },
+    sessionHandoff: {
+      echoCookie: false,
+      echoHeaderValue: false,
+      echoToken: false,
+      env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+      header: "X-Admin-Session",
+      requiredForActions: true,
+    },
+    requiredForPassAttempt: {
+      adminUiReachable: true,
+      artifactReadbackFresh: true,
+      artifactWriteOptIn: true,
+      browserToolingAvailable: true,
+      controlPlaneHealthReachable: true,
+      liveRunnerOptIn: true,
+      mutationOptIn: true,
+      sessionMaterialPresent: true,
+    },
+    secretSafeOmission: {
+      echoRequestMaterial: false,
+      echoSessionMaterial: false,
+      echoUrlCredentials: false,
+    },
+    statusMarkers: {
+      blocked: "blocked",
+      fail: "fail",
+      passAttemptReady: "pass_attempt_ready",
+      passReadback: "pass_readback",
+    },
+  } as const;
+
+export const ledgerAdjustmentExecuteBrowserMutationFinalDodContract = {
+  acceptanceMatrix: {
+    passRequires: {
+      adminSessionVerifiedSecretOmitted: true,
+      applyOutcome: "applied",
+      artifactFreshCurrentCommit: true,
+      artifactReadbackOptIn: true,
+      artifactReadbackPassed: true,
+      artifactWriteOptIn: true,
+      browserToolingAvailable: true,
+      idempotentReplayOutcome: "idempotent",
+      ledgerRefreshOutcome: "success",
+      mutationOptIn: true,
+      numericDurations: true,
+      refundRefusalOutcome: "blocked",
+      runtimeCurrentVerified: true,
+      secretSafeOmission: true,
+    },
+    rejectedEvidence: {
+      browserUnavailable: "browser_tooling_unavailable",
+      missingArtifact: "artifact_readback_missing",
+      missingSession: "session_material_missing",
+      simulatedArtifact: "simulated_artifact_cannot_close_e11",
+      staleArtifact: "artifact_readback_failed",
+      staleRuntime: "runtime_image_stale_or_unverified",
+    },
   },
-  statusMarkers: {
+  checklist: [
+    "runtime_current_verified",
+    "admin_session_verified_secret_omitted",
+    "mutation_opt_in_enabled",
+    "artifact_write_opt_in_enabled",
+    "artifact_readback_passed",
+    "apply_outcome_applied",
+    "idempotent_replay_outcome_idempotent",
+    "refund_refusal_outcome_blocked",
+    "ledger_refresh_outcome_success",
+    "numeric_duration_fields_present",
+    "artifact_fresh_current_commit",
+    "secret_safe_omission",
+  ],
+  defaultBuildsRuntime: false,
+  defaultClosesE11: false,
+  defaultRunsBrowserRunner: false,
+  defaultSubmitsLiveMutation: false,
+  e11TargetState: "x_requires_real_browser_mutation_pass",
+  finalPassClassification: "e11_browser_mutation_dod_passed",
+  schema: "billing_execute_browser_mutation_final_dod.v1",
+} as const;
+
+export const ledgerAdjustmentExecuteRuntimeCurrentEvidenceAcceptanceMatrixContract =
+  {
+    acceptedStates: {
+      e11X: "requires mutation_pass_artifact_passed plus artifact_readback_passed, current commit freshness, API and ledger readback, numeric durations, and secret-safe omission",
+      mutationPassArtifactPassed:
+        "real browser mutation artifact passed after runtime_current_evidence_accepted_for_review, admin session verification, mutation opt-in, artifact write/readback opt-in, API readback, ledger readback, and action duration checks",
+      mutationRunnerReadyBlocked:
+        "runtime_current_evidence_accepted_for_review is true but admin session, mutation opt-in, browser artifact write/readback, or runner opt-in is still missing",
+      runtimeCurrentEvidenceAcceptedForReview:
+        "bounded external runtime-current artifact is current, non-simulated, commit-matched, timestamp-consistent, and secret-safe; cannot mark E11 final x by itself",
+    },
+    acceptanceSchema: {
+      adminSessionVerification: {
+        marker: "admin_session_verified_secret_omitted",
+        rawSecretRequired: false,
+        requiredField: "session_verification",
+        secretOmitted: true,
+      },
+      browserArtifact: {
+        provenanceField: "provenance",
+        requiredFields:
+          ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.requiredTopLevelFields,
+        schema:
+          ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
+      },
+      freshness: {
+        currentCommitField: "git_commit",
+        freshnessField: "freshness",
+        requireCurrentCommit: true,
+      },
+      mutationControls: {
+        artifactReadbackOptIn: "artifact_readback_opt_in_enabled",
+        artifactWriteOptIn: "artifact_write_opt_in_enabled",
+        mutationOptIn: "mutation_opt_in_enabled",
+        requiredField: "mutation_controls",
+      },
+      readback: {
+        apiFields:
+          ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactSchema
+            .apiReadbackFields,
+        ledgerFields:
+          ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactSchema
+            .ledgerReadbackFields,
+      },
+      resultClassification: {
+        failedActionField: "failed_action",
+        failureClassificationField: "failure_classification",
+        requiredField: "failure_taxonomy",
+      },
+      runtimeArtifact: {
+        currentCommitField: "git_commit",
+        provenanceField: "provenance",
+        requiredFields: [
+          "schema",
+          "status",
+          "classification",
+          "blocker",
+          "source_newest_utc",
+          "container_created_utc",
+          "image_created_utc",
+          "image_id",
+          "git_commit",
+          "alignment_rules",
+          "readback_classification",
+          "rebuild_handoff_execution_allowed",
+        ],
+        schema: "control_plane_ledger_execute_runtime_current_handoff.v1",
+        timestampComparison: {
+          imageCreatedUtc: "image_created_utc",
+          runtimeCreatedUtc: "container_created_utc",
+          sourceNewestUtc: "source_newest_utc",
+        },
+      },
+      secretSafeOmission: {
+        requestMaterialEchoed: false,
+        sessionMaterialEchoed: false,
+        urlCredentialsEchoed: false,
+      },
+    },
+    defaults: {
+      buildsRuntime: false,
+      consumesAdminSession: false,
+      mutates: false,
+      readsBrowserArtifact: false,
+      readsRuntimeArtifact: false,
+      recreatesRuntime: false,
+    },
+    refusalTaxonomy: {
+      artifactReadbackMissing: "artifact_readback_missing",
+      artifactWriteMissing: "artifact_write_missing",
+      browserArtifactSimulated: "simulated_artifact_cannot_close_e11",
+      browserArtifactStale: "artifact_readback_failed",
+      browserUnavailable: "browser_tooling_unavailable",
+      durationNonNumeric: "duration_non_numeric",
+      idempotentReplayFailed: "browser_idempotent_replay_failed",
+      ledgerRefreshMissing: "ledger_refresh_missing",
+      mutationOptInMissing: "mutation_opt_in_missing",
+      rawSecretPresent: "raw_secret_present",
+      refundRefusalMissing: "refund_refusal_missing",
+      runtimeArtifactMissing: "runtime_current_artifact_missing",
+      runtimeArtifactSimulated: "simulated_artifact_cannot_close_e11",
+      runtimeArtifactStale: "runtime_current_artifact_stale_or_unverified",
+      runtimeCommitMismatch: "runtime_current_commit_mismatch",
+      runtimeUnsafeArtifact: "unsafe_artifact_path",
+      sessionInvalidMarker: "admin_session_invalid",
+      sessionMissingMarker: "session_material_missing",
+    },
+    schema: "billing_execute_runtime_current_evidence_acceptance_matrix.v1",
+    simulationPolicy: {
+      acceptedShapeSimulations: true,
+      buildsRuntime: false,
+      mutates: false,
+      recreatesRuntime: false,
+      simulationCanMarkFinalX: false,
+    },
+  } as const;
+
+export const ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract = {
+  defaults: {
+    buildsRuntime: false,
+    consumesAdminSession: false,
+    mutates: false,
+    readsBrowserArtifact: false,
+    readsRuntimeArtifact: false,
+    recreatesRuntime: false,
+  },
+  exactNextCommands: {
+    browserMutationRunnerArtifact:
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+    browserMutationRunnerArtifactReadback:
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserEvidenceArtifactReadbackOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+    runtimeCurrentHandoff:
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactWriteOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+    runtimeCurrentReadback:
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+    sessionMarker:
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -AdminSessionHandoff",
+  },
+  reportFields: {
+    apiReadbackState: "api_readback_state",
+    blockingReasons: "blocking_reasons",
+    browserArtifactState: "browser_artifact_state",
+    currentCommit: "current_commit",
+    durationState: "duration_state",
+    finalXEligible: "final_x_eligible",
+    generatedAt: "generated_at",
+    ledgerReadbackState: "ledger_readback_state",
+    mutationControlsState: "mutation_controls_state",
+    requiredEvidence: "required_evidence",
+    runtimeArtifactState: "runtime_artifact_state",
+    secretSafeOmissionState: "secret_safe_omission_state",
+    sessionState: "session_state",
+  },
+  requiredEvidence: [
+    "runtime_current_verified_artifact_readback",
+    "admin_session_verified_secret_omitted_marker",
+    "mutation_opt_in_enabled",
+    "browser_mutation_artifact_write_readback",
+    "api_readback_passed",
+    "ledger_readback_passed",
+    "numeric_durations_present",
+    "secret_safe_omission_proof",
+    "current_commit_freshness",
+  ],
+  schema: "billing_execute_browser_mutation_final_closure_audit.v1",
+  simulationPolicy: {
+    acceptedShapeSimulations: true,
+    buildsRuntime: false,
+    mutates: false,
+    recreatesRuntime: false,
+    simulationCanMarkFinalX: false,
+  },
+  stateValues: {
+    accepted: "accepted",
     blocked: "blocked",
-    fail: "fail",
-    pass: "pass",
+    missing: "missing",
+    refused: "refused",
+    simulated: "simulated",
   },
 } as const;
 
-export const ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract = {
-  artifactName: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.artifactName,
-  defaultInstallsBrowser: false,
-  defaultMode: "live_environment_bootstrap_attempt",
-  defaultStartsAdminUiDevServer: false,
-  defaultSubmitsLiveMutation: false,
-  devServer: {
-    command: "npm run dev -- --host 127.0.0.1",
-    cwd: "web/admin-ui",
-    env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_ADMIN_UI_DEV_SERVER",
-    flag: "-BrowserAdminUiDevServerOptIn",
-    requiredValue: "1",
-  },
-  durationFields: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.durationFields,
-  playwright: {
-    browser: "chromium",
-    installCommand: "npm --prefix web/admin-ui exec playwright install chromium",
-    installHintOnly: true,
-  },
-  sessionHandoff: {
-    echoCookie: false,
-    echoHeaderValue: false,
-    echoToken: false,
-    env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
-    header: "X-Admin-Session",
-    requiredForActions: true,
-  },
-  requiredForPassAttempt: {
-    adminUiReachable: true,
-    artifactReadbackFresh: true,
-    artifactWriteOptIn: true,
-    browserToolingAvailable: true,
-    controlPlaneHealthReachable: true,
-    liveRunnerOptIn: true,
-    mutationOptIn: true,
-    sessionMaterialPresent: true,
-  },
-  secretSafeOmission: {
-    echoRequestMaterial: false,
-    echoSessionMaterial: false,
-    echoUrlCredentials: false,
-  },
-  statusMarkers: {
-    blocked: "blocked",
-    fail: "fail",
-    passAttemptReady: "pass_attempt_ready",
-    passReadback: "pass_readback",
-  },
-} as const;
+export const ledgerAdjustmentExecuteBrowserMutationEvidenceWatcherFinalGuardContract =
+  {
+    defaultMode: "watcher_final_guard_review",
+    defaults: {
+      buildsRuntime: false,
+      consumesAdminSession: false,
+      mutates: false,
+      readsBrowserArtifact: false,
+      readsRuntimeArtifact: false,
+      recreatesRuntime: false,
+    },
+    exactNextCommands: {
+      browserArtifactReadback:
+        ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract
+          .exactNextCommands.browserMutationRunnerArtifactReadback,
+      browserMutationRunner:
+        ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract
+          .exactNextCommands.browserMutationRunnerArtifact,
+      runtimeCurrentHandoff:
+        ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract
+          .exactNextCommands.runtimeCurrentHandoff,
+      runtimeCurrentReadback:
+        ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract
+          .exactNextCommands.runtimeCurrentReadback,
+      sessionMarker:
+        ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract
+          .exactNextCommands.sessionMarker,
+    },
+    expectedArtifactPaths: {
+      browserMutationArtifact:
+        "artifacts/billing_execute_browser_live_e2e_evidence.json",
+      runtimeCurrentArtifact:
+        "artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+    },
+    finalGuardFlags: {
+      acceptedShapeCanMarkFinalX: false,
+      noArtifactCanMarkFinalX: false,
+      sessionMissingCanMarkFinalX: false,
+      simulationCanMarkFinalX: false,
+      watcherCanMarkFinalX: false,
+    },
+    finalReviewChecklist: [
+      {
+        key: "runtime_current_artifact_current",
+        requiredState: "runtime_current_verified",
+      },
+      {
+        key: "admin_session_marker_secret_omitted",
+        requiredState: "admin_session_verified_secret_omitted",
+      },
+      {
+        key: "mutation_opt_in_present",
+        requiredState: "mutation_opt_in_enabled",
+      },
+      {
+        key: "browser_artifact_readback_passed",
+        requiredState: "mutation_pass_artifact_passed",
+      },
+      {
+        key: "api_and_ledger_readback_passed",
+        requiredState: "api_ledger_readback_passed",
+      },
+      {
+        key: "numeric_durations_present",
+        requiredState: "numeric_durations_present",
+      },
+      {
+        key: "secret_safe_omission_proven",
+        requiredState: "secret_safe_omission",
+      },
+      {
+        key: "not_simulation_or_watcher_only",
+        requiredState: "real_artifact_only",
+      },
+    ],
+    mutationOptInRequirements: {
+      artifactReadbackFlag: "-BrowserEvidenceArtifactReadbackOptIn",
+      artifactWriteFlag: "-BrowserEvidenceArtifactWriteOptIn",
+      env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION=1",
+      runnerFlag: "-BrowserLiveRunnerExecutionOptIn",
+    },
+    schema: "billing_execute_browser_mutation_evidence_watcher_final_guard.v1",
+    sessionMarkerRequirements: {
+      env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+      marker: "admin_session_verified_secret_omitted",
+      rawSecretEchoed: false,
+    },
+    watcherStates: {
+      blocked: "blocked",
+      finalEligible: "final_eligible",
+      waitingForRealEvidence: "waiting_for_real_evidence",
+    },
+  } as const;
+
+export const ledgerAdjustmentExecuteRuntimeCurrentOperatorHandoffPackContract =
+  {
+    boundedRunnerTimeoutMs: 90000,
+    commands: {
+      adminSessionVerify: {
+        env: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+        flag: "-AdminSessionHandoff",
+        marker: "admin_session_present",
+        secretEchoed: false,
+      },
+      browserMutationRunner: {
+        command:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -BrowserPreflight -BrowserMutationOptIn -BrowserEvidenceArtifactWriteOptIn -BrowserLiveRunnerExecutionOptIn -BrowserEvidenceArtifactPath artifacts/billing_execute_browser_live_e2e_evidence.json",
+        env: {
+          artifactWrite:
+            "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_ARTIFACT_WRITE=1",
+          mutation:
+            "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_BROWSER_MUTATION=1",
+          session: "CONTROL_PLANE_ADMIN_SESSION_TOKEN",
+        },
+      },
+      runtimeArtifactReadback: {
+        command:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactReadbackOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_READBACK=1",
+        flag: "-RuntimeCurrentEvidenceArtifactReadbackOptIn",
+      },
+      runtimeArtifactWrite: {
+        command:
+          "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_control_plane_ledger_adjustment_execute_smoke.ps1 -RuntimeCurrentEvidenceArtifactWriteOptIn -RuntimeCurrentEvidenceArtifactPath artifacts/control_plane_ledger_execute_runtime_current_handoff.json",
+        env: "CONTROL_PLANE_LEDGER_ADJUSTMENT_EXECUTE_RUNTIME_CURRENT_ARTIFACT_WRITE=1",
+        flag: "-RuntimeCurrentEvidenceArtifactWriteOptIn",
+      },
+    },
+    defaultBuildsRuntime: false,
+    defaultConsumesSession: false,
+    defaultMutates: false,
+    defaultReadsRuntimeArtifact: false,
+    defaultRecreatesRuntime: false,
+    failureTaxonomy: {
+      artifactReadbackMissing: "artifact_readback_missing",
+      artifactWriteMissing: "artifact_write_missing",
+      browserUnavailable: "browser_tooling_unavailable",
+      durationNonNumeric: "duration_non_numeric",
+      idempotentReplayFailed: "browser_idempotent_replay_failed",
+      ledgerRefreshMissing: "ledger_refresh_missing",
+      mutationOptInMissing: "mutation_opt_in_missing",
+      recreateUnavailable:
+        "control_plane_container_unavailable_for_no_build_handoff",
+      rebuildForbidden: "runtime_image_requires_rebuild_but_build_forbidden",
+      refundRefusalMissing: "refund_refusal_missing",
+      runtimeArtifactMissing: "runtime_current_artifact_missing",
+      runtimeArtifactSimulated: "simulated_artifact_cannot_close_e11",
+      runtimeArtifactStale: "runtime_current_artifact_stale_or_unverified",
+      sessionInvalid: "admin_session_invalid",
+      sessionMissing: "session_material_missing",
+      unsafeArtifactPath: "unsafe_artifact_path",
+    },
+    requiredArtifactFields: {
+      browserMutationArtifact:
+        ledgerAdjustmentExecuteBrowserEvidenceArtifactContract.requiredTopLevelFields,
+      runtimeCurrentArtifact: [
+        "schema",
+        "status",
+        "classification",
+        "blocker",
+        "source_newest_utc",
+        "container_created_utc",
+        "image_created_utc",
+        "image_id",
+        "git_commit",
+        "alignment_rules",
+        "readback_classification",
+        "rebuild_handoff_execution_allowed",
+      ],
+    },
+    schema: "billing_execute_runtime_current_operator_handoff_pack.v1",
+    stateMarkers: {
+      e11X: "e11_x",
+      mutationPassArtifactPassed: "mutation_pass_artifact_passed",
+      mutationRunnerReadyBlocked: "mutation_runner_ready_blocked",
+      runtimeCurrentHandoffReady: "runtime_current_handoff_ready",
+    },
+    stateDefinitions: {
+      e11X: "requires mutation_pass_artifact_passed and artifact_readback_passed with final DoD checklist complete",
+      mutationPassArtifactPassed:
+        "browser runner produced passed artifact with current runtime, action outcomes, numeric durations, API and ledger readback",
+      mutationRunnerReadyBlocked:
+        "runtime_current_verified is proven, but session, mutation, browser artifact write/readback, or runner opt-in is still missing",
+      runtimeCurrentHandoffReady:
+        "runtime_current_verified artifact/readback is current; no browser mutation has run",
+    },
+    sequence: [
+      "operator_rebuild_or_recreate_outside_script",
+      "runtime_artifact_write",
+      "runtime_artifact_readback",
+      "admin_session_verify_secret_omitted",
+      "mutation_and_browser_artifact_opt_in",
+      "browser_runner_bounded_execution",
+      "browser_artifact_readback",
+      "final_dod_classification",
+    ],
+  } as const;
 
 export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
   browserActionPlan: ledgerAdjustmentExecuteBrowserActionPlanContract,
   browserDomActionRunner: ledgerAdjustmentExecuteBrowserDomActionRunnerContract,
-  browserEvidenceArtifact: ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
-  browserLiveEnvironmentBootstrapAttempt: ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract,
+  browserEvidenceArtifact:
+    ledgerAdjustmentExecuteBrowserEvidenceArtifactContract,
+  browserLiveEnvironmentBootstrapAttempt:
+    ledgerAdjustmentExecuteBrowserLiveEnvironmentBootstrapAttemptContract,
   browserLiveRunbook: ledgerAdjustmentExecuteBrowserLiveRunbookContract,
-  browserLiveRunnerExecutionBridge: ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract,
-  browserLivePassArtifactReadbackGate: ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract,
-  browserMutationPassArtifactClosure: ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract,
-  browserPlaywrightLaunchReadiness: ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract,
+  browserLiveRunnerExecutionBridge:
+    ledgerAdjustmentExecuteBrowserLiveRunnerExecutionBridgeContract,
+  browserLivePassArtifactReadbackGate:
+    ledgerAdjustmentExecuteBrowserLivePassArtifactReadbackGateContract,
+  browserMutationFinalDod:
+    ledgerAdjustmentExecuteBrowserMutationFinalDodContract,
+  browserMutationEvidenceWatcherFinalGuard:
+    ledgerAdjustmentExecuteBrowserMutationEvidenceWatcherFinalGuardContract,
+  browserMutationPassArtifactClosure:
+    ledgerAdjustmentExecuteBrowserMutationPassArtifactClosureContract,
+  browserPlaywrightLaunchReadiness:
+    ledgerAdjustmentExecuteBrowserPlaywrightLaunchReadinessContract,
   browserPreflight: ledgerAdjustmentExecuteBrowserPreflightContract,
   browserRunnerReadiness: ledgerAdjustmentExecuteBrowserRunnerReadinessContract,
-  forbiddenSensitiveMarkers: ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
+  forbiddenSensitiveMarkers:
+    ledgerAdjustmentExecuteLiveSmokeContract.forbiddenSensitiveMarkers,
+  runtimeCurrentEvidenceAcceptanceMatrix:
+    ledgerAdjustmentExecuteRuntimeCurrentEvidenceAcceptanceMatrixContract,
+  runtimeCurrentFinalClosureAudit:
+    ledgerAdjustmentExecuteRuntimeCurrentFinalClosureAuditContract,
+  runtimeCurrentOperatorHandoffPack:
+    ledgerAdjustmentExecuteRuntimeCurrentOperatorHandoffPackContract,
+  runtimeCurrentHandoff: ledgerAdjustmentExecuteRuntimeCurrentHandoffContract,
   readinessStates: {
     appliedRefreshError: {
       executeButtonEnabled: true,
@@ -539,10 +1202,12 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
+        executeOutcome:
+          ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
         executeResultFresh: true,
         executeWriteNetworkCall: true,
-        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.error,
+        ledgerRefreshStatus:
+          ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.error,
       },
     },
     appliedRefreshSuccess: {
@@ -551,10 +1216,12 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
+        executeOutcome:
+          ledgerAdjustmentExecuteLiveSmokeContract.statuses.applied,
         executeResultFresh: true,
         executeWriteNetworkCall: true,
-        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.success,
+        ledgerRefreshStatus:
+          ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.success,
       },
     },
     blocked: {
@@ -583,7 +1250,8 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
     },
     dryRunRequired: {
       executeButtonEnabled: false,
-      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.dryRunRequired,
+      expectedStatus:
+        ledgerAdjustmentExecuteLiveSmokeContract.statuses.dryRunRequired,
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: false,
@@ -595,7 +1263,8 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
     },
     executePreflight: {
       executeButtonEnabled: true,
-      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.executePreflight,
+      expectedStatus:
+        ledgerAdjustmentExecuteLiveSmokeContract.statuses.executePreflight,
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
@@ -619,31 +1288,38 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
     },
     idempotentRefreshError: {
       executeButtonEnabled: true,
-      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+      expectedStatus:
+        ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+        executeOutcome:
+          ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
         executeResultFresh: true,
         executeWriteNetworkCall: true,
-        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.error,
+        ledgerRefreshStatus:
+          ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.error,
       },
     },
     idempotentRefreshSuccess: {
       executeButtonEnabled: true,
-      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+      expectedStatus:
+        ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: true,
-        executeOutcome: ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
+        executeOutcome:
+          ledgerAdjustmentExecuteLiveSmokeContract.statuses.idempotent,
         executeResultFresh: true,
         executeWriteNetworkCall: true,
-        ledgerRefreshStatus: ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.success,
+        ledgerRefreshStatus:
+          ledgerAdjustmentExecuteLiveSmokeContract.refreshStatuses.success,
       },
     },
     stalePlan: {
       executeButtonEnabled: false,
-      expectedStatus: ledgerAdjustmentExecuteLiveSmokeContract.statuses.stalePlan,
+      expectedStatus:
+        ledgerAdjustmentExecuteLiveSmokeContract.statuses.stalePlan,
       markers: {
         contractCheckNetworkCall: false,
         dryRunFresh: false,
@@ -659,14 +1335,16 @@ export const ledgerAdjustmentExecuteLiveSmokeHandoff = {
     assertNoForbiddenMarkersInDocument: true,
     readStatusFromReadinessRegion: true,
     selectorsSource: "ledgerAdjustmentExecuteLiveSmokeContract.selectors",
-    statusMarkersSource: "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
+    statusMarkersSource:
+      "ledgerAdjustmentExecuteLiveSmokeHandoff.readinessStates",
     useDataTestIdsOnly: true,
   },
   selectors: ledgerAdjustmentExecuteLiveSmokeContract.selectors,
   statusMarkers: ledgerAdjustmentExecuteLiveSmokeContract.markers,
 } as const;
 
-export type LedgerAdjustmentExecuteLiveSmokeHandoff = typeof ledgerAdjustmentExecuteLiveSmokeHandoff;
+export type LedgerAdjustmentExecuteLiveSmokeHandoff =
+  typeof ledgerAdjustmentExecuteLiveSmokeHandoff;
 
 export const ledgerAdjustmentExecuteLiveSmokeSerializableHandoff = {
   ...ledgerAdjustmentExecuteLiveSmokeHandoff,
